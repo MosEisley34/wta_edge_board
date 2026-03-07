@@ -4,6 +4,7 @@ const SHEETS = {
   RAW_ODDS: 'Raw_Odds',
   RAW_SCHEDULE: 'Raw_Schedule',
   MATCH_MAP: 'Match_Map',
+  SIGNALS: 'Signals',
   STATE: 'State',
 };
 
@@ -18,12 +19,83 @@ const DEFAULT_CONFIG = {
   MATCH_FALLBACK_EXPANSION_MIN: '120',
   ALLOW_WTA_125: 'false',
   VERBOSE_LOGGING: 'true',
+  DUPLICATE_DEBOUNCE_MS: '90000',
 };
 
 const PROPS = {
-  TRIGGER_SPEC_V1: 'TRIGGER_SPEC_V1',
-  LAST_RUN_TS: 'LAST_RUN_TS',
+  PIPELINE_TRIGGER_SIGNATURE: 'PIPELINE_TRIGGER_SIGNATURE',
+  LAST_PIPELINE_RUN_TS: 'LAST_PIPELINE_RUN_TS',
+  DUPLICATE_PREVENTED_COUNT: 'DUPLICATE_PREVENTED_COUNT',
 };
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('WTA Pipeline Ops')
+    .addItem('Setup / Verify Tabs', 'menuSetupVerifyTabs')
+    .addItem('Run Pipeline Now', 'menuRunPipelineNow')
+    .addSeparator()
+    .addItem('Install Triggers', 'menuInstallTriggers')
+    .addItem('Remove Triggers', 'menuRemoveTriggers')
+    .addSeparator()
+    .addItem('Diagnostics / Health Check', 'menuDiagnosticsHealthCheck')
+    .addToUi();
+}
+
+function menuSetupVerifyTabs() {
+  ensureTabsAndConfig_();
+  SpreadsheetApp.getUi().alert('Setup complete: WTA foundation tabs/headers verified.');
+}
+
+function menuRunPipelineNow() {
+  runEdgeBoard();
+  SpreadsheetApp.getUi().alert('Pipeline run complete. Check Run_Log and State.');
+}
+
+function menuInstallTriggers() {
+  installOrUpdateTriggers();
+  SpreadsheetApp.getUi().alert('Trigger install/update completed. Check Run_Log.');
+}
+
+function menuRemoveTriggers() {
+  removePipelineTriggers();
+  SpreadsheetApp.getUi().alert('Pipeline triggers removed.');
+}
+
+function menuDiagnosticsHealthCheck() {
+  const report = diagnosticsHealthCheck();
+  SpreadsheetApp.getUi().alert('Diagnostics complete', JSON.stringify(report, null, 2), SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+function diagnosticsHealthCheck() {
+  ensureTabsAndConfig_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const scriptProps = PropertiesService.getScriptProperties();
+  const tabStatus = {};
+
+  Object.keys(SHEETS).forEach((key) => {
+    tabStatus[SHEETS[key]] = !!ss.getSheetByName(SHEETS[key]);
+  });
+
+  const triggerCount = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === 'runEdgeBoard').length;
+  const report = {
+    checked_at: new Date().toISOString(),
+    tabs_present: tabStatus,
+    run_edgeboard_triggers: triggerCount,
+    trigger_signature: scriptProps.getProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE) || '',
+    duplicate_prevented_count: Number(scriptProps.getProperty(PROPS.DUPLICATE_PREVENTED_COUNT) || 0),
+  };
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: buildRunId_(),
+    stage: 'diagnosticsHealthCheck',
+    status: 'ok',
+    reason_code: 'diagnostics_ok',
+    message: JSON.stringify(report),
+  });
+
+  return report;
+}
 
 function installOrUpdateTriggers() {
   ensureTabsAndConfig_();
@@ -34,24 +106,54 @@ function installOrUpdateTriggers() {
     type: 'clock',
     everyMinutes: 15,
   };
+
   const signature = JSON.stringify(spec);
   const scriptProps = PropertiesService.getScriptProperties();
-  const current = scriptProps.getProperty(PROPS.TRIGGER_SPEC_V1);
+  const existingSignature = scriptProps.getProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE);
+  const existingPipelineTriggers = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === spec.functionName);
 
-  if (current === signature) {
-    logTriggerEvent_('trigger_noop', 'Trigger spec unchanged.');
+  if (existingSignature === signature && existingPipelineTriggers.length > 0) {
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: buildRunId_(),
+      stage: 'installOrUpdateTriggers',
+      status: 'success',
+      reason_code: 'trigger_noop',
+      message: 'Trigger signature unchanged and trigger already exists.',
+      trigger_event: 'trigger_noop',
+    });
     return;
   }
 
+  existingPipelineTriggers.forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+  ScriptApp.newTrigger(spec.functionName).timeBased().everyMinutes(spec.everyMinutes).create();
+  scriptProps.setProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE, signature);
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: buildRunId_(),
+    stage: 'installOrUpdateTriggers',
+    status: 'success',
+    reason_code: 'trigger_reinstalled',
+    message: 'Pipeline trigger installed/refreshed with 15-minute schedule.',
+    trigger_event: 'trigger_reinstalled',
+  });
+}
+
+function removePipelineTriggers() {
   ScriptApp.getProjectTriggers().forEach((trigger) => {
-    if (trigger.getHandlerFunction() === 'runEdgeBoard') {
-      ScriptApp.deleteTrigger(trigger);
-    }
+    if (trigger.getHandlerFunction() === 'runEdgeBoard') ScriptApp.deleteTrigger(trigger);
   });
 
-  ScriptApp.newTrigger('runEdgeBoard').timeBased().everyMinutes(spec.everyMinutes).create();
-  scriptProps.setProperty(PROPS.TRIGGER_SPEC_V1, signature);
-  logTriggerEvent_('trigger_reinstalled', 'Trigger replaced with latest spec.');
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: buildRunId_(),
+    stage: 'removePipelineTriggers',
+    status: 'success',
+    reason_code: 'trigger_removed',
+    message: 'Removed runEdgeBoard triggers.',
+    trigger_event: 'trigger_removed',
+  });
 }
 
 function runEdgeBoard() {
@@ -61,168 +163,139 @@ function runEdgeBoard() {
   const startedAt = new Date();
   const scriptProps = PropertiesService.getScriptProperties();
   const lock = LockService.getScriptLock();
-  const runEvents = [];
 
   if (!tryLock_(lock, 5000)) {
-    appendRunLog_({
+    const prevented = incrementDuplicatePreventedCount_();
+    appendLogRow_({
+      row_type: 'summary',
       run_id: runId,
+      stage: 'runEdgeBoard',
       started_at: startedAt,
       ended_at: new Date(),
       status: 'skipped',
+      reason_code: 'run_locked_skip',
+      message: 'Skipped due to script lock contention.',
       lock_event: 'run_locked_skip',
-      debounce_event: '',
-      trigger_event: '',
-      exception: '',
-      stack: '',
-      stage_summaries: '{}',
-      rejection_codes: '{}',
-      fetched_odds: 0,
-      fetched_schedule: 0,
-      allowed_tournaments: 0,
-      matched: 0,
-      unmatched: 0,
-      cooldown_suppressed: 0,
-      duplicate_suppressed: 0,
+      duplicate_suppressed: prevented,
     });
     return;
   }
 
-  let config;
   try {
-    config = getConfig_();
+    const config = getConfig_();
     if (!config.RUN_ENABLED) {
-      appendRunLog_({
+      appendLogRow_({
+        row_type: 'summary',
         run_id: runId,
+        stage: 'runEdgeBoard',
         started_at: startedAt,
         ended_at: new Date(),
         status: 'skipped',
-        lock_event: '',
-        debounce_event: 'run_disabled_skip',
-        trigger_event: '',
-        exception: '',
-        stack: '',
-        stage_summaries: '{}',
-        rejection_codes: '{}',
-        fetched_odds: 0,
-        fetched_schedule: 0,
-        allowed_tournaments: 0,
-        matched: 0,
-        unmatched: 0,
-        cooldown_suppressed: 0,
-        duplicate_suppressed: 0,
+        reason_code: 'run_disabled_skip',
+        message: 'RUN_ENABLED is false.',
       });
       return;
     }
 
     const nowMs = Date.now();
-    const lastRun = Number(scriptProps.getProperty(PROPS.LAST_RUN_TS) || 0);
-    if (nowMs - lastRun < 2 * 60 * 1000) {
-      appendRunLog_({
+    const debounceMs = config.DUPLICATE_DEBOUNCE_MS;
+    const lastRunTs = Number(scriptProps.getProperty(PROPS.LAST_PIPELINE_RUN_TS) || 0);
+    if (nowMs - lastRunTs < debounceMs) {
+      const prevented = incrementDuplicatePreventedCount_();
+      appendLogRow_({
+        row_type: 'summary',
         run_id: runId,
+        stage: 'runEdgeBoard',
         started_at: startedAt,
         ended_at: new Date(),
         status: 'skipped',
-        lock_event: '',
+        reason_code: 'run_debounced_skip',
+        message: 'Skipped by debounce window.',
         debounce_event: 'run_debounced_skip',
-        trigger_event: '',
-        exception: '',
-        stack: '',
-        stage_summaries: '{}',
-        rejection_codes: '{}',
-        fetched_odds: 0,
-        fetched_schedule: 0,
-        allowed_tournaments: 0,
-        matched: 0,
-        unmatched: 0,
-        cooldown_suppressed: 0,
-        duplicate_suppressed: 0,
+        duplicate_suppressed: prevented,
       });
       return;
     }
 
-    scriptProps.setProperty(PROPS.LAST_RUN_TS, String(nowMs));
-
-    const stageSummaries = [];
-    const canonicalExamples = [];
-    const unmatchedSamples = [];
+    scriptProps.setProperty(PROPS.LAST_PIPELINE_RUN_TS, String(nowMs));
 
     const oddsStage = stageFetchOdds(runId, config);
-    stageSummaries.push(oddsStage.summary);
+    appendStageLog_(runId, oddsStage.summary);
 
     const scheduleStage = stageFetchSchedule(runId, config);
-    stageSummaries.push(scheduleStage.summary);
-    Array.prototype.push.apply(canonicalExamples, scheduleStage.canonicalExamples);
+    appendStageLog_(runId, scheduleStage.summary);
 
     const matchStage = stageMatchEvents(runId, config, oddsStage.events, scheduleStage.events);
-    stageSummaries.push(matchStage.summary);
-    Array.prototype.push.apply(unmatchedSamples, matchStage.unmatched.slice(0, 20));
+    appendStageLog_(runId, matchStage.summary);
 
-    const persistStage = stagePersist(runId, config, {
+    const signalStage = stageGenerateSignals(runId, matchStage.rows);
+    appendStageLog_(runId, signalStage.summary);
+
+    const persistStage = stagePersist(runId, {
       odds: oddsStage.rows,
       schedule: scheduleStage.rows,
       matchMap: matchStage.rows,
+      signals: signalStage.rows,
     });
-    stageSummaries.push(persistStage.summary);
+    appendStageLog_(runId, persistStage.summary);
 
-    const rejectionCodes = mergeReasonCounts_([
+    const combinedReasonCodes = mergeReasonCounts_([
+      oddsStage.summary.reason_codes,
       scheduleStage.summary.reason_codes,
       matchStage.summary.reason_codes,
+      signalStage.summary.reason_codes,
+      persistStage.summary.reason_codes,
     ]);
 
     const verbosePayload = {
       run_id: runId,
+      started_at: startedAt.toISOString(),
+      ended_at: new Date().toISOString(),
       config_snapshot: config,
-      stage_summaries: stageSummaries,
-      canonicalization_examples: canonicalExamples,
-      sample_unmatched_cases: unmatchedSamples,
-      timing_breakdown_ms: stageSummaries.reduce((acc, s) => {
-        acc[s.stage] = s.duration_ms;
-        return acc;
-      }, {}),
+      stage_summaries: [
+        oddsStage.summary,
+        scheduleStage.summary,
+        matchStage.summary,
+        signalStage.summary,
+        persistStage.summary,
+      ],
+      canonicalization_examples: scheduleStage.canonicalExamples,
+      sample_unmatched_cases: matchStage.unmatched.slice(0, 20),
+      reason_codes: combinedReasonCodes,
     };
 
     setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
 
-    appendRunLog_({
+    appendLogRow_({
+      row_type: 'summary',
       run_id: runId,
+      stage: 'runEdgeBoard',
       started_at: startedAt,
       ended_at: new Date(),
       status: 'success',
-      lock_event: '',
-      debounce_event: '',
-      trigger_event: '',
-      exception: '',
-      stack: '',
-      stage_summaries: JSON.stringify(stageSummaries),
-      rejection_codes: JSON.stringify(rejectionCodes),
+      reason_code: 'run_success',
+      message: 'Pipeline run completed.',
       fetched_odds: oddsStage.events.length,
       fetched_schedule: scheduleStage.events.length,
       allowed_tournaments: scheduleStage.allowedCount,
       matched: matchStage.matchedCount,
       unmatched: matchStage.unmatchedCount,
-      cooldown_suppressed: 0,
-      duplicate_suppressed: 0,
+      signals_found: signalStage.signalsFound,
+      rejection_codes: JSON.stringify(combinedReasonCodes),
+      stage_summaries: JSON.stringify(verbosePayload.stage_summaries),
     });
   } catch (error) {
-    appendRunLog_({
+    appendLogRow_({
+      row_type: 'summary',
       run_id: runId,
+      stage: 'runEdgeBoard',
       started_at: startedAt,
       ended_at: new Date(),
       status: 'failed',
-      lock_event: '',
-      debounce_event: '',
-      trigger_event: '',
+      reason_code: 'run_exception',
+      message: String(error && error.message ? error.message : error),
       exception: String(error && error.message ? error.message : error),
-      stack: String(error && error.stack ? error.stack : '').split('\n').slice(0, 4).join('\n'),
-      stage_summaries: '{}',
-      rejection_codes: '{}',
-      fetched_odds: 0,
-      fetched_schedule: 0,
-      allowed_tournaments: 0,
-      matched: 0,
-      unmatched: 0,
-      cooldown_suppressed: 0,
-      duplicate_suppressed: 0,
+      stack: String(error && error.stack ? error.stack : ''),
     });
     throw error;
   } finally {
@@ -411,7 +484,42 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
   };
 }
 
-function stagePersist(runId, config, payload) {
+function stageGenerateSignals(runId, matchRows) {
+  const start = Date.now();
+  const rows = [];
+  let signalsFound = 0;
+
+  matchRows.forEach((row) => {
+    if (!row.schedule_event_id) return;
+    const signal = {
+      key: row.key,
+      run_id: runId,
+      odds_event_id: row.odds_event_id,
+      schedule_event_id: row.schedule_event_id,
+      signal_type: 'candidate_edge',
+      signal_score: 1,
+      reason_code: row.match_type,
+      created_at: new Date().toISOString(),
+    };
+    rows.push(signal);
+    signalsFound += 1;
+  });
+
+  const summary = buildStageSummary_(runId, 'stageGenerateSignals', start, {
+    input_count: matchRows.length,
+    output_count: rows.length,
+    provider: 'internal_signal_builder',
+    api_credit_usage: 0,
+    reason_codes: {
+      signal_created: signalsFound,
+      signal_not_created: matchRows.length - signalsFound,
+    },
+  });
+
+  return { rows, signalsFound, summary };
+}
+
+function stagePersist(runId, payload) {
   const start = Date.now();
 
   upsertSheetRows_(SHEETS.RAW_ODDS, [
@@ -429,44 +537,26 @@ function stagePersist(runId, config, payload) {
     'rejection_code', 'time_diff_min', 'competition_tier', 'updated_at',
   ], payload.matchMap);
 
+  upsertSheetRows_(SHEETS.SIGNALS, [
+    'key', 'run_id', 'odds_event_id', 'schedule_event_id',
+    'signal_type', 'signal_score', 'reason_code', 'created_at',
+  ], payload.signals);
+
+  const total = payload.odds.length + payload.schedule.length + payload.matchMap.length + payload.signals.length;
   const summary = buildStageSummary_(runId, 'stagePersist', start, {
-    input_count: payload.odds.length + payload.schedule.length + payload.matchMap.length,
-    output_count: payload.odds.length + payload.schedule.length + payload.matchMap.length,
+    input_count: total,
+    output_count: total,
     provider: 'google_sheets',
     api_credit_usage: 0,
     reason_codes: {
       raw_odds_upserts: payload.odds.length,
       raw_schedule_upserts: payload.schedule.length,
       match_map_upserts: payload.matchMap.length,
+      signals_upserts: payload.signals.length,
     },
   });
 
   return { summary };
-}
-
-function canonicalizeCompetition(name) {
-  if (!name) return 'UNKNOWN';
-  const norm = String(name).toLowerCase().replace(/\s+/g, ' ').trim();
-
-  if (/(australian open|roland garros|french open|wimbledon|us open)/.test(norm)) return 'GRAND_SLAM';
-  if (/wta\s*1000/.test(norm)) return 'WTA_1000';
-  if (/wta\s*500/.test(norm)) return 'WTA_500';
-  if (/wta\s*125/.test(norm)) return 'WTA_125';
-  if (/wta/.test(norm)) return 'OTHER_WTA';
-  return 'UNKNOWN';
-}
-
-function isAllowedTournament(canonical, config) {
-  if (canonical === 'WTA_500') return { allowed: true, reason_code: 'allowed_wta500' };
-  if (canonical === 'WTA_1000') return { allowed: true, reason_code: 'allowed_wta1000' };
-  if (canonical === 'GRAND_SLAM') return { allowed: true, reason_code: 'allowed_grand_slam' };
-  if (canonical === 'WTA_125') {
-    return config.ALLOW_WTA_125
-      ? { allowed: true, reason_code: 'allowed_wta125' }
-      : { allowed: false, reason_code: 'rejected_wta125' };
-  }
-  if (canonical === 'OTHER_WTA') return { allowed: false, reason_code: 'rejected_other_tier' };
-  return { allowed: false, reason_code: 'rejected_unknown_competition' };
 }
 
 function ensureTabsAndConfig_() {
@@ -475,10 +565,26 @@ function ensureTabsAndConfig_() {
 
   ensureHeaders_(SHEETS.CONFIG, ['key', 'value']);
   ensureHeaders_(SHEETS.RUN_LOG, [
-    'run_id', 'started_at', 'ended_at', 'status',
-    'fetched_odds', 'fetched_schedule', 'allowed_tournaments', 'matched', 'unmatched',
+    'row_type', 'run_id', 'stage', 'started_at', 'ended_at', 'status', 'reason_code', 'message',
+    'fetched_odds', 'fetched_schedule', 'allowed_tournaments', 'matched', 'unmatched', 'signals_found',
     'rejection_codes', 'cooldown_suppressed', 'duplicate_suppressed',
     'lock_event', 'debounce_event', 'trigger_event', 'exception', 'stack', 'stage_summaries',
+  ]);
+  ensureHeaders_(SHEETS.RAW_ODDS, [
+    'key', 'event_id', 'bookmaker', 'market', 'outcome', 'price', 'commence_time',
+    'competition', 'home', 'away', 'source', 'updated_at',
+  ]);
+  ensureHeaders_(SHEETS.RAW_SCHEDULE, [
+    'key', 'event_id', 'match_id', 'start_time', 'competition', 'home', 'away',
+    'canonical_tier', 'is_allowed', 'reason_code', 'source', 'updated_at',
+  ]);
+  ensureHeaders_(SHEETS.MATCH_MAP, [
+    'key', 'odds_event_id', 'schedule_event_id', 'match_type',
+    'rejection_code', 'time_diff_min', 'competition_tier', 'updated_at',
+  ]);
+  ensureHeaders_(SHEETS.SIGNALS, [
+    'key', 'run_id', 'odds_event_id', 'schedule_event_id',
+    'signal_type', 'signal_score', 'reason_code', 'created_at',
   ]);
   ensureHeaders_(SHEETS.STATE, ['key', 'value', 'updated_at']);
 
@@ -495,9 +601,12 @@ function ensureHeaders_(sheetName, headers) {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   const firstRow = sh.getRange(1, 1, 1, headers.length).getValues()[0];
   const needsUpdate = headers.some((h, i) => firstRow[i] !== h);
+
   if (needsUpdate) {
     sh.getRange(1, 1, 1, headers.length).setValues([headers]);
   }
+
+  if (sh.getFrozenRows() !== 1) sh.setFrozenRows(1);
 }
 
 function ensureConfigDefaults_() {
@@ -537,54 +646,55 @@ function getConfig_() {
     MATCH_FALLBACK_EXPANSION_MIN: toNumber_(config.MATCH_FALLBACK_EXPANSION_MIN, 120),
     ALLOW_WTA_125: toBoolean_(config.ALLOW_WTA_125, false),
     VERBOSE_LOGGING: toBoolean_(config.VERBOSE_LOGGING, true),
+    DUPLICATE_DEBOUNCE_MS: toNumber_(config.DUPLICATE_DEBOUNCE_MS, 90000),
   };
 }
 
-function appendRunLog_(entry) {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.RUN_LOG);
-  sh.appendRow([
-    entry.run_id,
-    toIso_(entry.started_at),
-    toIso_(entry.ended_at),
-    entry.status,
-    entry.fetched_odds,
-    entry.fetched_schedule,
-    entry.allowed_tournaments,
-    entry.matched,
-    entry.unmatched,
-    entry.rejection_codes,
-    entry.cooldown_suppressed,
-    entry.duplicate_suppressed,
-    entry.lock_event,
-    entry.debounce_event,
-    entry.trigger_event,
-    entry.exception,
-    entry.stack,
-    entry.stage_summaries,
-  ]);
+function appendStageLog_(runId, summary) {
+  appendLogRow_({
+    row_type: 'stage',
+    run_id: runId,
+    stage: summary.stage,
+    started_at: summary.started_at,
+    ended_at: summary.ended_at,
+    status: 'success',
+    reason_code: 'stage_completed',
+    message: JSON.stringify({
+      input_count: summary.input_count,
+      output_count: summary.output_count,
+      provider: summary.provider,
+      reason_codes: summary.reason_codes,
+    }),
+  });
 }
 
-function logTriggerEvent_(triggerEvent, message) {
-  appendRunLog_({
-    run_id: buildRunId_(),
-    started_at: new Date(),
-    ended_at: new Date(),
-    status: 'partial',
-    fetched_odds: 0,
-    fetched_schedule: 0,
-    allowed_tournaments: 0,
-    matched: 0,
-    unmatched: 0,
-    rejection_codes: '{}',
-    cooldown_suppressed: 0,
-    duplicate_suppressed: 0,
-    lock_event: '',
-    debounce_event: '',
-    trigger_event: triggerEvent,
-    exception: '',
-    stack: '',
-    stage_summaries: JSON.stringify([{ stage: 'installOrUpdateTriggers', message }]),
-  });
+function appendLogRow_(entry) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.RUN_LOG);
+  sh.appendRow([
+    entry.row_type || 'summary',
+    entry.run_id || '',
+    entry.stage || '',
+    toIso_(entry.started_at),
+    toIso_(entry.ended_at),
+    entry.status || '',
+    entry.reason_code || '',
+    entry.message || '',
+    entry.fetched_odds || 0,
+    entry.fetched_schedule || 0,
+    entry.allowed_tournaments || 0,
+    entry.matched || 0,
+    entry.unmatched || 0,
+    entry.signals_found || 0,
+    entry.rejection_codes || '{}',
+    entry.cooldown_suppressed || 0,
+    entry.duplicate_suppressed || 0,
+    entry.lock_event || '',
+    entry.debounce_event || '',
+    entry.trigger_event || '',
+    entry.exception || '',
+    entry.stack || '',
+    entry.stage_summaries || '[]',
+  ]);
 }
 
 function setStateValue_(key, value) {
@@ -624,6 +734,14 @@ function upsertSheetRows_(sheetName, headers, rows) {
   }
 }
 
+function incrementDuplicatePreventedCount_() {
+  const scriptProps = PropertiesService.getScriptProperties();
+  const current = Number(scriptProps.getProperty(PROPS.DUPLICATE_PREVENTED_COUNT) || 0);
+  const next = current + 1;
+  scriptProps.setProperty(PROPS.DUPLICATE_PREVENTED_COUNT, String(next));
+  return next;
+}
+
 function buildStageSummary_(runId, stage, startMs, opts) {
   const endMs = Date.now();
   const summary = {
@@ -640,6 +758,31 @@ function buildStageSummary_(runId, stage, startMs, opts) {
   };
   Logger.log(JSON.stringify(summary));
   return summary;
+}
+
+function canonicalizeCompetition(name) {
+  if (!name) return 'UNKNOWN';
+  const norm = String(name).toLowerCase().replace(/\s+/g, ' ').trim();
+
+  if (/(australian open|roland garros|french open|wimbledon|us open)/.test(norm)) return 'GRAND_SLAM';
+  if (/wta\s*1000/.test(norm)) return 'WTA_1000';
+  if (/wta\s*500/.test(norm)) return 'WTA_500';
+  if (/wta\s*125/.test(norm)) return 'WTA_125';
+  if (/wta/.test(norm)) return 'OTHER_WTA';
+  return 'UNKNOWN';
+}
+
+function isAllowedTournament(canonical, config) {
+  if (canonical === 'WTA_500') return { allowed: true, reason_code: 'allowed_wta500' };
+  if (canonical === 'WTA_1000') return { allowed: true, reason_code: 'allowed_wta1000' };
+  if (canonical === 'GRAND_SLAM') return { allowed: true, reason_code: 'allowed_grand_slam' };
+  if (canonical === 'WTA_125') {
+    return config.ALLOW_WTA_125
+      ? { allowed: true, reason_code: 'allowed_wta125' }
+      : { allowed: false, reason_code: 'rejected_wta125' };
+  }
+  if (canonical === 'OTHER_WTA') return { allowed: false, reason_code: 'rejected_other_tier' };
+  return { allowed: false, reason_code: 'rejected_unknown_competition' };
 }
 
 function findScheduleMatch_(odds, scheduleEvents, maxToleranceMin) {
