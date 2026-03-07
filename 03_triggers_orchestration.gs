@@ -243,8 +243,6 @@ function runEdgeBoard() {
       return;
     }
 
-    scriptProps.setProperty(PROPS.LAST_PIPELINE_RUN_TS, String(nowMs));
-
     const oddsWindowDecision = resolveOddsWindowForPipeline_(config, nowMs);
     const decidedAt = localAndUtcTimestamps_(new Date());
     setStateValue_('ODDS_REFRESH_MODE_META', JSON.stringify({
@@ -397,6 +395,9 @@ function runEdgeBoard() {
       top_unresolved_competitions: scheduleStage.topUnresolvedCompetitions,
       unresolved_competition_counts: scheduleStage.unresolvedCompetitionCounts,
     }, null, 2));
+
+    // Policy: only successful orchestration updates debounce; crashed runs should retry immediately.
+    scriptProps.setProperty(PROPS.LAST_PIPELINE_RUN_TS, String(nowMs));
 
     appendLogRow_({
       row_type: 'summary',

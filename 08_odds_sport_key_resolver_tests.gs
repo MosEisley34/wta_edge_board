@@ -298,3 +298,134 @@ function testCallOddsApi_malformedJson_returnsParseFailure_() {
     UrlFetchApp.fetch = originalFetch;
   }
 }
+
+function testRunEdgeBoard_debounceSkipStillWorks_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1_000_000,
+    lastRunTs: 999_500,
+    debounceMs: 1_000,
+  });
+
+  try {
+    runEdgeBoard();
+    assertEquals_(1, harness.duplicatePreventedCount);
+    assertEquals_(0, harness.setPropertyCalls.length);
+    assertEquals_(1, harness.releaseLockCalls);
+    assertEquals_('run_debounced_skip', harness.summaryReasonCode());
+  } finally {
+    harness.restore();
+  }
+}
+
+function testRunEdgeBoard_crashDoesNotSetDebounceTimestamp_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1_000_000,
+    lastRunTs: 0,
+    debounceMs: 1_000,
+    throwDuringOrchestration: true,
+  });
+
+  try {
+    let threw = false;
+    try {
+      runEdgeBoard();
+    } catch (error) {
+      threw = true;
+      assertEquals_('stage crash', String(error && error.message ? error.message : error));
+    }
+    assertEquals_(true, threw);
+    assertEquals_(0, harness.setPropertyCalls.length);
+    assertEquals_(1, harness.releaseLockCalls);
+    assertEquals_('run_exception', harness.summaryReasonCode());
+  } finally {
+    harness.restore();
+  }
+}
+
+function createRunEdgeBoardTestHarness_(options) {
+  const opts = options || {};
+  const originalDateNow = Date.now;
+  const originalEnsureTabsAndConfig = ensureTabsAndConfig_;
+  const originalBuildRunId = buildRunId_;
+  const originalTryLock = tryLock_;
+  const originalGetConfig = getConfig_;
+  const originalAppendLogRow = appendLogRow_;
+  const originalIncrementDuplicatePreventedCount = incrementDuplicatePreventedCount_;
+  const originalResolveOddsWindowForPipeline = resolveOddsWindowForPipeline_;
+  const originalSetStateValue = setStateValue_;
+  const originalGetScriptProperties = PropertiesService.getScriptProperties;
+  const originalGetScriptLock = LockService.getScriptLock;
+
+  const logs = [];
+  const setPropertyCalls = [];
+  let duplicatePreventedCount = 0;
+  let releaseLockCalls = 0;
+
+  Date.now = function () { return Number(opts.nowMs || 0); };
+
+  ensureTabsAndConfig_ = function () {};
+  buildRunId_ = function () { return 'test-run'; };
+  tryLock_ = function () { return true; };
+  getConfig_ = function () {
+    return {
+      RUN_ENABLED: true,
+      DUPLICATE_DEBOUNCE_MS: Number(opts.debounceMs || 0),
+    };
+  };
+  appendLogRow_ = function (row) { logs.push(row); };
+  incrementDuplicatePreventedCount_ = function () {
+    duplicatePreventedCount += 1;
+    return duplicatePreventedCount;
+  };
+  resolveOddsWindowForPipeline_ = function () {
+    if (opts.throwDuringOrchestration) throw new Error('stage crash');
+    throw new Error('unexpected test path: orchestration should not execute in this harness');
+  };
+  setStateValue_ = function () {};
+
+  PropertiesService.getScriptProperties = function () {
+    return {
+      getProperty: function (key) {
+        if (key === PROPS.LAST_PIPELINE_RUN_TS) return String(Number(opts.lastRunTs || 0));
+        return '';
+      },
+      setProperty: function (key, value) {
+        setPropertyCalls.push({ key: key, value: value });
+      },
+    };
+  };
+
+  LockService.getScriptLock = function () {
+    return {
+      releaseLock: function () { releaseLockCalls += 1; },
+    };
+  };
+
+  return {
+    setPropertyCalls: setPropertyCalls,
+    logs: logs,
+    restore: function () {
+      Date.now = originalDateNow;
+      ensureTabsAndConfig_ = originalEnsureTabsAndConfig;
+      buildRunId_ = originalBuildRunId;
+      tryLock_ = originalTryLock;
+      getConfig_ = originalGetConfig;
+      appendLogRow_ = originalAppendLogRow;
+      incrementDuplicatePreventedCount_ = originalIncrementDuplicatePreventedCount;
+      resolveOddsWindowForPipeline_ = originalResolveOddsWindowForPipeline;
+      setStateValue_ = originalSetStateValue;
+      PropertiesService.getScriptProperties = originalGetScriptProperties;
+      LockService.getScriptLock = originalGetScriptLock;
+    },
+    summaryReasonCode: function () {
+      for (let i = logs.length - 1; i >= 0; i -= 1) {
+        if (logs[i].row_type === 'summary' && logs[i].stage === 'runEdgeBoard') {
+          return logs[i].reason_code || '';
+        }
+      }
+      return '';
+    },
+    get duplicatePreventedCount() { return duplicatePreventedCount; },
+    get releaseLockCalls() { return releaseLockCalls; },
+  };
+}
