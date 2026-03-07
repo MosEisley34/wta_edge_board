@@ -143,7 +143,9 @@ function runEdgeBoard() {
       run_id: runId,
       stage: 'odds_bootstrap_metadata',
       status: 'success',
-      reason_code: oddsWindowDecision.bootstrap_mode ? 'odds_refresh_bootstrap_fetch' : 'odds_refresh_bootstrap_inactive',
+      reason_code: oddsWindowDecision.decision_reason_code === 'odds_refresh_bootstrap_blocked_by_credit_limit'
+        ? 'odds_refresh_bootstrap_blocked_by_credit_limit'
+        : (oddsWindowDecision.bootstrap_mode ? 'odds_refresh_bootstrap_fetch' : 'odds_refresh_bootstrap_inactive'),
       message: JSON.stringify({
         bootstrap_mode: !!oddsWindowDecision.bootstrap_mode,
         bootstrap_window_hours: Number(oddsWindowDecision.bootstrap_window_hours || 0),
