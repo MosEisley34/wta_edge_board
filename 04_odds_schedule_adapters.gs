@@ -5,23 +5,39 @@ function stageFetchOdds(runId, config, fetchWindow) {
   const now = Date.now();
   const windowStartMs = fetchWindow && Number.isFinite(fetchWindow.startMs) ? fetchWindow.startMs : now;
   const windowEndMs = fetchWindow && Number.isFinite(fetchWindow.endMs) ? fetchWindow.endMs : now + lookaheadMs;
-  const cacheTtlSec = Math.max(30, config.ODDS_CACHE_TTL_SEC);
+  const cacheTtlMs = Math.max(1, config.ODDS_WINDOW_CACHE_TTL_MIN) * 60000;
+  const refreshMinMs = Math.max(1, config.ODDS_WINDOW_REFRESH_MIN) * 60000;
+  const forceRefresh = !!config.ODDS_WINDOW_FORCE_REFRESH;
   const cacheResult = getCachedPayload_('ODDS_WINDOW_PAYLOAD');
   let adapter;
 
-  if (cacheResult && now - cacheResult.cached_at_ms <= cacheTtlSec * 1000) {
+  if (!forceRefresh && cacheResult && Number.isFinite(cacheResult.cached_at_ms) && (now - cacheResult.cached_at_ms <= cacheTtlMs)) {
     adapter = {
       events: cacheResult.events,
       reason_code: 'odds_cache_hit',
       api_credit_usage: 0,
       api_call_count: 0,
       credit_headers: {},
+      selected_source: 'cached_fresh',
+      window_meta: buildWindowMeta_(cacheResult.events, cacheResult.cached_at_ms, 'cached_fresh', windowStartMs, windowEndMs),
+    };
+  } else if (!forceRefresh && cacheResult && Number.isFinite(cacheResult.cached_at_ms) && (now - cacheResult.cached_at_ms < refreshMinMs)) {
+    adapter = {
+      events: cacheResult.events,
+      reason_code: 'odds_cache_stale_refresh_throttled',
+      api_credit_usage: 0,
+      api_call_count: 0,
+      credit_headers: {},
+      selected_source: 'cached_stale_fallback',
+      window_meta: buildWindowMeta_(cacheResult.events, cacheResult.cached_at_ms, 'cached_stale_fallback', windowStartMs, windowEndMs),
     };
   } else {
     adapter = fetchOddsWindowFromOddsApi_(config, windowStartMs, windowEndMs);
-    if (adapter.events && adapter.events.length) {
-      setCachedPayload_('ODDS_WINDOW_PAYLOAD', adapter.events);
-    } else if (adapter.reason_code !== 'odds_api_success') {
+    adapter.selected_source = 'fresh_api';
+
+    if (adapter.reason_code === 'odds_api_success') {
+      setCachedPayload_('ODDS_WINDOW_PAYLOAD', adapter.events, buildWindowMeta_(adapter.events, now, 'fresh_api', windowStartMs, windowEndMs));
+    } else {
       const stale = getStateJson_('ODDS_WINDOW_STALE_PAYLOAD');
       if (stale && stale.events && stale.events.length) {
         adapter = {
@@ -30,6 +46,15 @@ function stageFetchOdds(runId, config, fetchWindow) {
           api_credit_usage: adapter.api_credit_usage,
           api_call_count: adapter.api_call_count,
           credit_headers: adapter.credit_headers,
+          selected_source: 'cached_stale_fallback',
+          window_meta: {
+            cached_at_ms: Number(stale.cached_at_ms) || now,
+            source: 'cached_stale_fallback',
+            has_games: !!stale.has_games,
+            event_count: Number(stale.event_count || 0),
+            window_start_ms: Number(stale.window_start_ms || windowStartMs),
+            window_end_ms: Number(stale.window_end_ms || windowEndMs),
+          },
         };
       }
     }
@@ -38,12 +63,27 @@ function stageFetchOdds(runId, config, fetchWindow) {
   const raw = adapter.events || [];
   const filtered = raw.filter((event) => event.commence_time.getTime() >= windowStartMs && event.commence_time.getTime() <= windowEndMs);
 
-  if (filtered.length) {
-    setStateValue_('ODDS_WINDOW_STALE_PAYLOAD', JSON.stringify({
-      stored_at: new Date().toISOString(),
-      events: filtered.map(serializeOddsEvent_),
-    }));
-  }
+  const selectedSource = adapter.selected_source || 'fresh_api';
+  const selectedMeta = adapter.window_meta || buildWindowMeta_(filtered, Date.now(), selectedSource, windowStartMs, windowEndMs);
+
+  setStateValue_('ODDS_WINDOW_STALE_PAYLOAD', JSON.stringify({
+    cached_at_ms: selectedMeta.cached_at_ms,
+    source: selectedSource,
+    has_games: filtered.length > 0,
+    event_count: filtered.length,
+    window_start_ms: windowStartMs,
+    window_end_ms: windowEndMs,
+    events: filtered.map(serializeOddsEvent_),
+  }));
+
+  setStateValue_('ODDS_WINDOW_LAST_FETCH_META', JSON.stringify({
+    cached_at_ms: selectedMeta.cached_at_ms,
+    source: selectedSource,
+    has_games: filtered.length > 0,
+    event_count: filtered.length,
+    window_start_ms: windowStartMs,
+    window_end_ms: windowEndMs,
+  }));
 
   const rows = filtered.map((event) => ({
     key: [event.event_id, event.market, event.outcome].join('|'),
@@ -79,6 +119,7 @@ function stageFetchOdds(runId, config, fetchWindow) {
     api_credit_usage: adapter.api_credit_usage,
     reason_codes: {
       [adapter.reason_code]: 1,
+      ['source_' + selectedSource]: 1,
       within_window: filtered.length,
       outside_window: raw.length - filtered.length,
       odds_rows_emitted: filtered.length,
@@ -94,20 +135,76 @@ function stageFetchOdds(runId, config, fetchWindow) {
     credit_headers: adapter.credit_headers || {},
   }));
 
-  return { events: filtered, rows, summary };
+  return { events: filtered, rows, summary, selected_source: selectedSource };
 }
 
 function stageFetchSchedule(runId, config, oddsEvents) {
   const start = Date.now();
   const source = 'the_odds_api_schedule';
+  const now = Date.now();
   const window = deriveScheduleWindowFromOdds_(oddsEvents, config);
-  const scheduleResp = window ? fetchScheduleFromOddsApi_(config, window) : {
-    events: [],
-    reason_code: 'schedule_window_empty',
-    api_credit_usage: 0,
-    api_call_count: 0,
-    credit_headers: {},
-  };
+  const cacheTtlMs = Math.max(1, config.ODDS_WINDOW_CACHE_TTL_MIN) * 60000;
+  const refreshMinMs = Math.max(1, config.ODDS_WINDOW_REFRESH_MIN) * 60000;
+  const forceRefresh = !!config.ODDS_WINDOW_FORCE_REFRESH;
+  const cacheResult = getCachedSchedulePayload_('SCHEDULE_WINDOW_PAYLOAD');
+  let scheduleResp;
+
+  if (!window) {
+    scheduleResp = {
+      events: [],
+      reason_code: 'schedule_window_empty',
+      api_credit_usage: 0,
+      api_call_count: 0,
+      credit_headers: {},
+      selected_source: 'cached_stale_fallback',
+    };
+  } else if (!forceRefresh && cacheResult && Number.isFinite(cacheResult.cached_at_ms) && (now - cacheResult.cached_at_ms <= cacheTtlMs)) {
+    scheduleResp = {
+      events: cacheResult.events,
+      reason_code: 'schedule_cache_hit',
+      api_credit_usage: 0,
+      api_call_count: 0,
+      credit_headers: {},
+      selected_source: 'cached_fresh',
+    };
+  } else if (!forceRefresh && cacheResult && Number.isFinite(cacheResult.cached_at_ms) && (now - cacheResult.cached_at_ms < refreshMinMs)) {
+    scheduleResp = {
+      events: cacheResult.events,
+      reason_code: 'schedule_cache_stale_refresh_throttled',
+      api_credit_usage: 0,
+      api_call_count: 0,
+      credit_headers: {},
+      selected_source: 'cached_stale_fallback',
+    };
+  } else {
+    scheduleResp = fetchScheduleFromOddsApi_(config, window);
+    scheduleResp.selected_source = 'fresh_api';
+
+    if (scheduleResp.reason_code === 'schedule_api_success') {
+      setCachedSchedulePayload_('SCHEDULE_WINDOW_PAYLOAD', scheduleResp.events, {
+        cached_at_ms: now,
+        source: 'fresh_api',
+        has_games: scheduleResp.events.length > 0,
+        event_count: scheduleResp.events.length,
+        window_start_ms: new Date(window.startIso).getTime(),
+        window_end_ms: new Date(window.endIso).getTime(),
+      });
+    } else {
+      const stale = getStateJson_('SCHEDULE_WINDOW_STALE_PAYLOAD');
+      if (stale && stale.events && stale.events.length) {
+        scheduleResp = {
+          events: stale.events.map(deserializeScheduleEvent_),
+          reason_code: 'schedule_stale_fallback',
+          api_credit_usage: scheduleResp.api_credit_usage,
+          api_call_count: scheduleResp.api_call_count,
+          credit_headers: scheduleResp.credit_headers,
+          selected_source: 'cached_stale_fallback',
+          selected_cached_at_ms: Number(stale.cached_at_ms) || now,
+        };
+      }
+    }
+  }
+
   const inWindow = scheduleResp.events || [];
 
   const reasonCounts = {};
@@ -172,6 +269,31 @@ function stageFetchSchedule(runId, config, oddsEvents) {
     }
   });
 
+  const windowStartMs = window ? new Date(window.startIso).getTime() : null;
+  const windowEndMs = window ? new Date(window.endIso).getTime() : null;
+  const selectedSource = scheduleResp.selected_source || 'fresh_api';
+  const selectedAtMs = Number(scheduleResp.selected_cached_at_ms)
+    || ((cacheResult && Number.isFinite(cacheResult.cached_at_ms) && selectedSource !== 'fresh_api') ? cacheResult.cached_at_ms : now);
+
+  setStateValue_('SCHEDULE_WINDOW_STALE_PAYLOAD', JSON.stringify({
+    cached_at_ms: selectedAtMs,
+    source: selectedSource,
+    has_games: inWindow.length > 0,
+    event_count: inWindow.length,
+    window_start_ms: windowStartMs,
+    window_end_ms: windowEndMs,
+    events: inWindow.map(serializeScheduleEvent_),
+  }));
+
+  setStateValue_('SCHEDULE_WINDOW_LAST_FETCH_META', JSON.stringify({
+    cached_at_ms: selectedAtMs,
+    source: selectedSource,
+    has_games: inWindow.length > 0,
+    event_count: inWindow.length,
+    window_start_ms: windowStartMs,
+    window_end_ms: windowEndMs,
+  }));
+
   const summary = buildStageSummary_(runId, 'stageFetchSchedule', start, {
     input_count: inWindow.length,
     output_count: inWindow.length,
@@ -181,6 +303,7 @@ function stageFetchSchedule(runId, config, oddsEvents) {
   });
 
   summary.reason_codes[scheduleResp.reason_code] = (summary.reason_codes[scheduleResp.reason_code] || 0) + 1;
+  summary.reason_codes['source_' + selectedSource] = (summary.reason_codes['source_' + selectedSource] || 0) + 1;
 
   setStateValue_('LAST_SCHEDULE_API_CREDITS', JSON.stringify({
     run_id: runId,
@@ -198,6 +321,7 @@ function stageFetchSchedule(runId, config, oddsEvents) {
     unresolvedCompetitionCounts,
     topUnresolvedCompetitions: getTopCompetitionStrings_(unresolvedCompetitionCounts, 20),
     allowedCount: allowedEvents.length,
+    selected_source: selectedSource,
   };
 }
 
@@ -270,6 +394,7 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
         should_fetch_odds: true,
         decision_reason_code: 'odds_refresh_executed_in_window',
         decision_message: 'No eligible schedule matches; using fallback static odds window.',
+        selected_source: 'fallback_static_window',
         odds_fetch_window: {
           startMs: nowMs,
           endMs: nowMs + lookaheadMs,
@@ -300,6 +425,7 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     last_eligible_start_ms: lastEligibleStartMs,
     refresh_window_start_ms: refreshWindowStartMs,
     refresh_window_end_ms: refreshWindowEndMs,
+    selected_source: inRefreshWindow ? 'fresh_api' : '',
     should_fetch_odds: inRefreshWindow,
     decision_reason_code: inRefreshWindow ? 'odds_refresh_executed_in_window' : 'odds_refresh_skipped_outside_window',
     decision_message: inRefreshWindow
@@ -498,6 +624,11 @@ function getCachedPayload_(key) {
     const parsed = JSON.parse(raw);
     return {
       cached_at_ms: parsed.cached_at_ms,
+      source: parsed.source || 'fresh_api',
+      has_games: !!parsed.has_games,
+      event_count: Number(parsed.event_count || 0),
+      window_start_ms: Number(parsed.window_start_ms || 0),
+      window_end_ms: Number(parsed.window_end_ms || 0),
       events: (parsed.events || []).map(deserializeOddsEvent_),
     };
   } catch (e) {
@@ -505,11 +636,108 @@ function getCachedPayload_(key) {
   }
 }
 
-function setCachedPayload_(key, events) {
-  CacheService.getScriptCache().put(key, JSON.stringify({
+function setCachedPayload_(key, events, meta) {
+  const mergedMeta = Object.assign({
     cached_at_ms: Date.now(),
-    events: events.map(serializeOddsEvent_),
+    source: 'fresh_api',
+    has_games: !!(events && events.length),
+    event_count: events ? events.length : 0,
+    window_start_ms: null,
+    window_end_ms: null,
+  }, meta || {});
+
+  CacheService.getScriptCache().put(key, JSON.stringify({
+    cached_at_ms: mergedMeta.cached_at_ms,
+    source: mergedMeta.source,
+    has_games: mergedMeta.has_games,
+    event_count: mergedMeta.event_count,
+    window_start_ms: mergedMeta.window_start_ms,
+    window_end_ms: mergedMeta.window_end_ms,
+    events: (events || []).map(serializeOddsEvent_),
   }), 21600);
+}
+
+function buildWindowMeta_(events, cachedAtMs, source, windowStartMs, windowEndMs) {
+  return {
+    cached_at_ms: Number(cachedAtMs) || Date.now(),
+    source: source || 'fresh_api',
+    has_games: !!(events && events.length),
+    event_count: events ? events.length : 0,
+    window_start_ms: Number(windowStartMs) || null,
+    window_end_ms: Number(windowEndMs) || null,
+  };
+}
+
+function getCachedSchedulePayload_(key) {
+  try {
+    const raw = CacheService.getScriptCache().get(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return {
+      cached_at_ms: parsed.cached_at_ms,
+      source: parsed.source || 'fresh_api',
+      has_games: !!parsed.has_games,
+      event_count: Number(parsed.event_count || 0),
+      window_start_ms: Number(parsed.window_start_ms || 0),
+      window_end_ms: Number(parsed.window_end_ms || 0),
+      events: (parsed.events || []).map(deserializeScheduleEvent_),
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function setCachedSchedulePayload_(key, events, meta) {
+  const mergedMeta = Object.assign({
+    cached_at_ms: Date.now(),
+    source: 'fresh_api',
+    has_games: !!(events && events.length),
+    event_count: events ? events.length : 0,
+    window_start_ms: null,
+    window_end_ms: null,
+  }, meta || {});
+
+  CacheService.getScriptCache().put(key, JSON.stringify({
+    cached_at_ms: mergedMeta.cached_at_ms,
+    source: mergedMeta.source,
+    has_games: mergedMeta.has_games,
+    event_count: mergedMeta.event_count,
+    window_start_ms: mergedMeta.window_start_ms,
+    window_end_ms: mergedMeta.window_end_ms,
+    events: (events || []).map(serializeScheduleEvent_),
+  }), 21600);
+}
+
+function serializeScheduleEvent_(event) {
+  return {
+    event_id: event.event_id,
+    match_id: event.match_id,
+    start_time: event.start_time.toISOString(),
+    competition: event.competition,
+    tournament: event.tournament || '',
+    event_name: event.event_name || '',
+    sport_title: event.sport_title || '',
+    home_team: event.home_team || '',
+    away_team: event.away_team || '',
+    player_1: event.player_1,
+    player_2: event.player_2,
+  };
+}
+
+function deserializeScheduleEvent_(event) {
+  return {
+    event_id: event.event_id,
+    match_id: event.match_id || event.event_id,
+    start_time: new Date(event.start_time),
+    competition: event.competition,
+    tournament: event.tournament || '',
+    event_name: event.event_name || '',
+    sport_title: event.sport_title || '',
+    home_team: event.home_team || '',
+    away_team: event.away_team || '',
+    player_1: event.player_1,
+    player_2: event.player_2,
+  };
 }
 
 function serializeOddsEvent_(event) {
