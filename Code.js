@@ -26,6 +26,17 @@ const DEFAULT_CONFIG = {
   VERBOSE_LOGGING: 'true',
   DUPLICATE_DEBOUNCE_MS: '90000',
   PLAYER_ALIAS_MAP_JSON: '{}',
+  MODEL_VERSION: 'wta_mvp_v1',
+  EDGE_THRESHOLD_MICRO: '0.015',
+  EDGE_THRESHOLD_SMALL: '0.03',
+  EDGE_THRESHOLD_MED: '0.05',
+  EDGE_THRESHOLD_STRONG: '0.08',
+  STAKE_UNITS_MICRO: '0.25',
+  STAKE_UNITS_SMALL: '0.5',
+  STAKE_UNITS_MED: '1',
+  STAKE_UNITS_STRONG: '1.5',
+  SIGNAL_COOLDOWN_MIN: '180',
+  STALE_ODDS_WINDOW_MIN: '60',
 };
 
 const PROPS = {
@@ -234,7 +245,7 @@ function runEdgeBoard() {
     const matchStage = stageMatchEvents(runId, config, oddsStage.events, scheduleStage.events);
     appendStageLog_(runId, matchStage.summary);
 
-    const signalStage = stageGenerateSignals(runId, matchStage.rows);
+    const signalStage = stageGenerateSignals(runId, config, oddsStage.events, matchStage.rows);
     appendStageLog_(runId, signalStage.summary);
 
     const persistStage = stagePersist(runId, {
@@ -290,9 +301,11 @@ function runEdgeBoard() {
       allowed_tournaments: scheduleStage.allowedCount,
       matched: matchStage.matchedCount,
       unmatched: matchStage.unmatchedCount,
-      signals_found: signalStage.signalsFound,
+      signals_found: signalStage.sentCount,
       rejection_codes: JSON.stringify(combinedReasonCodes),
       stage_summaries: JSON.stringify(verbosePayload.stage_summaries),
+      cooldown_suppressed: signalStage.cooldownSuppressedCount,
+      duplicate_suppressed: signalStage.duplicateSuppressedCount,
     });
   } catch (error) {
     appendLogRow_({
@@ -564,39 +577,120 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
   };
 }
 
-function stageGenerateSignals(runId, matchRows) {
+function stageGenerateSignals(runId, config, oddsEvents, matchRows) {
   const start = Date.now();
+  const nowMs = Date.now();
   const rows = [];
-  let signalsFound = 0;
-
+  const reasonCounts = {
+    sent: 0,
+    duplicate_suppressed: 0,
+    cooldown_suppressed: 0,
+    edge_below_threshold: 0,
+    stale_odds_skip: 0,
+  };
+  const signalState = getSignalState_();
+  const seenHashesThisRun = {};
+  const matchByOddsEventId = {};
   matchRows.forEach((row) => {
-    if (!row.schedule_event_id) return;
-    const signal = {
-      key: row.key,
-      run_id: runId,
-      odds_event_id: row.odds_event_id,
-      schedule_event_id: row.schedule_event_id,
-      signal_type: 'candidate_edge',
-      signal_score: 1,
-      reason_code: row.match_type,
-      created_at: new Date().toISOString(),
-    };
-    rows.push(signal);
-    signalsFound += 1;
+    matchByOddsEventId[row.odds_event_id] = row;
   });
+
+  oddsEvents.forEach((event) => {
+    const match = matchByOddsEventId[event.event_id];
+    if (!match || !match.schedule_event_id) return;
+
+    const impliedProbability = oddsPriceToImpliedProbability_(event.price);
+    if (impliedProbability === null) return;
+
+    const staleThresholdMs = config.STALE_ODDS_WINDOW_MIN * 60000;
+    if (event.commence_time.getTime() <= nowMs + staleThresholdMs) {
+      rows.push(buildSignalRow_(runId, config, event, match, {
+        notification_outcome: 'stale_odds_skip',
+        model_probability: estimateFairProbability_(impliedProbability, match.competition_tier),
+        market_implied_probability: impliedProbability,
+        edge_value: 0,
+        edge_tier: 'NONE',
+        stake_units: 0,
+        signal_hash: buildSignalHash_(event.event_id, event.market, event.outcome, config.MODEL_VERSION),
+      }));
+      reasonCounts.stale_odds_skip += 1;
+      return;
+    }
+
+    const modelProbability = estimateFairProbability_(impliedProbability, match.competition_tier);
+    const edgeValue = roundNumber_(modelProbability - impliedProbability, 4);
+    const edgeTierAndStake = classifyEdgeAndStake_(edgeValue, config);
+    const signalHash = buildSignalHash_(event.event_id, event.market, event.outcome, config.MODEL_VERSION);
+
+    if (edgeTierAndStake.edge_tier === 'NONE') {
+      rows.push(buildSignalRow_(runId, config, event, match, {
+        notification_outcome: 'edge_below_threshold',
+        model_probability: modelProbability,
+        market_implied_probability: impliedProbability,
+        edge_value: edgeValue,
+        edge_tier: edgeTierAndStake.edge_tier,
+        stake_units: edgeTierAndStake.stake_units,
+        signal_hash: signalHash,
+      }));
+      reasonCounts.edge_below_threshold += 1;
+      return;
+    }
+
+    const notifyDecision = maybeNotifySignal_(signalState, seenHashesThisRun, signalHash, nowMs, config.SIGNAL_COOLDOWN_MIN);
+    reasonCounts[notifyDecision.outcome] = (reasonCounts[notifyDecision.outcome] || 0) + 1;
+
+    rows.push(buildSignalRow_(runId, config, event, match, {
+      notification_outcome: notifyDecision.outcome,
+      model_probability: modelProbability,
+      market_implied_probability: impliedProbability,
+      edge_value: edgeValue,
+      edge_tier: edgeTierAndStake.edge_tier,
+      stake_units: edgeTierAndStake.stake_units,
+      signal_hash: signalHash,
+    }));
+  });
+
+  setSignalState_(signalState);
+  setStateValue_('LAST_SIGNAL_SNAPSHOTS', JSON.stringify({
+    run_id: runId,
+    generated_at: new Date().toISOString(),
+    model_version: config.MODEL_VERSION,
+    signals: rows.map((row) => ({
+      event_id: row.odds_event_id,
+      schedule_event_id: row.schedule_event_id,
+      side: row.side,
+      market: row.market,
+      model_probability: row.model_probability,
+      market_implied_probability: row.market_implied_probability,
+      edge_value: row.edge_value,
+      edge_tier: row.edge_tier,
+      timestamp: row.created_at,
+      model_version: row.model_version,
+      notification_outcome: row.notification_outcome,
+    })),
+  }));
+
+  setStateValue_('LAST_SIGNAL_DECISIONS', JSON.stringify({
+    run_id: runId,
+    generated_at: new Date().toISOString(),
+    reason_counts: reasonCounts,
+  }));
 
   const summary = buildStageSummary_(runId, 'stageGenerateSignals', start, {
     input_count: matchRows.length,
     output_count: rows.length,
     provider: 'internal_signal_builder',
     api_credit_usage: 0,
-    reason_codes: {
-      signal_created: signalsFound,
-      signal_not_created: matchRows.length - signalsFound,
-    },
+    reason_codes: reasonCounts,
   });
 
-  return { rows, signalsFound, summary };
+  return {
+    rows,
+    summary,
+    sentCount: reasonCounts.sent || 0,
+    cooldownSuppressedCount: reasonCounts.cooldown_suppressed || 0,
+    duplicateSuppressedCount: reasonCounts.duplicate_suppressed || 0,
+  };
 }
 
 function stagePersist(runId, payload) {
@@ -619,7 +713,9 @@ function stagePersist(runId, payload) {
 
   upsertSheetRows_(SHEETS.SIGNALS, [
     'key', 'run_id', 'odds_event_id', 'schedule_event_id',
-    'signal_type', 'signal_score', 'reason_code', 'created_at',
+    'market', 'side', 'bookmaker', 'competition_tier', 'model_version',
+    'model_probability', 'market_implied_probability', 'edge_value', 'edge_tier', 'stake_units',
+    'signal_hash', 'notification_outcome', 'reason_code', 'created_at',
   ], payload.signals);
 
   const total = payload.odds.length + payload.schedule.length + payload.matchMap.length + payload.signals.length;
@@ -664,7 +760,9 @@ function ensureTabsAndConfig_() {
   ]);
   ensureHeaders_(SHEETS.SIGNALS, [
     'key', 'run_id', 'odds_event_id', 'schedule_event_id',
-    'signal_type', 'signal_score', 'reason_code', 'created_at',
+    'market', 'side', 'bookmaker', 'competition_tier', 'model_version',
+    'model_probability', 'market_implied_probability', 'edge_value', 'edge_tier', 'stake_units',
+    'signal_hash', 'notification_outcome', 'reason_code', 'created_at',
   ]);
   ensureHeaders_(SHEETS.STATE, ['key', 'value', 'updated_at']);
 
@@ -733,6 +831,17 @@ function getConfig_() {
     VERBOSE_LOGGING: toBoolean_(config.VERBOSE_LOGGING, true),
     DUPLICATE_DEBOUNCE_MS: toNumber_(config.DUPLICATE_DEBOUNCE_MS, 90000),
     PLAYER_ALIAS_MAP_JSON: String(config.PLAYER_ALIAS_MAP_JSON || '{}'),
+    MODEL_VERSION: String(config.MODEL_VERSION || 'wta_mvp_v1'),
+    EDGE_THRESHOLD_MICRO: toNumber_(config.EDGE_THRESHOLD_MICRO, 0.015),
+    EDGE_THRESHOLD_SMALL: toNumber_(config.EDGE_THRESHOLD_SMALL, 0.03),
+    EDGE_THRESHOLD_MED: toNumber_(config.EDGE_THRESHOLD_MED, 0.05),
+    EDGE_THRESHOLD_STRONG: toNumber_(config.EDGE_THRESHOLD_STRONG, 0.08),
+    STAKE_UNITS_MICRO: toNumber_(config.STAKE_UNITS_MICRO, 0.25),
+    STAKE_UNITS_SMALL: toNumber_(config.STAKE_UNITS_SMALL, 0.5),
+    STAKE_UNITS_MED: toNumber_(config.STAKE_UNITS_MED, 1),
+    STAKE_UNITS_STRONG: toNumber_(config.STAKE_UNITS_STRONG, 1.5),
+    SIGNAL_COOLDOWN_MIN: toNumber_(config.SIGNAL_COOLDOWN_MIN, 180),
+    STALE_ODDS_WINDOW_MIN: toNumber_(config.STALE_ODDS_WINDOW_MIN, 60),
   };
 }
 
@@ -844,6 +953,105 @@ function buildStageSummary_(runId, stage, startMs, opts) {
   };
   Logger.log(JSON.stringify(summary));
   return summary;
+}
+
+function buildSignalRow_(runId, config, event, match, detail) {
+  return {
+    key: detail.signal_hash,
+    run_id: runId,
+    odds_event_id: event.event_id,
+    schedule_event_id: match.schedule_event_id,
+    market: event.market,
+    side: event.outcome,
+    bookmaker: event.bookmaker,
+    competition_tier: match.competition_tier,
+    model_version: config.MODEL_VERSION,
+    model_probability: detail.model_probability,
+    market_implied_probability: detail.market_implied_probability,
+    edge_value: detail.edge_value,
+    edge_tier: detail.edge_tier,
+    stake_units: detail.stake_units,
+    signal_hash: detail.signal_hash,
+    notification_outcome: detail.notification_outcome,
+    reason_code: detail.notification_outcome,
+    created_at: new Date().toISOString(),
+  };
+}
+
+function getSignalState_() {
+  const existing = getStateJson_('SIGNAL_GUARD_STATE');
+  if (!existing || typeof existing !== 'object') return { sent_hashes: {} };
+  return {
+    sent_hashes: existing.sent_hashes || {},
+  };
+}
+
+function setSignalState_(state) {
+  setStateValue_('SIGNAL_GUARD_STATE', JSON.stringify({
+    updated_at: new Date().toISOString(),
+    sent_hashes: state.sent_hashes || {},
+  }));
+}
+
+function maybeNotifySignal_(state, seenHashesThisRun, signalHash, nowMs, cooldownMin) {
+  const lastSent = Number((state.sent_hashes || {})[signalHash] || 0);
+
+  if (seenHashesThisRun[signalHash]) {
+    return { outcome: 'duplicate_suppressed' };
+  }
+
+  seenHashesThisRun[signalHash] = true;
+
+  if (lastSent > 0 && nowMs - lastSent < cooldownMin * 60000) {
+    return { outcome: 'cooldown_suppressed' };
+  }
+
+  state.sent_hashes[signalHash] = nowMs;
+  return { outcome: 'sent' };
+}
+
+function buildSignalHash_(eventId, market, side, modelVersion) {
+  return [eventId || '', market || '', side || '', modelVersion || ''].join('|');
+}
+
+function oddsPriceToImpliedProbability_(price) {
+  const p = Number(price);
+  if (!Number.isFinite(p) || p === 0) return null;
+  if (p > 0) return roundNumber_(100 / (p + 100), 4);
+  return roundNumber_(Math.abs(p) / (Math.abs(p) + 100), 4);
+}
+
+function estimateFairProbability_(marketProbability, competitionTier) {
+  const tierBump = {
+    GRAND_SLAM: 0.012,
+    WTA_1000: 0.01,
+    WTA_500: 0.008,
+    WTA_125: 0.005,
+  };
+  const underdogBump = marketProbability < 0.5 ? 0.01 : -0.005;
+  const fair = marketProbability + underdogBump + (tierBump[competitionTier] || 0.005);
+  return roundNumber_(Math.max(0.02, Math.min(0.98, fair)), 4);
+}
+
+function classifyEdgeAndStake_(edgeValue, config) {
+  if (edgeValue >= config.EDGE_THRESHOLD_STRONG) {
+    return { edge_tier: 'STRONG', stake_units: config.STAKE_UNITS_STRONG };
+  }
+  if (edgeValue >= config.EDGE_THRESHOLD_MED) {
+    return { edge_tier: 'MED', stake_units: config.STAKE_UNITS_MED };
+  }
+  if (edgeValue >= config.EDGE_THRESHOLD_SMALL) {
+    return { edge_tier: 'SMALL', stake_units: config.STAKE_UNITS_SMALL };
+  }
+  if (edgeValue >= config.EDGE_THRESHOLD_MICRO) {
+    return { edge_tier: 'MICRO', stake_units: config.STAKE_UNITS_MICRO };
+  }
+  return { edge_tier: 'NONE', stake_units: 0 };
+}
+
+function roundNumber_(value, decimals) {
+  const factor = Math.pow(10, Number(decimals || 0));
+  return Math.round(Number(value) * factor) / factor;
 }
 
 function canonicalizeCompetition(name) {
