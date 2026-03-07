@@ -617,3 +617,34 @@ function testStageGenerateSignals_notifyDisabledDoesNotMarkSentHash_() {
     localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
   }
 }
+
+function testGetConfig_allowWta250Missing_usesDefaultTrue_() {
+  const originalGetActiveSpreadsheet = SpreadsheetApp.getActiveSpreadsheet;
+
+  SpreadsheetApp.getActiveSpreadsheet = function () {
+    return {
+      getSheetByName: function () {
+        return {
+          getDataRange: function () {
+            return {
+              getValues: function () {
+                return [
+                  ['key', 'value'],
+                  ['RUN_ENABLED', 'true'],
+                  ['ALLOW_WTA_125', 'false'],
+                ];
+              },
+            };
+          },
+        };
+      },
+    };
+  };
+
+  try {
+    const config = getConfig_();
+    assertEquals_(true, config.ALLOW_WTA_250);
+  } finally {
+    SpreadsheetApp.getActiveSpreadsheet = originalGetActiveSpreadsheet;
+  }
+}
