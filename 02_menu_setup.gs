@@ -102,12 +102,7 @@ function ensureTabsAndConfig_() {
   Object.keys(SHEETS).forEach((k) => ensureSheet_(ss, SHEETS[k]));
 
   ensureHeaders_(SHEETS.CONFIG, ['key', 'value']);
-  ensureHeaders_(SHEETS.RUN_LOG, [
-    'row_type', 'run_id', 'stage', 'started_at', 'ended_at', 'status', 'reason_code', 'message',
-    'fetched_odds', 'fetched_schedule', 'allowed_tournaments', 'matched', 'unmatched', 'signals_found',
-    'rejection_codes', 'cooldown_suppressed', 'duplicate_suppressed',
-    'lock_event', 'debounce_event', 'trigger_event', 'exception', 'stack', 'stage_summaries',
-  ]);
+  ensureHeaders_(SHEETS.RUN_LOG, RUN_LOG_HEADERS);
   ensureHeaders_(SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
     'odds_updated_epoch_ms', 'provider_odds_updated_time', 'ingestion_timestamp', 'commence_time',
