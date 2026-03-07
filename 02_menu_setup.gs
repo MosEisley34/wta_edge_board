@@ -185,7 +185,9 @@ function recreateWorkbook_() {
   });
 
   const placeholder = ss.getSheetByName(placeholderName);
-  if (placeholder) ss.deleteSheet(placeholder);
+  if (placeholder && ss.getSheets().length > 1) {
+    ss.deleteSheet(placeholder);
+  }
 
   const scriptProps = PropertiesService.getScriptProperties();
   const allProps = scriptProps.getProperties();
@@ -200,6 +202,11 @@ function recreateWorkbook_() {
   ]);
 
   ensureTabsAndConfig_();
+
+  const placeholderAfterSetup = ss.getSheetByName(placeholderName);
+  if (placeholderAfterSetup && ss.getSheets().length > 1) {
+    ss.deleteSheet(placeholderAfterSetup);
+  }
 
   appendLogRow_({
     row_type: 'ops',
