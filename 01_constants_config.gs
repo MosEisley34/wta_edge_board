@@ -63,6 +63,14 @@ const DEFAULT_CONFIG = {
   NOTIFY_TEST_MODE: 'false',
 };
 
+
+const RUN_LOG_HEADERS = [
+  'row_type', 'run_id', 'stage', 'started_at', 'ended_at', 'status', 'reason_code', 'message',
+  'fetched_odds', 'fetched_schedule', 'allowed_tournaments', 'matched', 'unmatched', 'signals_found',
+  'rejection_codes', 'cooldown_suppressed', 'duplicate_suppressed',
+  'lock_event', 'debounce_event', 'trigger_event', 'exception', 'stack', 'stage_summaries',
+];
+
 const PROPS = {
   PIPELINE_TRIGGER_SIGNATURE: 'PIPELINE_TRIGGER_SIGNATURE',
   LAST_PIPELINE_RUN_TS: 'LAST_PIPELINE_RUN_TS',

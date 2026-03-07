@@ -65,7 +65,14 @@ function appendStageLog_(runId, summary) {
 }
 
 function appendLogRow_(entry) {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.RUN_LOG);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(SHEETS.RUN_LOG);
+
+  if (!sh) {
+    sh = ensureSheet_(ss, SHEETS.RUN_LOG);
+    ensureHeaders_(SHEETS.RUN_LOG, RUN_LOG_HEADERS);
+  }
+
   sh.appendRow([
     entry.row_type || 'summary',
     entry.run_id || '',
