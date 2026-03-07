@@ -407,9 +407,9 @@ function testFetchOddsWindowFromOddsApi_nonArrayPayloadDoesNotThrow_() {
 
 function testRunEdgeBoard_debounceSkipStillWorks_() {
   const harness = createRunEdgeBoardTestHarness_({
-    nowMs: 1_000_000,
-    lastRunTs: 999_500,
-    debounceMs: 1_000,
+    nowMs: 1000000,
+    lastRunTs: 999500,
+    debounceMs: 1000,
   });
 
   try {
@@ -425,9 +425,9 @@ function testRunEdgeBoard_debounceSkipStillWorks_() {
 
 function testRunEdgeBoard_crashDoesNotSetDebounceTimestamp_() {
   const harness = createRunEdgeBoardTestHarness_({
-    nowMs: 1_000_000,
+    nowMs: 1000000,
     lastRunTs: 0,
-    debounceMs: 1_000,
+    debounceMs: 1000,
     throwDuringOrchestration: true,
   });
 
