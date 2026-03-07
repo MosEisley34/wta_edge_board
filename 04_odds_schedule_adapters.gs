@@ -844,7 +844,7 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
 
   return {
     events,
-    reason_code: fetched.fallback_sport_key_used ? 'odds_api_success_sport_key_fallback' : 'odds_api_success',
+    reason_code: fetched.selected_sport_key_fallback && fetched.selected_sport_key_fallback !== 'none' ? 'odds_api_success_sport_key_fallback' : 'odds_api_success',
     api_credit_usage: fetched.api_credit_usage,
     api_call_count: fetched.api_call_count || 1,
     credit_headers: fetched.credit_headers,
@@ -880,7 +880,7 @@ function fetchScheduleFromOddsApi_(config, window) {
       player_1: event.home_team || '',
       player_2: event.away_team || '',
     })),
-    reason_code: fetched.fallback_sport_key_used ? 'schedule_api_success_sport_key_fallback' : 'schedule_api_success',
+    reason_code: fetched.selected_sport_key_fallback && fetched.selected_sport_key_fallback !== 'none' ? 'schedule_api_success_sport_key_fallback' : 'schedule_api_success',
     api_credit_usage: fetched.api_credit_usage,
     api_call_count: fetched.api_call_count || 1,
     credit_headers: fetched.credit_headers,
@@ -888,56 +888,127 @@ function fetchScheduleFromOddsApi_(config, window) {
 }
 
 function callOddsApiWithSportKeyFallback_(config, opts) {
-  const primarySportKey = String(config.ODDS_SPORT_KEY || '').trim();
-  const primaryUrl = buildOddsApiSportUrl_(config, primarySportKey, opts.endpoint, opts.query);
-  const primary = callOddsApi_(primaryUrl);
-  if (primary.ok || primary.status_code !== 404) {
-    return primary;
-  }
+  const resolvedSportKeys = resolveActiveWtaSportKeys_(config);
+  const sportKeys = resolvedSportKeys.sport_keys || [];
+  const responses = [];
 
-  const fallbackSportKey = discoverFallbackSportKey_(config, primarySportKey);
-  if (!fallbackSportKey || fallbackSportKey === primarySportKey) {
-    return primary;
-  }
-
-  const fallbackUrl = buildOddsApiSportUrl_(config, fallbackSportKey, opts.endpoint, opts.query);
-  const secondary = callOddsApi_(fallbackUrl);
-  secondary.api_call_count = Number(primary.api_call_count || 0) + Number(secondary.api_call_count || 0);
-  secondary.api_credit_usage = Number(primary.api_credit_usage || 0) + Number(secondary.api_credit_usage || 0);
-  secondary.credit_headers = secondary.credit_headers || primary.credit_headers;
-  if (secondary.ok) {
-    secondary.fallback_sport_key_used = fallbackSportKey;
-  }
-  return secondary;
-}
-
-function discoverFallbackSportKey_(config, requestedSportKey) {
-  const catalogResp = callOddsApi_(buildOddsApiUrl_(config, '/sports', { all: 'true' }));
-  if (!catalogResp.ok) return '';
-  const allSports = catalogResp.payload || [];
-  const normalizedRequested = normalizeSportKeyToken_(requestedSportKey);
-  const requestedTokens = normalizedRequested.split(/[^a-z0-9]+/).filter(Boolean);
-
-  let bestKey = '';
-  let bestScore = 0;
-
-  allSports.forEach((sport) => {
-    const key = String((sport && sport.key) || '').trim();
-    if (!key) return;
-    const normalized = normalizeSportKeyToken_(key);
-    let score = 0;
-    if (normalized === normalizedRequested) score += 100;
-    requestedTokens.forEach((token) => {
-      if (token && normalized.indexOf(token) !== -1) score += 10;
-    });
-    if (normalized.indexOf('wta') !== -1) score += 5;
-    if (score > bestScore) {
-      bestScore = score;
-      bestKey = key;
-    }
+  sportKeys.forEach((sportKey) => {
+    const url = buildOddsApiSportUrl_(config, sportKey, opts.endpoint, opts.query);
+    const resp = callOddsApi_(url);
+    resp.sport_key = sportKey;
+    responses.push(resp);
   });
 
-  return bestScore >= 20 ? bestKey : '';
+  const successful = responses.filter((resp) => resp.ok);
+  const firstSuccess = successful[0] || null;
+  const firstFailure = responses[0] || {
+    ok: false,
+    status_code: 404,
+    payload: [],
+    reason_code: 'api_http_404',
+    api_credit_usage: 0,
+    api_call_count: 0,
+    credit_headers: {},
+  };
+  const selected = firstSuccess || firstFailure;
+
+  return {
+    ok: !!firstSuccess,
+    status_code: selected.status_code,
+    payload: mergeOddsApiPayloads_(successful.map((resp) => resp.payload || [])),
+    reason_code: selected.reason_code,
+    api_credit_usage: responses.reduce((sum, resp) => sum + Number(resp.api_credit_usage || 0), 0),
+    api_call_count: responses.reduce((sum, resp) => sum + Number(resp.api_call_count || 0), 0),
+    credit_headers: responses.length ? responses[responses.length - 1].credit_headers : {},
+    selected_sport_keys: sportKeys,
+    selected_sport_key_count: sportKeys.length,
+    selected_sport_key_source: resolvedSportKeys.source,
+    selected_sport_key_fallback: resolvedSportKeys.fallback,
+  };
+}
+
+function resolveActiveWtaSportKeys_(config, deps) {
+  const cacheKey = 'ODDS_ACTIVE_WTA_SPORT_KEYS';
+  const cacheTtlSec = Math.max(60, Math.min(600, Number(config.ODDS_CACHE_TTL_SEC || 300)));
+  const requestedSportKey = String(config.ODDS_SPORT_KEY || '').trim();
+  const unknownSport = 'UNKNOWN_SPORT';
+  const fallbackSportKey = requestedSportKey || unknownSport;
+  const adapters = deps || {};
+  const getCached = adapters.getCachedOddsSportKeys || getCachedOddsSportKeys_;
+  const setCached = adapters.setCachedOddsSportKeys || setCachedOddsSportKeys_;
+  const callOddsApi = adapters.callOddsApi || callOddsApi_;
+  const logResolution = adapters.logOddsSportKeyResolution || logOddsSportKeyResolution_;
+
+  const cached = getCached(cacheKey);
+  if (cached && cached.length) {
+    logResolution('selected_cached', cached, 'none');
+    return { sport_keys: cached, source: 'cache', fallback: 'none' };
+  }
+
+  const catalogResp = callOddsApi(buildOddsApiUrl_(config, '/sports', { all: 'true' }));
+  if (!catalogResp.ok) {
+    logResolution('catalog_fetch_failed', [fallbackSportKey], 'catalog_fetch_failed');
+    return { sport_keys: [fallbackSportKey], source: 'fallback', fallback: 'catalog_fetch_failed' };
+  }
+
+  const activeWtaKeys = selectActiveWtaSportKeys_(catalogResp.payload || []);
+  if (activeWtaKeys.length) {
+    setCached(cacheKey, activeWtaKeys, cacheTtlSec);
+    logResolution('selected_from_catalog', activeWtaKeys, 'none');
+    return { sport_keys: activeWtaKeys, source: 'catalog', fallback: 'none' };
+  }
+
+  logResolution('none_active_fallback', [fallbackSportKey], 'none_active_wta_keys');
+  return { sport_keys: [fallbackSportKey], source: 'fallback', fallback: 'none_active_wta_keys' };
+}
+
+function selectActiveWtaSportKeys_(sportsCatalog) {
+  const activeKeys = [];
+  (sportsCatalog || []).forEach((sport) => {
+    const key = String((sport && sport.key) || '').trim();
+    const active = sport && sport.active === true;
+    if (active && /^tennis_wta_/i.test(key)) {
+      activeKeys.push(key);
+    }
+  });
+  return activeKeys;
+}
+
+function mergeOddsApiPayloads_(payloads) {
+  const mergedByEventId = {};
+  (payloads || []).forEach((list) => {
+    (list || []).forEach((event) => {
+      const eventId = String((event && event.id) || '').trim();
+      if (!eventId) return;
+      if (!mergedByEventId[eventId]) mergedByEventId[eventId] = event;
+    });
+  });
+  return Object.keys(mergedByEventId).map((eventId) => mergedByEventId[eventId]);
+}
+
+function logOddsSportKeyResolution_(selectionMode, sportKeys, fallbackBehavior) {
+  Logger.log(JSON.stringify({
+    event: 'odds_sport_keys_resolved',
+    mode: selectionMode,
+    selected_sport_keys: sportKeys || [],
+    selected_sport_key_count: (sportKeys || []).length,
+    fallback_behavior: fallbackBehavior || 'none',
+  }));
+}
+
+function getCachedOddsSportKeys_(cacheKey) {
+  try {
+    const raw = CacheService.getScriptCache().get(cacheKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.sport_keys) ? parsed.sport_keys : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function setCachedOddsSportKeys_(cacheKey, sportKeys, ttlSec) {
+  CacheService.getScriptCache().put(cacheKey, JSON.stringify({ sport_keys: sportKeys || [] }), ttlSec);
 }
 
 function normalizeSportKeyToken_(value) {
