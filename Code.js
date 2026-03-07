@@ -372,12 +372,14 @@ function stageFetchOdds(runId, config) {
   }
 
   const rows = filtered.map((event) => ({
-    key: [event.event_id, event.bookmaker, event.market, event.outcome].join('|'),
+    key: [event.event_id, event.market, event.outcome].join('|'),
     event_id: event.event_id,
     bookmaker: event.bookmaker,
+    bookmaker_keys_considered: (event.bookmaker_keys_considered || []).join(','),
     market: event.market,
     outcome: event.outcome,
     price: event.price,
+    odds_timestamp: event.odds_timestamp.toISOString(),
     commence_time: event.commence_time.toISOString(),
     commence_epoch_ms: event.commence_time.getTime(),
     competition: event.competition,
@@ -396,6 +398,9 @@ function stageFetchOdds(runId, config) {
       [adapter.reason_code]: 1,
       within_window: filtered.length,
       outside_window: raw.length - filtered.length,
+      odds_rows_emitted: filtered.length,
+      events_missing_h2h_outcomes: adapter.events_missing_h2h_outcomes || 0,
+      bookmakers_without_h2h_market: adapter.bookmakers_without_h2h_market || 0,
     },
   });
 
@@ -697,7 +702,7 @@ function stagePersist(runId, payload) {
   const start = Date.now();
 
   upsertSheetRows_(SHEETS.RAW_ODDS, [
-    'key', 'event_id', 'bookmaker', 'market', 'outcome', 'price', 'commence_time',
+    'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'commence_time',
     'commence_epoch_ms', 'competition', 'player_1', 'player_2', 'source', 'updated_at',
   ], payload.odds);
 
@@ -747,7 +752,7 @@ function ensureTabsAndConfig_() {
     'lock_event', 'debounce_event', 'trigger_event', 'exception', 'stack', 'stage_summaries',
   ]);
   ensureHeaders_(SHEETS.RAW_ODDS, [
-    'key', 'event_id', 'bookmaker', 'market', 'outcome', 'price', 'commence_time',
+    'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'commence_time',
     'commence_epoch_ms', 'competition', 'player_1', 'player_2', 'source', 'updated_at',
   ]);
   ensureHeaders_(SHEETS.RAW_SCHEDULE, [
@@ -1175,26 +1180,81 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
   const fetched = callOddsApi_(url);
   if (!fetched.ok) return fetched;
 
-  return {
-    events: (fetched.payload || []).map((event) => {
-      const outcome = (((event.bookmakers || [])[0] || {}).markets || [])[0];
-      const firstOutcome = ((outcome || {}).outcomes || [])[0] || {};
-      return {
+  const events = [];
+  let eventsMissingH2hOutcomes = 0;
+  let bookmakersWithoutH2hMarket = 0;
+
+  (fetched.payload || []).forEach((event) => {
+    const bestByOutcome = {};
+    const allBookmakers = event.bookmakers || [];
+
+    allBookmakers.forEach((bookmaker) => {
+      const h2hMarket = (bookmaker.markets || []).find((market) => market.key === 'h2h');
+      if (!h2hMarket) {
+        bookmakersWithoutH2hMarket += 1;
+        return;
+      }
+
+      (h2hMarket.outcomes || []).forEach((outcome) => {
+        const price = Number(outcome.price);
+        if (!outcome.name || !Number.isFinite(price)) return;
+
+        const side = String(outcome.name);
+        const candidate = {
+          bookmaker: bookmaker.key || '',
+          price,
+          odds_timestamp: new Date(outcome.last_update || h2hMarket.last_update || bookmaker.last_update || event.commence_time),
+        };
+
+        if (!bestByOutcome[side]) {
+          bestByOutcome[side] = {
+            best: candidate,
+            bookmakers: {},
+          };
+        }
+
+        if (!bestByOutcome[side].bookmakers[candidate.bookmaker]) {
+          bestByOutcome[side].bookmakers[candidate.bookmaker] = true;
+        }
+
+        if (candidate.price > bestByOutcome[side].best.price) {
+          bestByOutcome[side].best = candidate;
+        }
+      });
+    });
+
+    const sides = Object.keys(bestByOutcome);
+    if (!sides.length) {
+      eventsMissingH2hOutcomes += 1;
+      return;
+    }
+
+    sides.forEach((side) => {
+      const best = bestByOutcome[side].best;
+      events.push({
         event_id: event.id,
-        bookmaker: ((event.bookmakers || [])[0] || {}).key || '',
-        market: ((outcome || {}).key) || config.ODDS_MARKETS,
-        outcome: firstOutcome.name || '',
-        price: Number(firstOutcome.price || ''),
+        bookmaker: best.bookmaker,
+        bookmaker_keys_considered: Object.keys(bestByOutcome[side].bookmakers),
+        market: 'h2h',
+        outcome: side,
+        price: best.price,
+        odds_timestamp: best.odds_timestamp,
         commence_time: new Date(event.commence_time),
         competition: event.sport_title || '',
         player_1: event.home_team || '',
         player_2: event.away_team || '',
-      };
-    }),
+      });
+    });
+  });
+
+  return {
+    events,
     reason_code: 'odds_api_success',
     api_credit_usage: fetched.api_credit_usage,
     api_call_count: 1,
     credit_headers: fetched.credit_headers,
+    events_missing_h2h_outcomes: eventsMissingH2hOutcomes,
+    bookmakers_without_h2h_market: bookmakersWithoutH2hMarket,
   };
 }
 
@@ -1280,9 +1340,11 @@ function serializeOddsEvent_(event) {
   return {
     event_id: event.event_id,
     bookmaker: event.bookmaker,
+    bookmaker_keys_considered: event.bookmaker_keys_considered,
     market: event.market,
     outcome: event.outcome,
     price: event.price,
+    odds_timestamp: event.odds_timestamp.toISOString(),
     commence_time: event.commence_time.toISOString(),
     competition: event.competition,
     player_1: event.player_1,
@@ -1294,9 +1356,11 @@ function deserializeOddsEvent_(event) {
   return {
     event_id: event.event_id,
     bookmaker: event.bookmaker,
+    bookmaker_keys_considered: event.bookmaker_keys_considered || [],
     market: event.market,
     outcome: event.outcome,
     price: event.price,
+    odds_timestamp: new Date(event.odds_timestamp || event.commence_time),
     commence_time: new Date(event.commence_time),
     competition: event.competition,
     player_1: event.player_1,
