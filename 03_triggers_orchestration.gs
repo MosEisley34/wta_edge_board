@@ -163,7 +163,7 @@ function checkScriptLockClear_() {
 function estimateNextRunIso_(everyMinutes) {
   const minutes = Number(everyMinutes || 0);
   if (!minutes || minutes <= 0) return '';
-  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
+  return formatLocalIso_(new Date(Date.now() + minutes * 60 * 1000));
 }
 
 function removePipelineTriggers() {
@@ -246,9 +246,11 @@ function runEdgeBoard() {
     scriptProps.setProperty(PROPS.LAST_PIPELINE_RUN_TS, String(nowMs));
 
     const oddsWindowDecision = resolveOddsWindowForPipeline_(config, nowMs);
+    const decidedAt = localAndUtcTimestamps_(new Date());
     setStateValue_('ODDS_REFRESH_MODE_META', JSON.stringify({
       run_id: runId,
-      decided_at: new Date().toISOString(),
+      decided_at: decidedAt.local,
+      decided_at_utc: decidedAt.utc,
       current_refresh_mode: oddsWindowDecision.current_refresh_mode || '',
       decision_reason_code: oddsWindowDecision.decision_reason_code || '',
       bootstrap_mode: !!oddsWindowDecision.bootstrap_mode,
@@ -332,18 +334,28 @@ function runEdgeBoard() {
       persistStage.summary.reason_codes,
     ]);
 
+    const runStartedAt = localAndUtcTimestamps_(startedAt);
+    const runEndedAt = localAndUtcTimestamps_(new Date());
     const verbosePayload = {
       run_id: runId,
-      started_at: startedAt.toISOString(),
-      ended_at: new Date().toISOString(),
+      timezone: TIMESTAMP_TIMEZONE.ID,
+      timezone_offset: TIMESTAMP_TIMEZONE.OFFSET,
+      started_at: runStartedAt.local,
+      started_at_utc: runStartedAt.utc,
+      ended_at: runEndedAt.local,
+      ended_at_utc: runEndedAt.utc,
       config_snapshot: config,
       odds_refresh_decision: {
         decision_reason_code: oddsWindowDecision.decision_reason_code,
         should_fetch_odds: oddsWindowDecision.should_fetch_odds,
-        first_eligible_match_start: oddsWindowDecision.first_eligible_start_ms ? new Date(oddsWindowDecision.first_eligible_start_ms).toISOString() : '',
-        last_eligible_match_start: oddsWindowDecision.last_eligible_start_ms ? new Date(oddsWindowDecision.last_eligible_start_ms).toISOString() : '',
-        refresh_window_start: oddsWindowDecision.refresh_window_start_ms ? new Date(oddsWindowDecision.refresh_window_start_ms).toISOString() : '',
-        refresh_window_end: oddsWindowDecision.refresh_window_end_ms ? new Date(oddsWindowDecision.refresh_window_end_ms).toISOString() : '',
+        first_eligible_match_start: oddsWindowDecision.first_eligible_start_ms ? formatLocalIso_(new Date(oddsWindowDecision.first_eligible_start_ms)) : '',
+        first_eligible_match_start_utc: oddsWindowDecision.first_eligible_start_ms ? new Date(oddsWindowDecision.first_eligible_start_ms).toISOString() : '',
+        last_eligible_match_start: oddsWindowDecision.last_eligible_start_ms ? formatLocalIso_(new Date(oddsWindowDecision.last_eligible_start_ms)) : '',
+        last_eligible_match_start_utc: oddsWindowDecision.last_eligible_start_ms ? new Date(oddsWindowDecision.last_eligible_start_ms).toISOString() : '',
+        refresh_window_start: oddsWindowDecision.refresh_window_start_ms ? formatLocalIso_(new Date(oddsWindowDecision.refresh_window_start_ms)) : '',
+        refresh_window_start_utc: oddsWindowDecision.refresh_window_start_ms ? new Date(oddsWindowDecision.refresh_window_start_ms).toISOString() : '',
+        refresh_window_end: oddsWindowDecision.refresh_window_end_ms ? formatLocalIso_(new Date(oddsWindowDecision.refresh_window_end_ms)) : '',
+        refresh_window_end_utc: oddsWindowDecision.refresh_window_end_ms ? new Date(oddsWindowDecision.refresh_window_end_ms).toISOString() : '',
         eligible_match_count: oddsWindowDecision.eligible_match_count || 0,
         bootstrap_mode: !!oddsWindowDecision.bootstrap_mode,
         bootstrap_window_hours: Number(oddsWindowDecision.bootstrap_window_hours || 0),
@@ -376,9 +388,11 @@ function runEdgeBoard() {
     };
 
     setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
+    const competitionDiagnosticsGeneratedAt = localAndUtcTimestamps_(new Date());
     setStateValue_('LAST_RUN_COMPETITION_DIAGNOSTICS_JSON', JSON.stringify({
       run_id: runId,
-      generated_at: new Date().toISOString(),
+      generated_at: competitionDiagnosticsGeneratedAt.local,
+      generated_at_utc: competitionDiagnosticsGeneratedAt.utc,
       source_fields_priority: (scheduleStage.canonicalExamples[0] && scheduleStage.canonicalExamples[0].resolver_fields || []).map((f) => f.field),
       top_unresolved_competitions: scheduleStage.topUnresolvedCompetitions,
       unresolved_competition_counts: scheduleStage.unresolvedCompetitionCounts,

@@ -135,9 +135,11 @@ function stageFetchOdds(runId, config, fetchWindow) {
   const creditSnapshot = updateCreditStateFromHeaders_(runId, adapter.credit_headers || {});
   if (!creditSnapshot.header_present) summary.reason_codes.credit_header_missing = (summary.reason_codes.credit_header_missing || 0) + 1;
 
+  const oddsCreditsObservedAt = localAndUtcTimestamps_(new Date());
   setStateValue_('LAST_ODDS_API_CREDITS', JSON.stringify({
     run_id: runId,
-    observed_at: new Date().toISOString(),
+    observed_at: oddsCreditsObservedAt.local,
+    observed_at_utc: oddsCreditsObservedAt.utc,
     api_call_count: adapter.api_call_count || 0,
     credit_headers: adapter.credit_headers || {},
   }));
@@ -355,9 +357,11 @@ function stageFetchSchedule(runId, config, oddsEvents) {
     summary.reason_codes.credit_header_missing = (summary.reason_codes.credit_header_missing || 0) + 1;
   }
 
+  const scheduleCreditsObservedAt = localAndUtcTimestamps_(new Date());
   setStateValue_('LAST_SCHEDULE_API_CREDITS', JSON.stringify({
     run_id: runId,
-    observed_at: new Date().toISOString(),
+    observed_at: scheduleCreditsObservedAt.local,
+    observed_at_utc: scheduleCreditsObservedAt.utc,
     api_call_count: scheduleResp.api_call_count || 0,
     credit_headers: scheduleResp.credit_headers || {},
   }));
@@ -476,7 +480,8 @@ function updateCreditStateFromHeaders_(runId, headers) {
     used: Number.isFinite(used) ? used : null,
     remaining: remainingIsNumeric ? remaining : null,
     last: Number.isFinite(last) ? last : null,
-    timestamp: new Date().toISOString(),
+    timestamp: formatLocalIso_(new Date()),
+    timestamp_utc: new Date().toISOString(),
     header_present: hasHeaderValues,
     remaining_is_numeric: remainingIsNumeric,
     limit_enforced: false,

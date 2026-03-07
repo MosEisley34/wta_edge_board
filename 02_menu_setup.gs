@@ -47,12 +47,16 @@ function diagnosticsHealthCheck() {
   });
 
   const triggerCount = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === 'runEdgeBoard').length;
+  const checkedAt = localAndUtcTimestamps_(new Date());
   const report = {
-    checked_at: new Date().toISOString(),
+    checked_at: checkedAt.local,
+    checked_at_utc: checkedAt.utc,
     tabs_present: tabStatus,
     run_edgeboard_triggers: triggerCount,
     trigger_signature: scriptProps.getProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE) || '',
     duplicate_prevented_count: Number(scriptProps.getProperty(PROPS.DUPLICATE_PREVENTED_COUNT) || 0),
+    timezone: TIMESTAMP_TIMEZONE.ID,
+    timezone_offset: TIMESTAMP_TIMEZONE.OFFSET,
   };
 
   appendLogRow_({

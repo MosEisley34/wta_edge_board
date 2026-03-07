@@ -75,7 +75,7 @@ function buildRawPlayerStatsRow_(eventId, canonicalPlayerName, source, featureTi
     feature_timestamp: featureTimestamp,
     feature_values: JSON.stringify(payload.features),
     has_stats: payload.has_stats,
-    updated_at: new Date().toISOString(),
+    updated_at: formatLocalIso_(new Date()),
   };
 }
 
@@ -240,10 +240,15 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         odds_event_id: event.event_id,
       });
       notifyOutcome = sendResult.outcome;
+      const notifyLoggedAt = localAndUtcTimestamps_(new Date());
       notifyDiagnostics = {
         run_id: runId,
         signal_hash: signalHash,
         notification_outcome: notifyOutcome,
+        logged_at: notifyLoggedAt.local,
+        logged_at_utc: notifyLoggedAt.utc,
+        timezone: TIMESTAMP_TIMEZONE.ID,
+        timezone_offset: TIMESTAMP_TIMEZONE.OFFSET,
         http_status: sendResult.http_status,
         response_body_preview: sendResult.response_body_preview || '',
         test_mode: !!sendResult.test_mode,
@@ -280,9 +285,11 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   });
 
   setSignalState_(signalState);
+  const signalSnapshotsGeneratedAt = localAndUtcTimestamps_(new Date());
   setStateValue_('LAST_SIGNAL_SNAPSHOTS', JSON.stringify({
     run_id: runId,
-    generated_at: new Date().toISOString(),
+    generated_at: signalSnapshotsGeneratedAt.local,
+    generated_at_utc: signalSnapshotsGeneratedAt.utc,
     model_version: config.MODEL_VERSION,
     signals: rows.map((row) => ({
       event_id: row.odds_event_id,
@@ -294,6 +301,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       edge_value: row.edge_value,
       edge_tier: row.edge_tier,
       timestamp: row.created_at,
+      timestamp_utc: row.created_at_utc || '',
       commence_time: row.commence_time,
       odds_updated_time: row.odds_updated_time,
       model_version: row.model_version,
@@ -305,15 +313,19 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const deliveryDiagnostics = rows
     .filter((row) => row.notification_metadata)
     .map((row) => row.notification_metadata);
+  const notifyDiagnosticsGeneratedAt = localAndUtcTimestamps_(new Date());
   setStateValue_('LAST_NOTIFY_DELIVERY_DIAGNOSTICS', JSON.stringify({
     run_id: runId,
-    generated_at: new Date().toISOString(),
+    generated_at: notifyDiagnosticsGeneratedAt.local,
+    generated_at_utc: notifyDiagnosticsGeneratedAt.utc,
     deliveries: deliveryDiagnostics,
   }));
 
+  const signalDecisionsGeneratedAt = localAndUtcTimestamps_(new Date());
   setStateValue_('LAST_SIGNAL_DECISIONS', JSON.stringify({
     run_id: runId,
-    generated_at: new Date().toISOString(),
+    generated_at: signalDecisionsGeneratedAt.local,
+    generated_at_utc: signalDecisionsGeneratedAt.utc,
     reason_counts: reasonCounts,
   }));
 
@@ -353,9 +365,12 @@ function buildSignalRow_(runId, config, event, match, detail) {
     signal_hash: detail.signal_hash,
     notification_outcome: detail.notification_outcome,
     reason_code: detail.notification_outcome,
-    commence_time: event.commence_time.toISOString(),
-    odds_updated_time: event.odds_updated_time.toISOString(),
-    created_at: new Date().toISOString(),
+    commence_time: formatLocalIso_(event.commence_time),
+    commence_time_utc: event.commence_time.toISOString(),
+    odds_updated_time: formatLocalIso_(event.odds_updated_time),
+    odds_updated_time_utc: event.odds_updated_time.toISOString(),
+    created_at: formatLocalIso_(new Date()),
+    created_at_utc: new Date().toISOString(),
     notification_metadata: detail.notification_metadata || null,
   };
 }
@@ -369,8 +384,10 @@ function getSignalState_() {
 }
 
 function setSignalState_(state) {
+  const signalStateUpdatedAt = localAndUtcTimestamps_(new Date());
   setStateValue_('SIGNAL_GUARD_STATE', JSON.stringify({
-    updated_at: new Date().toISOString(),
+    updated_at: signalStateUpdatedAt.local,
+    updated_at_utc: signalStateUpdatedAt.utc,
     sent_hashes: state.sent_hashes || {},
   }));
 }
@@ -432,6 +449,8 @@ function formatSignalNotificationMessage_(runId, signalHash, payload) {
     'model_prob=' + payload.model_probability,
     'market_prob=' + payload.market_implied_probability,
     'commence=' + toIso_(payload.commence_time),
+    'commence_utc=' + (payload.commence_time ? new Date(payload.commence_time).toISOString() : ''),
+    'timezone=' + TIMESTAMP_TIMEZONE.ID,
   ].join(' | ');
 }
 
