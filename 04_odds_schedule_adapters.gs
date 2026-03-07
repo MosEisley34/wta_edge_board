@@ -395,10 +395,14 @@ function getTopCompetitionStrings_(countMap, topN) {
 function getCreditRuntimeMode_(config) {
   const snapshot = getStateJson_('ODDS_API_CREDIT_SNAPSHOT') || {};
   const remaining = Number(snapshot.remaining);
+  const headerPresent = !!snapshot.header_present;
+  const remainingIsNumeric = snapshot.remaining_is_numeric === true || Number.isFinite(remaining);
   const softLimit = Math.max(0, Number(config.ODDS_MIN_CREDITS_SOFT_LIMIT || 0));
   const hardLimit = Math.max(0, Number(config.ODDS_MIN_CREDITS_HARD_LIMIT || 0));
 
-  if (!Number.isFinite(remaining)) {
+  if (!headerPresent || !remainingIsNumeric) {
+    snapshot.limit_enforced = false;
+    setStateValue_('ODDS_API_CREDIT_SNAPSHOT', JSON.stringify(snapshot));
     return {
       mode: 'normal',
       snapshot,
@@ -407,12 +411,17 @@ function getCreditRuntimeMode_(config) {
   }
 
   if (remaining <= hardLimit) {
+    snapshot.limit_enforced = true;
+    setStateValue_('ODDS_API_CREDIT_SNAPSHOT', JSON.stringify(snapshot));
     return {
       mode: 'hard',
       snapshot,
       reason_code: 'credit_hard_limit_skip_odds',
     };
   }
+
+  snapshot.limit_enforced = false;
+  setStateValue_('ODDS_API_CREDIT_SNAPSHOT', JSON.stringify(snapshot));
 
   if (remaining <= softLimit) {
     return {
@@ -456,15 +465,21 @@ function updateCreditStateFromHeaders_(runId, headers) {
   const used = Number(creditHeaders.requests_used);
   const remaining = Number(creditHeaders.requests_remaining);
   const last = Number(creditHeaders.requests_last);
-  const hasHeaderValues = Number.isFinite(used) || Number.isFinite(remaining) || Number.isFinite(last);
+  const hasUsed = creditHeaders.requests_used !== undefined && creditHeaders.requests_used !== null;
+  const hasRemaining = creditHeaders.requests_remaining !== undefined && creditHeaders.requests_remaining !== null;
+  const hasLast = creditHeaders.requests_last !== undefined && creditHeaders.requests_last !== null;
+  const hasHeaderValues = hasUsed || hasRemaining || hasLast;
+  const remainingIsNumeric = Number.isFinite(remaining);
 
   const snapshot = {
     run_id: runId,
     used: Number.isFinite(used) ? used : null,
-    remaining: Number.isFinite(remaining) ? remaining : null,
+    remaining: remainingIsNumeric ? remaining : null,
     last: Number.isFinite(last) ? last : null,
     timestamp: new Date().toISOString(),
     header_present: hasHeaderValues,
+    remaining_is_numeric: remainingIsNumeric,
+    limit_enforced: false,
   };
 
   setStateValue_('ODDS_API_CREDIT_SNAPSHOT', JSON.stringify(snapshot));
@@ -850,9 +865,9 @@ function callOddsApi_(url) {
   const rawLast = headers['x-requests-last'] || headers['X-Requests-Last'];
   const hasCreditHeaders = rawUsed !== undefined || rawRemaining !== undefined || rawLast !== undefined;
   const creditHeaders = {
-    requests_used: Number(rawUsed || 0),
-    requests_remaining: Number(rawRemaining || 0),
-    requests_last: Number(rawLast || 0),
+    requests_used: rawUsed === undefined || rawUsed === null || rawUsed === '' ? null : Number(rawUsed),
+    requests_remaining: rawRemaining === undefined || rawRemaining === null || rawRemaining === '' ? null : Number(rawRemaining),
+    requests_last: rawLast === undefined || rawLast === null || rawLast === '' ? null : Number(rawLast),
   };
 
   if (status < 200 || status >= 300) {
