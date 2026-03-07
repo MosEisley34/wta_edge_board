@@ -1113,7 +1113,36 @@ function callOddsApi_(url, opts) {
     }));
   }
 
-  const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  const failureResult = function (reasonCode, creditHeaders) {
+    return {
+      ok: false,
+      status_code: 0,
+      payload: [],
+      reason_code: reasonCode,
+      api_credit_usage: 0,
+      api_call_count: 1,
+      credit_headers: creditHeaders || {},
+    };
+  };
+
+  const logApiException = function (eventName, error) {
+    if (!debugEnabled) return;
+    const errorText = sanitizeForLog_(error && error.message ? error.message : String(error || 'unknown_error'));
+    Logger.log(JSON.stringify({
+      event: eventName,
+      url: sanitizeForLog_(url),
+      error: errorText,
+    }));
+  };
+
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  } catch (e) {
+    logApiException('odds_api_transport_error', e);
+    return failureResult('api_transport_error');
+  }
+
   const status = resp.getResponseCode();
   const headers = resp.getAllHeaders();
   const rawUsed = headers['x-requests-used'] || headers['X-Requests-Used'];
@@ -1147,10 +1176,18 @@ function callOddsApi_(url, opts) {
     };
   }
 
+  let parsedPayload;
+  try {
+    parsedPayload = JSON.parse(resp.getContentText() || '[]');
+  } catch (e) {
+    logApiException('odds_api_parse_error', e);
+    return failureResult('api_parse_error', creditHeaders);
+  }
+
   return {
     ok: true,
     status_code: status,
-    payload: JSON.parse(resp.getContentText() || '[]'),
+    payload: parsedPayload,
     api_credit_usage: creditHeaders.requests_last || 0,
     api_call_count: 1,
     credit_headers: creditHeaders,
