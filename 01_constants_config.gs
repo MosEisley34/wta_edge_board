@@ -58,6 +58,9 @@ const DEFAULT_CONFIG = {
   STALE_ODDS_WINDOW_MIN: '60',
   ODDS_MIN_CREDITS_SOFT_LIMIT: '50',
   ODDS_MIN_CREDITS_HARD_LIMIT: '10',
+  DISCORD_WEBHOOK: '',
+  NOTIFY_ENABLED: 'true',
+  NOTIFY_TEST_MODE: 'false',
 };
 
 const PROPS = {
@@ -126,5 +129,8 @@ function getConfig_() {
     STALE_ODDS_WINDOW_MIN: toNumber_(config.STALE_ODDS_WINDOW_MIN, 60),
     ODDS_MIN_CREDITS_SOFT_LIMIT: toNumber_(config.ODDS_MIN_CREDITS_SOFT_LIMIT, 50),
     ODDS_MIN_CREDITS_HARD_LIMIT: toNumber_(config.ODDS_MIN_CREDITS_HARD_LIMIT, 10),
+    DISCORD_WEBHOOK: String(config.DISCORD_WEBHOOK || ''),
+    NOTIFY_ENABLED: toBoolean_(config.NOTIFY_ENABLED, true),
+    NOTIFY_TEST_MODE: toBoolean_(config.NOTIFY_TEST_MODE, false),
   };
 }
