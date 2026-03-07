@@ -725,13 +725,15 @@ function mergeScheduleEventsById_(primaryEvents, expandedEvents) {
   const mergedById = {};
 
   (primaryEvents || []).forEach((event) => {
-    if (!event || !event.event_id) return;
-    mergedById[event.event_id] = event;
+    const dedupeKey = buildScheduleEventDedupeKey_(event);
+    if (!dedupeKey) return;
+    mergedById[dedupeKey] = event;
   });
 
   (expandedEvents || []).forEach((event) => {
-    if (!event || !event.event_id) return;
-    if (!mergedById[event.event_id]) mergedById[event.event_id] = event;
+    const dedupeKey = buildScheduleEventDedupeKey_(event);
+    if (!dedupeKey) return;
+    if (!mergedById[dedupeKey]) mergedById[dedupeKey] = event;
   });
 
   return Object.keys(mergedById).map((eventId) => mergedById[eventId]);
@@ -857,34 +859,105 @@ function fetchScheduleFromOddsApi_(config, window) {
   if (!config.ODDS_API_KEY) {
     return { events: [], reason_code: 'missing_api_key', api_credit_usage: 0, api_call_count: 0, credit_headers: {} };
   }
-  const fetched = callOddsApiWithSportKeyFallback_(config, {
-    endpoint: 'events',
-    query: {
+  const resolvedSportKeys = resolveActiveWtaSportKeys_(config);
+  const sportKeys = resolvedSportKeys.sport_keys || [];
+  const responses = [];
+
+  sportKeys.forEach((sportKey) => {
+    const url = buildOddsApiSportUrl_(config, sportKey, 'events', {
       commenceTimeFrom: window.startIso,
       commenceTimeTo: window.endIso,
-    },
+    });
+    const resp = callOddsApi_(url);
+    resp.sport_key = sportKey;
+    responses.push(resp);
   });
-  if (!fetched.ok) return fetched;
+
+  const successful = responses.filter((resp) => resp.ok);
+  const firstSuccess = successful[0] || null;
+  const firstFailure = responses[0] || {
+    ok: false,
+    status_code: 404,
+    payload: [],
+    reason_code: 'api_http_404',
+    api_credit_usage: 0,
+    api_call_count: 0,
+    credit_headers: {},
+  };
+
+  if (!firstSuccess) {
+    if (resolvedSportKeys.fallback === 'none_active_wta_keys') {
+      return {
+        events: [],
+        reason_code: 'schedule_no_active_wta_keys',
+        api_credit_usage: responses.reduce((sum, resp) => sum + Number(resp.api_credit_usage || 0), 0),
+        api_call_count: responses.reduce((sum, resp) => sum + Number(resp.api_call_count || 0), 0),
+        credit_headers: responses.length ? responses[responses.length - 1].credit_headers : {},
+      };
+    }
+    return firstFailure;
+  }
+
+  const normalizedEvents = normalizeAndDeduplicateScheduleEvents_(successful.map((resp) => resp.payload || []));
+  let reasonCode = resolvedSportKeys.fallback && resolvedSportKeys.fallback !== 'none'
+    ? 'schedule_api_success_sport_key_fallback'
+    : 'schedule_api_success';
+
+  if (!normalizedEvents.length) {
+    reasonCode = resolvedSportKeys.fallback === 'none_active_wta_keys'
+      ? 'schedule_no_active_wta_keys'
+      : 'schedule_active_keys_no_events';
+  }
 
   return {
-    events: (fetched.payload || []).map((event) => ({
-      event_id: event.id,
-      match_id: event.id,
-      start_time: new Date(event.commence_time),
-      competition: event.tournament || event.sport_title || '',
-      tournament: event.tournament || '',
-      event_name: event.name || '',
-      sport_title: event.sport_title || '',
-      home_team: event.home_team || '',
-      away_team: event.away_team || '',
-      player_1: event.home_team || '',
-      player_2: event.away_team || '',
-    })),
-    reason_code: fetched.selected_sport_key_fallback && fetched.selected_sport_key_fallback !== 'none' ? 'schedule_api_success_sport_key_fallback' : 'schedule_api_success',
-    api_credit_usage: fetched.api_credit_usage,
-    api_call_count: fetched.api_call_count || 1,
-    credit_headers: fetched.credit_headers,
+    events: normalizedEvents,
+    reason_code: reasonCode,
+    api_credit_usage: responses.reduce((sum, resp) => sum + Number(resp.api_credit_usage || 0), 0),
+    api_call_count: responses.reduce((sum, resp) => sum + Number(resp.api_call_count || 0), 0),
+    credit_headers: responses.length ? responses[responses.length - 1].credit_headers : {},
   };
+}
+
+function normalizeAndDeduplicateScheduleEvents_(payloadLists) {
+  const deduped = {};
+
+  (payloadLists || []).forEach((list) => {
+    (list || []).forEach((event) => {
+      const eventId = String((event && event.id) || '').trim();
+      const commenceIso = String((event && event.commence_time) || '').trim();
+      if (!eventId || !commenceIso) return;
+
+      const startTime = new Date(commenceIso);
+      if (Number.isNaN(startTime.getTime())) return;
+
+      const normalizedEvent = {
+        event_id: eventId,
+        match_id: eventId,
+        start_time: startTime,
+        competition: event.tournament || event.sport_title || '',
+        tournament: event.tournament || '',
+        event_name: event.name || '',
+        sport_title: event.sport_title || '',
+        home_team: event.home_team || '',
+        away_team: event.away_team || '',
+        player_1: event.home_team || '',
+        player_2: event.away_team || '',
+      };
+
+      const dedupeKey = buildScheduleEventDedupeKey_(normalizedEvent);
+      if (!dedupeKey) return;
+      if (!deduped[dedupeKey]) deduped[dedupeKey] = normalizedEvent;
+    });
+  });
+
+  return Object.keys(deduped).map((dedupeKey) => deduped[dedupeKey]);
+}
+
+function buildScheduleEventDedupeKey_(event) {
+  if (!event || !event.event_id || !(event.start_time instanceof Date)) return '';
+  const startMs = event.start_time.getTime();
+  if (!Number.isFinite(startMs)) return '';
+  return String(event.event_id) + '|' + String(startMs);
 }
 
 function callOddsApiWithSportKeyFallback_(config, opts) {
