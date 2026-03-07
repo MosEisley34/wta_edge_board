@@ -55,7 +55,7 @@ function testResolveActiveWtaSportKeys_fallsBackWhenAbsent_() {
 
   assertEquals_('fallback', result.source);
   assertEquals_('none_active_wta_keys', result.fallback);
-  assertArrayEquals_(['UNKNOWN_SPORT'], result.sport_keys);
+  assertArrayEquals_([], result.sport_keys);
 }
 
 function testResolveActiveWtaSportKeys_ignoresInactiveWtaKeys_() {
@@ -83,7 +83,7 @@ function testResolveActiveWtaSportKeys_ignoresInactiveWtaKeys_() {
 
   assertEquals_('fallback', result.source);
   assertEquals_('none_active_wta_keys', result.fallback);
-  assertArrayEquals_(['wta_manual_fallback'], result.sport_keys);
+  assertArrayEquals_([], result.sport_keys);
 }
 
 function assertEquals_(expected, actual) {
@@ -147,23 +147,14 @@ function testFetchScheduleFromOddsApi_marksNoActiveWtaKeysReason_() {
 
   resolveActiveWtaSportKeys_ = function () {
     return {
-      sport_keys: ['UNKNOWN_SPORT'],
+      sport_keys: [],
       source: 'fallback',
       fallback: 'none_active_wta_keys',
     };
   };
 
-  callOddsApi_ = function () {
-    return {
-      ok: false,
-      status_code: 404,
-      payload: [],
-      reason_code: 'api_http_404',
-      api_credit_usage: 1,
-      api_call_count: 1,
-      credit_headers: { requests_last: 1 },
-    };
-  };
+  let callCount = 0;
+  callOddsApi_ = function () { callCount += 1; throw new Error('should not be called'); };
 
   try {
     const result = fetchScheduleFromOddsApi_({
@@ -176,10 +167,51 @@ function testFetchScheduleFromOddsApi_marksNoActiveWtaKeysReason_() {
 
     assertEquals_('schedule_no_active_wta_keys', result.reason_code);
     assertEquals_(0, result.events.length);
+    assertEquals_(0, callCount);
   } finally {
     resolveActiveWtaSportKeys_ = originalResolver;
     callOddsApi_ = originalCaller;
   }
+}
+
+function testCallOddsApiWithSportKeyFallback_noActiveWtaKeys_returnsDedicatedReason_() {
+  const originalResolver = resolveActiveWtaSportKeys_;
+  const originalCaller = callOddsApi_;
+
+  resolveActiveWtaSportKeys_ = function () {
+    return {
+      sport_keys: [],
+      source: 'fallback',
+      fallback: 'none_active_wta_keys',
+    };
+  };
+
+  callOddsApi_ = function () { throw new Error('should not be called'); };
+
+  try {
+    const result = callOddsApiWithSportKeyFallback_({
+      ODDS_API_KEY: 'test',
+      ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+    }, {
+      endpoint: 'odds',
+      query: {
+        regions: 'us',
+      },
+    });
+
+    assertEquals_(false, result.ok);
+    assertEquals_('odds_no_active_wta_keys', result.reason_code);
+    assertEquals_(0, result.api_call_count);
+    assertArrayEquals_([], result.selected_sport_keys);
+  } finally {
+    resolveActiveWtaSportKeys_ = originalResolver;
+    callOddsApi_ = originalCaller;
+  }
+}
+
+function testBuildOddsApiRequestPathForLog_stripsOriginAndSecrets_() {
+  const path = buildOddsApiRequestPathForLog_('https://api.the-odds-api.com/v4/sports/tennis_wta_indian_wells/events?apiKey=abc123&regions=us');
+  assertEquals_('/v4/sports/tennis_wta_indian_wells/events?apiKey=[REDACTED]&regions=us', path);
 }
 
 function testFetchScheduleFromOddsApi_marksActiveKeysNoEventsReason_() {
