@@ -172,10 +172,11 @@ function recreateWorkbook_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const managedTabs = Object.keys(SHEETS).map((k) => SHEETS[k]);
   const placeholderName = '__WTA_RESET_PLACEHOLDER__';
+  const createdPlaceholder = !ss.getSheetByName(placeholderName);
 
   removePipelineTriggers();
 
-  if (ss.getSheets().length <= managedTabs.length) {
+  if (createdPlaceholder && ss.getSheets().length <= managedTabs.length) {
     ensureSheet_(ss, placeholderName);
   }
 
@@ -183,9 +184,6 @@ function recreateWorkbook_() {
     const sh = ss.getSheetByName(name);
     if (sh) ss.deleteSheet(sh);
   });
-
-  const placeholder = ss.getSheetByName(placeholderName);
-  if (placeholder) ss.deleteSheet(placeholder);
 
   const scriptProps = PropertiesService.getScriptProperties();
   const allProps = scriptProps.getProperties();
@@ -200,6 +198,9 @@ function recreateWorkbook_() {
   ]);
 
   ensureTabsAndConfig_();
+
+  const placeholder = ss.getSheetByName(placeholderName);
+  if (placeholder && ss.getSheets().length > 1) ss.deleteSheet(placeholder);
 
   appendLogRow_({
     row_type: 'ops',

@@ -65,7 +65,19 @@ function appendStageLog_(runId, summary) {
 }
 
 function appendLogRow_(entry) {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.RUN_LOG);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(SHEETS.RUN_LOG);
+
+  if (!sh) {
+    sh = ensureSheet_(ss, SHEETS.RUN_LOG);
+    ensureHeaders_(SHEETS.RUN_LOG, [
+      'row_type', 'run_id', 'stage', 'started_at', 'ended_at', 'status', 'reason_code', 'message',
+      'fetched_odds', 'fetched_schedule', 'allowed_tournaments', 'matched', 'unmatched', 'signals_found',
+      'rejection_codes', 'cooldown_suppressed', 'duplicate_suppressed',
+      'lock_event', 'debounce_event', 'trigger_event', 'exception', 'stack', 'stage_summaries',
+    ]);
+  }
+
   sh.appendRow([
     entry.row_type || 'summary',
     entry.run_id || '',
