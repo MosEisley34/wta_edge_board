@@ -429,3 +429,85 @@ function createRunEdgeBoardTestHarness_(options) {
     get releaseLockCalls() { return releaseLockCalls; },
   };
 }
+
+function testStageGenerateSignals_notifyDisabledDoesNotMarkSentHash_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalAppendLogRow = appendLogRow_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const captured = {
+    state: null,
+    logs: [],
+  };
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function (state) { captured.state = JSON.parse(JSON.stringify(state || {})); };
+  appendLogRow_ = function (entry) { captured.logs.push(entry); };
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_notify_disabled',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 150,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+    };
+    const match = {
+      odds_event_id: 'evt_notify_disabled',
+      schedule_event_id: 'sched_1',
+      competition_tier: 'WTA_500',
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: '',
+    };
+
+    const result = stageGenerateSignals('run_notify_disabled', config, [event], [match], {});
+
+    assertEquals_(1, result.rows.length);
+    assertEquals_('notify_disabled', result.rows[0].notification_outcome);
+    assertEquals_(0, Object.keys((captured.state && captured.state.sent_hashes) || {}).length);
+    assertEquals_(0, result.sentCount);
+
+    const notifyLog = captured.logs.filter(function (entry) {
+      return entry.stage === 'signalNotifyDelivery';
+    })[0] || null;
+
+    assertEquals_(true, !!notifyLog);
+    assertEquals_('notify_disabled', notifyLog.reason_code);
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    appendLogRow_ = originalAppendLogRow;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}

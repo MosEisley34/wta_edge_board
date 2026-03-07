@@ -141,6 +141,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const rows = [];
   const reasonCounts = {
     sent: 0,
+    notify_disabled: 0,
     duplicate_suppressed: 0,
     cooldown_suppressed: 0,
     edge_below_threshold: 0,
@@ -263,7 +264,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         row_type: 'ops',
         run_id: runId,
         stage: 'signalNotifyDelivery',
-        status: notifyOutcome === 'sent' ? 'success' : 'failed',
+        status: notifyOutcome === 'sent' ? 'success' : (notifyOutcome === 'notify_disabled' ? 'skipped' : 'failed'),
         reason_code: notifyOutcome,
         message: JSON.stringify(notifyDiagnostics),
       });
@@ -411,7 +412,7 @@ function maybeNotifySignal_(state, seenHashesThisRun, signalHash, nowMs, cooldow
 function sendSignalNotification_(config, runId, signalHash, payload) {
   if (!config.NOTIFY_ENABLED) {
     return {
-      outcome: 'sent',
+      outcome: 'notify_disabled',
       transport: 'discord_webhook',
       http_status: null,
       response_body_preview: 'notify_disabled',
