@@ -4,6 +4,8 @@ function onOpen() {
     .addItem('Setup / Verify Tabs', 'menuSetupVerifyTabs')
     .addItem('Run Pipeline Now', 'menuRunPipelineNow')
     .addSeparator()
+    .addItem('Re-create / Reset Workbook', 'menuRecreateWorkbook')
+    .addSeparator()
     .addItem('Install Triggers', 'menuInstallTriggers')
     .addItem('Remove Triggers', 'menuRemoveTriggers')
     .addSeparator()
@@ -19,6 +21,30 @@ function menuSetupVerifyTabs() {
 function menuRunPipelineNow() {
   runEdgeBoard();
   SpreadsheetApp.getUi().alert('Pipeline run complete. Check Run_Log and State.');
+}
+
+function menuRecreateWorkbook() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'Re-create / Reset Workbook',
+    'This will delete and recreate all managed pipeline tabs, clear script state/properties, and remove pipeline triggers. Continue?',
+    ui.ButtonSet.YES_NO,
+  );
+
+  if (response !== ui.Button.YES) {
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: buildRunId_(),
+      stage: 'menuRecreateWorkbook',
+      status: 'skipped',
+      reason_code: 'recreate_cancelled',
+      message: 'Workbook recreate was cancelled by user.',
+    });
+    return;
+  }
+
+  recreateWorkbook_();
+  ui.alert('Workbook reset complete. Tabs, defaults, and headers have been recreated.');
 }
 
 function menuInstallTriggers() {
@@ -139,5 +165,48 @@ function ensureConfigDefaults_() {
     if (existing[key] === undefined || existing[key] === '') {
       sh.appendRow([key, DEFAULT_CONFIG[key]]);
     }
+  });
+}
+
+function recreateWorkbook_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const managedTabs = Object.keys(SHEETS).map((k) => SHEETS[k]);
+  const placeholderName = '__WTA_RESET_PLACEHOLDER__';
+
+  removePipelineTriggers();
+
+  if (ss.getSheets().length <= managedTabs.length) {
+    ensureSheet_(ss, placeholderName);
+  }
+
+  managedTabs.forEach((name) => {
+    const sh = ss.getSheetByName(name);
+    if (sh) ss.deleteSheet(sh);
+  });
+
+  const placeholder = ss.getSheetByName(placeholderName);
+  if (placeholder) ss.deleteSheet(placeholder);
+
+  const scriptProps = PropertiesService.getScriptProperties();
+  const allProps = scriptProps.getProperties();
+  Object.keys(allProps || {}).forEach((key) => {
+    scriptProps.deleteProperty(key);
+  });
+
+  const scriptCache = CacheService.getScriptCache();
+  scriptCache.removeAll([
+    'ODDS_WINDOW_PAYLOAD',
+    'SCHEDULE_WINDOW_CACHE',
+  ]);
+
+  ensureTabsAndConfig_();
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: buildRunId_(),
+    stage: 'recreateWorkbook_',
+    status: 'success',
+    reason_code: 'recreate_completed',
+    message: 'Workbook tabs were deleted/recreated, triggers removed, and script state cleared.',
   });
 }
