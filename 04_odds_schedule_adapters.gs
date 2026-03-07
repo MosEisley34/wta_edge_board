@@ -767,7 +767,7 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
   let eventsMissingH2hOutcomes = 0;
   let bookmakersWithoutH2hMarket = 0;
 
-  (fetched.payload || []).forEach((event) => {
+  (ensureArrayPayload_(fetched.payload) || []).forEach((event) => {
     const bestByOutcome = {};
     const allBookmakers = event.bookmakers || [];
 
@@ -898,7 +898,7 @@ function fetchScheduleFromOddsApi_(config, window) {
     return firstFailure;
   }
 
-  const normalizedEvents = normalizeAndDeduplicateScheduleEvents_(successful.map((resp) => resp.payload || []));
+  const normalizedEvents = normalizeAndDeduplicateScheduleEvents_(successful.map((resp) => ensureArrayPayload_(resp.payload) || []));
   let reasonCode = resolvedSportKeys.fallback && resolvedSportKeys.fallback !== 'none'
     ? 'schedule_api_success_sport_key_fallback'
     : 'schedule_api_success';
@@ -988,7 +988,7 @@ function callOddsApiWithSportKeyFallback_(config, opts) {
   return {
     ok: !!firstSuccess,
     status_code: selected.status_code,
-    payload: mergeOddsApiPayloads_(successful.map((resp) => resp.payload || [])),
+    payload: mergeOddsApiPayloads_(successful.map((resp) => ensureArrayPayload_(resp.payload) || [])),
     reason_code: selected.reason_code,
     api_credit_usage: responses.reduce((sum, resp) => sum + Number(resp.api_credit_usage || 0), 0),
     api_call_count: responses.reduce((sum, resp) => sum + Number(resp.api_call_count || 0), 0),
@@ -1057,6 +1057,19 @@ function mergeOddsApiPayloads_(payloads) {
     });
   });
   return Object.keys(mergedByEventId).map((eventId) => mergedByEventId[eventId]);
+}
+
+function ensureArrayPayload_(value) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return null;
+
+  const listLikeKeys = ['data', 'events', 'results', 'payload', 'items'];
+  for (let i = 0; i < listLikeKeys.length; i += 1) {
+    const key = listLikeKeys[i];
+    if (Array.isArray(value[key])) return value[key];
+  }
+
+  return null;
 }
 
 function logOddsSportKeyResolution_(selectionMode, sportKeys, fallbackBehavior) {
@@ -1184,10 +1197,23 @@ function callOddsApi_(url, opts) {
     return failureResult('api_parse_error', creditHeaders);
   }
 
+  const normalizedPayload = ensureArrayPayload_(parsedPayload);
+  if (!normalizedPayload) {
+    return {
+      ok: false,
+      status_code: status,
+      payload: [],
+      reason_code: 'api_unexpected_payload_shape',
+      api_credit_usage: creditHeaders.requests_last || 0,
+      api_call_count: 1,
+      credit_headers: creditHeaders,
+    };
+  }
+
   return {
     ok: true,
     status_code: status,
-    payload: parsedPayload,
+    payload: normalizedPayload,
     api_credit_usage: creditHeaders.requests_last || 0,
     api_call_count: 1,
     credit_headers: creditHeaders,
