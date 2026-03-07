@@ -999,3 +999,198 @@ function testGetConfig_allowWta250Missing_usesDefaultTrue_() {
     SpreadsheetApp.getActiveSpreadsheet = originalGetActiveSpreadsheet;
   }
 }
+
+function testStageFetchSchedule_staleWithEvents_keepsCachedStaleFallbackSource_() {
+  const result = runStageFetchScheduleScenario_({
+    cacheResult: {
+      cached_at_ms: Date.parse('2025-03-01T00:00:00.000Z'),
+      events: [],
+    },
+    stalePayload: {
+      event_count: 2,
+      events: [{ event_id: 'evt_stale_1' }, { event_id: 'evt_stale_2' }],
+    },
+    fetchResponses: [],
+  });
+
+  assertEquals_('cached_stale_fallback', result.stage.selected_source);
+  assertEquals_(0, result.fetchCalls.length);
+  assertEquals_(0, result.lastMeta.live_fetch_happened ? 1 : 0);
+  assertEquals_(0, result.lastMeta.stale_fallback_empty_forced_live ? 1 : 0);
+  assertEquals_(0, result.creditHeadersCaptured.length);
+}
+
+function testStageFetchSchedule_staleEmpty_forcesLiveAndPersistsFlagsOnSuccess_() {
+  const liveHeaders = {
+    x_requests_used: '10',
+    x_requests_remaining: '490',
+  };
+  const result = runStageFetchScheduleScenario_({
+    cacheResult: {
+      cached_at_ms: Date.parse('2025-03-01T00:00:00.000Z'),
+      events: [],
+    },
+    stalePayload: {
+      event_count: 0,
+      events: [],
+    },
+    fetchResponses: [{
+      events: [],
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: liveHeaders,
+    }],
+  });
+
+  assertEquals_('fresh_api', result.stage.selected_source);
+  assertEquals_(1, result.fetchCalls.length);
+  assertEquals_(1, result.lastMeta.live_fetch_happened ? 1 : 0);
+  assertEquals_(1, result.lastMeta.stale_fallback_empty_forced_live ? 1 : 0);
+  assertEquals_(1, result.creditHeadersCaptured.length);
+  assertEquals_('490', String(result.creditHeadersCaptured[0].x_requests_remaining || ''));
+}
+
+function testStageFetchSchedule_staleEmpty_forcesLiveAndPersistsFlagsOnLiveEmpty_() {
+  const liveHeaders = {
+    x_requests_used: '11',
+    x_requests_remaining: '489',
+  };
+  const result = runStageFetchScheduleScenario_({
+    cacheResult: {
+      cached_at_ms: Date.parse('2025-03-01T00:00:00.000Z'),
+      events: [],
+    },
+    stalePayload: {
+      event_count: 0,
+      events: [],
+    },
+    fetchResponses: [{
+      events: [],
+      reason_code: 'schedule_active_keys_no_events',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: liveHeaders,
+    }],
+  });
+
+  assertEquals_('fresh_api', result.stage.selected_source);
+  assertEquals_(1, result.stage.summary.reason_codes.schedule_active_keys_no_events || 0);
+  assertEquals_(1, result.fetchCalls.length);
+  assertEquals_(1, result.lastMeta.live_fetch_happened ? 1 : 0);
+  assertEquals_(1, result.lastMeta.stale_fallback_empty_forced_live ? 1 : 0);
+  assertEquals_(1, result.creditHeadersCaptured.length);
+  assertEquals_('489', String(result.creditHeadersCaptured[0].x_requests_remaining || ''));
+}
+
+function runStageFetchScheduleScenario_(options) {
+  const opts = options || {};
+  const originalDateNow = Date.now;
+  const originalDeriveScheduleWindowFromOdds = deriveScheduleWindowFromOdds_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+  const originalGetCachedSchedulePayload = getCachedSchedulePayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalSetCachedSchedulePayload = setCachedSchedulePayload_;
+  const originalBuildCompetitionTierResolverConfig = buildCompetitionTierResolverConfig_;
+  const originalResolveCompetitionTier = resolveCompetitionTier_;
+  const originalIsAllowedTournament = isAllowedTournament;
+  const originalBuildStageSummary = buildStageSummary_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const originalSetStateValue = setStateValue_;
+
+  const fetchResponses = (opts.fetchResponses || []).slice();
+  const fetchCalls = [];
+  const stateWrites = {};
+  const creditHeadersCaptured = [];
+
+  Date.now = function () { return Date.parse('2025-03-01T00:10:00.000Z'); };
+  deriveScheduleWindowFromOdds_ = function () {
+    return {
+      startIso: '2025-03-01T00:00:00.000Z',
+      endIso: '2025-03-01T06:00:00.000Z',
+    };
+  };
+  getCreditAwareRuntimeConfig_ = function () {
+    return {
+      odds_window_cache_ttl_min: 1,
+      odds_window_refresh_min: 30,
+      mode: 'normal',
+      schedule_refresh_non_critical_enabled: false,
+    };
+  };
+  getCachedSchedulePayload_ = function () { return opts.cacheResult || null; };
+  getStateJson_ = function (key) {
+    if (key === 'SCHEDULE_WINDOW_STALE_PAYLOAD') return opts.stalePayload || {};
+    if (key === 'SCHEDULE_WINDOW_LAST_FETCH_META') return opts.lastFetchMeta || {};
+    return {};
+  };
+  fetchScheduleFromOddsApi_ = function () {
+    fetchCalls.push(true);
+    if (!fetchResponses.length) throw new Error('missing fetch response');
+    return fetchResponses.shift();
+  };
+  setCachedSchedulePayload_ = function () {};
+  buildCompetitionTierResolverConfig_ = function () { return {}; };
+  resolveCompetitionTier_ = function () {
+    return {
+      canonical_tier: 'UNKNOWN',
+      matched_by: '',
+      matched_field: '',
+      raw_fields: [],
+    };
+  };
+  isAllowedTournament = function () {
+    return {
+      allowed: true,
+      reason_code: 'allowed',
+    };
+  };
+  buildStageSummary_ = function (runId, stage, start, values) {
+    return {
+      run_id: runId,
+      stage: stage,
+      reason_code: values && values.reason_code ? values.reason_code : '',
+      reason_codes: Object.assign({}, (values && values.reason_codes) || {}),
+    };
+  };
+  updateCreditStateFromHeaders_ = function (runId, headers) {
+    creditHeadersCaptured.push(Object.assign({}, headers || {}));
+    return { header_present: Object.keys(headers || {}).length > 0 };
+  };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2025-03-01T00:10:00-07:00',
+      utc: '2025-03-01T07:10:00.000Z',
+    };
+  };
+  setStateValue_ = function (key, value) {
+    stateWrites[key] = value;
+  };
+
+  try {
+    const stage = stageFetchSchedule('run_stage_fetch_schedule_test', {}, []);
+    return {
+      stage: stage,
+      fetchCalls: fetchCalls,
+      lastMeta: JSON.parse(stateWrites.SCHEDULE_WINDOW_LAST_FETCH_META || '{}'),
+      creditHeadersCaptured: creditHeadersCaptured,
+    };
+  } finally {
+    Date.now = originalDateNow;
+    deriveScheduleWindowFromOdds_ = originalDeriveScheduleWindowFromOdds;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+    getCachedSchedulePayload_ = originalGetCachedSchedulePayload;
+    getStateJson_ = originalGetStateJson;
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    setCachedSchedulePayload_ = originalSetCachedSchedulePayload;
+    buildCompetitionTierResolverConfig_ = originalBuildCompetitionTierResolverConfig;
+    resolveCompetitionTier_ = originalResolveCompetitionTier;
+    isAllowedTournament = originalIsAllowedTournament;
+    buildStageSummary_ = originalBuildStageSummary;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+    setStateValue_ = originalSetStateValue;
+  }
+}
