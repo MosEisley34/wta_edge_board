@@ -148,6 +148,11 @@ function stageFetchSchedule(runId, config, oddsEvents) {
   const forceRefresh = !!config.ODDS_WINDOW_FORCE_REFRESH;
   const cacheResult = getCachedSchedulePayload_('SCHEDULE_WINDOW_PAYLOAD');
   let scheduleResp;
+  let scheduleWindowMetrics = {
+    primary_window_matched: 0,
+    expanded_window_fallback_used: 0,
+    expanded_window_short_circuit: 0,
+  };
 
   if (!window) {
     scheduleResp = {
@@ -202,6 +207,30 @@ function stageFetchSchedule(runId, config, oddsEvents) {
           selected_cached_at_ms: Number(stale.cached_at_ms) || now,
         };
       }
+    }
+  }
+
+  if (window && oddsEvents && oddsEvents.length) {
+    const primaryCoverage = assessScheduleCoverage_(oddsEvents, scheduleResp.events || [], config);
+    const shouldExpand = hasMaterialScheduleCoverageGap_(primaryCoverage);
+
+    if (primaryCoverage.all_matched) {
+      scheduleWindowMetrics.primary_window_matched = 1;
+      scheduleWindowMetrics.expanded_window_short_circuit = 1;
+    }
+
+    if (shouldExpand) {
+      const expandedWindow = expandScheduleWindow_(window, config.MATCH_FALLBACK_EXPANSION_MIN);
+      const expandedResp = fetchScheduleFromOddsApi_(config, expandedWindow);
+
+      if (expandedResp.reason_code === 'schedule_api_success') {
+        scheduleResp.events = mergeScheduleEventsById_(scheduleResp.events || [], expandedResp.events || []);
+        scheduleWindowMetrics.expanded_window_fallback_used = 1;
+      }
+
+      scheduleResp.api_credit_usage = Number(scheduleResp.api_credit_usage || 0) + Number(expandedResp.api_credit_usage || 0);
+      scheduleResp.api_call_count = Number(scheduleResp.api_call_count || 0) + Number(expandedResp.api_call_count || 0);
+      scheduleResp.credit_headers = mergeCreditHeaders_(scheduleResp.credit_headers || {}, expandedResp.credit_headers || {});
     }
   }
 
@@ -304,6 +333,9 @@ function stageFetchSchedule(runId, config, oddsEvents) {
 
   summary.reason_codes[scheduleResp.reason_code] = (summary.reason_codes[scheduleResp.reason_code] || 0) + 1;
   summary.reason_codes['source_' + selectedSource] = (summary.reason_codes['source_' + selectedSource] || 0) + 1;
+  summary.reason_codes.primary_window_matched = (summary.reason_codes.primary_window_matched || 0) + scheduleWindowMetrics.primary_window_matched;
+  summary.reason_codes.expanded_window_fallback_used = (summary.reason_codes.expanded_window_fallback_used || 0) + scheduleWindowMetrics.expanded_window_fallback_used;
+  summary.reason_codes.expanded_window_short_circuit = (summary.reason_codes.expanded_window_short_circuit || 0) + scheduleWindowMetrics.expanded_window_short_circuit;
 
   setStateValue_('LAST_SCHEDULE_API_CREDITS', JSON.stringify({
     run_id: runId,
@@ -446,6 +478,64 @@ function deriveScheduleWindowFromOdds_(oddsEvents, config) {
   return {
     startIso: new Date(minMs).toISOString(),
     endIso: new Date(maxMs).toISOString(),
+  };
+}
+
+function expandScheduleWindow_(window, expansionMin) {
+  const expandMs = Math.max(0, Number(expansionMin || 0)) * 60000;
+  const startMs = new Date(window.startIso).getTime();
+  const endMs = new Date(window.endIso).getTime();
+  return {
+    startIso: new Date(startMs - expandMs).toISOString(),
+    endIso: new Date(endMs + expandMs).toISOString(),
+  };
+}
+
+function assessScheduleCoverage_(oddsEvents, scheduleEvents, config) {
+  const canonicalizationExamples = [];
+  const aliasMap = buildPlayerAliasMap_(config.PLAYER_ALIAS_MAP_JSON);
+  const toleranceMin = Number(config.MATCH_TIME_TOLERANCE_MIN || 0);
+  let matchedCount = 0;
+
+  (oddsEvents || []).forEach((oddsEvent) => {
+    const result = matchSingleOddsEvent_(oddsEvent, scheduleEvents || [], toleranceMin, aliasMap, canonicalizationExamples);
+    if (result.matched) matchedCount += 1;
+  });
+
+  const totalOdds = (oddsEvents || []).length;
+  return {
+    matched_count: matchedCount,
+    unmatched_count: Math.max(0, totalOdds - matchedCount),
+    total_odds_events: totalOdds,
+    all_matched: totalOdds > 0 && matchedCount === totalOdds,
+  };
+}
+
+function hasMaterialScheduleCoverageGap_(coverage) {
+  return !!(coverage && coverage.unmatched_count > 0);
+}
+
+function mergeScheduleEventsById_(primaryEvents, expandedEvents) {
+  const mergedById = {};
+
+  (primaryEvents || []).forEach((event) => {
+    if (!event || !event.event_id) return;
+    mergedById[event.event_id] = event;
+  });
+
+  (expandedEvents || []).forEach((event) => {
+    if (!event || !event.event_id) return;
+    if (!mergedById[event.event_id]) mergedById[event.event_id] = event;
+  });
+
+  return Object.keys(mergedById).map((eventId) => mergedById[eventId]);
+}
+
+function mergeCreditHeaders_(primaryHeaders, secondaryHeaders) {
+  return {
+    requests_used: Number(primaryHeaders.requests_used || 0) + Number(secondaryHeaders.requests_used || 0),
+    requests_remaining: Number(secondaryHeaders.requests_remaining || primaryHeaders.requests_remaining || 0),
+    requests_last: Number(secondaryHeaders.requests_last || primaryHeaders.requests_last || 0),
   };
 }
 
