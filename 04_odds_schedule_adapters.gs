@@ -1,8 +1,10 @@
-function stageFetchOdds(runId, config) {
+function stageFetchOdds(runId, config, fetchWindow) {
   const start = Date.now();
   const source = 'the_odds_api';
   const lookaheadMs = config.LOOKAHEAD_HOURS * 60 * 60 * 1000;
   const now = Date.now();
+  const windowStartMs = fetchWindow && Number.isFinite(fetchWindow.startMs) ? fetchWindow.startMs : now;
+  const windowEndMs = fetchWindow && Number.isFinite(fetchWindow.endMs) ? fetchWindow.endMs : now + lookaheadMs;
   const cacheTtlSec = Math.max(30, config.ODDS_CACHE_TTL_SEC);
   const cacheResult = getCachedPayload_('ODDS_WINDOW_PAYLOAD');
   let adapter;
@@ -16,7 +18,7 @@ function stageFetchOdds(runId, config) {
       credit_headers: {},
     };
   } else {
-    adapter = fetchOddsWindowFromOddsApi_(config, now, now + lookaheadMs);
+    adapter = fetchOddsWindowFromOddsApi_(config, windowStartMs, windowEndMs);
     if (adapter.events && adapter.events.length) {
       setCachedPayload_('ODDS_WINDOW_PAYLOAD', adapter.events);
     } else if (adapter.reason_code !== 'odds_api_success') {
@@ -34,7 +36,7 @@ function stageFetchOdds(runId, config) {
   }
 
   const raw = adapter.events || [];
-  const filtered = raw.filter((event) => event.commence_time.getTime() >= now && event.commence_time.getTime() <= now + lookaheadMs);
+  const filtered = raw.filter((event) => event.commence_time.getTime() >= windowStartMs && event.commence_time.getTime() <= windowEndMs);
 
   if (filtered.length) {
     setStateValue_('ODDS_WINDOW_STALE_PAYLOAD', JSON.stringify({
@@ -212,6 +214,102 @@ function getTopCompetitionStrings_(countMap, topN) {
     .map((key) => ({ competition: key, count: countMap[key] }))
     .sort((a, b) => b.count - a.count)
     .slice(0, topN || 10);
+}
+
+
+function buildSkippedOddsStage_(runId, reasonCode, message) {
+  const start = Date.now();
+  return {
+    events: [],
+    rows: [],
+    summary: buildStageSummary_(runId, 'stageFetchOdds', start, {
+      input_count: 0,
+      output_count: 0,
+      provider: 'the_odds_api',
+      api_credit_usage: 0,
+      reason_codes: {
+        [reasonCode]: 1,
+      },
+      message: message || '',
+    }),
+  };
+}
+
+function resolveOddsWindowForPipeline_(config, nowMs) {
+  const lookaheadMs = config.LOOKAHEAD_HOURS * 60 * 60 * 1000;
+  const sourceWindow = {
+    startIso: new Date(nowMs).toISOString(),
+    endIso: new Date(nowMs + lookaheadMs).toISOString(),
+  };
+  const scheduleResp = fetchScheduleFromOddsApi_(config, sourceWindow);
+  const targetTiers = {
+    WTA_250: true,
+    WTA_500: true,
+    WTA_1000: true,
+    GRAND_SLAM: true,
+  };
+  const tierResolverConfig = buildCompetitionTierResolverConfig_(config);
+
+  const eligibleStarts = (scheduleResp.events || [])
+    .filter((event) => targetTiers[resolveCompetitionTier_(event, tierResolverConfig).canonical_tier])
+    .map((event) => event.start_time.getTime())
+    .filter((value) => Number.isFinite(value));
+
+  const decisionBase = {
+    schedule_reason_code: scheduleResp.reason_code,
+    schedule_api_credit_usage: scheduleResp.api_credit_usage || 0,
+    schedule_api_call_count: scheduleResp.api_call_count || 0,
+    schedule_credit_headers: scheduleResp.credit_headers || {},
+    eligible_match_count: eligibleStarts.length,
+    no_games_behavior: String(config.ODDS_NO_GAMES_BEHAVIOR || 'SKIP').toUpperCase(),
+  };
+
+  if (!eligibleStarts.length) {
+    if (decisionBase.no_games_behavior === 'FALLBACK_STATIC_WINDOW') {
+      return Object.assign({}, decisionBase, {
+        should_fetch_odds: true,
+        decision_reason_code: 'odds_refresh_executed_in_window',
+        decision_message: 'No eligible schedule matches; using fallback static odds window.',
+        odds_fetch_window: {
+          startMs: nowMs,
+          endMs: nowMs + lookaheadMs,
+        },
+        refresh_window_start_ms: nowMs,
+        refresh_window_end_ms: nowMs + lookaheadMs,
+      });
+    }
+
+    return Object.assign({}, decisionBase, {
+      should_fetch_odds: false,
+      decision_reason_code: 'odds_refresh_skipped_no_games',
+      decision_message: 'No eligible schedule matches in lookahead window.',
+      odds_fetch_window: null,
+      refresh_window_start_ms: null,
+      refresh_window_end_ms: null,
+    });
+  }
+
+  const firstEligibleStartMs = Math.min.apply(null, eligibleStarts);
+  const lastEligibleStartMs = Math.max.apply(null, eligibleStarts);
+  const refreshWindowStartMs = firstEligibleStartMs - (config.ODDS_WINDOW_PRE_FIRST_MIN * 60000);
+  const refreshWindowEndMs = lastEligibleStartMs + (config.ODDS_WINDOW_POST_LAST_MIN * 60000);
+  const inRefreshWindow = nowMs >= refreshWindowStartMs && nowMs <= refreshWindowEndMs;
+
+  return Object.assign({}, decisionBase, {
+    first_eligible_start_ms: firstEligibleStartMs,
+    last_eligible_start_ms: lastEligibleStartMs,
+    refresh_window_start_ms: refreshWindowStartMs,
+    refresh_window_end_ms: refreshWindowEndMs,
+    should_fetch_odds: inRefreshWindow,
+    decision_reason_code: inRefreshWindow ? 'odds_refresh_executed_in_window' : 'odds_refresh_skipped_outside_window',
+    decision_message: inRefreshWindow
+      ? 'Current time is inside schedule-derived refresh window.'
+      : 'Current time is outside schedule-derived refresh window.',
+    odds_fetch_window: inRefreshWindow ? {
+      startMs: Math.max(nowMs, refreshWindowStartMs),
+      endMs: refreshWindowEndMs,
+    } : null,
+  });
 }
 
 function deriveScheduleWindowFromOdds_(oddsEvents, config) {

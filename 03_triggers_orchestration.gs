@@ -120,7 +120,19 @@ function runEdgeBoard() {
 
     scriptProps.setProperty(PROPS.LAST_PIPELINE_RUN_TS, String(nowMs));
 
-    const oddsStage = stageFetchOdds(runId, config);
+    const oddsWindowDecision = resolveOddsWindowForPipeline_(config, nowMs);
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: runId,
+      stage: 'resolveOddsWindowForPipeline',
+      status: oddsWindowDecision.should_fetch_odds ? 'success' : 'skipped',
+      reason_code: oddsWindowDecision.decision_reason_code,
+      message: oddsWindowDecision.decision_message,
+    });
+
+    const oddsStage = oddsWindowDecision.should_fetch_odds
+      ? stageFetchOdds(runId, config, oddsWindowDecision.odds_fetch_window)
+      : buildSkippedOddsStage_(runId, oddsWindowDecision.decision_reason_code, oddsWindowDecision.decision_message);
     appendStageLog_(runId, oddsStage.summary);
 
     const scheduleStage = stageFetchSchedule(runId, config, oddsStage.events);
@@ -158,6 +170,15 @@ function runEdgeBoard() {
       started_at: startedAt.toISOString(),
       ended_at: new Date().toISOString(),
       config_snapshot: config,
+      odds_refresh_decision: {
+        decision_reason_code: oddsWindowDecision.decision_reason_code,
+        should_fetch_odds: oddsWindowDecision.should_fetch_odds,
+        first_eligible_match_start: oddsWindowDecision.first_eligible_start_ms ? new Date(oddsWindowDecision.first_eligible_start_ms).toISOString() : '',
+        last_eligible_match_start: oddsWindowDecision.last_eligible_start_ms ? new Date(oddsWindowDecision.last_eligible_start_ms).toISOString() : '',
+        refresh_window_start: oddsWindowDecision.refresh_window_start_ms ? new Date(oddsWindowDecision.refresh_window_start_ms).toISOString() : '',
+        refresh_window_end: oddsWindowDecision.refresh_window_end_ms ? new Date(oddsWindowDecision.refresh_window_end_ms).toISOString() : '',
+        eligible_match_count: oddsWindowDecision.eligible_match_count || 0,
+      },
       stage_summaries: [
         oddsStage.summary,
         scheduleStage.summary,
