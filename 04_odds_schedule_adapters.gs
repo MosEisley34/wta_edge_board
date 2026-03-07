@@ -157,7 +157,19 @@ function stageFetchSchedule(runId, config, oddsEvents) {
   const refreshMinMs = Math.max(1, runtimeConfig.odds_window_refresh_min) * 60000;
   const forceRefresh = !!config.ODDS_WINDOW_FORCE_REFRESH;
   const cacheResult = getCachedSchedulePayload_('SCHEDULE_WINDOW_PAYLOAD');
+  const stalePayload = getStateJson_('SCHEDULE_WINDOW_STALE_PAYLOAD') || {};
+  const stalePayloadEventCount = Math.max(
+    Number(stalePayload.event_count || 0),
+    Array.isArray(stalePayload.events) ? stalePayload.events.length : 0
+  );
+  const stalePayloadIsEmpty = stalePayloadEventCount === 0;
+  const lastFetchMeta = getStateJson_('SCHEDULE_WINDOW_LAST_FETCH_META') || {};
+  const staleEmptyForcedLiveAlreadyAttemptedThisRun = String(lastFetchMeta.run_id || '') === String(runId || '')
+    && lastFetchMeta.stale_fallback_empty_forced_live === true;
   let scheduleResp;
+  let liveFetchHappened = false;
+  let staleFallbackUsedWithEvents = 0;
+  let staleFallbackEmptyForcedLive = 0;
   let scheduleWindowMetrics = {
     primary_window_matched: 0,
     expanded_window_fallback_used: 0,
@@ -191,11 +203,36 @@ function stageFetchSchedule(runId, config, oddsEvents) {
       credit_headers: {},
       selected_source: 'cached_stale_fallback',
     };
+
+    if (stalePayloadIsEmpty && !staleEmptyForcedLiveAlreadyAttemptedThisRun) {
+      const forcedLiveResp = fetchScheduleFromOddsApi_(config, window);
+      liveFetchHappened = true;
+      staleFallbackEmptyForcedLive = 1;
+
+      if (forcedLiveResp.reason_code === 'schedule_api_success' || forcedLiveResp.reason_code === 'schedule_api_success_sport_key_fallback') {
+        scheduleResp = Object.assign({}, forcedLiveResp, {
+          selected_source: 'fresh_api',
+        });
+        setCachedSchedulePayload_('SCHEDULE_WINDOW_PAYLOAD', scheduleResp.events, {
+          cached_at_ms: now,
+          source: 'fresh_api',
+          has_games: scheduleResp.events.length > 0,
+          event_count: scheduleResp.events.length,
+          window_start_ms: new Date(window.startIso).getTime(),
+          window_end_ms: new Date(window.endIso).getTime(),
+        });
+      } else {
+        scheduleResp.api_credit_usage = Number(scheduleResp.api_credit_usage || 0) + Number(forcedLiveResp.api_credit_usage || 0);
+        scheduleResp.api_call_count = Number(scheduleResp.api_call_count || 0) + Number(forcedLiveResp.api_call_count || 0);
+        scheduleResp.credit_headers = mergeCreditHeaders_(scheduleResp.credit_headers || {}, forcedLiveResp.credit_headers || {});
+      }
+    }
   } else {
     scheduleResp = fetchScheduleFromOddsApi_(config, window);
+    liveFetchHappened = true;
     scheduleResp.selected_source = 'fresh_api';
 
-    if (scheduleResp.reason_code === 'schedule_api_success') {
+    if (scheduleResp.reason_code === 'schedule_api_success' || scheduleResp.reason_code === 'schedule_api_success_sport_key_fallback') {
       setCachedSchedulePayload_('SCHEDULE_WINDOW_PAYLOAD', scheduleResp.events, {
         cached_at_ms: now,
         source: 'fresh_api',
@@ -205,8 +242,9 @@ function stageFetchSchedule(runId, config, oddsEvents) {
         window_end_ms: new Date(window.endIso).getTime(),
       });
     } else {
-      const stale = getStateJson_('SCHEDULE_WINDOW_STALE_PAYLOAD');
+      const stale = stalePayload;
       if (stale && stale.events && stale.events.length) {
+        staleFallbackUsedWithEvents = 1;
         scheduleResp = {
           events: stale.events.map(deserializeScheduleEvent_),
           reason_code: 'schedule_stale_fallback',
@@ -219,6 +257,10 @@ function stageFetchSchedule(runId, config, oddsEvents) {
       }
     }
   }
+
+  scheduleResp.live_fetch_happened = liveFetchHappened;
+  scheduleResp.stale_fallback_used_with_events = staleFallbackUsedWithEvents;
+  scheduleResp.stale_fallback_empty_forced_live = staleFallbackEmptyForcedLive;
 
   if (window && oddsEvents && oddsEvents.length) {
     const primaryCoverage = assessScheduleCoverage_(oddsEvents, scheduleResp.events || [], config);
@@ -325,10 +367,13 @@ function stageFetchSchedule(runId, config, oddsEvents) {
   }));
 
   setStateValue_('SCHEDULE_WINDOW_LAST_FETCH_META', JSON.stringify({
+    run_id: runId,
     cached_at_ms: selectedAtMs,
     source: selectedSource,
     has_games: inWindow.length > 0,
     event_count: inWindow.length,
+    live_fetch_happened: !!scheduleResp.live_fetch_happened,
+    stale_fallback_empty_forced_live: !!scheduleResp.stale_fallback_empty_forced_live,
     window_start_ms: windowStartMs,
     window_end_ms: windowEndMs,
   }));
@@ -346,6 +391,9 @@ function stageFetchSchedule(runId, config, oddsEvents) {
   summary.reason_codes.primary_window_matched = (summary.reason_codes.primary_window_matched || 0) + scheduleWindowMetrics.primary_window_matched;
   summary.reason_codes.expanded_window_fallback_used = (summary.reason_codes.expanded_window_fallback_used || 0) + scheduleWindowMetrics.expanded_window_fallback_used;
   summary.reason_codes.expanded_window_short_circuit = (summary.reason_codes.expanded_window_short_circuit || 0) + scheduleWindowMetrics.expanded_window_short_circuit;
+  summary.reason_codes.stale_fallback_used_with_events = (summary.reason_codes.stale_fallback_used_with_events || 0) + Number(scheduleResp.stale_fallback_used_with_events || 0);
+  summary.reason_codes.stale_fallback_empty_forced_live = (summary.reason_codes.stale_fallback_empty_forced_live || 0) + Number(scheduleResp.stale_fallback_empty_forced_live || 0);
+  summary.reason_codes.live_fetch_happened = (summary.reason_codes.live_fetch_happened || 0) + (scheduleResp.live_fetch_happened ? 1 : 0);
   summary.reason_codes.runtime_mode_soft_degraded = (summary.reason_codes.runtime_mode_soft_degraded || 0) + (runtimeConfig.mode === 'soft' ? 1 : 0);
   if (!runtimeConfig.schedule_refresh_non_critical_enabled) {
     summary.reason_codes.schedule_refresh_non_critical_skipped = (summary.reason_codes.schedule_refresh_non_critical_skipped || 0) + 1;
