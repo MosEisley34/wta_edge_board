@@ -69,6 +69,11 @@ const PROPS = {
   DUPLICATE_PREVENTED_COUNT: 'DUPLICATE_PREVENTED_COUNT',
 };
 
+const TIMESTAMP_TIMEZONE = {
+  ID: 'America/Hermosillo',
+  OFFSET: '-07:00',
+};
+
 function getConfig_() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
   const values = sh.getDataRange().getValues();

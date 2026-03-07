@@ -97,7 +97,7 @@ function setStateValue_(key, value) {
   upsertSheetRows_(SHEETS.STATE, ['key', 'value', 'updated_at'], [{
     key,
     value,
-    updated_at: new Date().toISOString(),
+    updated_at: formatLocalIso_(new Date()),
   }]);
 }
 
@@ -143,8 +143,8 @@ function buildStageSummary_(runId, stage, startMs, opts) {
   const summary = {
     run_id: runId,
     stage,
-    started_at: new Date(startMs).toISOString(),
-    ended_at: new Date(endMs).toISOString(),
+    started_at: formatLocalIso_(new Date(startMs)),
+    ended_at: formatLocalIso_(new Date(endMs)),
     duration_ms: endMs - startMs,
     input_count: opts.input_count,
     output_count: opts.output_count,
@@ -231,6 +231,22 @@ function toNumber_(value, fallback) {
 
 function toIso_(value) {
   if (!value) return '';
-  if (value instanceof Date) return value.toISOString();
-  return String(value);
+  return formatLocalIso_(value);
+}
+
+function formatLocalIso_(value) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  if (isNaN(date.getTime())) return '';
+  return Utilities.formatDate(date, TIMESTAMP_TIMEZONE.ID, "yyyy-MM-dd'T'HH:mm:ss") + TIMESTAMP_TIMEZONE.OFFSET;
+}
+
+function localAndUtcTimestamps_(value) {
+  if (!value) return { local: '', utc: '' };
+  const date = value instanceof Date ? value : new Date(value);
+  if (isNaN(date.getTime())) return { local: '', utc: '' };
+  return {
+    local: formatLocalIso_(date),
+    utc: date.toISOString(),
+  };
 }
