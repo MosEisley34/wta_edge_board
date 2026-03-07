@@ -146,6 +146,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     edge_below_threshold: 0,
     too_close_to_start_skip: 0,
     stale_odds_skip: 0,
+    notify_http_failed: 0,
+    notify_missing_config: 0,
   };
   const signalState = getSignalState_();
   const seenHashesThisRun = {};
@@ -220,10 +222,52 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     }
 
     const notifyDecision = maybeNotifySignal_(signalState, seenHashesThisRun, signalHash, nowMs, config.SIGNAL_COOLDOWN_MIN);
-    reasonCounts[notifyDecision.outcome] = (reasonCounts[notifyDecision.outcome] || 0) + 1;
+    let notifyOutcome = notifyDecision.outcome;
+    let notifyDiagnostics = null;
+
+    if (notifyDecision.outcome === 'sent') {
+      const sendResult = sendSignalNotification_(config, runId, signalHash, {
+        side: event.outcome,
+        market: event.market,
+        bookmaker: event.bookmaker,
+        competition_tier: match.competition_tier,
+        edge_tier: edgeTierAndStake.edge_tier,
+        edge_value: edgeValue,
+        stake_units: edgeTierAndStake.stake_units,
+        model_probability: modelProbability,
+        market_implied_probability: impliedProbability,
+        commence_time: event.commence_time,
+        odds_event_id: event.event_id,
+      });
+      notifyOutcome = sendResult.outcome;
+      notifyDiagnostics = {
+        run_id: runId,
+        signal_hash: signalHash,
+        notification_outcome: notifyOutcome,
+        http_status: sendResult.http_status,
+        response_body_preview: sendResult.response_body_preview || '',
+        test_mode: !!sendResult.test_mode,
+        transport: sendResult.transport || 'discord_webhook',
+      };
+
+      if (notifyOutcome === 'sent') {
+        signalState.sent_hashes[signalHash] = nowMs;
+      }
+
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'signalNotifyDelivery',
+        status: notifyOutcome === 'sent' ? 'success' : 'failed',
+        reason_code: notifyOutcome,
+        message: JSON.stringify(notifyDiagnostics),
+      });
+    }
+
+    reasonCounts[notifyOutcome] = (reasonCounts[notifyOutcome] || 0) + 1;
 
     rows.push(buildSignalRow_(runId, config, event, match, {
-      notification_outcome: notifyDecision.outcome,
+      notification_outcome: notifyOutcome,
       model_probability: modelProbability,
       market_implied_probability: impliedProbability,
       edge_value: edgeValue,
@@ -231,6 +275,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       stake_units: edgeTierAndStake.stake_units,
       signal_hash: signalHash,
       model_version: modelVersion,
+      notification_metadata: notifyDiagnostics,
     }));
   });
 
@@ -253,7 +298,17 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       odds_updated_time: row.odds_updated_time,
       model_version: row.model_version,
       notification_outcome: row.notification_outcome,
+      notification_metadata: row.notification_metadata || null,
     })),
+  }));
+
+  const deliveryDiagnostics = rows
+    .filter((row) => row.notification_metadata)
+    .map((row) => row.notification_metadata);
+  setStateValue_('LAST_NOTIFY_DELIVERY_DIAGNOSTICS', JSON.stringify({
+    run_id: runId,
+    generated_at: new Date().toISOString(),
+    deliveries: deliveryDiagnostics,
   }));
 
   setStateValue_('LAST_SIGNAL_DECISIONS', JSON.stringify({
@@ -301,6 +356,7 @@ function buildSignalRow_(runId, config, event, match, detail) {
     commence_time: event.commence_time.toISOString(),
     odds_updated_time: event.odds_updated_time.toISOString(),
     created_at: new Date().toISOString(),
+    notification_metadata: detail.notification_metadata || null,
   };
 }
 
@@ -332,8 +388,97 @@ function maybeNotifySignal_(state, seenHashesThisRun, signalHash, nowMs, cooldow
     return { outcome: 'cooldown_suppressed' };
   }
 
-  state.sent_hashes[signalHash] = nowMs;
   return { outcome: 'sent' };
+}
+
+function sendSignalNotification_(config, runId, signalHash, payload) {
+  if (!config.NOTIFY_ENABLED) {
+    return {
+      outcome: 'sent',
+      transport: 'discord_webhook',
+      http_status: null,
+      response_body_preview: 'notify_disabled',
+      test_mode: !!config.NOTIFY_TEST_MODE,
+    };
+  }
+
+  if (!config.DISCORD_WEBHOOK) {
+    return {
+      outcome: 'notify_missing_config',
+      transport: 'discord_webhook',
+      http_status: null,
+      response_body_preview: '',
+      test_mode: !!config.NOTIFY_TEST_MODE,
+    };
+  }
+
+  const message = formatSignalNotificationMessage_(runId, signalHash, payload);
+  return postDiscordWebhook_(config.DISCORD_WEBHOOK, { content: message }, !!config.NOTIFY_TEST_MODE);
+}
+
+function formatSignalNotificationMessage_(runId, signalHash, payload) {
+  return [
+    'WTA Edge Signal',
+    'run_id=' + runId,
+    'signal_hash=' + signalHash,
+    'event_id=' + payload.odds_event_id,
+    'market=' + payload.market,
+    'side=' + payload.side,
+    'bookmaker=' + payload.bookmaker,
+    'tier=' + payload.competition_tier,
+    'edge=' + payload.edge_value,
+    'edge_tier=' + payload.edge_tier,
+    'stake_units=' + payload.stake_units,
+    'model_prob=' + payload.model_probability,
+    'market_prob=' + payload.market_implied_probability,
+    'commence=' + toIso_(payload.commence_time),
+  ].join(' | ');
+}
+
+function postDiscordWebhook_(webhookUrl, payload, testMode) {
+  if (testMode) {
+    return {
+      outcome: 'sent',
+      transport: 'discord_webhook',
+      http_status: 200,
+      response_body_preview: 'test_mode_no_post',
+      test_mode: true,
+    };
+  }
+
+  try {
+    const response = UrlFetchApp.fetch(String(webhookUrl), {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload || {}),
+      muteHttpExceptions: true,
+    });
+    const code = Number(response.getResponseCode());
+    const body = truncateForLog_(response.getContentText(), 300);
+
+    return {
+      outcome: code >= 200 && code < 300 ? 'sent' : 'notify_http_failed',
+      transport: 'discord_webhook',
+      http_status: code,
+      response_body_preview: body,
+      test_mode: false,
+    };
+  } catch (error) {
+    return {
+      outcome: 'notify_http_failed',
+      transport: 'discord_webhook',
+      http_status: null,
+      response_body_preview: truncateForLog_(String(error && error.message ? error.message : error), 300),
+      test_mode: false,
+    };
+  }
+}
+
+function truncateForLog_(value, maxLen) {
+  const text = String(value || '');
+  const limit = Number(maxLen || 300);
+  if (text.length <= limit) return text;
+  return text.slice(0, Math.max(0, limit - 3)) + '...';
 }
 
 function buildSignalHash_(eventId, market, side, modelVersion) {
