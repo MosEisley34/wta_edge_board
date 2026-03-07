@@ -5,8 +5,9 @@ function stageFetchOdds(runId, config, fetchWindow) {
   const now = Date.now();
   const windowStartMs = fetchWindow && Number.isFinite(fetchWindow.startMs) ? fetchWindow.startMs : now;
   const windowEndMs = fetchWindow && Number.isFinite(fetchWindow.endMs) ? fetchWindow.endMs : now + lookaheadMs;
-  const cacheTtlMs = Math.max(1, config.ODDS_WINDOW_CACHE_TTL_MIN) * 60000;
-  const refreshMinMs = Math.max(1, config.ODDS_WINDOW_REFRESH_MIN) * 60000;
+  const runtimeConfig = getCreditAwareRuntimeConfig_(config);
+  const cacheTtlMs = Math.max(1, runtimeConfig.odds_window_cache_ttl_min) * 60000;
+  const refreshMinMs = Math.max(1, runtimeConfig.odds_window_refresh_min) * 60000;
   const forceRefresh = !!config.ODDS_WINDOW_FORCE_REFRESH;
   const cacheResult = getCachedPayload_('ODDS_WINDOW_PAYLOAD');
   let adapter;
@@ -125,8 +126,14 @@ function stageFetchOdds(runId, config, fetchWindow) {
       odds_rows_emitted: filtered.length,
       events_missing_h2h_outcomes: adapter.events_missing_h2h_outcomes || 0,
       bookmakers_without_h2h_market: adapter.bookmakers_without_h2h_market || 0,
+      runtime_mode_soft_degraded: runtimeConfig.mode === 'soft' ? 1 : 0,
     },
   });
+
+  if (runtimeConfig.reason_code) summary.reason_codes[runtimeConfig.reason_code] = (summary.reason_codes[runtimeConfig.reason_code] || 0) + 1;
+
+  const creditSnapshot = updateCreditStateFromHeaders_(runId, adapter.credit_headers || {});
+  if (!creditSnapshot.header_present) summary.reason_codes.credit_header_missing = (summary.reason_codes.credit_header_missing || 0) + 1;
 
   setStateValue_('LAST_ODDS_API_CREDITS', JSON.stringify({
     run_id: runId,
@@ -143,8 +150,9 @@ function stageFetchSchedule(runId, config, oddsEvents) {
   const source = 'the_odds_api_schedule';
   const now = Date.now();
   const window = deriveScheduleWindowFromOdds_(oddsEvents, config);
-  const cacheTtlMs = Math.max(1, config.ODDS_WINDOW_CACHE_TTL_MIN) * 60000;
-  const refreshMinMs = Math.max(1, config.ODDS_WINDOW_REFRESH_MIN) * 60000;
+  const runtimeConfig = getCreditAwareRuntimeConfig_(config);
+  const cacheTtlMs = Math.max(1, runtimeConfig.odds_window_cache_ttl_min) * 60000;
+  const refreshMinMs = Math.max(1, runtimeConfig.odds_window_refresh_min) * 60000;
   const forceRefresh = !!config.ODDS_WINDOW_FORCE_REFRESH;
   const cacheResult = getCachedSchedulePayload_('SCHEDULE_WINDOW_PAYLOAD');
   let scheduleResp;
@@ -219,8 +227,8 @@ function stageFetchSchedule(runId, config, oddsEvents) {
       scheduleWindowMetrics.expanded_window_short_circuit = 1;
     }
 
-    if (shouldExpand) {
-      const expandedWindow = expandScheduleWindow_(window, config.MATCH_FALLBACK_EXPANSION_MIN);
+    if (shouldExpand && runtimeConfig.schedule_refresh_non_critical_enabled) {
+      const expandedWindow = expandScheduleWindow_(window, runtimeConfig.match_fallback_expansion_min);
       const expandedResp = fetchScheduleFromOddsApi_(config, expandedWindow);
 
       if (expandedResp.reason_code === 'schedule_api_success') {
@@ -336,6 +344,16 @@ function stageFetchSchedule(runId, config, oddsEvents) {
   summary.reason_codes.primary_window_matched = (summary.reason_codes.primary_window_matched || 0) + scheduleWindowMetrics.primary_window_matched;
   summary.reason_codes.expanded_window_fallback_used = (summary.reason_codes.expanded_window_fallback_used || 0) + scheduleWindowMetrics.expanded_window_fallback_used;
   summary.reason_codes.expanded_window_short_circuit = (summary.reason_codes.expanded_window_short_circuit || 0) + scheduleWindowMetrics.expanded_window_short_circuit;
+  summary.reason_codes.runtime_mode_soft_degraded = (summary.reason_codes.runtime_mode_soft_degraded || 0) + (runtimeConfig.mode === 'soft' ? 1 : 0);
+  if (!runtimeConfig.schedule_refresh_non_critical_enabled) {
+    summary.reason_codes.schedule_refresh_non_critical_skipped = (summary.reason_codes.schedule_refresh_non_critical_skipped || 0) + 1;
+  }
+  if (runtimeConfig.reason_code) summary.reason_codes[runtimeConfig.reason_code] = (summary.reason_codes[runtimeConfig.reason_code] || 0) + 1;
+
+  const scheduleCreditSnapshot = updateCreditStateFromHeaders_(runId, scheduleResp.credit_headers || {});
+  if (!scheduleCreditSnapshot.header_present) {
+    summary.reason_codes.credit_header_missing = (summary.reason_codes.credit_header_missing || 0) + 1;
+  }
 
   setStateValue_('LAST_SCHEDULE_API_CREDITS', JSON.stringify({
     run_id: runId,
@@ -373,6 +391,86 @@ function getTopCompetitionStrings_(countMap, topN) {
 }
 
 
+
+function getCreditRuntimeMode_(config) {
+  const snapshot = getStateJson_('ODDS_API_CREDIT_SNAPSHOT') || {};
+  const remaining = Number(snapshot.remaining);
+  const softLimit = Math.max(0, Number(config.ODDS_MIN_CREDITS_SOFT_LIMIT || 0));
+  const hardLimit = Math.max(0, Number(config.ODDS_MIN_CREDITS_HARD_LIMIT || 0));
+
+  if (!Number.isFinite(remaining)) {
+    return {
+      mode: 'normal',
+      snapshot,
+      reason_code: 'credit_header_missing',
+    };
+  }
+
+  if (remaining <= hardLimit) {
+    return {
+      mode: 'hard',
+      snapshot,
+      reason_code: 'credit_hard_limit_skip_odds',
+    };
+  }
+
+  if (remaining <= softLimit) {
+    return {
+      mode: 'soft',
+      snapshot,
+      reason_code: 'credit_soft_limit_degraded_mode',
+    };
+  }
+
+  return {
+    mode: 'normal',
+    snapshot,
+    reason_code: '',
+  };
+}
+
+function getCreditAwareRuntimeConfig_(config) {
+  const modeInfo = getCreditRuntimeMode_(config);
+  const runtime = {
+    mode: modeInfo.mode,
+    reason_code: modeInfo.reason_code,
+    snapshot: modeInfo.snapshot,
+    odds_window_cache_ttl_min: Number(config.ODDS_WINDOW_CACHE_TTL_MIN || 5),
+    odds_window_refresh_min: Number(config.ODDS_WINDOW_REFRESH_MIN || 5),
+    match_fallback_expansion_min: Number(config.MATCH_FALLBACK_EXPANSION_MIN || 120),
+    schedule_refresh_non_critical_enabled: true,
+  };
+
+  if (modeInfo.mode === 'soft') {
+    runtime.odds_window_cache_ttl_min = Math.max(runtime.odds_window_cache_ttl_min, runtime.odds_window_cache_ttl_min * 2);
+    runtime.odds_window_refresh_min = Math.max(runtime.odds_window_refresh_min, runtime.odds_window_refresh_min * 2);
+    runtime.match_fallback_expansion_min = 0;
+    runtime.schedule_refresh_non_critical_enabled = false;
+  }
+
+  return runtime;
+}
+
+function updateCreditStateFromHeaders_(runId, headers) {
+  const creditHeaders = headers || {};
+  const used = Number(creditHeaders.requests_used);
+  const remaining = Number(creditHeaders.requests_remaining);
+  const last = Number(creditHeaders.requests_last);
+  const hasHeaderValues = Number.isFinite(used) || Number.isFinite(remaining) || Number.isFinite(last);
+
+  const snapshot = {
+    run_id: runId,
+    used: Number.isFinite(used) ? used : null,
+    remaining: Number.isFinite(remaining) ? remaining : null,
+    last: Number.isFinite(last) ? last : null,
+    timestamp: new Date().toISOString(),
+    header_present: hasHeaderValues,
+  };
+
+  setStateValue_('ODDS_API_CREDIT_SNAPSHOT', JSON.stringify(snapshot));
+  return snapshot;
+}
+
 function buildSkippedOddsStage_(runId, reasonCode, message) {
   const start = Date.now();
   return {
@@ -392,12 +490,33 @@ function buildSkippedOddsStage_(runId, reasonCode, message) {
 }
 
 function resolveOddsWindowForPipeline_(config, nowMs) {
+  const runtimeConfig = getCreditAwareRuntimeConfig_(config);
   const lookaheadMs = config.LOOKAHEAD_HOURS * 60 * 60 * 1000;
+
+  if (runtimeConfig.mode === 'hard') {
+    return {
+      schedule_reason_code: 'schedule_refresh_skipped_hard_credit_limit',
+      schedule_api_credit_usage: 0,
+      schedule_api_call_count: 0,
+      schedule_credit_headers: {},
+      eligible_match_count: 0,
+      no_games_behavior: String(config.ODDS_NO_GAMES_BEHAVIOR || 'SKIP').toUpperCase(),
+      runtime_credit_mode: runtimeConfig.mode,
+      should_fetch_odds: false,
+      decision_reason_code: 'credit_hard_limit_skip_odds',
+      decision_message: 'Remaining API credits are below hard limit; running observation-only mode.',
+      odds_fetch_window: null,
+      refresh_window_start_ms: null,
+      refresh_window_end_ms: null,
+    };
+  }
+
   const sourceWindow = {
     startIso: new Date(nowMs).toISOString(),
     endIso: new Date(nowMs + lookaheadMs).toISOString(),
   };
   const scheduleResp = fetchScheduleFromOddsApi_(config, sourceWindow);
+  updateCreditStateFromHeaders_('', scheduleResp.credit_headers || {});
   const targetTiers = {
     WTA_250: true,
     WTA_500: true,
@@ -418,6 +537,7 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     schedule_credit_headers: scheduleResp.credit_headers || {},
     eligible_match_count: eligibleStarts.length,
     no_games_behavior: String(config.ODDS_NO_GAMES_BEHAVIOR || 'SKIP').toUpperCase(),
+    runtime_credit_mode: runtimeConfig.mode,
   };
 
   if (!eligibleStarts.length) {
@@ -681,17 +801,21 @@ function callOddsApi_(url) {
   const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
   const status = resp.getResponseCode();
   const headers = resp.getAllHeaders();
+  const rawUsed = headers['x-requests-used'] || headers['X-Requests-Used'];
+  const rawRemaining = headers['x-requests-remaining'] || headers['X-Requests-Remaining'];
+  const rawLast = headers['x-requests-last'] || headers['X-Requests-Last'];
+  const hasCreditHeaders = rawUsed !== undefined || rawRemaining !== undefined || rawLast !== undefined;
   const creditHeaders = {
-    requests_used: Number(headers['x-requests-used'] || headers['X-Requests-Used'] || 0),
-    requests_remaining: Number(headers['x-requests-remaining'] || headers['X-Requests-Remaining'] || 0),
-    requests_last: Number(headers['x-requests-last'] || headers['X-Requests-Last'] || 0),
+    requests_used: Number(rawUsed || 0),
+    requests_remaining: Number(rawRemaining || 0),
+    requests_last: Number(rawLast || 0),
   };
 
   if (status < 200 || status >= 300) {
     return {
       ok: false,
       payload: [],
-      reason_code: 'api_http_' + status,
+      reason_code: hasCreditHeaders ? 'api_http_' + status : 'credit_header_missing',
       api_credit_usage: creditHeaders.requests_last || 0,
       api_call_count: 1,
       credit_headers: creditHeaders,
@@ -704,6 +828,7 @@ function callOddsApi_(url) {
     api_credit_usage: creditHeaders.requests_last || 0,
     api_call_count: 1,
     credit_headers: creditHeaders,
+    reason_code: hasCreditHeaders ? 'api_ok' : 'credit_header_missing',
   };
 }
 
