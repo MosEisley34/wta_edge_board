@@ -506,32 +506,11 @@ function buildSkippedOddsStage_(runId, reasonCode, message) {
 
 function resolveOddsWindowForPipeline_(config, nowMs) {
   const runtimeConfig = getCreditAwareRuntimeConfig_(config);
+  const runtimeSnapshot = runtimeConfig.snapshot || {};
+  const hardLimitEnforced = runtimeConfig.mode === 'hard'
+    && runtimeSnapshot.limit_enforced === true
+    && runtimeSnapshot.remaining_is_numeric === true;
   const lookaheadMs = config.LOOKAHEAD_HOURS * 60 * 60 * 1000;
-
-  if (runtimeConfig.mode === 'hard') {
-    return {
-      schedule_reason_code: 'schedule_refresh_skipped_hard_credit_limit',
-      schedule_api_credit_usage: 0,
-      schedule_api_call_count: 0,
-      schedule_credit_headers: {},
-      eligible_match_count: 0,
-      no_games_behavior: String(config.ODDS_NO_GAMES_BEHAVIOR || 'SKIP').toUpperCase(),
-      runtime_credit_mode: runtimeConfig.mode,
-      bootstrap_mode: false,
-      bootstrap_window_hours: 0,
-      bootstrap_cached_payload_has_events: false,
-      bootstrap_cached_payload_source: '',
-      previous_refresh_mode: '',
-      transitioned_from_bootstrap_to_active_window: false,
-      current_refresh_mode: 'credit_hard_limit_skip',
-      should_fetch_odds: false,
-      decision_reason_code: 'credit_hard_limit_skip_odds',
-      decision_message: 'Remaining API credits are below hard limit; running observation-only mode.',
-      odds_fetch_window: null,
-      refresh_window_start_ms: null,
-      refresh_window_end_ms: null,
-    };
-  }
 
   const sourceWindow = {
     startIso: new Date(nowMs).toISOString(),
@@ -578,21 +557,64 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     transitioned_from_bootstrap_to_active_window: false,
   };
 
-  if (!eligibleStarts.length) {
-    if (decisionBase.no_games_behavior === 'SKIP' && !bootstrapCachedPayloadHasEvents) {
+  const bootstrapEligible = !eligibleStarts.length
+    && decisionBase.no_games_behavior === 'SKIP'
+    && !bootstrapCachedPayloadHasEvents;
+
+  if (bootstrapEligible) {
+    if (hardLimitEnforced) {
       return Object.assign({}, decisionBase, {
-        should_fetch_odds: true,
-        decision_reason_code: 'odds_refresh_bootstrap_fetch',
-        decision_message: 'No eligible schedule matches and cache/stale payload has no events; forcing bootstrap odds fetch window.',
-        selected_source: 'bootstrap_static_window',
-        bootstrap_mode: true,
-        current_refresh_mode: 'bootstrap',
-        odds_fetch_window: {
-          startMs: nowMs,
-          endMs: nowMs + bootstrapWindowMs,
-        },
-        refresh_window_start_ms: nowMs,
-        refresh_window_end_ms: nowMs + bootstrapWindowMs,
+        should_fetch_odds: false,
+        decision_reason_code: 'odds_refresh_bootstrap_blocked_by_credit_limit',
+        decision_message: 'Bootstrap odds fetch blocked by enforced hard credit limit.',
+        selected_source: '',
+        bootstrap_mode: false,
+        current_refresh_mode: 'bootstrap_blocked_by_credit_limit',
+        odds_fetch_window: null,
+        refresh_window_start_ms: null,
+        refresh_window_end_ms: null,
+      });
+    }
+
+    return Object.assign({}, decisionBase, {
+      should_fetch_odds: true,
+      decision_reason_code: 'odds_refresh_bootstrap_fetch',
+      decision_message: 'No eligible schedule matches and cache/stale payload has no events; forcing bootstrap odds fetch window.',
+      selected_source: 'bootstrap_static_window',
+      bootstrap_mode: true,
+      current_refresh_mode: 'bootstrap',
+      odds_fetch_window: {
+        startMs: nowMs,
+        endMs: nowMs + bootstrapWindowMs,
+      },
+      refresh_window_start_ms: nowMs,
+      refresh_window_end_ms: nowMs + bootstrapWindowMs,
+    });
+  }
+
+  if (hardLimitEnforced) {
+    return Object.assign({}, decisionBase, {
+      should_fetch_odds: false,
+      decision_reason_code: 'credit_hard_limit_skip_odds',
+      decision_message: 'Remaining API credits are below hard limit; running observation-only mode.',
+      selected_source: '',
+      current_refresh_mode: 'credit_hard_limit_skip',
+      odds_fetch_window: null,
+      refresh_window_start_ms: null,
+      refresh_window_end_ms: null,
+    });
+  }
+
+  if (!eligibleStarts.length) {
+    if (decisionBase.no_games_behavior === 'SKIP') {
+      return Object.assign({}, decisionBase, {
+        should_fetch_odds: false,
+        decision_reason_code: 'odds_refresh_bootstrap_inactive',
+        decision_message: 'Bootstrap odds fetch is inactive because cached payload already has events.',
+        odds_fetch_window: null,
+        refresh_window_start_ms: null,
+        refresh_window_end_ms: null,
+        current_refresh_mode: 'bootstrap_inactive_cached_events',
       });
     }
 
