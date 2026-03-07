@@ -99,3 +99,126 @@ function assertArrayEquals_(expected, actual) {
     throw new Error('Assertion failed. Expected array: ' + left + ', actual array: ' + right);
   }
 }
+
+function testNormalizeAndDeduplicateScheduleEvents_dedupesByEventIdAndCommenceTime_() {
+  const payloadLists = [
+    [
+      {
+        id: 'evt_1',
+        commence_time: '2025-01-01T12:00:00Z',
+        tournament: 'WTA 500',
+        home_team: 'A',
+        away_team: 'B',
+      },
+    ],
+    [
+      {
+        id: 'evt_1',
+        commence_time: '2025-01-01T12:00:00Z',
+        tournament: 'WTA Duplicate',
+        home_team: 'A',
+        away_team: 'B',
+      },
+      {
+        id: 'evt_1',
+        commence_time: '2025-01-01T14:00:00Z',
+        tournament: 'WTA Shifted',
+        home_team: 'A',
+        away_team: 'B',
+      },
+    ],
+  ];
+
+  const events = normalizeAndDeduplicateScheduleEvents_(payloadLists);
+  assertEquals_(2, events.length);
+
+  const dedupeKeys = events
+    .map(function (event) { return buildScheduleEventDedupeKey_(event); })
+    .sort();
+  assertArrayEquals_([
+    'evt_1|1735732800000',
+    'evt_1|1735740000000',
+  ], dedupeKeys);
+}
+
+function testFetchScheduleFromOddsApi_marksNoActiveWtaKeysReason_() {
+  const originalResolver = resolveActiveWtaSportKeys_;
+  const originalCaller = callOddsApi_;
+
+  resolveActiveWtaSportKeys_ = function () {
+    return {
+      sport_keys: ['UNKNOWN_SPORT'],
+      source: 'fallback',
+      fallback: 'none_active_wta_keys',
+    };
+  };
+
+  callOddsApi_ = function () {
+    return {
+      ok: false,
+      status_code: 404,
+      payload: [],
+      reason_code: 'api_http_404',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: { requests_last: 1 },
+    };
+  };
+
+  try {
+    const result = fetchScheduleFromOddsApi_({
+      ODDS_API_KEY: 'test',
+      ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+    }, {
+      startIso: '2025-01-01T00:00:00Z',
+      endIso: '2025-01-02T00:00:00Z',
+    });
+
+    assertEquals_('schedule_no_active_wta_keys', result.reason_code);
+    assertEquals_(0, result.events.length);
+  } finally {
+    resolveActiveWtaSportKeys_ = originalResolver;
+    callOddsApi_ = originalCaller;
+  }
+}
+
+function testFetchScheduleFromOddsApi_marksActiveKeysNoEventsReason_() {
+  const originalResolver = resolveActiveWtaSportKeys_;
+  const originalCaller = callOddsApi_;
+
+  resolveActiveWtaSportKeys_ = function () {
+    return {
+      sport_keys: ['tennis_wta_us_open'],
+      source: 'catalog',
+      fallback: 'none',
+    };
+  };
+
+  callOddsApi_ = function () {
+    return {
+      ok: true,
+      status_code: 200,
+      payload: [],
+      reason_code: 'api_success',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: { requests_last: 1 },
+    };
+  };
+
+  try {
+    const result = fetchScheduleFromOddsApi_({
+      ODDS_API_KEY: 'test',
+      ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+    }, {
+      startIso: '2025-01-01T00:00:00Z',
+      endIso: '2025-01-02T00:00:00Z',
+    });
+
+    assertEquals_('schedule_active_keys_no_events', result.reason_code);
+    assertEquals_(0, result.events.length);
+  } finally {
+    resolveActiveWtaSportKeys_ = originalResolver;
+    callOddsApi_ = originalCaller;
+  }
+}
