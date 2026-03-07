@@ -243,3 +243,58 @@ function testSanitizeForLog_redactsSensitiveObjectFields_() {
   assertEquals_('[REDACTED]', sanitized.nested.Authorization);
   assertEquals_('https://x.test/path?api_key=[REDACTED]', sanitized.nested.url);
 }
+
+
+function testCallOddsApi_transportThrow_returnsNormalizedFailure_() {
+  const originalFetch = UrlFetchApp.fetch;
+
+  UrlFetchApp.fetch = function () {
+    throw new Error('transport failed apiKey=secret123');
+  };
+
+  try {
+    const result = callOddsApi_('https://api.the-odds-api.com/v4/sports?apiKey=secret123', { debug: true });
+    assertEquals_(false, result.ok);
+    assertEquals_(0, result.status_code);
+    assertArrayEquals_([], result.payload);
+    assertEquals_('api_transport_error', result.reason_code);
+    assertEquals_(0, result.api_credit_usage);
+    assertEquals_(1, result.api_call_count);
+    assertArrayEquals_([], Object.keys(result.credit_headers || {}));
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
+function testCallOddsApi_malformedJson_returnsParseFailure_() {
+  const originalFetch = UrlFetchApp.fetch;
+
+  UrlFetchApp.fetch = function () {
+    return {
+      getResponseCode: function () { return 200; },
+      getAllHeaders: function () {
+        return {
+          'x-requests-used': '10',
+          'x-requests-remaining': '490',
+          'x-requests-last': '1',
+        };
+      },
+      getContentText: function () { return '{bad json'; },
+    };
+  };
+
+  try {
+    const result = callOddsApi_('https://api.the-odds-api.com/v4/sports?apiKey=secret123', { debug: true });
+    assertEquals_(false, result.ok);
+    assertEquals_(0, result.status_code);
+    assertArrayEquals_([], result.payload);
+    assertEquals_('api_parse_error', result.reason_code);
+    assertEquals_(0, result.api_credit_usage);
+    assertEquals_(1, result.api_call_count);
+    assertEquals_(1, result.credit_headers.requests_last);
+    assertEquals_(10, result.credit_headers.requests_used);
+    assertEquals_(490, result.credit_headers.requests_remaining);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
