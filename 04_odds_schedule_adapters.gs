@@ -868,7 +868,7 @@ function fetchScheduleFromOddsApi_(config, window) {
       commenceTimeFrom: window.startIso,
       commenceTimeTo: window.endIso,
     });
-    const resp = callOddsApi_(url);
+    const resp = callOddsApi_(url, { debug: config.VERBOSE_LOGGING });
     resp.sport_key = sportKey;
     responses.push(resp);
   });
@@ -967,7 +967,7 @@ function callOddsApiWithSportKeyFallback_(config, opts) {
 
   sportKeys.forEach((sportKey) => {
     const url = buildOddsApiSportUrl_(config, sportKey, opts.endpoint, opts.query);
-    const resp = callOddsApi_(url);
+    const resp = callOddsApi_(url, { debug: config.VERBOSE_LOGGING });
     resp.sport_key = sportKey;
     responses.push(resp);
   });
@@ -1018,7 +1018,7 @@ function resolveActiveWtaSportKeys_(config, deps) {
     return { sport_keys: cached, source: 'cache', fallback: 'none' };
   }
 
-  const catalogResp = callOddsApi(buildOddsApiUrl_(config, '/sports', { all: 'true' }));
+  const catalogResp = callOddsApi(buildOddsApiUrl_(config, '/sports', { all: 'true' }), { debug: config.VERBOSE_LOGGING });
   if (!catalogResp.ok) {
     logResolution('catalog_fetch_failed', [fallbackSportKey], 'catalog_fetch_failed');
     return { sport_keys: [fallbackSportKey], source: 'fallback', fallback: 'catalog_fetch_failed' };
@@ -1060,13 +1060,13 @@ function mergeOddsApiPayloads_(payloads) {
 }
 
 function logOddsSportKeyResolution_(selectionMode, sportKeys, fallbackBehavior) {
-  Logger.log(JSON.stringify({
+  Logger.log(JSON.stringify(sanitizeForLog_({
     event: 'odds_sport_keys_resolved',
     mode: selectionMode,
     selected_sport_keys: sportKeys || [],
     selected_sport_key_count: (sportKeys || []).length,
     fallback_behavior: fallbackBehavior || 'none',
-  }));
+  })));
 }
 
 function getCachedOddsSportKeys_(cacheKey) {
@@ -1103,7 +1103,16 @@ function buildOddsApiUrl_(config, path, query) {
   return baseUrl + path + (parts.length ? ('?' + parts.join('&')) : '');
 }
 
-function callOddsApi_(url) {
+function callOddsApi_(url, opts) {
+  const debugEnabled = !!(opts && opts.debug);
+  if (debugEnabled) {
+    Logger.log(JSON.stringify({
+      event: 'odds_api_request',
+      method: 'GET',
+      url: sanitizeForLog_(url),
+    }));
+  }
+
   const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
   const status = resp.getResponseCode();
   const headers = resp.getAllHeaders();
@@ -1116,6 +1125,15 @@ function callOddsApi_(url) {
     requests_remaining: rawRemaining === undefined || rawRemaining === null || rawRemaining === '' ? null : Number(rawRemaining),
     requests_last: rawLast === undefined || rawLast === null || rawLast === '' ? null : Number(rawLast),
   };
+
+  if (debugEnabled) {
+    Logger.log(JSON.stringify({
+      event: 'odds_api_response',
+      url: sanitizeForLog_(url),
+      status_code: status,
+      has_credit_headers: hasCreditHeaders,
+    }));
+  }
 
   if (status < 200 || status >= 300) {
     return {

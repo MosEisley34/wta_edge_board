@@ -81,22 +81,22 @@ function appendLogRow_(entry) {
     toIso_(entry.ended_at),
     entry.status || '',
     entry.reason_code || '',
-    entry.message || '',
+    sanitizeForLog_(entry.message || ''),
     entry.fetched_odds || 0,
     entry.fetched_schedule || 0,
     entry.allowed_tournaments || 0,
     entry.matched || 0,
     entry.unmatched || 0,
     entry.signals_found || 0,
-    entry.rejection_codes || '{}',
+    sanitizeForLog_(entry.rejection_codes || '{}'),
     entry.cooldown_suppressed || 0,
     entry.duplicate_suppressed || 0,
     entry.lock_event || '',
     entry.debounce_event || '',
     entry.trigger_event || '',
-    entry.exception || '',
-    entry.stack || '',
-    entry.stage_summaries || '[]',
+    sanitizeForLog_(entry.exception || ''),
+    sanitizeForLog_(entry.stack || ''),
+    sanitizeForLog_(entry.stage_summaries || '[]'),
   ]);
 }
 
@@ -159,8 +159,51 @@ function buildStageSummary_(runId, stage, startMs, opts) {
     api_credit_usage: opts.api_credit_usage,
     reason_codes: opts.reason_codes || {},
   };
-  Logger.log(JSON.stringify(summary));
+  Logger.log(JSON.stringify(sanitizeForLog_(summary)));
   return summary;
+}
+
+function sanitizeForLog_(value) {
+  if (value === null || value === undefined) return value;
+
+  if (typeof value === 'string') {
+    return sanitizeStringForLog_(value);
+  }
+
+  if (value instanceof Date) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForLog_(item));
+  }
+
+  if (typeof value === 'object') {
+    const sanitized = {};
+    Object.keys(value).forEach((key) => {
+      const keyLower = String(key || '').toLowerCase();
+      if (/(api[_-]?key|secret|token|authorization|password|webhook)/i.test(keyLower)) {
+        sanitized[key] = '[REDACTED]';
+      } else {
+        sanitized[key] = sanitizeForLog_(value[key]);
+      }
+    });
+    return sanitized;
+  }
+
+  return value;
+}
+
+function sanitizeStringForLog_(text) {
+  let sanitized = String(text || '');
+
+  sanitized = sanitized.replace(/([?&](?:apiKey|api_key|token|access_token|key|secret|password)=)[^&#\s]*/gi, '$1[REDACTED]');
+  sanitized = sanitized.replace(/(x-api-key\s*[:=]\s*)[^\s"']+/gi, '$1[REDACTED]');
+  sanitized = sanitized.replace(/(authorization\s*[:=]\s*bearer\s+)[^\s"']+/gi, '$1[REDACTED]');
+  sanitized = sanitized.replace(/(hooks\.slack\.com\/services\/)[^\s"']+/gi, '$1[REDACTED]');
+  sanitized = sanitized.replace(/(discord(?:app)?\.com\/api\/webhooks\/)[^\s"']+/gi, '$1[REDACTED]');
+
+  return sanitized;
 }
 
 function stringHashCode_(value) {

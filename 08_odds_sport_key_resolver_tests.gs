@@ -222,3 +222,24 @@ function testFetchScheduleFromOddsApi_marksActiveKeysNoEventsReason_() {
     callOddsApi_ = originalCaller;
   }
 }
+
+function testSanitizeStringForLog_redactsQuerySecrets_() {
+  const raw = 'https://api.the-odds-api.com/v4/sports?apiKey=abc123&regions=us&token=xyz';
+  const sanitized = sanitizeStringForLog_(raw);
+  assertEquals_('https://api.the-odds-api.com/v4/sports?apiKey=[REDACTED]&regions=us&token=[REDACTED]', sanitized);
+}
+
+function testSanitizeForLog_redactsSensitiveObjectFields_() {
+  const payload = {
+    apiKey: 'abc123',
+    nested: {
+      Authorization: 'Bearer topsecret',
+      url: 'https://x.test/path?api_key=xyz',
+    },
+  };
+
+  const sanitized = sanitizeForLog_(payload);
+  assertEquals_('[REDACTED]', sanitized.apiKey);
+  assertEquals_('[REDACTED]', sanitized.nested.Authorization);
+  assertEquals_('https://x.test/path?api_key=[REDACTED]', sanitized.nested.url);
+}
