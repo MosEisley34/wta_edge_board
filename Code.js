@@ -23,6 +23,9 @@ const DEFAULT_CONFIG = {
   MATCH_TIME_TOLERANCE_MIN: '45',
   MATCH_FALLBACK_EXPANSION_MIN: '120',
   ALLOW_WTA_125: 'false',
+  GRAND_SLAM_ALIASES_JSON: '["australian open","roland garros","french open","wimbledon","us open"]',
+  WTA_1000_ALIASES_JSON: '["wta 1000","wta-1000","masters 1000"]',
+  WTA_500_ALIASES_JSON: '["wta 500","wta-500"]',
   VERBOSE_LOGGING: 'true',
   DUPLICATE_DEBOUNCE_MS: '90000',
   PLAYER_ALIAS_MAP_JSON: '{}',
@@ -280,6 +283,7 @@ function runEdgeBoard() {
         competition: scheduleStage.canonicalExamples.slice(0, 25),
         players: matchStage.canonicalizationExamples.slice(0, 25),
       },
+      unresolved_competitions: scheduleStage.unresolvedCompetitions.slice(0, 50),
       sample_unmatched_cases: matchStage.unmatched.slice(0, 20),
       top_rejection_reasons: getTopReasonCodes_(combinedReasonCodes, 10),
       reason_codes: combinedReasonCodes,
@@ -383,6 +387,11 @@ function stageFetchOdds(runId, config) {
     commence_time: event.commence_time.toISOString(),
     commence_epoch_ms: event.commence_time.getTime(),
     competition: event.competition,
+    tournament: event.tournament || '',
+    event_name: event.event_name || '',
+    sport_title: event.sport_title || '',
+    home_team: event.home_team || '',
+    away_team: event.away_team || '',
     player_1: event.player_1,
     player_2: event.player_2,
     source,
@@ -429,18 +438,32 @@ function stageFetchSchedule(runId, config, oddsEvents) {
 
   const reasonCounts = {};
   const canonicalExamples = [];
+  const unresolvedCompetitions = [];
   const rows = [];
   const allowedEvents = [];
+  const tierResolverConfig = buildCompetitionTierResolverConfig_(config);
 
   inWindow.forEach((event) => {
-    const canonical = canonicalizeCompetition(event.competition);
+    const resolved = resolveCompetitionTier_(event, tierResolverConfig);
+    const canonical = resolved.canonical_tier;
     const decision = isAllowedTournament(canonical, config);
     reasonCounts[decision.reason_code] = (reasonCounts[decision.reason_code] || 0) + 1;
     canonicalExamples.push({
       raw_name: event.competition,
       canonical_tier: canonical,
       reason_code: decision.reason_code,
+      matched_by: resolved.matched_by,
+      matched_field: resolved.matched_field,
+      resolver_fields: resolved.raw_fields,
     });
+
+    if (canonical === 'UNKNOWN') {
+      unresolvedCompetitions.push({
+        event_id: event.event_id,
+        competition: event.competition,
+        source_fields: resolved.raw_fields,
+      });
+    }
 
     rows.push({
       key: event.event_id,
@@ -493,6 +516,7 @@ function stageFetchSchedule(runId, config, oddsEvents) {
     rows,
     summary,
     canonicalExamples,
+    unresolvedCompetitions,
     allowedCount: allowedEvents.length,
   };
 }
@@ -833,6 +857,9 @@ function getConfig_() {
     MATCH_TIME_TOLERANCE_MIN: toNumber_(config.MATCH_TIME_TOLERANCE_MIN, 45),
     MATCH_FALLBACK_EXPANSION_MIN: toNumber_(config.MATCH_FALLBACK_EXPANSION_MIN, 120),
     ALLOW_WTA_125: toBoolean_(config.ALLOW_WTA_125, false),
+    GRAND_SLAM_ALIASES_JSON: String(config.GRAND_SLAM_ALIASES_JSON || DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON),
+    WTA_1000_ALIASES_JSON: String(config.WTA_1000_ALIASES_JSON || DEFAULT_CONFIG.WTA_1000_ALIASES_JSON),
+    WTA_500_ALIASES_JSON: String(config.WTA_500_ALIASES_JSON || DEFAULT_CONFIG.WTA_500_ALIASES_JSON),
     VERBOSE_LOGGING: toBoolean_(config.VERBOSE_LOGGING, true),
     DUPLICATE_DEBOUNCE_MS: toNumber_(config.DUPLICATE_DEBOUNCE_MS, 90000),
     PLAYER_ALIAS_MAP_JSON: String(config.PLAYER_ALIAS_MAP_JSON || '{}'),
@@ -1060,15 +1087,101 @@ function roundNumber_(value, decimals) {
 }
 
 function canonicalizeCompetition(name) {
-  if (!name) return 'UNKNOWN';
-  const norm = String(name).toLowerCase().replace(/\s+/g, ' ').trim();
+  const resolved = resolveCompetitionTier_({ competition: name }, buildCompetitionTierResolverConfig_({
+    GRAND_SLAM_ALIASES_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON,
+    WTA_1000_ALIASES_JSON: DEFAULT_CONFIG.WTA_1000_ALIASES_JSON,
+    WTA_500_ALIASES_JSON: DEFAULT_CONFIG.WTA_500_ALIASES_JSON,
+  }));
+  return resolved.canonical_tier;
+}
 
-  if (/(australian open|roland garros|french open|wimbledon|us open)/.test(norm)) return 'GRAND_SLAM';
-  if (/wta\s*1000/.test(norm)) return 'WTA_1000';
-  if (/wta\s*500/.test(norm)) return 'WTA_500';
+function buildCompetitionTierResolverConfig_(config) {
+  return {
+    grandSlamAliases: parseAliasListJson_(config.GRAND_SLAM_ALIASES_JSON, DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON),
+    wta1000Aliases: parseAliasListJson_(config.WTA_1000_ALIASES_JSON, DEFAULT_CONFIG.WTA_1000_ALIASES_JSON),
+    wta500Aliases: parseAliasListJson_(config.WTA_500_ALIASES_JSON, DEFAULT_CONFIG.WTA_500_ALIASES_JSON),
+  };
+}
+
+function resolveCompetitionTier_(event, resolverConfig) {
+  const sourceFields = buildCompetitionSourceFields_(event);
+
+  for (let i = 0; i < sourceFields.length; i += 1) {
+    const source = sourceFields[i];
+    const canonical = detectTierByValue_(source.value, resolverConfig);
+    if (canonical !== 'UNKNOWN') {
+      return {
+        canonical_tier: canonical,
+        matched_by: source.rule,
+        matched_field: source.field,
+        raw_fields: sourceFields,
+      };
+    }
+  }
+
+  return {
+    canonical_tier: 'UNKNOWN',
+    matched_by: 'none',
+    matched_field: '',
+    raw_fields: sourceFields,
+  };
+}
+
+function buildCompetitionSourceFields_(event) {
+  return [
+    { field: 'competition', value: event.competition || '', rule: 'direct_competition' },
+    { field: 'tournament', value: event.tournament || '', rule: 'tournament' },
+    { field: 'event_name', value: event.event_name || '', rule: 'event_name' },
+    { field: 'sport_title', value: event.sport_title || '', rule: 'sport_title' },
+    { field: 'home_team', value: event.home_team || '', rule: 'home_team' },
+    { field: 'away_team', value: event.away_team || '', rule: 'away_team' },
+  ];
+}
+
+function detectTierByValue_(rawValue, resolverConfig) {
+  const norm = normalizeCompetitionValue_(rawValue);
+  if (!norm) return 'UNKNOWN';
+
   if (/wta\s*125/.test(norm)) return 'WTA_125';
+  if (containsAlias_(norm, resolverConfig.grandSlamAliases)) return 'GRAND_SLAM';
+  if (containsAlias_(norm, resolverConfig.wta1000Aliases)) return 'WTA_1000';
+  if (containsAlias_(norm, resolverConfig.wta500Aliases)) return 'WTA_500';
   if (/wta/.test(norm)) return 'OTHER';
   return 'UNKNOWN';
+}
+
+function containsAlias_(normalizedSource, aliases) {
+  for (let i = 0; i < aliases.length; i += 1) {
+    if (normalizedSource.indexOf(aliases[i]) !== -1) return true;
+  }
+  return false;
+}
+
+function normalizeCompetitionValue_(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function parseAliasListJson_(jsonText, fallbackJsonText) {
+  let parsed = [];
+  try {
+    parsed = JSON.parse(jsonText || fallbackJsonText || '[]');
+  } catch (e) {
+    try {
+      parsed = JSON.parse(fallbackJsonText || '[]');
+    } catch (ignored) {
+      parsed = [];
+    }
+  }
+
+  if (!Array.isArray(parsed)) return [];
+
+  const aliasMap = {};
+  parsed.forEach((value) => {
+    const normalized = normalizeCompetitionValue_(value);
+    if (normalized) aliasMap[normalized] = true;
+  });
+
+  return Object.keys(aliasMap);
 }
 
 function isAllowedTournament(canonical, config) {
@@ -1240,7 +1353,12 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
         price: best.price,
         odds_timestamp: best.odds_timestamp,
         commence_time: new Date(event.commence_time),
-        competition: event.sport_title || '',
+        competition: event.tournament || event.sport_title || '',
+        tournament: event.tournament || '',
+        event_name: event.name || '',
+        sport_title: event.sport_title || '',
+        home_team: event.home_team || '',
+        away_team: event.away_team || '',
         player_1: event.home_team || '',
         player_2: event.away_team || '',
       });
@@ -1275,6 +1393,11 @@ function fetchScheduleFromOddsApi_(config, window) {
       match_id: event.id,
       start_time: new Date(event.commence_time),
       competition: event.tournament || event.sport_title || '',
+      tournament: event.tournament || '',
+      event_name: event.name || '',
+      sport_title: event.sport_title || '',
+      home_team: event.home_team || '',
+      away_team: event.away_team || '',
       player_1: event.home_team || '',
       player_2: event.away_team || '',
     })),
@@ -1347,6 +1470,11 @@ function serializeOddsEvent_(event) {
     odds_timestamp: event.odds_timestamp.toISOString(),
     commence_time: event.commence_time.toISOString(),
     competition: event.competition,
+    tournament: event.tournament || '',
+    event_name: event.event_name || '',
+    sport_title: event.sport_title || '',
+    home_team: event.home_team || '',
+    away_team: event.away_team || '',
     player_1: event.player_1,
     player_2: event.player_2,
   };
@@ -1363,6 +1491,11 @@ function deserializeOddsEvent_(event) {
     odds_timestamp: new Date(event.odds_timestamp || event.commence_time),
     commence_time: new Date(event.commence_time),
     competition: event.competition,
+    tournament: event.tournament || '',
+    event_name: event.event_name || '',
+    sport_title: event.sport_title || '',
+    home_team: event.home_team || '',
+    away_team: event.away_team || '',
     player_1: event.player_1,
     player_2: event.player_2,
   };
