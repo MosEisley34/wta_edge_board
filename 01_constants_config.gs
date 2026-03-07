@@ -1,0 +1,98 @@
+const SHEETS = {
+  CONFIG: 'Config',
+  RUN_LOG: 'Run_Log',
+  RAW_ODDS: 'Raw_Odds',
+  RAW_SCHEDULE: 'Raw_Schedule',
+  RAW_PLAYER_STATS: 'Raw_Player_Stats',
+  MATCH_MAP: 'Match_Map',
+  SIGNALS: 'Signals',
+  STATE: 'State',
+};
+
+const DEFAULT_CONFIG = {
+  RUN_ENABLED: 'true',
+  LOOKAHEAD_HOURS: '36',
+  ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+  ODDS_API_KEY: '',
+  ODDS_SPORT_KEY: 'tennis_wta',
+  ODDS_MARKETS: 'h2h',
+  ODDS_REGIONS: 'us',
+  ODDS_ODDS_FORMAT: 'american',
+  ODDS_CACHE_TTL_SEC: '300',
+  SCHEDULE_BUFFER_BEFORE_MIN: '180',
+  SCHEDULE_BUFFER_AFTER_MIN: '180',
+  MATCH_TIME_TOLERANCE_MIN: '45',
+  MATCH_FALLBACK_EXPANSION_MIN: '120',
+  ALLOW_WTA_125: 'false',
+  GRAND_SLAM_ALIASES_JSON: '["australian open","roland garros","french open","wimbledon","us open"]',
+  WTA_1000_ALIASES_JSON: '["wta 1000","wta-1000","masters 1000"]',
+  WTA_500_ALIASES_JSON: '["wta 500","wta-500"]',
+  VERBOSE_LOGGING: 'true',
+  DUPLICATE_DEBOUNCE_MS: '90000',
+  PLAYER_ALIAS_MAP_JSON: '{}',
+  MODEL_VERSION: 'wta_mvp_playerstats_v2',
+  EDGE_THRESHOLD_MICRO: '0.015',
+  EDGE_THRESHOLD_SMALL: '0.03',
+  EDGE_THRESHOLD_MED: '0.05',
+  EDGE_THRESHOLD_STRONG: '0.08',
+  STAKE_UNITS_MICRO: '0.25',
+  STAKE_UNITS_SMALL: '0.5',
+  STAKE_UNITS_MED: '1',
+  STAKE_UNITS_STRONG: '1.5',
+  SIGNAL_COOLDOWN_MIN: '180',
+  MINUTES_BEFORE_START_CUTOFF: '60',
+  STALE_ODDS_WINDOW_MIN: '60',
+};
+
+const PROPS = {
+  PIPELINE_TRIGGER_SIGNATURE: 'PIPELINE_TRIGGER_SIGNATURE',
+  LAST_PIPELINE_RUN_TS: 'LAST_PIPELINE_RUN_TS',
+  DUPLICATE_PREVENTED_COUNT: 'DUPLICATE_PREVENTED_COUNT',
+};
+
+function getConfig_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
+  const values = sh.getDataRange().getValues();
+  const config = {};
+
+  for (let i = 1; i < values.length; i += 1) {
+    const key = String(values[i][0] || '').trim();
+    if (!key) continue;
+    config[key] = values[i][1];
+  }
+
+  return {
+    RUN_ENABLED: toBoolean_(config.RUN_ENABLED, true),
+    LOOKAHEAD_HOURS: toNumber_(config.LOOKAHEAD_HOURS, 36),
+    ODDS_SPORT_KEY: String(config.ODDS_SPORT_KEY || 'tennis_wta'),
+    ODDS_API_BASE_URL: String(config.ODDS_API_BASE_URL || 'https://api.the-odds-api.com/v4'),
+    ODDS_API_KEY: String(config.ODDS_API_KEY || ''),
+    ODDS_MARKETS: String(config.ODDS_MARKETS || 'h2h'),
+    ODDS_REGIONS: String(config.ODDS_REGIONS || 'us'),
+    ODDS_ODDS_FORMAT: String(config.ODDS_ODDS_FORMAT || 'american'),
+    ODDS_CACHE_TTL_SEC: toNumber_(config.ODDS_CACHE_TTL_SEC, 300),
+    SCHEDULE_BUFFER_BEFORE_MIN: toNumber_(config.SCHEDULE_BUFFER_BEFORE_MIN, 180),
+    SCHEDULE_BUFFER_AFTER_MIN: toNumber_(config.SCHEDULE_BUFFER_AFTER_MIN, 180),
+    MATCH_TIME_TOLERANCE_MIN: toNumber_(config.MATCH_TIME_TOLERANCE_MIN, 45),
+    MATCH_FALLBACK_EXPANSION_MIN: toNumber_(config.MATCH_FALLBACK_EXPANSION_MIN, 120),
+    ALLOW_WTA_125: toBoolean_(config.ALLOW_WTA_125, false),
+    GRAND_SLAM_ALIASES_JSON: String(config.GRAND_SLAM_ALIASES_JSON || DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON),
+    WTA_1000_ALIASES_JSON: String(config.WTA_1000_ALIASES_JSON || DEFAULT_CONFIG.WTA_1000_ALIASES_JSON),
+    WTA_500_ALIASES_JSON: String(config.WTA_500_ALIASES_JSON || DEFAULT_CONFIG.WTA_500_ALIASES_JSON),
+    VERBOSE_LOGGING: toBoolean_(config.VERBOSE_LOGGING, true),
+    DUPLICATE_DEBOUNCE_MS: toNumber_(config.DUPLICATE_DEBOUNCE_MS, 90000),
+    PLAYER_ALIAS_MAP_JSON: String(config.PLAYER_ALIAS_MAP_JSON || '{}'),
+    MODEL_VERSION: String(config.MODEL_VERSION || 'wta_mvp_playerstats_v2'),
+    EDGE_THRESHOLD_MICRO: toNumber_(config.EDGE_THRESHOLD_MICRO, 0.015),
+    EDGE_THRESHOLD_SMALL: toNumber_(config.EDGE_THRESHOLD_SMALL, 0.03),
+    EDGE_THRESHOLD_MED: toNumber_(config.EDGE_THRESHOLD_MED, 0.05),
+    EDGE_THRESHOLD_STRONG: toNumber_(config.EDGE_THRESHOLD_STRONG, 0.08),
+    STAKE_UNITS_MICRO: toNumber_(config.STAKE_UNITS_MICRO, 0.25),
+    STAKE_UNITS_SMALL: toNumber_(config.STAKE_UNITS_SMALL, 0.5),
+    STAKE_UNITS_MED: toNumber_(config.STAKE_UNITS_MED, 1),
+    STAKE_UNITS_STRONG: toNumber_(config.STAKE_UNITS_STRONG, 1.5),
+    SIGNAL_COOLDOWN_MIN: toNumber_(config.SIGNAL_COOLDOWN_MIN, 180),
+    MINUTES_BEFORE_START_CUTOFF: toNumber_(config.MINUTES_BEFORE_START_CUTOFF, 60),
+    STALE_ODDS_WINDOW_MIN: toNumber_(config.STALE_ODDS_WINDOW_MIN, 60),
+  };
+}

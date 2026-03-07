@@ -1,0 +1,218 @@
+function installOrUpdateTriggers() {
+  ensureTabsAndConfig_();
+
+  const spec = {
+    version: 1,
+    functionName: 'runEdgeBoard',
+    type: 'clock',
+    everyMinutes: 15,
+  };
+
+  const signature = JSON.stringify(spec);
+  const scriptProps = PropertiesService.getScriptProperties();
+  const existingSignature = scriptProps.getProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE);
+  const existingPipelineTriggers = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === spec.functionName);
+
+  if (existingSignature === signature && existingPipelineTriggers.length > 0) {
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: buildRunId_(),
+      stage: 'installOrUpdateTriggers',
+      status: 'success',
+      reason_code: 'trigger_noop',
+      message: 'Trigger signature unchanged and trigger already exists.',
+      trigger_event: 'trigger_noop',
+    });
+    return;
+  }
+
+  existingPipelineTriggers.forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+  ScriptApp.newTrigger(spec.functionName).timeBased().everyMinutes(spec.everyMinutes).create();
+  scriptProps.setProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE, signature);
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: buildRunId_(),
+    stage: 'installOrUpdateTriggers',
+    status: 'success',
+    reason_code: 'trigger_reinstalled',
+    message: 'Pipeline trigger installed/refreshed with 15-minute schedule.',
+    trigger_event: 'trigger_reinstalled',
+  });
+}
+
+function removePipelineTriggers() {
+  ScriptApp.getProjectTriggers().forEach((trigger) => {
+    if (trigger.getHandlerFunction() === 'runEdgeBoard') ScriptApp.deleteTrigger(trigger);
+  });
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: buildRunId_(),
+    stage: 'removePipelineTriggers',
+    status: 'success',
+    reason_code: 'trigger_removed',
+    message: 'Removed runEdgeBoard triggers.',
+    trigger_event: 'trigger_removed',
+  });
+}
+
+function runEdgeBoard() {
+  ensureTabsAndConfig_();
+
+  const runId = buildRunId_();
+  const startedAt = new Date();
+  const scriptProps = PropertiesService.getScriptProperties();
+  const lock = LockService.getScriptLock();
+
+  if (!tryLock_(lock, 5000)) {
+    const prevented = incrementDuplicatePreventedCount_();
+    appendLogRow_({
+      row_type: 'summary',
+      run_id: runId,
+      stage: 'runEdgeBoard',
+      started_at: startedAt,
+      ended_at: new Date(),
+      status: 'skipped',
+      reason_code: 'run_locked_skip',
+      message: 'Skipped due to script lock contention.',
+      lock_event: 'run_locked_skip',
+      duplicate_suppressed: prevented,
+    });
+    return;
+  }
+
+  try {
+    const config = getConfig_();
+    if (!config.RUN_ENABLED) {
+      appendLogRow_({
+        row_type: 'summary',
+        run_id: runId,
+        stage: 'runEdgeBoard',
+        started_at: startedAt,
+        ended_at: new Date(),
+        status: 'skipped',
+        reason_code: 'run_disabled_skip',
+        message: 'RUN_ENABLED is false.',
+      });
+      return;
+    }
+
+    const nowMs = Date.now();
+    const debounceMs = config.DUPLICATE_DEBOUNCE_MS;
+    const lastRunTs = Number(scriptProps.getProperty(PROPS.LAST_PIPELINE_RUN_TS) || 0);
+    if (nowMs - lastRunTs < debounceMs) {
+      const prevented = incrementDuplicatePreventedCount_();
+      appendLogRow_({
+        row_type: 'summary',
+        run_id: runId,
+        stage: 'runEdgeBoard',
+        started_at: startedAt,
+        ended_at: new Date(),
+        status: 'skipped',
+        reason_code: 'run_debounced_skip',
+        message: 'Skipped by debounce window.',
+        debounce_event: 'run_debounced_skip',
+        duplicate_suppressed: prevented,
+      });
+      return;
+    }
+
+    scriptProps.setProperty(PROPS.LAST_PIPELINE_RUN_TS, String(nowMs));
+
+    const oddsStage = stageFetchOdds(runId, config);
+    appendStageLog_(runId, oddsStage.summary);
+
+    const scheduleStage = stageFetchSchedule(runId, config, oddsStage.events);
+    appendStageLog_(runId, scheduleStage.summary);
+
+    const matchStage = stageMatchEvents(runId, config, oddsStage.events, scheduleStage.events);
+    appendStageLog_(runId, matchStage.summary);
+
+    const playerStatsStage = stageFetchPlayerStats(runId, config, oddsStage.events, matchStage.rows);
+    appendStageLog_(runId, playerStatsStage.summary);
+
+    const signalStage = stageGenerateSignals(runId, config, oddsStage.events, matchStage.rows, playerStatsStage.byOddsEventId);
+    appendStageLog_(runId, signalStage.summary);
+
+    const persistStage = stagePersist(runId, {
+      odds: oddsStage.rows,
+      schedule: scheduleStage.rows,
+      playerStats: playerStatsStage.rows,
+      matchMap: matchStage.rows,
+      signals: signalStage.rows,
+    });
+    appendStageLog_(runId, persistStage.summary);
+
+    const combinedReasonCodes = mergeReasonCounts_([
+      oddsStage.summary.reason_codes,
+      scheduleStage.summary.reason_codes,
+      matchStage.summary.reason_codes,
+      playerStatsStage.summary.reason_codes,
+      signalStage.summary.reason_codes,
+      persistStage.summary.reason_codes,
+    ]);
+
+    const verbosePayload = {
+      run_id: runId,
+      started_at: startedAt.toISOString(),
+      ended_at: new Date().toISOString(),
+      config_snapshot: config,
+      stage_summaries: [
+        oddsStage.summary,
+        scheduleStage.summary,
+        matchStage.summary,
+        playerStatsStage.summary,
+        signalStage.summary,
+        persistStage.summary,
+      ],
+      canonicalization_examples: {
+        competition: scheduleStage.canonicalExamples.slice(0, 25),
+        players: matchStage.canonicalizationExamples.slice(0, 25),
+      },
+      unresolved_competitions: scheduleStage.unresolvedCompetitions.slice(0, 50),
+      sample_unmatched_cases: matchStage.unmatched.slice(0, 20),
+      top_rejection_reasons: getTopReasonCodes_(combinedReasonCodes, 10),
+      reason_codes: combinedReasonCodes,
+    };
+
+    setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
+
+    appendLogRow_({
+      row_type: 'summary',
+      run_id: runId,
+      stage: 'runEdgeBoard',
+      started_at: startedAt,
+      ended_at: new Date(),
+      status: 'success',
+      reason_code: 'run_success',
+      message: 'Pipeline run completed.',
+      fetched_odds: oddsStage.events.length,
+      fetched_schedule: scheduleStage.events.length,
+      allowed_tournaments: scheduleStage.allowedCount,
+      matched: matchStage.matchedCount,
+      unmatched: matchStage.unmatchedCount,
+      signals_found: signalStage.sentCount,
+      rejection_codes: JSON.stringify(combinedReasonCodes),
+      stage_summaries: JSON.stringify(verbosePayload.stage_summaries),
+      cooldown_suppressed: signalStage.cooldownSuppressedCount,
+      duplicate_suppressed: signalStage.duplicateSuppressedCount,
+    });
+  } catch (error) {
+    appendLogRow_({
+      row_type: 'summary',
+      run_id: runId,
+      stage: 'runEdgeBoard',
+      started_at: startedAt,
+      ended_at: new Date(),
+      status: 'failed',
+      reason_code: 'run_exception',
+      message: String(error && error.message ? error.message : error),
+      exception: String(error && error.message ? error.message : error),
+      stack: String(error && error.stack ? error.stack : ''),
+    });
+    throw error;
+  } finally {
+    lock.releaseLock();
+  }
+}
