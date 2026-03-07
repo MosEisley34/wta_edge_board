@@ -11,15 +11,21 @@ const SHEETS = {
 const DEFAULT_CONFIG = {
   RUN_ENABLED: 'true',
   LOOKAHEAD_HOURS: '36',
+  ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+  ODDS_API_KEY: '',
   ODDS_SPORT_KEY: 'tennis_wta',
   ODDS_MARKETS: 'h2h',
   ODDS_REGIONS: 'us',
   ODDS_ODDS_FORMAT: 'american',
+  ODDS_CACHE_TTL_SEC: '300',
+  SCHEDULE_BUFFER_BEFORE_MIN: '180',
+  SCHEDULE_BUFFER_AFTER_MIN: '180',
   MATCH_TIME_TOLERANCE_MIN: '45',
   MATCH_FALLBACK_EXPANSION_MIN: '120',
   ALLOW_WTA_125: 'false',
   VERBOSE_LOGGING: 'true',
   DUPLICATE_DEBOUNCE_MS: '90000',
+  PLAYER_ALIAS_MAP_JSON: '{}',
 };
 
 const PROPS = {
@@ -222,7 +228,7 @@ function runEdgeBoard() {
     const oddsStage = stageFetchOdds(runId, config);
     appendStageLog_(runId, oddsStage.summary);
 
-    const scheduleStage = stageFetchSchedule(runId, config);
+    const scheduleStage = stageFetchSchedule(runId, config, oddsStage.events);
     appendStageLog_(runId, scheduleStage.summary);
 
     const matchStage = stageMatchEvents(runId, config, oddsStage.events, scheduleStage.events);
@@ -259,8 +265,12 @@ function runEdgeBoard() {
         signalStage.summary,
         persistStage.summary,
       ],
-      canonicalization_examples: scheduleStage.canonicalExamples,
+      canonicalization_examples: {
+        competition: scheduleStage.canonicalExamples.slice(0, 25),
+        players: matchStage.canonicalizationExamples.slice(0, 25),
+      },
       sample_unmatched_cases: matchStage.unmatched.slice(0, 20),
+      top_rejection_reasons: getTopReasonCodes_(combinedReasonCodes, 10),
       reason_codes: combinedReasonCodes,
     };
 
@@ -305,15 +315,48 @@ function runEdgeBoard() {
 
 function stageFetchOdds(runId, config) {
   const start = Date.now();
-  const source = 'scaffold_sample_odds_provider';
+  const source = 'the_odds_api';
   const lookaheadMs = config.LOOKAHEAD_HOURS * 60 * 60 * 1000;
   const now = Date.now();
+  const cacheTtlSec = Math.max(30, config.ODDS_CACHE_TTL_SEC);
+  const cacheResult = getCachedPayload_('ODDS_WINDOW_PAYLOAD');
+  let adapter;
 
-  const raw = buildSampleOdds_();
-  const filtered = raw.filter((event) => {
-    const t = event.commence_time.getTime();
-    return t >= now && t <= now + lookaheadMs;
-  });
+  if (cacheResult && now - cacheResult.cached_at_ms <= cacheTtlSec * 1000) {
+    adapter = {
+      events: cacheResult.events,
+      reason_code: 'odds_cache_hit',
+      api_credit_usage: 0,
+      api_call_count: 0,
+      credit_headers: {},
+    };
+  } else {
+    adapter = fetchOddsWindowFromOddsApi_(config, now, now + lookaheadMs);
+    if (adapter.events && adapter.events.length) {
+      setCachedPayload_('ODDS_WINDOW_PAYLOAD', adapter.events);
+    } else if (adapter.reason_code !== 'odds_api_success') {
+      const stale = getStateJson_('ODDS_WINDOW_STALE_PAYLOAD');
+      if (stale && stale.events && stale.events.length) {
+        adapter = {
+          events: stale.events.map(deserializeOddsEvent_),
+          reason_code: 'odds_stale_fallback',
+          api_credit_usage: adapter.api_credit_usage,
+          api_call_count: adapter.api_call_count,
+          credit_headers: adapter.credit_headers,
+        };
+      }
+    }
+  }
+
+  const raw = adapter.events || [];
+  const filtered = raw.filter((event) => event.commence_time.getTime() >= now && event.commence_time.getTime() <= now + lookaheadMs);
+
+  if (filtered.length) {
+    setStateValue_('ODDS_WINDOW_STALE_PAYLOAD', JSON.stringify({
+      stored_at: new Date().toISOString(),
+      events: filtered.map(serializeOddsEvent_),
+    }));
+  }
 
   const rows = filtered.map((event) => ({
     key: [event.event_id, event.bookmaker, event.market, event.outcome].join('|'),
@@ -323,9 +366,10 @@ function stageFetchOdds(runId, config) {
     outcome: event.outcome,
     price: event.price,
     commence_time: event.commence_time.toISOString(),
+    commence_epoch_ms: event.commence_time.getTime(),
     competition: event.competition,
-    home: event.home,
-    away: event.away,
+    player_1: event.player_1,
+    player_2: event.player_2,
     source,
     updated_at: new Date().toISOString(),
   }));
@@ -334,28 +378,36 @@ function stageFetchOdds(runId, config) {
     input_count: raw.length,
     output_count: filtered.length,
     provider: source,
-    api_credit_usage: 0,
+    api_credit_usage: adapter.api_credit_usage,
     reason_codes: {
+      [adapter.reason_code]: 1,
       within_window: filtered.length,
       outside_window: raw.length - filtered.length,
     },
   });
 
+  setStateValue_('LAST_ODDS_API_CREDITS', JSON.stringify({
+    run_id: runId,
+    observed_at: new Date().toISOString(),
+    api_call_count: adapter.api_call_count || 0,
+    credit_headers: adapter.credit_headers || {},
+  }));
+
   return { events: filtered, rows, summary };
 }
 
-function stageFetchSchedule(runId, config) {
+function stageFetchSchedule(runId, config, oddsEvents) {
   const start = Date.now();
-  const source = 'scaffold_sample_schedule_provider';
-  const now = Date.now();
-  const lookaheadMs = config.LOOKAHEAD_HOURS * 60 * 60 * 1000;
-  const bufferMs = config.MATCH_FALLBACK_EXPANSION_MIN * 60 * 1000;
-
-  const raw = buildSampleSchedule_();
-  const inWindow = raw.filter((event) => {
-    const t = event.start_time.getTime();
-    return t >= now && t <= now + lookaheadMs + bufferMs;
-  });
+  const source = 'the_odds_api_schedule';
+  const window = deriveScheduleWindowFromOdds_(oddsEvents, config);
+  const scheduleResp = window ? fetchScheduleFromOddsApi_(config, window) : {
+    events: [],
+    reason_code: 'schedule_window_empty',
+    api_credit_usage: 0,
+    api_call_count: 0,
+    credit_headers: {},
+  };
+  const inWindow = scheduleResp.events || [];
 
   const reasonCounts = {};
   const canonicalExamples = [];
@@ -377,9 +429,10 @@ function stageFetchSchedule(runId, config) {
       event_id: event.event_id,
       match_id: event.match_id,
       start_time: event.start_time.toISOString(),
+      start_epoch_ms: event.start_time.getTime(),
       competition: event.competition,
-      home: event.home,
-      away: event.away,
+      player_1: event.player_1,
+      player_2: event.player_2,
       canonical_tier: canonical,
       is_allowed: decision.allowed,
       reason_code: decision.reason_code,
@@ -394,19 +447,28 @@ function stageFetchSchedule(runId, config) {
         start_time: event.start_time,
         competition: event.competition,
         canonical_tier: canonical,
-        home: event.home,
-        away: event.away,
+        player_1: event.player_1,
+        player_2: event.player_2,
       });
     }
   });
 
   const summary = buildStageSummary_(runId, 'stageFetchSchedule', start, {
-    input_count: raw.length,
+    input_count: inWindow.length,
     output_count: inWindow.length,
     provider: source,
-    api_credit_usage: 0,
+    api_credit_usage: scheduleResp.api_credit_usage,
     reason_codes: reasonCounts,
   });
+
+  summary.reason_codes[scheduleResp.reason_code] = (summary.reason_codes[scheduleResp.reason_code] || 0) + 1;
+
+  setStateValue_('LAST_SCHEDULE_API_CREDITS', JSON.stringify({
+    run_id: runId,
+    observed_at: new Date().toISOString(),
+    api_call_count: scheduleResp.api_call_count || 0,
+    credit_headers: scheduleResp.credit_headers || {},
+  }));
 
   return {
     events: allowedEvents,
@@ -421,50 +483,67 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
   const start = Date.now();
   const toleranceMin = config.MATCH_TIME_TOLERANCE_MIN;
   const fallbackMin = config.MATCH_FALLBACK_EXPANSION_MIN;
+  const aliasMap = buildPlayerAliasMap_(config.PLAYER_ALIAS_MAP_JSON);
   const reasonCounts = {};
   const rows = [];
   const unmatched = [];
   let matchedCount = 0;
+  const canonicalizationExamples = [];
 
-  oddsEvents.forEach((odds) => {
-    const primary = findScheduleMatch_(odds, scheduleEvents, toleranceMin);
-    const fallback = primary ? null : findScheduleMatch_(odds, scheduleEvents, toleranceMin + fallbackMin);
+  const primary = oddsEvents.map((odds) => matchSingleOddsEvent_(odds, scheduleEvents, toleranceMin, aliasMap, canonicalizationExamples));
+  const unmatchedPrimary = primary.filter((res) => !res.matched);
 
-    if (primary || fallback) {
-      const selected = primary || fallback;
-      const matchType = primary ? 'primary_match' : 'fallback_match';
+  if (unmatchedPrimary.length === 0) reasonCounts.fallback_short_circuit = (reasonCounts.fallback_short_circuit || 0) + 1;
+
+  const finalResults = unmatchedPrimary.length === 0
+    ? primary
+    : primary.map((res) => {
+      if (res.matched) return res;
+      const fallback = matchSingleOddsEvent_(res.odds, scheduleEvents, toleranceMin + fallbackMin, aliasMap, canonicalizationExamples);
+      if (fallback.matched) {
+        fallback.match_type = 'fallback_match';
+        return fallback;
+      }
+      fallback.rejection_code = fallback.rejection_code === 'outside_time_tolerance' ? 'fallback_exhausted' : fallback.rejection_code;
+      return fallback;
+    });
+
+  finalResults.forEach((result) => {
+    if (result.matched) {
       rows.push({
-        key: odds.event_id,
-        odds_event_id: odds.event_id,
-        schedule_event_id: selected.event_id,
-        match_type: matchType,
+        key: result.odds.event_id,
+        odds_event_id: result.odds.event_id,
+        schedule_event_id: result.schedule_event_id,
+        match_type: result.match_type,
         rejection_code: '',
-        time_diff_min: selected.timeDiffMin,
-        competition_tier: selected.canonical_tier,
+        time_diff_min: result.time_diff_min,
+        competition_tier: result.competition_tier,
         updated_at: new Date().toISOString(),
       });
       matchedCount += 1;
-      reasonCounts[matchType] = (reasonCounts[matchType] || 0) + 1;
-    } else {
-      rows.push({
-        key: odds.event_id,
-        odds_event_id: odds.event_id,
-        schedule_event_id: '',
-        match_type: '',
-        rejection_code: 'unmatched_no_schedule_match',
-        time_diff_min: '',
-        competition_tier: '',
-        updated_at: new Date().toISOString(),
-      });
-      reasonCounts.unmatched_no_schedule_match = (reasonCounts.unmatched_no_schedule_match || 0) + 1;
-      unmatched.push({
-        odds_event_id: odds.event_id,
-        competition: odds.competition,
-        home: odds.home,
-        away: odds.away,
-        commence_time: odds.commence_time.toISOString(),
-      });
+      reasonCounts[result.match_type] = (reasonCounts[result.match_type] || 0) + 1;
+      return;
     }
+
+    rows.push({
+      key: result.odds.event_id,
+      odds_event_id: result.odds.event_id,
+      schedule_event_id: '',
+      match_type: '',
+      rejection_code: result.rejection_code,
+      time_diff_min: '',
+      competition_tier: '',
+      updated_at: new Date().toISOString(),
+    });
+    reasonCounts[result.rejection_code] = (reasonCounts[result.rejection_code] || 0) + 1;
+    unmatched.push({
+      odds_event_id: result.odds.event_id,
+      competition: result.odds.competition,
+      player_1: result.odds.player_1,
+      player_2: result.odds.player_2,
+      commence_time: result.odds.commence_time.toISOString(),
+      rejection_code: result.rejection_code,
+    });
   });
 
   const summary = buildStageSummary_(runId, 'stageMatchEvents', start, {
@@ -481,6 +560,7 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
     matchedCount,
     unmatchedCount: oddsEvents.length - matchedCount,
     unmatched,
+    canonicalizationExamples,
   };
 }
 
@@ -524,11 +604,11 @@ function stagePersist(runId, payload) {
 
   upsertSheetRows_(SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'market', 'outcome', 'price', 'commence_time',
-    'competition', 'home', 'away', 'source', 'updated_at',
+    'commence_epoch_ms', 'competition', 'player_1', 'player_2', 'source', 'updated_at',
   ], payload.odds);
 
   upsertSheetRows_(SHEETS.RAW_SCHEDULE, [
-    'key', 'event_id', 'match_id', 'start_time', 'competition', 'home', 'away',
+    'key', 'event_id', 'match_id', 'start_time', 'start_epoch_ms', 'competition', 'player_1', 'player_2',
     'canonical_tier', 'is_allowed', 'reason_code', 'source', 'updated_at',
   ], payload.schedule);
 
@@ -572,10 +652,10 @@ function ensureTabsAndConfig_() {
   ]);
   ensureHeaders_(SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'market', 'outcome', 'price', 'commence_time',
-    'competition', 'home', 'away', 'source', 'updated_at',
+    'commence_epoch_ms', 'competition', 'player_1', 'player_2', 'source', 'updated_at',
   ]);
   ensureHeaders_(SHEETS.RAW_SCHEDULE, [
-    'key', 'event_id', 'match_id', 'start_time', 'competition', 'home', 'away',
+    'key', 'event_id', 'match_id', 'start_time', 'start_epoch_ms', 'competition', 'player_1', 'player_2',
     'canonical_tier', 'is_allowed', 'reason_code', 'source', 'updated_at',
   ]);
   ensureHeaders_(SHEETS.MATCH_MAP, [
@@ -639,14 +719,20 @@ function getConfig_() {
     RUN_ENABLED: toBoolean_(config.RUN_ENABLED, true),
     LOOKAHEAD_HOURS: toNumber_(config.LOOKAHEAD_HOURS, 36),
     ODDS_SPORT_KEY: String(config.ODDS_SPORT_KEY || 'tennis_wta'),
+    ODDS_API_BASE_URL: String(config.ODDS_API_BASE_URL || 'https://api.the-odds-api.com/v4'),
+    ODDS_API_KEY: String(config.ODDS_API_KEY || ''),
     ODDS_MARKETS: String(config.ODDS_MARKETS || 'h2h'),
     ODDS_REGIONS: String(config.ODDS_REGIONS || 'us'),
     ODDS_ODDS_FORMAT: String(config.ODDS_ODDS_FORMAT || 'american'),
+    ODDS_CACHE_TTL_SEC: toNumber_(config.ODDS_CACHE_TTL_SEC, 300),
+    SCHEDULE_BUFFER_BEFORE_MIN: toNumber_(config.SCHEDULE_BUFFER_BEFORE_MIN, 180),
+    SCHEDULE_BUFFER_AFTER_MIN: toNumber_(config.SCHEDULE_BUFFER_AFTER_MIN, 180),
     MATCH_TIME_TOLERANCE_MIN: toNumber_(config.MATCH_TIME_TOLERANCE_MIN, 45),
     MATCH_FALLBACK_EXPANSION_MIN: toNumber_(config.MATCH_FALLBACK_EXPANSION_MIN, 120),
     ALLOW_WTA_125: toBoolean_(config.ALLOW_WTA_125, false),
     VERBOSE_LOGGING: toBoolean_(config.VERBOSE_LOGGING, true),
     DUPLICATE_DEBOUNCE_MS: toNumber_(config.DUPLICATE_DEBOUNCE_MS, 90000),
+    PLAYER_ALIAS_MAP_JSON: String(config.PLAYER_ALIAS_MAP_JSON || '{}'),
   };
 }
 
@@ -768,7 +854,7 @@ function canonicalizeCompetition(name) {
   if (/wta\s*1000/.test(norm)) return 'WTA_1000';
   if (/wta\s*500/.test(norm)) return 'WTA_500';
   if (/wta\s*125/.test(norm)) return 'WTA_125';
-  if (/wta/.test(norm)) return 'OTHER_WTA';
+  if (/wta/.test(norm)) return 'OTHER';
   return 'UNKNOWN';
 }
 
@@ -781,30 +867,248 @@ function isAllowedTournament(canonical, config) {
       ? { allowed: true, reason_code: 'allowed_wta125' }
       : { allowed: false, reason_code: 'rejected_wta125' };
   }
-  if (canonical === 'OTHER_WTA') return { allowed: false, reason_code: 'rejected_other_tier' };
+  if (canonical === 'OTHER') return { allowed: false, reason_code: 'rejected_other_tier' };
   return { allowed: false, reason_code: 'rejected_unknown_competition' };
 }
 
-function findScheduleMatch_(odds, scheduleEvents, maxToleranceMin) {
-  const oddsPlayers = normalizePlayers_(odds.home, odds.away);
-  let best = null;
-  scheduleEvents.forEach((sched) => {
-    const schedPlayers = normalizePlayers_(sched.home, sched.away);
-    if (oddsPlayers !== schedPlayers) return;
-    const diffMin = Math.abs(odds.commence_time.getTime() - sched.start_time.getTime()) / 60000;
-    if (diffMin <= maxToleranceMin && (!best || diffMin < best.timeDiffMin)) {
-      best = {
-        event_id: sched.event_id,
-        canonical_tier: sched.canonical_tier,
-        timeDiffMin: Math.round(diffMin),
-      };
-    }
+function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, canonicalizationExamples) {
+  const oddsPlayers = normalizePlayers_(odds.player_1, odds.player_2, aliasMap);
+  canonicalizationExamples.push({
+    sample_type: 'odds',
+    raw_players: [odds.player_1, odds.player_2],
+    canonical_players: oddsPlayers,
   });
-  return best;
+
+  const samePlayers = [];
+  scheduleEvents.forEach((sched) => {
+    const schedPlayers = normalizePlayers_(sched.player_1, sched.player_2, aliasMap);
+    if (canonicalizationExamples.length < 25) {
+      canonicalizationExamples.push({
+        sample_type: 'schedule',
+        raw_players: [sched.player_1, sched.player_2],
+        canonical_players: schedPlayers,
+      });
+    }
+    if (oddsPlayers === schedPlayers) samePlayers.push(sched);
+  });
+
+  if (!samePlayers.length) return { odds, matched: false, rejection_code: 'no_player_match' };
+
+  const inTolerance = samePlayers
+    .map((sched) => ({
+      sched,
+      diffMin: Math.abs(odds.commence_time.getTime() - sched.start_time.getTime()) / 60000,
+    }))
+    .filter((candidate) => candidate.diffMin <= maxToleranceMin)
+    .sort((a, b) => a.diffMin - b.diffMin);
+
+  if (!inTolerance.length) return { odds, matched: false, rejection_code: 'outside_time_tolerance' };
+  if (inTolerance.length > 1 && inTolerance[0].diffMin === inTolerance[1].diffMin) {
+    return { odds, matched: false, rejection_code: 'ambiguous_candidate' };
+  }
+
+  const winner = inTolerance[0];
+  return {
+    odds,
+    matched: true,
+    match_type: 'primary_match',
+    schedule_event_id: winner.sched.event_id,
+    competition_tier: winner.sched.canonical_tier,
+    time_diff_min: Math.round(winner.diffMin),
+  };
 }
 
-function normalizePlayers_(a, b) {
-  return [String(a || '').toLowerCase().trim(), String(b || '').toLowerCase().trim()].sort().join('|');
+function normalizePlayers_(a, b, aliasMap) {
+  return [canonicalizePlayerName_(a, aliasMap), canonicalizePlayerName_(b, aliasMap)].sort().join('|');
+}
+
+function canonicalizePlayerName_(name, aliasMap) {
+  let normalized = String(name || '').toLowerCase();
+  normalized = normalized.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  normalized = normalized.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return aliasMap[normalized] || normalized;
+}
+
+function buildPlayerAliasMap_(json) {
+  try {
+    const parsed = JSON.parse(json || '{}');
+    const alias = {};
+    Object.keys(parsed || {}).forEach((key) => {
+      alias[canonicalizePlayerName_(key, {})] = canonicalizePlayerName_(parsed[key], {});
+    });
+    return alias;
+  } catch (e) {
+    return {};
+  }
+}
+
+function deriveScheduleWindowFromOdds_(oddsEvents, config) {
+  if (!oddsEvents || !oddsEvents.length) return null;
+  const commenceTimes = oddsEvents.map((e) => e.commence_time.getTime());
+  const minMs = Math.min.apply(null, commenceTimes) - config.SCHEDULE_BUFFER_BEFORE_MIN * 60000;
+  const maxMs = Math.max.apply(null, commenceTimes) + config.SCHEDULE_BUFFER_AFTER_MIN * 60000;
+  return {
+    startIso: new Date(minMs).toISOString(),
+    endIso: new Date(maxMs).toISOString(),
+  };
+}
+
+function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
+  if (!config.ODDS_API_KEY) {
+    return { events: [], reason_code: 'missing_api_key', api_credit_usage: 0, api_call_count: 0, credit_headers: {} };
+  }
+  const url = config.ODDS_API_BASE_URL + '/sports/' + encodeURIComponent(config.ODDS_SPORT_KEY) + '/odds'
+    + '?apiKey=' + encodeURIComponent(config.ODDS_API_KEY)
+    + '&regions=' + encodeURIComponent(config.ODDS_REGIONS)
+    + '&markets=' + encodeURIComponent(config.ODDS_MARKETS)
+    + '&oddsFormat=' + encodeURIComponent(config.ODDS_ODDS_FORMAT)
+    + '&commenceTimeFrom=' + encodeURIComponent(new Date(startMs).toISOString())
+    + '&commenceTimeTo=' + encodeURIComponent(new Date(endMs).toISOString());
+  const fetched = callOddsApi_(url);
+  if (!fetched.ok) return fetched;
+
+  return {
+    events: (fetched.payload || []).map((event) => {
+      const outcome = (((event.bookmakers || [])[0] || {}).markets || [])[0];
+      const firstOutcome = ((outcome || {}).outcomes || [])[0] || {};
+      return {
+        event_id: event.id,
+        bookmaker: ((event.bookmakers || [])[0] || {}).key || '',
+        market: ((outcome || {}).key) || config.ODDS_MARKETS,
+        outcome: firstOutcome.name || '',
+        price: Number(firstOutcome.price || ''),
+        commence_time: new Date(event.commence_time),
+        competition: event.sport_title || '',
+        player_1: event.home_team || '',
+        player_2: event.away_team || '',
+      };
+    }),
+    reason_code: 'odds_api_success',
+    api_credit_usage: fetched.api_credit_usage,
+    api_call_count: 1,
+    credit_headers: fetched.credit_headers,
+  };
+}
+
+function fetchScheduleFromOddsApi_(config, window) {
+  if (!config.ODDS_API_KEY) {
+    return { events: [], reason_code: 'missing_api_key', api_credit_usage: 0, api_call_count: 0, credit_headers: {} };
+  }
+  const url = config.ODDS_API_BASE_URL + '/sports/' + encodeURIComponent(config.ODDS_SPORT_KEY) + '/events'
+    + '?apiKey=' + encodeURIComponent(config.ODDS_API_KEY)
+    + '&commenceTimeFrom=' + encodeURIComponent(window.startIso)
+    + '&commenceTimeTo=' + encodeURIComponent(window.endIso);
+  const fetched = callOddsApi_(url);
+  if (!fetched.ok) return fetched;
+
+  return {
+    events: (fetched.payload || []).map((event) => ({
+      event_id: event.id,
+      match_id: event.id,
+      start_time: new Date(event.commence_time),
+      competition: event.tournament || event.sport_title || '',
+      player_1: event.home_team || '',
+      player_2: event.away_team || '',
+    })),
+    reason_code: 'schedule_api_success',
+    api_credit_usage: fetched.api_credit_usage,
+    api_call_count: 1,
+    credit_headers: fetched.credit_headers,
+  };
+}
+
+function callOddsApi_(url) {
+  const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  const status = resp.getResponseCode();
+  const headers = resp.getAllHeaders();
+  const creditHeaders = {
+    requests_used: Number(headers['x-requests-used'] || headers['X-Requests-Used'] || 0),
+    requests_remaining: Number(headers['x-requests-remaining'] || headers['X-Requests-Remaining'] || 0),
+    requests_last: Number(headers['x-requests-last'] || headers['X-Requests-Last'] || 0),
+  };
+
+  if (status < 200 || status >= 300) {
+    return {
+      ok: false,
+      payload: [],
+      reason_code: 'api_http_' + status,
+      api_credit_usage: creditHeaders.requests_last || 0,
+      api_call_count: 1,
+      credit_headers: creditHeaders,
+    };
+  }
+
+  return {
+    ok: true,
+    payload: JSON.parse(resp.getContentText() || '[]'),
+    api_credit_usage: creditHeaders.requests_last || 0,
+    api_call_count: 1,
+    credit_headers: creditHeaders,
+  };
+}
+
+function getCachedPayload_(key) {
+  try {
+    const raw = CacheService.getScriptCache().get(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return {
+      cached_at_ms: parsed.cached_at_ms,
+      events: (parsed.events || []).map(deserializeOddsEvent_),
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function setCachedPayload_(key, events) {
+  CacheService.getScriptCache().put(key, JSON.stringify({
+    cached_at_ms: Date.now(),
+    events: events.map(serializeOddsEvent_),
+  }), 21600);
+}
+
+function serializeOddsEvent_(event) {
+  return {
+    event_id: event.event_id,
+    bookmaker: event.bookmaker,
+    market: event.market,
+    outcome: event.outcome,
+    price: event.price,
+    commence_time: event.commence_time.toISOString(),
+    competition: event.competition,
+    player_1: event.player_1,
+    player_2: event.player_2,
+  };
+}
+
+function deserializeOddsEvent_(event) {
+  return {
+    event_id: event.event_id,
+    bookmaker: event.bookmaker,
+    market: event.market,
+    outcome: event.outcome,
+    price: event.price,
+    commence_time: new Date(event.commence_time),
+    competition: event.competition,
+    player_1: event.player_1,
+    player_2: event.player_2,
+  };
+}
+
+function getStateJson_(key) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.STATE);
+  const values = sh.getDataRange().getValues();
+  for (let i = 1; i < values.length; i += 1) {
+    if (String(values[i][0]) === key) {
+      try {
+        return JSON.parse(values[i][1]);
+      } catch (e) {
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 function mergeReasonCounts_(reasonMaps) {
@@ -817,62 +1121,13 @@ function mergeReasonCounts_(reasonMaps) {
   return merged;
 }
 
-function buildSampleOdds_() {
-  const now = Date.now();
-  return [
-    {
-      event_id: 'odds_evt_1',
-      bookmaker: 'sample_book',
-      market: 'h2h',
-      outcome: 'player_a',
-      price: -130,
-      commence_time: new Date(now + 2 * 60 * 60 * 1000),
-      competition: 'WTA 500 Doha',
-      home: 'Player A',
-      away: 'Player B',
-    },
-    {
-      event_id: 'odds_evt_2',
-      bookmaker: 'sample_book',
-      market: 'h2h',
-      outcome: 'player_c',
-      price: 115,
-      commence_time: new Date(now + 3 * 60 * 60 * 1000),
-      competition: 'WTA 125 Mumbai',
-      home: 'Player C',
-      away: 'Player D',
-    },
-  ];
-}
 
-function buildSampleSchedule_() {
-  const now = Date.now();
-  return [
-    {
-      event_id: 'sched_evt_1',
-      match_id: 'match_1',
-      start_time: new Date(now + 2 * 60 * 60 * 1000 + 8 * 60000),
-      competition: 'WTA 500 Doha',
-      home: 'Player A',
-      away: 'Player B',
-    },
-    {
-      event_id: 'sched_evt_2',
-      match_id: 'match_2',
-      start_time: new Date(now + 3 * 60 * 60 * 1000),
-      competition: 'WTA 125 Mumbai',
-      home: 'Player C',
-      away: 'Player D',
-    },
-    {
-      event_id: 'sched_evt_3',
-      match_id: 'match_3',
-      start_time: new Date(now + 5 * 60 * 60 * 1000),
-      competition: 'ITF W100 Example',
-      home: 'Player E',
-      away: 'Player F',
-    },
-  ];
+
+function getTopReasonCodes_(reasonMap, topN) {
+  return Object.keys(reasonMap || {})
+    .map((k) => ({ reason_code: k, count: reasonMap[k] }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, topN || 10);
 }
 
 function buildRunId_() {
