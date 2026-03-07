@@ -135,6 +135,18 @@ function runEdgeBoard() {
       : buildSkippedOddsStage_(runId, oddsWindowDecision.decision_reason_code, oddsWindowDecision.decision_message);
     appendStageLog_(runId, oddsStage.summary);
 
+    const selectedOddsSource = oddsWindowDecision.selected_source === 'fallback_static_window'
+      ? 'fallback_static_window'
+      : (oddsStage.selected_source || 'cached_stale_fallback');
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: runId,
+      stage: 'odds_source_selection',
+      status: 'success',
+      reason_code: selectedOddsSource,
+      message: 'Odds source selected for this run: ' + selectedOddsSource,
+    });
+
     const scheduleStage = stageFetchSchedule(runId, config, oddsStage.events);
     appendStageLog_(runId, scheduleStage.summary);
 
