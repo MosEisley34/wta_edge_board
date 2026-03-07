@@ -751,15 +751,33 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
   if (!config.ODDS_API_KEY) {
     return { events: [], reason_code: 'missing_api_key', api_credit_usage: 0, api_call_count: 0, credit_headers: {} };
   }
+  const query = {
+    regions: config.ODDS_REGIONS,
+    markets: config.ODDS_MARKETS,
+    oddsFormat: config.ODDS_ODDS_FORMAT,
+    commenceTimeFrom: new Date(startMs).toISOString(),
+    commenceTimeTo: new Date(endMs).toISOString(),
+  };
+  const queryValidation = validateOddsApiOddsQuery_(query);
+  if (!queryValidation.ok) {
+    Logger.log(JSON.stringify(sanitizeForLog_({
+      event: 'odds_api_request_validation_failed',
+      reason_code: queryValidation.reason_code,
+      query_params: buildOddsApiDiagnosticQueryParams_(query),
+      validation_errors: queryValidation.errors,
+    })));
+    return {
+      events: [],
+      reason_code: queryValidation.reason_code,
+      api_credit_usage: 0,
+      api_call_count: 0,
+      credit_headers: {},
+    };
+  }
+
   const fetched = callOddsApiWithSportKeyFallback_(config, {
     endpoint: 'odds',
-    query: {
-      regions: config.ODDS_REGIONS,
-      markets: config.ODDS_MARKETS,
-      oddsFormat: config.ODDS_ODDS_FORMAT,
-      commenceTimeFrom: new Date(startMs).toISOString(),
-      commenceTimeTo: new Date(endMs).toISOString(),
-    },
+    query: query,
   });
   if (!fetched.ok) return fetched;
 
@@ -1145,6 +1163,88 @@ function buildOddsApiUrl_(config, path, query) {
   return baseUrl + path + (parts.length ? ('?' + parts.join('&')) : '');
 }
 
+function validateOddsApiOddsQuery_(query) {
+  const q = query || {};
+  const errors = [];
+
+  const markets = String(q.markets || '').trim();
+  const regions = String(q.regions || '').trim();
+  const oddsFormat = String(q.oddsFormat || '').trim().toLowerCase();
+  const commenceTimeFrom = String(q.commenceTimeFrom || '').trim();
+  const commenceTimeTo = String(q.commenceTimeTo || '').trim();
+
+  if (!markets) errors.push('markets_required');
+  if (!regions) errors.push('regions_required');
+  if (!oddsFormat) errors.push('odds_format_required');
+  if (oddsFormat && ['american', 'decimal'].indexOf(oddsFormat) < 0) errors.push('odds_format_invalid');
+
+  const fromTime = new Date(commenceTimeFrom);
+  const toTime = new Date(commenceTimeTo);
+  const hasValidFrom = commenceTimeFrom && !Number.isNaN(fromTime.getTime());
+  const hasValidTo = commenceTimeTo && !Number.isNaN(toTime.getTime());
+  if (!hasValidFrom) errors.push('commence_time_from_invalid');
+  if (!hasValidTo) errors.push('commence_time_to_invalid');
+  if (hasValidFrom && hasValidTo && fromTime.getTime() >= toTime.getTime()) errors.push('commence_time_window_invalid');
+
+  const timeErrors = {
+    commence_time_from_invalid: true,
+    commence_time_to_invalid: true,
+    commence_time_window_invalid: true,
+  };
+
+  const reasonCode = errors.some(function (err) { return !!timeErrors[err]; }) ? 'invalid_time_window' : 'invalid_query_params';
+  return {
+    ok: errors.length === 0,
+    reason_code: reasonCode,
+    errors: errors,
+  };
+}
+
+function buildOddsApiDiagnosticQueryParams_(query) {
+  const q = query || {};
+  return {
+    markets: String(q.markets || ''),
+    regions: String(q.regions || ''),
+    oddsFormat: String(q.oddsFormat || ''),
+    commenceTimeFrom: String(q.commenceTimeFrom || ''),
+    commenceTimeTo: String(q.commenceTimeTo || ''),
+  };
+}
+
+function parseQueryParamsFromUrl_(url) {
+  const rawUrl = String(url || '');
+  const queryIndex = rawUrl.indexOf('?');
+  if (queryIndex < 0) return {};
+  const queryString = rawUrl.slice(queryIndex + 1);
+  const params = {};
+
+  (queryString ? queryString.split('&') : []).forEach(function (pair) {
+    const raw = String(pair || '');
+    if (!raw) return;
+    const equalsIndex = raw.indexOf('=');
+    const key = decodeURIComponent((equalsIndex >= 0 ? raw.slice(0, equalsIndex) : raw).replace(/\+/g, ' '));
+    const value = decodeURIComponent((equalsIndex >= 0 ? raw.slice(equalsIndex + 1) : '').replace(/\+/g, ' '));
+    params[key] = value;
+  });
+
+  return params;
+}
+
+function classifyOddsApiClientErrorReason_(statusCode, bodyText, url) {
+  const status = Number(statusCode || 0);
+  if (status < 400 || status >= 500) return 'api_http_' + status;
+
+  const text = String(bodyText || '').toLowerCase();
+  const hasSportHint = /invalid[^\n]*sport|sport[^\n]*not found|unknown[^\n]*sport/.test(text);
+  const hasWindowHint = /commencetimefrom|commencetimeto|time window|date range|start[^\n]*before[^\n]*end/.test(text);
+  const hasParamHint = /regions|markets|oddsformat|query param|parameter|invalid query|missing required/.test(text);
+
+  if (hasSportHint && /invalid|unknown|not found/.test(text)) return 'invalid_sport_key';
+  if (hasWindowHint) return 'invalid_time_window';
+  if (hasParamHint) return 'invalid_query_params';
+  return 'unknown_client_error';
+}
+
 function callOddsApi_(url, opts) {
   const debugEnabled = !!(opts && opts.debug);
   if (debugEnabled) {
@@ -1209,12 +1309,26 @@ function callOddsApi_(url, opts) {
     }));
   }
 
+  const responseBody = resp.getContentText() || '';
+
   if (status < 200 || status >= 300) {
+    const rawQueryParams = parseQueryParamsFromUrl_(url);
+    const diagnosticQueryParams = buildOddsApiDiagnosticQueryParams_(rawQueryParams);
+    const diagnosticEvent = {
+      event: 'odds_api_non_2xx_response',
+      url: sanitizeForLog_(url),
+      status_code: status,
+      reason_code: classifyOddsApiClientErrorReason_(status, responseBody, url),
+      query_params: diagnosticQueryParams,
+      response_body: sanitizeForLog_(responseBody),
+    };
+    Logger.log(JSON.stringify(sanitizeForLog_(diagnosticEvent)));
+
     return {
       ok: false,
       status_code: status,
       payload: [],
-      reason_code: hasCreditHeaders ? 'api_http_' + status : 'credit_header_missing',
+      reason_code: classifyOddsApiClientErrorReason_(status, responseBody, url),
       api_credit_usage: creditHeaders.requests_last || 0,
       api_call_count: 1,
       credit_headers: creditHeaders,
@@ -1223,7 +1337,7 @@ function callOddsApi_(url, opts) {
 
   let parsedPayload;
   try {
-    parsedPayload = JSON.parse(resp.getContentText() || '[]');
+    parsedPayload = JSON.parse(responseBody || '[]');
   } catch (e) {
     logApiException('odds_api_parse_error', e);
     return failureResult('api_parse_error', creditHeaders);
