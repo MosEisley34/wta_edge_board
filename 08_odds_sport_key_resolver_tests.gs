@@ -437,6 +437,123 @@ function testFetchOddsWindowFromOddsApi_nonArrayPayloadDoesNotThrow_() {
   }
 }
 
+function testValidateOddsApiOddsQuery_validWindowAndParams_() {
+  const result = validateOddsApiOddsQuery_({
+    regions: 'us',
+    markets: 'h2h',
+    oddsFormat: 'american',
+    commenceTimeFrom: '2025-01-01T00:00:00.000Z',
+    commenceTimeTo: '2025-01-02T00:00:00.000Z',
+  });
+
+  assertEquals_(true, result.ok);
+  assertEquals_(0, result.errors.length);
+}
+
+function testValidateOddsApiOddsQuery_invalidWindowFormatsTimeReason_() {
+  const result = validateOddsApiOddsQuery_({
+    regions: 'us',
+    markets: 'h2h',
+    oddsFormat: 'american',
+    commenceTimeFrom: 'not-a-time',
+    commenceTimeTo: '2025-01-02T00:00:00.000Z',
+  });
+
+  assertEquals_(false, result.ok);
+  assertEquals_('invalid_time_window', result.reason_code);
+  assertEquals_(true, result.errors.indexOf('commence_time_from_invalid') >= 0);
+}
+
+function testValidateOddsApiOddsQuery_startAfterEndIsInvalidWindow_() {
+  const result = validateOddsApiOddsQuery_({
+    regions: 'us',
+    markets: 'h2h',
+    oddsFormat: 'american',
+    commenceTimeFrom: '2025-01-03T00:00:00.000Z',
+    commenceTimeTo: '2025-01-02T00:00:00.000Z',
+  });
+
+  assertEquals_(false, result.ok);
+  assertEquals_('invalid_time_window', result.reason_code);
+  assertEquals_(true, result.errors.indexOf('commence_time_window_invalid') >= 0);
+}
+
+function testValidateOddsApiOddsQuery_missingParamsReturnsInvalidQueryParams_() {
+  const result = validateOddsApiOddsQuery_({
+    regions: '',
+    markets: '',
+    oddsFormat: 'fractional',
+    commenceTimeFrom: '2025-01-01T00:00:00.000Z',
+    commenceTimeTo: '2025-01-02T00:00:00.000Z',
+  });
+
+  assertEquals_(false, result.ok);
+  assertEquals_('invalid_query_params', result.reason_code);
+  assertEquals_(true, result.errors.indexOf('markets_required') >= 0);
+  assertEquals_(true, result.errors.indexOf('regions_required') >= 0);
+  assertEquals_(true, result.errors.indexOf('odds_format_invalid') >= 0);
+}
+
+function testBuildOddsApiDiagnosticQueryParams_returnsExpectedSubset_() {
+  const diagnostic = buildOddsApiDiagnosticQueryParams_({
+    markets: 'h2h',
+    regions: 'us',
+    oddsFormat: 'american',
+    commenceTimeFrom: '2025-01-01T00:00:00.000Z',
+    commenceTimeTo: '2025-01-01T04:00:00.000Z',
+    apiKey: 'secret',
+  });
+
+  assertEquals_('h2h', diagnostic.markets);
+  assertEquals_('us', diagnostic.regions);
+  assertEquals_('american', diagnostic.oddsFormat);
+  assertEquals_('2025-01-01T00:00:00.000Z', diagnostic.commenceTimeFrom);
+  assertEquals_('2025-01-01T04:00:00.000Z', diagnostic.commenceTimeTo);
+  assertEquals_(undefined, diagnostic.apiKey);
+}
+
+function testClassifyOddsApiClientErrorReason_splitsClientErrorCodes_() {
+  assertEquals_(
+    'invalid_sport_key',
+    classifyOddsApiClientErrorReason_(422, '{"message":"invalid sport key tennis_wta_unknown"}', 'https://api.test/v4/sports/tennis_wta_unknown/odds')
+  );
+  assertEquals_(
+    'invalid_time_window',
+    classifyOddsApiClientErrorReason_(422, '{"message":"commenceTimeFrom must be before commenceTimeTo"}', 'https://api.test/v4/sports/tennis_wta_us_open/odds')
+  );
+  assertEquals_(
+    'invalid_query_params',
+    classifyOddsApiClientErrorReason_(422, '{"message":"invalid query parameter markets"}', 'https://api.test/v4/sports/tennis_wta_us_open/odds')
+  );
+  assertEquals_(
+    'unknown_client_error',
+    classifyOddsApiClientErrorReason_(422, '{"message":"unprocessable entity"}', 'https://api.test/v4/sports/tennis_wta_us_open/odds')
+  );
+}
+
+function testCallOddsApi_non2xxReturnsBodyDerivedReasonCode_() {
+  const originalFetch = UrlFetchApp.fetch;
+
+  UrlFetchApp.fetch = function () {
+    return {
+      getResponseCode: function () { return 422; },
+      getAllHeaders: function () { return {}; },
+      getContentText: function () {
+        return '{"message":"invalid query parameter markets"}';
+      },
+    };
+  };
+
+  try {
+    const result = callOddsApi_('https://api.the-odds-api.com/v4/sports/tennis_wta_us_open/odds?apiKey=secret&regions=us&markets=', { debug: true });
+    assertEquals_(false, result.ok);
+    assertEquals_(422, result.status_code);
+    assertEquals_('invalid_query_params', result.reason_code);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
 function testRunEdgeBoard_debounceSkipStillWorks_() {
   const harness = createRunEdgeBoardTestHarness_({
     nowMs: 1000000,
