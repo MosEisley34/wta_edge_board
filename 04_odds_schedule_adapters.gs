@@ -799,19 +799,35 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
   if (!config.ODDS_API_KEY) {
     return { events: [], reason_code: 'missing_api_key', api_credit_usage: 0, api_call_count: 0, credit_headers: {} };
   }
-  const query = {
-    regions: config.ODDS_REGIONS,
-    markets: config.ODDS_MARKETS,
-    oddsFormat: config.ODDS_ODDS_FORMAT,
-    commenceTimeFrom: new Date(startMs).toISOString(),
-    commenceTimeTo: new Date(endMs).toISOString(),
-  };
+  const queryBuild = buildOddsApiOddsQuery_(config, startMs, endMs);
+  if (!queryBuild.ok) {
+    Logger.log(JSON.stringify(sanitizeForLog_({
+      event: 'odds_api_request_validation_failed',
+      reason_code: queryBuild.reason_code,
+      detail: queryBuild.detail,
+      detail_code: queryBuild.detail_code,
+      query_params: queryBuild.query_params,
+      request_param_diagnostics: queryBuild.diagnostics,
+      validation_errors: queryBuild.errors,
+    })));
+    return {
+      events: [],
+      reason_code: queryBuild.reason_code,
+      detail: queryBuild.detail,
+      detail_code: queryBuild.detail_code,
+      api_credit_usage: 0,
+      api_call_count: 0,
+      credit_headers: {},
+    };
+  }
+  const query = queryBuild.query;
   const queryValidation = validateOddsApiOddsQuery_(query);
   if (!queryValidation.ok) {
     Logger.log(JSON.stringify(sanitizeForLog_({
       event: 'odds_api_request_validation_failed',
       reason_code: queryValidation.reason_code,
       detail: queryValidation.detail,
+      detail_code: queryValidation.detail_code,
       query_params: buildOddsApiDiagnosticQueryParams_(query),
       request_param_diagnostics: queryValidation.diagnostics,
       validation_errors: queryValidation.errors,
@@ -1250,29 +1266,129 @@ function validateOddsApiOddsQuery_(query) {
   };
 
   const reasonCode = errors.some(function (err) { return !!timeErrors[err]; }) ? 'invalid_time_window' : 'invalid_query_params';
+  const detailCode = errors.length ? errors[0] : '';
   return {
     ok: errors.length === 0,
     reason_code: reasonCode,
-    detail: errors.length ? errors[0] : '',
+    detail: detailCode,
+    detail_code: detailCode,
     errors: errors,
     diagnostics: diagnostics,
   };
 }
 
-function buildOddsApiDiagnosticQueryParams_(query) {
+function buildOddsApiOddsQuery_(config, startMs, endMs) {
+  const preflight = validateOddsFetchWindowMs_(startMs, endMs);
+  const query = {
+    regions: config.ODDS_REGIONS,
+    markets: config.ODDS_MARKETS,
+    oddsFormat: config.ODDS_ODDS_FORMAT,
+    commenceTimeFrom: preflight.ok ? new Date(preflight.start_ms).toISOString() : '',
+    commenceTimeTo: preflight.ok ? new Date(preflight.end_ms).toISOString() : '',
+  };
+
+  const diagnostics = preflight.ok
+    ? buildOddsApiTimeWindowDiagnostics_(query.commenceTimeFrom, query.commenceTimeTo)
+    : {
+      start_ms: preflight.start_ms,
+      end_ms: preflight.end_ms,
+      duration_minutes: preflight.duration_minutes,
+      expected_timezone: 'UTC',
+      timezone_conversion_inverted: preflight.start_ms !== null && preflight.end_ms !== null && preflight.start_ms >= preflight.end_ms,
+      known_good_cli_pattern: {
+        sport_key: 'tennis_wta_indian_wells',
+        endpoint: '/v4/sports/{sport_key}/odds',
+        required_params: ['regions', 'markets', 'oddsFormat', 'commenceTimeFrom', 'commenceTimeTo'],
+        commenceTimeFrom_format: 'RFC3339_UTC',
+        commenceTimeTo_format: 'RFC3339_UTC',
+        ordering_rule: 'commenceTimeFrom_before_commenceTimeTo',
+        http_status: 200,
+      },
+      known_good_cli_match: false,
+      known_good_cli_mismatches: ['window_ms_preflight_failed'],
+    };
+
+  return {
+    ok: preflight.ok,
+    reason_code: preflight.ok ? '' : 'invalid_time_window',
+    detail: preflight.detail_code,
+    detail_code: preflight.detail_code,
+    errors: preflight.errors,
+    diagnostics: diagnostics,
+    query: query,
+    query_params: buildOddsApiDiagnosticQueryParams_(query, {
+      start_ms: preflight.start_ms,
+      end_ms: preflight.end_ms,
+      duration_minutes: preflight.duration_minutes,
+      preflight_detail_code: preflight.detail_code,
+    }),
+  };
+}
+
+function validateOddsFetchWindowMs_(startMs, endMs) {
+  const start = Number(startMs);
+  const end = Number(endMs);
+  const hasStart = Number.isFinite(start);
+  const hasEnd = Number.isFinite(end);
+  const durationMinutes = hasStart && hasEnd ? ((end - start) / 60000) : null;
+  const errors = [];
+
+  if (!hasStart) errors.push('refresh_window_start_required');
+  if (!hasEnd) errors.push('refresh_window_end_required');
+  if (hasStart && hasEnd && end < start) errors.push('refresh_window_duration_negative');
+  if (hasStart && hasEnd && start >= end) errors.push('refresh_window_from_must_be_before_to');
+
+  return {
+    ok: errors.length === 0,
+    detail_code: errors.length ? errors[0] : '',
+    errors: errors,
+    start_ms: hasStart ? start : null,
+    end_ms: hasEnd ? end : null,
+    duration_minutes: durationMinutes,
+  };
+}
+
+function buildOddsApiDiagnosticQueryParams_(query, extra) {
   const q = query || {};
   const diagnostics = buildOddsApiTimeWindowDiagnostics_(String(q.commenceTimeFrom || ''), String(q.commenceTimeTo || ''));
-  return {
+  const knownGoodComparison = compareOddsApiQueryToKnownGoodCliPattern_(q, diagnostics);
+  return Object.assign({
     markets: String(q.markets || ''),
     regions: String(q.regions || ''),
     oddsFormat: String(q.oddsFormat || ''),
     commenceTimeFrom: String(q.commenceTimeFrom || ''),
     commenceTimeTo: String(q.commenceTimeTo || ''),
     duration_minutes: diagnostics.duration_minutes,
-    known_good_cli_pattern: diagnostics.known_good_cli_pattern,
-    known_good_cli_match: diagnostics.known_good_cli_match,
-    known_good_cli_mismatches: diagnostics.known_good_cli_mismatches,
+    known_good_cli_pattern: knownGoodComparison.pattern,
+    known_good_cli_match: knownGoodComparison.mismatches.length === 0,
+    known_good_cli_mismatches: knownGoodComparison.mismatches,
+  }, extra || {});
+}
+
+function compareOddsApiQueryToKnownGoodCliPattern_(query, diagnostics) {
+  const q = query || {};
+  const d = diagnostics || buildOddsApiTimeWindowDiagnostics_(String(q.commenceTimeFrom || ''), String(q.commenceTimeTo || ''));
+  const pattern = d.known_good_cli_pattern;
+  const mismatches = (d.known_good_cli_mismatches || []).slice();
+  if (!String(q.regions || '').trim()) mismatches.push('regions_required');
+  if (!String(q.markets || '').trim()) mismatches.push('markets_required');
+  if (!String(q.oddsFormat || '').trim()) mismatches.push('oddsFormat_required');
+  return {
+    pattern: pattern,
+    mismatches: dedupeArray_(mismatches),
   };
+}
+
+function dedupeArray_(values) {
+  const seen = {};
+  const out = [];
+  (values || []).forEach(function (value) {
+    const key = String(value || '');
+    if (!key || seen[key]) return;
+    seen[key] = true;
+    out.push(key);
+  });
+  return out;
 }
 
 function buildOddsApiTimeWindowDiagnostics_(commenceTimeFrom, commenceTimeTo) {
@@ -1290,9 +1406,12 @@ function buildOddsApiTimeWindowDiagnostics_(commenceTimeFrom, commenceTimeTo) {
 
   const knownGoodPattern = {
     sport_key: 'tennis_wta_indian_wells',
+    endpoint: '/v4/sports/{sport_key}/odds',
+    required_params: ['regions', 'markets', 'oddsFormat', 'commenceTimeFrom', 'commenceTimeTo'],
     commenceTimeFrom_format: 'RFC3339_UTC',
     commenceTimeTo_format: 'RFC3339_UTC',
     ordering_rule: 'commenceTimeFrom_before_commenceTimeTo',
+    http_status: 200,
   };
   const knownGoodMismatches = [];
   if (!fromIsRfc3339Utc) knownGoodMismatches.push('commenceTimeFrom_format');
@@ -1311,6 +1430,7 @@ function buildOddsApiTimeWindowDiagnostics_(commenceTimeFrom, commenceTimeTo) {
     has_valid_window_bounds: hasValidWindowBounds,
     from_before_to: hasValidWindowBounds ? fromParsedMs < toParsedMs : false,
     duration_minutes: durationMinutes,
+    timezone_conversion_inverted: hasValidWindowBounds ? fromParsedMs >= toParsedMs : false,
     known_good_cli_pattern: knownGoodPattern,
     known_good_cli_match: knownGoodMismatches.length === 0,
     known_good_cli_mismatches: knownGoodMismatches,

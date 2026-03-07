@@ -465,6 +465,7 @@ function testValidateOddsApiOddsQuery_invalidWindowFormatsTimeReason_() {
   assertEquals_(false, result.ok);
   assertEquals_('invalid_time_window', result.reason_code);
   assertEquals_('commence_time_from_not_rfc3339_utc', result.detail);
+  assertEquals_('commence_time_from_not_rfc3339_utc', result.detail_code);
   assertEquals_(true, result.errors.indexOf('commence_time_from_not_rfc3339_utc') >= 0);
 }
 
@@ -480,6 +481,7 @@ function testValidateOddsApiOddsQuery_startAfterEndIsInvalidWindow_() {
   assertEquals_(false, result.ok);
   assertEquals_('invalid_time_window', result.reason_code);
   assertEquals_('commence_time_window_invalid', result.detail);
+  assertEquals_('commence_time_window_invalid', result.detail_code);
   assertEquals_(true, result.errors.indexOf('commence_time_window_invalid') >= 0);
   assertEquals_(true, result.diagnostics.known_good_cli_mismatches.indexOf('window_ordering') >= 0);
 }
@@ -496,6 +498,7 @@ function testValidateOddsApiOddsQuery_missingTimeBoundsAreRequired_() {
   assertEquals_(false, result.ok);
   assertEquals_('invalid_time_window', result.reason_code);
   assertEquals_('commence_time_from_required', result.detail);
+  assertEquals_('commence_time_from_required', result.detail_code);
   assertEquals_(true, result.errors.indexOf('commence_time_from_required') >= 0);
   assertEquals_(true, result.errors.indexOf('commence_time_to_required') >= 0);
 }
@@ -512,6 +515,7 @@ function testValidateOddsApiOddsQuery_rejectsNonUtcOffsetTimes_() {
   assertEquals_(false, result.ok);
   assertEquals_('invalid_time_window', result.reason_code);
   assertEquals_('commence_time_from_not_rfc3339_utc', result.detail);
+  assertEquals_('commence_time_from_not_rfc3339_utc', result.detail_code);
   assertEquals_(true, result.errors.indexOf('commence_time_from_not_rfc3339_utc') >= 0);
   assertEquals_(true, result.errors.indexOf('commence_time_to_not_rfc3339_utc') >= 0);
 }
@@ -550,6 +554,7 @@ function testBuildOddsApiDiagnosticQueryParams_returnsExpectedSubset_() {
   assertEquals_(240, diagnostic.duration_minutes);
   assertEquals_(true, diagnostic.known_good_cli_match);
   assertArrayEquals_([], diagnostic.known_good_cli_mismatches);
+  assertEquals_('/v4/sports/{sport_key}/odds', diagnostic.known_good_cli_pattern.endpoint);
   assertEquals_(undefined, diagnostic.apiKey);
 }
 
@@ -565,6 +570,92 @@ function testBuildOddsApiDiagnosticQueryParams_surfacesKnownGoodCliDiffs_() {
   assertEquals_(-60, diagnostic.duration_minutes);
   assertEquals_(false, diagnostic.known_good_cli_match);
   assertEquals_(true, diagnostic.known_good_cli_mismatches.indexOf('window_ordering') >= 0);
+}
+
+function testBuildOddsApiOddsQuery_preflightValidatesInvertedMsWindow_() {
+  const built = buildOddsApiOddsQuery_({
+    ODDS_REGIONS: 'us',
+    ODDS_MARKETS: 'h2h',
+    ODDS_ODDS_FORMAT: 'american',
+  }, Date.parse('2025-01-02T00:00:00.000Z'), Date.parse('2025-01-01T00:00:00.000Z'));
+
+  assertEquals_(false, built.ok);
+  assertEquals_('invalid_time_window', built.reason_code);
+  assertEquals_('refresh_window_duration_negative', built.detail);
+  assertEquals_('refresh_window_duration_negative', built.detail_code);
+  assertEquals_(true, built.errors.indexOf('refresh_window_duration_negative') >= 0);
+  assertEquals_(true, built.errors.indexOf('refresh_window_from_must_be_before_to') >= 0);
+  assertEquals_(-1440, built.query_params.duration_minutes);
+}
+
+function testBuildOddsApiOddsQuery_serializesUtcIsoForKnownGoodCliPattern_() {
+  const startMs = Date.parse('2025-03-01T00:00:00.000Z');
+  const endMs = Date.parse('2025-03-01T12:00:00.000Z');
+  const built = buildOddsApiOddsQuery_({
+    ODDS_REGIONS: 'us',
+    ODDS_MARKETS: 'h2h',
+    ODDS_ODDS_FORMAT: 'american',
+  }, startMs, endMs);
+
+  assertEquals_(true, built.ok);
+  assertEquals_('2025-03-01T00:00:00.000Z', built.query.commenceTimeFrom);
+  assertEquals_('2025-03-01T12:00:00.000Z', built.query.commenceTimeTo);
+  assertEquals_(720, built.query_params.duration_minutes);
+  assertEquals_(true, built.query_params.known_good_cli_match);
+  assertArrayEquals_([], built.query_params.known_good_cli_mismatches);
+}
+
+function testResolveOddsWindowForPipeline_bootstrapWindowSerializationIsUtcAndOrdered_() {
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+
+  fetchScheduleFromOddsApi_ = function () {
+    return {
+      events: [],
+      reason_code: 'schedule_active_keys_no_events',
+      api_credit_usage: 0,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  updateCreditStateFromHeaders_ = function () {};
+  getCachedPayload_ = function () { return null; };
+  getStateJson_ = function () { return null; };
+  getCreditAwareRuntimeConfig_ = function () { return { mode: 'OFF', snapshot: {} }; };
+
+  const nowMs = Date.parse('2025-03-09T09:55:00.000Z');
+  try {
+    const decision = resolveOddsWindowForPipeline_({
+      ODDS_NO_GAMES_BEHAVIOR: 'SKIP',
+      ODDS_BOOTSTRAP_LOOKAHEAD_HOURS: 12,
+      LOOKAHEAD_HOURS: 24,
+      ODDS_WINDOW_PRE_FIRST_MIN: 45,
+      ODDS_WINDOW_POST_LAST_MIN: 180,
+      API_CREDIT_HARD_LIMIT: 0,
+      CREDIT_USAGE_ENFORCEMENT_MODE: 'OFF',
+    }, nowMs);
+
+    const built = buildOddsApiOddsQuery_({
+      ODDS_REGIONS: 'us',
+      ODDS_MARKETS: 'h2h',
+      ODDS_ODDS_FORMAT: 'american',
+    }, decision.refresh_window_start_ms, decision.refresh_window_end_ms);
+
+    assertEquals_(true, built.ok);
+    assertEquals_(true, /Z$/.test(built.query.commenceTimeFrom));
+    assertEquals_(true, /Z$/.test(built.query.commenceTimeTo));
+    assertEquals_(true, built.query.commenceTimeFrom < built.query.commenceTimeTo);
+    assertEquals_(false, built.diagnostics.timezone_conversion_inverted);
+  } finally {
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    getCachedPayload_ = originalGetCachedPayload;
+    getStateJson_ = originalGetStateJson;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+  }
 }
 
 function testResolveOddsWindowForPipeline_bootstrapWindowHasPositiveUtcDuration_() {
