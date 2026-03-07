@@ -14,7 +14,7 @@ const DEFAULT_CONFIG = {
   LOOKAHEAD_HOURS: '36',
   ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
   ODDS_API_KEY: '',
-  ODDS_SPORT_KEY: 'tennis_wta',
+  ODDS_SPORT_KEY: '',
   ODDS_MARKETS: 'h2h',
   ODDS_REGIONS: 'us',
   ODDS_ODDS_FORMAT: 'american',
@@ -96,7 +96,7 @@ function getConfig_() {
   return {
     RUN_ENABLED: toBoolean_(config.RUN_ENABLED, true),
     LOOKAHEAD_HOURS: toNumber_(config.LOOKAHEAD_HOURS, 36),
-    ODDS_SPORT_KEY: String(config.ODDS_SPORT_KEY || 'tennis_wta'),
+    ODDS_SPORT_KEY: String(config.ODDS_SPORT_KEY || ''),
     ODDS_API_BASE_URL: String(config.ODDS_API_BASE_URL || 'https://api.the-odds-api.com/v4'),
     ODDS_API_KEY: String(config.ODDS_API_KEY || ''),
     ODDS_MARKETS: String(config.ODDS_MARKETS || 'h2h'),
