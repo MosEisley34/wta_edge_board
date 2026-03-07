@@ -111,6 +111,7 @@ function stageFetchSchedule(runId, config, oddsEvents) {
   const reasonCounts = {};
   const canonicalExamples = [];
   const unresolvedCompetitions = [];
+  const unresolvedCompetitionCounts = {};
   const rows = [];
   const allowedEvents = [];
   const tierResolverConfig = buildCompetitionTierResolverConfig_(config);
@@ -135,6 +136,9 @@ function stageFetchSchedule(runId, config, oddsEvents) {
         competition: event.competition,
         source_fields: resolved.raw_fields,
       });
+
+      const unresolvedKey = getUnresolvedCompetitionKey_(resolved.raw_fields);
+      unresolvedCompetitionCounts[unresolvedKey] = (unresolvedCompetitionCounts[unresolvedKey] || 0) + 1;
     }
 
     rows.push({
@@ -189,8 +193,25 @@ function stageFetchSchedule(runId, config, oddsEvents) {
     summary,
     canonicalExamples,
     unresolvedCompetitions,
+    unresolvedCompetitionCounts,
+    topUnresolvedCompetitions: getTopCompetitionStrings_(unresolvedCompetitionCounts, 20),
     allowedCount: allowedEvents.length,
   };
+}
+
+function getUnresolvedCompetitionKey_(sourceFields) {
+  for (let i = 0; i < sourceFields.length; i += 1) {
+    const candidate = normalizeCompetitionValue_(sourceFields[i].value);
+    if (candidate) return candidate;
+  }
+  return 'unknown_competition_value';
+}
+
+function getTopCompetitionStrings_(countMap, topN) {
+  return Object.keys(countMap || {})
+    .map((key) => ({ competition: key, count: countMap[key] }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, topN || 10);
 }
 
 function deriveScheduleWindowFromOdds_(oddsEvents, config) {

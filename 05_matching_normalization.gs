@@ -85,23 +85,35 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
 
 function canonicalizeCompetition(name) {
   const resolved = resolveCompetitionTier_({ competition: name }, buildCompetitionTierResolverConfig_({
+    COMPETITION_SOURCE_FIELDS_JSON: DEFAULT_CONFIG.COMPETITION_SOURCE_FIELDS_JSON,
     GRAND_SLAM_ALIASES_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON,
     WTA_1000_ALIASES_JSON: DEFAULT_CONFIG.WTA_1000_ALIASES_JSON,
     WTA_500_ALIASES_JSON: DEFAULT_CONFIG.WTA_500_ALIASES_JSON,
+    COMPETITION_DENY_ALIASES_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIASES_JSON,
+    GRAND_SLAM_ALIAS_MAP_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIAS_MAP_JSON,
+    WTA_500_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON,
+    WTA_1000_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON,
+    COMPETITION_DENY_ALIAS_MAP_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON,
   }));
   return resolved.canonical_tier;
 }
 
 function buildCompetitionTierResolverConfig_(config) {
   return {
+    sourceFields: parseCompetitionSourceFieldsJson_(config.COMPETITION_SOURCE_FIELDS_JSON, DEFAULT_CONFIG.COMPETITION_SOURCE_FIELDS_JSON),
     grandSlamAliases: parseAliasListJson_(config.GRAND_SLAM_ALIASES_JSON, DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON),
     wta1000Aliases: parseAliasListJson_(config.WTA_1000_ALIASES_JSON, DEFAULT_CONFIG.WTA_1000_ALIASES_JSON),
     wta500Aliases: parseAliasListJson_(config.WTA_500_ALIASES_JSON, DEFAULT_CONFIG.WTA_500_ALIASES_JSON),
+    denyAliases: parseAliasListJson_(config.COMPETITION_DENY_ALIASES_JSON, DEFAULT_CONFIG.COMPETITION_DENY_ALIASES_JSON),
+    grandSlamAliasMap: parseAliasMapJson_(config.GRAND_SLAM_ALIAS_MAP_JSON, DEFAULT_CONFIG.GRAND_SLAM_ALIAS_MAP_JSON),
+    wta500AliasMap: parseAliasMapJson_(config.WTA_500_ALIAS_MAP_JSON, DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON),
+    wta1000AliasMap: parseAliasMapJson_(config.WTA_1000_ALIAS_MAP_JSON, DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON),
+    denyAliasMap: parseAliasMapJson_(config.COMPETITION_DENY_ALIAS_MAP_JSON, DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON),
   };
 }
 
 function resolveCompetitionTier_(event, resolverConfig) {
-  const sourceFields = buildCompetitionSourceFields_(event);
+  const sourceFields = buildCompetitionSourceFields_(event, resolverConfig);
 
   for (let i = 0; i < sourceFields.length; i += 1) {
     const source = sourceFields[i];
@@ -124,34 +136,118 @@ function resolveCompetitionTier_(event, resolverConfig) {
   };
 }
 
-function buildCompetitionSourceFields_(event) {
-  return [
-    { field: 'competition', value: event.competition || '', rule: 'direct_competition' },
-    { field: 'tournament', value: event.tournament || '', rule: 'tournament' },
-    { field: 'event_name', value: event.event_name || '', rule: 'event_name' },
-    { field: 'sport_title', value: event.sport_title || '', rule: 'sport_title' },
-    { field: 'home_team', value: event.home_team || '', rule: 'home_team' },
-    { field: 'away_team', value: event.away_team || '', rule: 'away_team' },
-  ];
+function buildCompetitionSourceFields_(event, resolverConfig) {
+  const sourceFields = resolverConfig && resolverConfig.sourceFields && resolverConfig.sourceFields.length
+    ? resolverConfig.sourceFields
+    : ['competition', 'tournament', 'event_name', 'sport_title', 'home_team', 'away_team'];
+
+  return sourceFields.map((fieldName) => ({
+    field: fieldName,
+    value: event[fieldName] || '',
+    rule: 'field_priority',
+  }));
 }
 
 function detectTierByValue_(rawValue, resolverConfig) {
   const norm = normalizeCompetitionValue_(rawValue);
   if (!norm) return 'UNKNOWN';
 
+  if (containsAlias_(norm, resolverConfig.denyAliases) || containsAliasMap_(norm, resolverConfig.denyAliasMap)) {
+    return detectDeniedTier_(norm, resolverConfig.denyAliasMap);
+  }
+
+  if (containsAliasMap_(norm, resolverConfig.grandSlamAliasMap) || containsAlias_(norm, resolverConfig.grandSlamAliases)) return 'GRAND_SLAM';
+  if (containsAliasMap_(norm, resolverConfig.wta1000AliasMap) || containsAlias_(norm, resolverConfig.wta1000Aliases)) return 'WTA_1000';
+  if (containsAliasMap_(norm, resolverConfig.wta500AliasMap) || containsAlias_(norm, resolverConfig.wta500Aliases)) return 'WTA_500';
   if (/wta\s*125/.test(norm)) return 'WTA_125';
-  if (containsAlias_(norm, resolverConfig.grandSlamAliases)) return 'GRAND_SLAM';
-  if (containsAlias_(norm, resolverConfig.wta1000Aliases)) return 'WTA_1000';
-  if (containsAlias_(norm, resolverConfig.wta500Aliases)) return 'WTA_500';
+  if (/wta\s*250/.test(norm)) return 'WTA_250';
+  if (/\bitf\b/.test(norm)) return 'ITF';
   if (/wta/.test(norm)) return 'OTHER';
   return 'UNKNOWN';
 }
 
 function containsAlias_(normalizedSource, aliases) {
+  if (!aliases || !aliases.length) return false;
   for (let i = 0; i < aliases.length; i += 1) {
     if (normalizedSource.indexOf(aliases[i]) !== -1) return true;
   }
   return false;
+}
+
+function containsAliasMap_(normalizedSource, aliasMap) {
+  if (!aliasMap) return false;
+  const tiers = Object.keys(aliasMap);
+  for (let i = 0; i < tiers.length; i += 1) {
+    const aliases = aliasMap[tiers[i]] || [];
+    if (containsAlias_(normalizedSource, aliases)) return true;
+  }
+  return false;
+}
+
+function detectDeniedTier_(normalizedSource, denyAliasMap) {
+  const tiers = Object.keys(denyAliasMap || {});
+  for (let i = 0; i < tiers.length; i += 1) {
+    const tier = tiers[i];
+    if (containsAlias_(normalizedSource, denyAliasMap[tier] || [])) return tier;
+  }
+  if (/wta\s*125/.test(normalizedSource)) return 'WTA_125';
+  if (/wta\s*250/.test(normalizedSource)) return 'WTA_250';
+  if (/\bitf\b/.test(normalizedSource)) return 'ITF';
+  return 'OTHER';
+}
+
+function parseCompetitionSourceFieldsJson_(jsonText, fallbackJsonText) {
+  let parsed = [];
+  try {
+    parsed = JSON.parse(jsonText || fallbackJsonText || '[]');
+  } catch (e) {
+    try {
+      parsed = JSON.parse(fallbackJsonText || '[]');
+    } catch (ignored) {
+      parsed = [];
+    }
+  }
+
+  if (!Array.isArray(parsed)) return ['competition', 'tournament', 'event_name', 'sport_title', 'home_team', 'away_team'];
+
+  const out = [];
+  const seen = {};
+  parsed.forEach((field) => {
+    const normalized = String(field || '').trim();
+    if (!normalized || seen[normalized]) return;
+    seen[normalized] = true;
+    out.push(normalized);
+  });
+
+  return out.length ? out : ['competition', 'tournament', 'event_name', 'sport_title', 'home_team', 'away_team'];
+}
+
+function parseAliasMapJson_(jsonText, fallbackJsonText) {
+  let parsed = {};
+  try {
+    parsed = JSON.parse(jsonText || fallbackJsonText || '{}');
+  } catch (e) {
+    try {
+      parsed = JSON.parse(fallbackJsonText || '{}');
+    } catch (ignored) {
+      parsed = {};
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+  const aliasMap = {};
+  Object.keys(parsed).forEach((tier) => {
+    const list = Array.isArray(parsed[tier]) ? parsed[tier] : [];
+    const deduped = {};
+    list.forEach((value) => {
+      const normalized = normalizeCompetitionValue_(value);
+      if (normalized) deduped[normalized] = true;
+    });
+    aliasMap[String(tier)] = Object.keys(deduped);
+  });
+
+  return aliasMap;
 }
 
 function normalizeCompetitionValue_(value) {
@@ -190,6 +286,8 @@ function isAllowedTournament(canonical, config) {
       ? { allowed: true, reason_code: 'allowed_wta125' }
       : { allowed: false, reason_code: 'rejected_wta125' };
   }
+  if (canonical === 'WTA_250') return { allowed: false, reason_code: 'rejected_wta250' };
+  if (canonical === 'ITF') return { allowed: false, reason_code: 'rejected_itf' };
   if (canonical === 'OTHER') return { allowed: false, reason_code: 'rejected_other_tier' };
   return { allowed: false, reason_code: 'rejected_unknown_competition' };
 }
