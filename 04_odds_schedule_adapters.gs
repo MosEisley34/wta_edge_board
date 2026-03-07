@@ -749,14 +749,16 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
   if (!config.ODDS_API_KEY) {
     return { events: [], reason_code: 'missing_api_key', api_credit_usage: 0, api_call_count: 0, credit_headers: {} };
   }
-  const url = config.ODDS_API_BASE_URL + '/sports/' + encodeURIComponent(config.ODDS_SPORT_KEY) + '/odds'
-    + '?apiKey=' + encodeURIComponent(config.ODDS_API_KEY)
-    + '&regions=' + encodeURIComponent(config.ODDS_REGIONS)
-    + '&markets=' + encodeURIComponent(config.ODDS_MARKETS)
-    + '&oddsFormat=' + encodeURIComponent(config.ODDS_ODDS_FORMAT)
-    + '&commenceTimeFrom=' + encodeURIComponent(new Date(startMs).toISOString())
-    + '&commenceTimeTo=' + encodeURIComponent(new Date(endMs).toISOString());
-  const fetched = callOddsApi_(url);
+  const fetched = callOddsApiWithSportKeyFallback_(config, {
+    endpoint: 'odds',
+    query: {
+      regions: config.ODDS_REGIONS,
+      markets: config.ODDS_MARKETS,
+      oddsFormat: config.ODDS_ODDS_FORMAT,
+      commenceTimeFrom: new Date(startMs).toISOString(),
+      commenceTimeTo: new Date(endMs).toISOString(),
+    },
+  });
   if (!fetched.ok) return fetched;
 
   const events = [];
@@ -842,9 +844,9 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
 
   return {
     events,
-    reason_code: 'odds_api_success',
+    reason_code: fetched.fallback_sport_key_used ? 'odds_api_success_sport_key_fallback' : 'odds_api_success',
     api_credit_usage: fetched.api_credit_usage,
-    api_call_count: 1,
+    api_call_count: fetched.api_call_count || 1,
     credit_headers: fetched.credit_headers,
     events_missing_h2h_outcomes: eventsMissingH2hOutcomes,
     bookmakers_without_h2h_market: bookmakersWithoutH2hMarket,
@@ -855,11 +857,13 @@ function fetchScheduleFromOddsApi_(config, window) {
   if (!config.ODDS_API_KEY) {
     return { events: [], reason_code: 'missing_api_key', api_credit_usage: 0, api_call_count: 0, credit_headers: {} };
   }
-  const url = config.ODDS_API_BASE_URL + '/sports/' + encodeURIComponent(config.ODDS_SPORT_KEY) + '/events'
-    + '?apiKey=' + encodeURIComponent(config.ODDS_API_KEY)
-    + '&commenceTimeFrom=' + encodeURIComponent(window.startIso)
-    + '&commenceTimeTo=' + encodeURIComponent(window.endIso);
-  const fetched = callOddsApi_(url);
+  const fetched = callOddsApiWithSportKeyFallback_(config, {
+    endpoint: 'events',
+    query: {
+      commenceTimeFrom: window.startIso,
+      commenceTimeTo: window.endIso,
+    },
+  });
   if (!fetched.ok) return fetched;
 
   return {
@@ -876,11 +880,83 @@ function fetchScheduleFromOddsApi_(config, window) {
       player_1: event.home_team || '',
       player_2: event.away_team || '',
     })),
-    reason_code: 'schedule_api_success',
+    reason_code: fetched.fallback_sport_key_used ? 'schedule_api_success_sport_key_fallback' : 'schedule_api_success',
     api_credit_usage: fetched.api_credit_usage,
-    api_call_count: 1,
+    api_call_count: fetched.api_call_count || 1,
     credit_headers: fetched.credit_headers,
   };
+}
+
+function callOddsApiWithSportKeyFallback_(config, opts) {
+  const primarySportKey = String(config.ODDS_SPORT_KEY || '').trim();
+  const primaryUrl = buildOddsApiSportUrl_(config, primarySportKey, opts.endpoint, opts.query);
+  const primary = callOddsApi_(primaryUrl);
+  if (primary.ok || primary.status_code !== 404) {
+    return primary;
+  }
+
+  const fallbackSportKey = discoverFallbackSportKey_(config, primarySportKey);
+  if (!fallbackSportKey || fallbackSportKey === primarySportKey) {
+    return primary;
+  }
+
+  const fallbackUrl = buildOddsApiSportUrl_(config, fallbackSportKey, opts.endpoint, opts.query);
+  const secondary = callOddsApi_(fallbackUrl);
+  secondary.api_call_count = Number(primary.api_call_count || 0) + Number(secondary.api_call_count || 0);
+  secondary.api_credit_usage = Number(primary.api_credit_usage || 0) + Number(secondary.api_credit_usage || 0);
+  secondary.credit_headers = secondary.credit_headers || primary.credit_headers;
+  if (secondary.ok) {
+    secondary.fallback_sport_key_used = fallbackSportKey;
+  }
+  return secondary;
+}
+
+function discoverFallbackSportKey_(config, requestedSportKey) {
+  const catalogResp = callOddsApi_(buildOddsApiUrl_(config, '/sports', { all: 'true' }));
+  if (!catalogResp.ok) return '';
+  const allSports = catalogResp.payload || [];
+  const normalizedRequested = normalizeSportKeyToken_(requestedSportKey);
+  const requestedTokens = normalizedRequested.split(/[^a-z0-9]+/).filter(Boolean);
+
+  let bestKey = '';
+  let bestScore = 0;
+
+  allSports.forEach((sport) => {
+    const key = String((sport && sport.key) || '').trim();
+    if (!key) return;
+    const normalized = normalizeSportKeyToken_(key);
+    let score = 0;
+    if (normalized === normalizedRequested) score += 100;
+    requestedTokens.forEach((token) => {
+      if (token && normalized.indexOf(token) !== -1) score += 10;
+    });
+    if (normalized.indexOf('wta') !== -1) score += 5;
+    if (score > bestScore) {
+      bestScore = score;
+      bestKey = key;
+    }
+  });
+
+  return bestScore >= 20 ? bestKey : '';
+}
+
+function normalizeSportKeyToken_(value) {
+  return String(value || '').toLowerCase().trim().replace(/[^a-z0-9_]+/g, '_');
+}
+
+function buildOddsApiSportUrl_(config, sportKey, endpoint, query) {
+  return buildOddsApiUrl_(config, '/sports/' + encodeURIComponent(sportKey) + '/' + endpoint, query);
+}
+
+function buildOddsApiUrl_(config, path, query) {
+  const baseUrl = String(config.ODDS_API_BASE_URL || '').replace(/\/+$/, '');
+  const qp = Object.assign({}, query || {}, { apiKey: config.ODDS_API_KEY });
+  const parts = [];
+  Object.keys(qp).forEach((key) => {
+    if (qp[key] === undefined || qp[key] === null || qp[key] === '') return;
+    parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(String(qp[key])));
+  });
+  return baseUrl + path + (parts.length ? ('?' + parts.join('&')) : '');
 }
 
 function callOddsApi_(url) {
@@ -900,6 +976,7 @@ function callOddsApi_(url) {
   if (status < 200 || status >= 300) {
     return {
       ok: false,
+      status_code: status,
       payload: [],
       reason_code: hasCreditHeaders ? 'api_http_' + status : 'credit_header_missing',
       api_credit_usage: creditHeaders.requests_last || 0,
@@ -910,6 +987,7 @@ function callOddsApi_(url) {
 
   return {
     ok: true,
+    status_code: status,
     payload: JSON.parse(resp.getContentText() || '[]'),
     api_credit_usage: creditHeaders.requests_last || 0,
     api_call_count: 1,
