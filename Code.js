@@ -39,6 +39,7 @@ const DEFAULT_CONFIG = {
   STAKE_UNITS_MED: '1',
   STAKE_UNITS_STRONG: '1.5',
   SIGNAL_COOLDOWN_MIN: '180',
+  MINUTES_BEFORE_START_CUTOFF: '60',
   STALE_ODDS_WINDOW_MIN: '60',
 };
 
@@ -383,7 +384,11 @@ function stageFetchOdds(runId, config) {
     market: event.market,
     outcome: event.outcome,
     price: event.price,
-    odds_timestamp: event.odds_timestamp.toISOString(),
+    odds_timestamp: event.odds_updated_time.toISOString(),
+    odds_updated_time: event.odds_updated_time.toISOString(),
+    odds_updated_epoch_ms: event.odds_updated_time.getTime(),
+    provider_odds_updated_time: event.provider_odds_updated_time ? event.provider_odds_updated_time.toISOString() : '',
+    ingestion_timestamp: event.ingestion_timestamp.toISOString(),
     commence_time: event.commence_time.toISOString(),
     commence_epoch_ms: event.commence_time.getTime(),
     competition: event.competition,
@@ -615,6 +620,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows) {
     duplicate_suppressed: 0,
     cooldown_suppressed: 0,
     edge_below_threshold: 0,
+    too_close_to_start_skip: 0,
     stale_odds_skip: 0,
   };
   const signalState = getSignalState_();
@@ -631,8 +637,23 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows) {
     const impliedProbability = oddsPriceToImpliedProbability_(event.price);
     if (impliedProbability === null) return;
 
+    const startCutoffMs = config.MINUTES_BEFORE_START_CUTOFF * 60000;
+    if (event.commence_time.getTime() <= nowMs + startCutoffMs) {
+      rows.push(buildSignalRow_(runId, config, event, match, {
+        notification_outcome: 'too_close_to_start_skip',
+        model_probability: estimateFairProbability_(impliedProbability, match.competition_tier),
+        market_implied_probability: impliedProbability,
+        edge_value: 0,
+        edge_tier: 'NONE',
+        stake_units: 0,
+        signal_hash: buildSignalHash_(event.event_id, event.market, event.outcome, config.MODEL_VERSION),
+      }));
+      reasonCounts.too_close_to_start_skip += 1;
+      return;
+    }
+
     const staleThresholdMs = config.STALE_ODDS_WINDOW_MIN * 60000;
-    if (event.commence_time.getTime() <= nowMs + staleThresholdMs) {
+    if (nowMs - event.odds_updated_time.getTime() > staleThresholdMs) {
       rows.push(buildSignalRow_(runId, config, event, match, {
         notification_outcome: 'stale_odds_skip',
         model_probability: estimateFairProbability_(impliedProbability, match.competition_tier),
@@ -694,6 +715,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows) {
       edge_value: row.edge_value,
       edge_tier: row.edge_tier,
       timestamp: row.created_at,
+      commence_time: row.commence_time,
+      odds_updated_time: row.odds_updated_time,
       model_version: row.model_version,
       notification_outcome: row.notification_outcome,
     })),
@@ -726,7 +749,8 @@ function stagePersist(runId, payload) {
   const start = Date.now();
 
   upsertSheetRows_(SHEETS.RAW_ODDS, [
-    'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'commence_time',
+    'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
+    'odds_updated_epoch_ms', 'provider_odds_updated_time', 'ingestion_timestamp', 'commence_time',
     'commence_epoch_ms', 'competition', 'player_1', 'player_2', 'source', 'updated_at',
   ], payload.odds);
 
@@ -776,7 +800,8 @@ function ensureTabsAndConfig_() {
     'lock_event', 'debounce_event', 'trigger_event', 'exception', 'stack', 'stage_summaries',
   ]);
   ensureHeaders_(SHEETS.RAW_ODDS, [
-    'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'commence_time',
+    'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
+    'odds_updated_epoch_ms', 'provider_odds_updated_time', 'ingestion_timestamp', 'commence_time',
     'commence_epoch_ms', 'competition', 'player_1', 'player_2', 'source', 'updated_at',
   ]);
   ensureHeaders_(SHEETS.RAW_SCHEDULE, [
@@ -873,6 +898,7 @@ function getConfig_() {
     STAKE_UNITS_MED: toNumber_(config.STAKE_UNITS_MED, 1),
     STAKE_UNITS_STRONG: toNumber_(config.STAKE_UNITS_STRONG, 1.5),
     SIGNAL_COOLDOWN_MIN: toNumber_(config.SIGNAL_COOLDOWN_MIN, 180),
+    MINUTES_BEFORE_START_CUTOFF: toNumber_(config.MINUTES_BEFORE_START_CUTOFF, 60),
     STALE_ODDS_WINDOW_MIN: toNumber_(config.STALE_ODDS_WINDOW_MIN, 60),
   };
 }
@@ -1006,6 +1032,8 @@ function buildSignalRow_(runId, config, event, match, detail) {
     signal_hash: detail.signal_hash,
     notification_outcome: detail.notification_outcome,
     reason_code: detail.notification_outcome,
+    commence_time: event.commence_time.toISOString(),
+    odds_updated_time: event.odds_updated_time.toISOString(),
     created_at: new Date().toISOString(),
   };
 }
@@ -1313,10 +1341,16 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
         if (!outcome.name || !Number.isFinite(price)) return;
 
         const side = String(outcome.name);
+        const providerOddsUpdatedTime = outcome.last_update || h2hMarket.last_update || bookmaker.last_update || '';
+        const parsedProviderOddsUpdatedTime = providerOddsUpdatedTime ? new Date(providerOddsUpdatedTime) : null;
+        const providerOddsTimestamp = parsedProviderOddsUpdatedTime && !Number.isNaN(parsedProviderOddsUpdatedTime.getTime())
+          ? parsedProviderOddsUpdatedTime
+          : null;
+
         const candidate = {
           bookmaker: bookmaker.key || '',
           price,
-          odds_timestamp: new Date(outcome.last_update || h2hMarket.last_update || bookmaker.last_update || event.commence_time),
+          provider_odds_updated_time: providerOddsTimestamp,
         };
 
         if (!bestByOutcome[side]) {
@@ -1344,6 +1378,7 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
 
     sides.forEach((side) => {
       const best = bestByOutcome[side].best;
+      const ingestionTimestamp = new Date();
       events.push({
         event_id: event.id,
         bookmaker: best.bookmaker,
@@ -1351,7 +1386,9 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
         market: 'h2h',
         outcome: side,
         price: best.price,
-        odds_timestamp: best.odds_timestamp,
+        provider_odds_updated_time: best.provider_odds_updated_time,
+        ingestion_timestamp: ingestionTimestamp,
+        odds_updated_time: best.provider_odds_updated_time || ingestionTimestamp,
         commence_time: new Date(event.commence_time),
         competition: event.tournament || event.sport_title || '',
         tournament: event.tournament || '',
@@ -1467,7 +1504,10 @@ function serializeOddsEvent_(event) {
     market: event.market,
     outcome: event.outcome,
     price: event.price,
-    odds_timestamp: event.odds_timestamp.toISOString(),
+    odds_timestamp: event.odds_updated_time.toISOString(),
+    odds_updated_time: event.odds_updated_time.toISOString(),
+    provider_odds_updated_time: event.provider_odds_updated_time ? event.provider_odds_updated_time.toISOString() : '',
+    ingestion_timestamp: event.ingestion_timestamp.toISOString(),
     commence_time: event.commence_time.toISOString(),
     competition: event.competition,
     tournament: event.tournament || '',
@@ -1488,7 +1528,10 @@ function deserializeOddsEvent_(event) {
     market: event.market,
     outcome: event.outcome,
     price: event.price,
-    odds_timestamp: new Date(event.odds_timestamp || event.commence_time),
+    provider_odds_updated_time: event.provider_odds_updated_time ? new Date(event.provider_odds_updated_time) : null,
+    ingestion_timestamp: new Date(event.ingestion_timestamp || event.odds_updated_time || event.odds_timestamp || event.commence_time),
+    odds_updated_time: new Date(event.odds_updated_time || event.odds_timestamp || event.ingestion_timestamp || event.commence_time),
+    odds_timestamp: new Date(event.odds_updated_time || event.odds_timestamp || event.ingestion_timestamp || event.commence_time),
     commence_time: new Date(event.commence_time),
     competition: event.competition,
     tournament: event.tournament || '',
