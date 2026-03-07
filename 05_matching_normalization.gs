@@ -160,7 +160,7 @@ function detectTierByValue_(rawValue, resolverConfig) {
   if (containsAliasMap_(norm, resolverConfig.wta1000AliasMap) || containsAlias_(norm, resolverConfig.wta1000Aliases)) return 'WTA_1000';
   if (containsAliasMap_(norm, resolverConfig.wta500AliasMap) || containsAlias_(norm, resolverConfig.wta500Aliases)) return 'WTA_500';
   if (/wta\s*125/.test(norm)) return 'WTA_125';
-  if (/wta\s*250/.test(norm)) return 'WTA_250';
+  if (isWta250Competition_(norm)) return 'WTA_250';
   if (/\bitf\b/.test(norm)) return 'ITF';
   if (/wta/.test(norm)) return 'OTHER';
   return 'UNKNOWN';
@@ -191,9 +191,15 @@ function detectDeniedTier_(normalizedSource, denyAliasMap) {
     if (containsAlias_(normalizedSource, denyAliasMap[tier] || [])) return tier;
   }
   if (/wta\s*125/.test(normalizedSource)) return 'WTA_125';
-  if (/wta\s*250/.test(normalizedSource)) return 'WTA_250';
+  if (isWta250Competition_(normalizedSource)) return 'WTA_250';
   if (/\bitf\b/.test(normalizedSource)) return 'ITF';
   return 'OTHER';
+}
+
+function isWta250Competition_(normalizedSource) {
+  if (!normalizedSource) return false;
+  if (!/\bwta\b/.test(normalizedSource)) return false;
+  return /\b250\b/.test(normalizedSource) || /\bwta\s+international\b/.test(normalizedSource);
 }
 
 function parseCompetitionSourceFieldsJson_(jsonText, fallbackJsonText) {
@@ -286,7 +292,11 @@ function isAllowedTournament(canonical, config) {
       ? { allowed: true, reason_code: 'allowed_wta125' }
       : { allowed: false, reason_code: 'rejected_wta125' };
   }
-  if (canonical === 'WTA_250') return { allowed: false, reason_code: 'rejected_wta250' };
+  if (canonical === 'WTA_250') {
+    return config.ALLOW_WTA_250
+      ? { allowed: true, reason_code: 'allowed_wta250' }
+      : { allowed: false, reason_code: 'rejected_wta250' };
+  }
   if (canonical === 'ITF') return { allowed: false, reason_code: 'rejected_itf' };
   if (canonical === 'OTHER') return { allowed: false, reason_code: 'rejected_other_tier' };
   return { allowed: false, reason_code: 'rejected_unknown_competition' };
