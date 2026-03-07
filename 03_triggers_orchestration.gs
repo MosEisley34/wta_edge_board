@@ -12,17 +12,19 @@ function installOrUpdateTriggers() {
   const scriptProps = PropertiesService.getScriptProperties();
   const existingSignature = scriptProps.getProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE);
   const existingPipelineTriggers = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === spec.functionName);
+  const runId = buildRunId_();
 
   if (existingSignature === signature && existingPipelineTriggers.length > 0) {
     appendLogRow_({
       row_type: 'ops',
-      run_id: buildRunId_(),
+      run_id: runId,
       stage: 'installOrUpdateTriggers',
       status: 'success',
       reason_code: 'trigger_noop',
       message: 'Trigger signature unchanged and trigger already exists.',
       trigger_event: 'trigger_noop',
     });
+    verifyTriggerInstallation_(spec, signature, runId, 'trigger_noop');
     return;
   }
 
@@ -30,15 +32,138 @@ function installOrUpdateTriggers() {
   ScriptApp.newTrigger(spec.functionName).timeBased().everyMinutes(spec.everyMinutes).create();
   scriptProps.setProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE, signature);
 
+  const currentTriggerCount = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === spec.functionName).length;
+
   appendLogRow_({
     row_type: 'ops',
-    run_id: buildRunId_(),
+    run_id: runId,
     stage: 'installOrUpdateTriggers',
     status: 'success',
     reason_code: 'trigger_reinstalled',
-    message: 'Pipeline trigger installed/refreshed with 15-minute schedule.',
+    message: JSON.stringify({
+      action: 'install_or_refresh',
+      trigger_count: currentTriggerCount,
+      schedule_minutes: spec.everyMinutes,
+    }),
     trigger_event: 'trigger_reinstalled',
   });
+
+  verifyTriggerInstallation_(spec, signature, runId, 'trigger_reinstalled');
+}
+
+function installAndVerifyRunEdgeBoardTrigger() {
+  installOrUpdateTriggers();
+  return diagnosticsTriggerInstallHealth();
+}
+
+function diagnosticsTriggerInstallHealth() {
+  const spec = {
+    functionName: 'runEdgeBoard',
+    everyMinutes: 15,
+  };
+  const signature = JSON.stringify({
+    version: 1,
+    functionName: spec.functionName,
+    type: 'clock',
+    everyMinutes: spec.everyMinutes,
+  });
+  return verifyTriggerInstallation_(spec, signature, buildRunId_(), 'trigger_health_check');
+}
+
+function verifyTriggerInstallation_(spec, signature, runId, installAction) {
+  const scriptProps = PropertiesService.getScriptProperties();
+  const matchingTriggers = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === spec.functionName);
+  const signatureStored = scriptProps.getProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE) === signature;
+  const triggerCount = matchingTriggers.length;
+  const lockState = checkScriptLockClear_();
+  const debounceState = checkDebounceState_();
+  const nextRunEstimateIso = estimateNextRunIso_(spec.everyMinutes);
+
+  const verificationPassed = triggerCount === 1 && signatureStored;
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: runId,
+    stage: 'verifyTriggerInstallation',
+    status: verificationPassed ? 'success' : 'error',
+    reason_code: verificationPassed ? 'trigger_install_verified' : 'trigger_install_invalid',
+    message: JSON.stringify({
+      install_action: installAction || 'unknown',
+      trigger_count: triggerCount,
+      signature_stored: signatureStored,
+      expected_exactly_one_trigger: true,
+    }),
+    trigger_event: verificationPassed ? 'trigger_install_verified' : 'trigger_install_invalid',
+  });
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: runId,
+    stage: 'postInstallTriggerHealth',
+    status: 'ok',
+    reason_code: 'trigger_post_install_health',
+    message: JSON.stringify({
+      trigger_count: triggerCount,
+      next_run_estimate: nextRunEstimateIso,
+      debounce_clear: debounceState.debounce_clear,
+      lock_clear: lockState.lock_clear,
+      lock_check_error: lockState.lock_check_error,
+    }),
+  });
+
+  return {
+    run_id: runId,
+    trigger_count: triggerCount,
+    signature_stored: signatureStored,
+    next_run_estimate: nextRunEstimateIso,
+    debounce_clear: debounceState.debounce_clear,
+    debounce_wait_ms_remaining: debounceState.debounce_wait_ms_remaining,
+    lock_clear: lockState.lock_clear,
+    lock_check_error: lockState.lock_check_error,
+    verification_passed: verificationPassed,
+  };
+}
+
+function checkDebounceState_() {
+  const scriptProps = PropertiesService.getScriptProperties();
+  const config = getConfig_();
+  const nowMs = Date.now();
+  const lastRunTs = Number(scriptProps.getProperty(PROPS.LAST_PIPELINE_RUN_TS) || 0);
+  const debounceMs = Number(config.DUPLICATE_DEBOUNCE_MS || 0);
+  const elapsed = nowMs - lastRunTs;
+  const remaining = lastRunTs > 0 ? Math.max(0, debounceMs - elapsed) : 0;
+
+  return {
+    debounce_clear: remaining === 0,
+    debounce_wait_ms_remaining: remaining,
+  };
+}
+
+function checkScriptLockClear_() {
+  const lock = LockService.getScriptLock();
+  let hasLock = false;
+  try {
+    hasLock = lock.tryLock(1);
+    return {
+      lock_clear: hasLock,
+      lock_check_error: '',
+    };
+  } catch (e) {
+    return {
+      lock_clear: false,
+      lock_check_error: String(e && e.message ? e.message : e),
+    };
+  } finally {
+    if (hasLock) {
+      lock.releaseLock();
+    }
+  }
+}
+
+function estimateNextRunIso_(everyMinutes) {
+  const minutes = Number(everyMinutes || 0);
+  if (!minutes || minutes <= 0) return '';
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
 function removePipelineTriggers() {
