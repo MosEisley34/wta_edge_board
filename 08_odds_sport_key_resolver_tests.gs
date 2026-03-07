@@ -299,6 +299,112 @@ function testCallOddsApi_malformedJson_returnsParseFailure_() {
   }
 }
 
+function testCallOddsApi_objectPayloadWithListLikeField_isNormalized_() {
+  const originalFetch = UrlFetchApp.fetch;
+
+  UrlFetchApp.fetch = function () {
+    return {
+      getResponseCode: function () { return 200; },
+      getAllHeaders: function () {
+        return {
+          'x-requests-used': '11',
+          'x-requests-remaining': '489',
+          'x-requests-last': '1',
+        };
+      },
+      getContentText: function () {
+        return JSON.stringify({
+          events: [
+            { id: 'evt_obj_1', commence_time: '2025-01-01T12:00:00Z' },
+          ],
+        });
+      },
+    };
+  };
+
+  try {
+    const result = callOddsApi_('https://api.the-odds-api.com/v4/sports?apiKey=secret123', { debug: true });
+    assertEquals_(true, result.ok);
+    assertEquals_(200, result.status_code);
+    assertEquals_(1, result.payload.length);
+    assertEquals_('evt_obj_1', result.payload[0].id);
+    assertEquals_('api_ok', result.reason_code);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
+function testCallOddsApi_stringPayload_returnsUnexpectedShapeFailure_() {
+  const originalFetch = UrlFetchApp.fetch;
+
+  UrlFetchApp.fetch = function () {
+    return {
+      getResponseCode: function () { return 200; },
+      getAllHeaders: function () {
+        return {
+          'x-requests-used': '12',
+          'x-requests-remaining': '488',
+          'x-requests-last': '1',
+        };
+      },
+      getContentText: function () { return JSON.stringify('not_an_array'); },
+    };
+  };
+
+  try {
+    const result = callOddsApi_('https://api.the-odds-api.com/v4/sports?apiKey=secret123', { debug: true });
+    assertEquals_(false, result.ok);
+    assertEquals_(200, result.status_code);
+    assertArrayEquals_([], result.payload);
+    assertEquals_('api_unexpected_payload_shape', result.reason_code);
+    assertEquals_(1, result.api_credit_usage);
+    assertEquals_(1, result.api_call_count);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
+function testFetchOddsWindowFromOddsApi_nonArrayPayloadDoesNotThrow_() {
+  const originalResolver = resolveActiveWtaSportKeys_;
+  const originalCaller = callOddsApi_;
+
+  resolveActiveWtaSportKeys_ = function () {
+    return {
+      sport_keys: ['tennis_wta_us_open'],
+      source: 'catalog',
+      fallback: 'none',
+    };
+  };
+
+  callOddsApi_ = function () {
+    return {
+      ok: true,
+      status_code: 200,
+      payload: 'unexpected-string-shape',
+      reason_code: 'api_ok',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: { requests_last: 1 },
+    };
+  };
+
+  try {
+    const result = fetchOddsWindowFromOddsApi_({
+      ODDS_API_KEY: 'test',
+      ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+      ODDS_REGIONS: 'us',
+      ODDS_MARKETS: 'h2h',
+      ODDS_ODDS_FORMAT: 'american',
+    }, Date.parse('2025-01-01T00:00:00Z'), Date.parse('2025-01-02T00:00:00Z'));
+
+    assertEquals_('odds_api_success', result.reason_code);
+    assertEquals_(0, result.events.length);
+  } finally {
+    resolveActiveWtaSportKeys_ = originalResolver;
+    callOddsApi_ = originalCaller;
+  }
+}
+
 function testRunEdgeBoard_debounceSkipStillWorks_() {
   const harness = createRunEdgeBoardTestHarness_({
     nowMs: 1_000_000,
