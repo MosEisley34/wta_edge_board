@@ -195,24 +195,25 @@ function stageFetchSchedule(runId, config, oddsEvents) {
       selected_source: 'cached_fresh',
     };
   } else if (!forceRefresh && cacheResult && Number.isFinite(cacheResult.cached_at_ms) && (now - cacheResult.cached_at_ms < refreshMinMs)) {
+    const stalePayloadHasEvents = !stalePayloadIsEmpty;
     scheduleResp = {
       events: cacheResult.events,
       reason_code: 'schedule_cache_stale_refresh_throttled',
       api_credit_usage: 0,
       api_call_count: 0,
       credit_headers: {},
-      selected_source: 'cached_stale_fallback',
+      selected_source: stalePayloadHasEvents ? 'cached_stale_fallback' : 'fresh_api',
     };
 
     if (stalePayloadIsEmpty && !staleEmptyForcedLiveAlreadyAttemptedThisRun) {
       const forcedLiveResp = fetchScheduleFromOddsApi_(config, window);
       liveFetchHappened = true;
       staleFallbackEmptyForcedLive = 1;
+      scheduleResp = Object.assign({}, forcedLiveResp, {
+        selected_source: 'fresh_api',
+      });
 
       if (forcedLiveResp.reason_code === 'schedule_api_success' || forcedLiveResp.reason_code === 'schedule_api_success_sport_key_fallback') {
-        scheduleResp = Object.assign({}, forcedLiveResp, {
-          selected_source: 'fresh_api',
-        });
         setCachedSchedulePayload_('SCHEDULE_WINDOW_PAYLOAD', scheduleResp.events, {
           cached_at_ms: now,
           source: 'fresh_api',
@@ -221,10 +222,6 @@ function stageFetchSchedule(runId, config, oddsEvents) {
           window_start_ms: new Date(window.startIso).getTime(),
           window_end_ms: new Date(window.endIso).getTime(),
         });
-      } else {
-        scheduleResp.api_credit_usage = Number(scheduleResp.api_credit_usage || 0) + Number(forcedLiveResp.api_credit_usage || 0);
-        scheduleResp.api_call_count = Number(scheduleResp.api_call_count || 0) + Number(forcedLiveResp.api_call_count || 0);
-        scheduleResp.credit_headers = mergeCreditHeaders_(scheduleResp.credit_headers || {}, forcedLiveResp.credit_headers || {});
       }
     }
   } else {
