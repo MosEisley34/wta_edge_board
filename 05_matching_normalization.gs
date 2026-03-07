@@ -99,16 +99,34 @@ function canonicalizeCompetition(name) {
 }
 
 function buildCompetitionTierResolverConfig_(config) {
+  const denyAliases = parseAliasListJson_(config.COMPETITION_DENY_ALIASES_JSON, DEFAULT_CONFIG.COMPETITION_DENY_ALIASES_JSON);
+  const denyAliasMap = parseAliasMapJson_(config.COMPETITION_DENY_ALIAS_MAP_JSON, DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON);
+
+  if (config.ALLOW_WTA_250) {
+    delete denyAliasMap.WTA_250;
+    return {
+      sourceFields: parseCompetitionSourceFieldsJson_(config.COMPETITION_SOURCE_FIELDS_JSON, DEFAULT_CONFIG.COMPETITION_SOURCE_FIELDS_JSON),
+      grandSlamAliases: parseAliasListJson_(config.GRAND_SLAM_ALIASES_JSON, DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON),
+      wta1000Aliases: parseAliasListJson_(config.WTA_1000_ALIASES_JSON, DEFAULT_CONFIG.WTA_1000_ALIASES_JSON),
+      wta500Aliases: parseAliasListJson_(config.WTA_500_ALIASES_JSON, DEFAULT_CONFIG.WTA_500_ALIASES_JSON),
+      denyAliases: denyAliases.filter((alias) => !isWta250Competition_(alias)),
+      grandSlamAliasMap: parseAliasMapJson_(config.GRAND_SLAM_ALIAS_MAP_JSON, DEFAULT_CONFIG.GRAND_SLAM_ALIAS_MAP_JSON),
+      wta500AliasMap: parseAliasMapJson_(config.WTA_500_ALIAS_MAP_JSON, DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON),
+      wta1000AliasMap: parseAliasMapJson_(config.WTA_1000_ALIAS_MAP_JSON, DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON),
+      denyAliasMap,
+    };
+  }
+
   return {
     sourceFields: parseCompetitionSourceFieldsJson_(config.COMPETITION_SOURCE_FIELDS_JSON, DEFAULT_CONFIG.COMPETITION_SOURCE_FIELDS_JSON),
     grandSlamAliases: parseAliasListJson_(config.GRAND_SLAM_ALIASES_JSON, DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON),
     wta1000Aliases: parseAliasListJson_(config.WTA_1000_ALIASES_JSON, DEFAULT_CONFIG.WTA_1000_ALIASES_JSON),
     wta500Aliases: parseAliasListJson_(config.WTA_500_ALIASES_JSON, DEFAULT_CONFIG.WTA_500_ALIASES_JSON),
-    denyAliases: parseAliasListJson_(config.COMPETITION_DENY_ALIASES_JSON, DEFAULT_CONFIG.COMPETITION_DENY_ALIASES_JSON),
+    denyAliases,
     grandSlamAliasMap: parseAliasMapJson_(config.GRAND_SLAM_ALIAS_MAP_JSON, DEFAULT_CONFIG.GRAND_SLAM_ALIAS_MAP_JSON),
     wta500AliasMap: parseAliasMapJson_(config.WTA_500_ALIAS_MAP_JSON, DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON),
     wta1000AliasMap: parseAliasMapJson_(config.WTA_1000_ALIAS_MAP_JSON, DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON),
-    denyAliasMap: parseAliasMapJson_(config.COMPETITION_DENY_ALIAS_MAP_JSON, DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON),
+    denyAliasMap,
   };
 }
 

@@ -31,7 +31,7 @@ const DEFAULT_CONFIG = {
   MATCH_TIME_TOLERANCE_MIN: '45',
   MATCH_FALLBACK_EXPANSION_MIN: '120',
   ALLOW_WTA_125: 'false',
-  ALLOW_WTA_250: 'false',
+  ALLOW_WTA_250: 'true',
   COMPETITION_SOURCE_FIELDS_JSON: '["competition","tournament","event_name","sport_title","home_team","away_team"]',
   GRAND_SLAM_ALIASES_JSON: '["australian open","roland garros","french open","wimbledon","us open"]',
   WTA_1000_ALIASES_JSON: '["wta 1000","wta-1000","masters 1000"]',
