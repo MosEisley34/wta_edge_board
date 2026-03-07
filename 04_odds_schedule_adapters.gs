@@ -502,6 +502,13 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
       eligible_match_count: 0,
       no_games_behavior: String(config.ODDS_NO_GAMES_BEHAVIOR || 'SKIP').toUpperCase(),
       runtime_credit_mode: runtimeConfig.mode,
+      bootstrap_mode: false,
+      bootstrap_window_hours: 0,
+      bootstrap_cached_payload_has_events: false,
+      bootstrap_cached_payload_source: '',
+      previous_refresh_mode: '',
+      transitioned_from_bootstrap_to_active_window: false,
+      current_refresh_mode: 'credit_hard_limit_skip',
       should_fetch_odds: false,
       decision_reason_code: 'credit_hard_limit_skip_odds',
       decision_message: 'Remaining API credits are below hard limit; running observation-only mode.',
@@ -530,6 +537,16 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     .map((event) => event.start_time.getTime())
     .filter((value) => Number.isFinite(value));
 
+  const cachedPayload = getCachedPayload_('ODDS_WINDOW_PAYLOAD') || {};
+  const cacheHasEvents = !!((cachedPayload.events || []).length || Number(cachedPayload.event_count || 0) > 0 || cachedPayload.has_games);
+  const stalePayload = getStateJson_('ODDS_WINDOW_STALE_PAYLOAD') || {};
+  const staleHasEvents = !!((stalePayload.events || []).length || Number(stalePayload.event_count || 0) > 0 || stalePayload.has_games);
+  const bootstrapCachedPayloadHasEvents = cacheHasEvents || staleHasEvents;
+  const bootstrapWindowHours = Math.max(12, Number(config.ODDS_BOOTSTRAP_LOOKAHEAD_HOURS || 18));
+  const bootstrapWindowMs = bootstrapWindowHours * 60 * 60 * 1000;
+  const previousRefreshMeta = getStateJson_('ODDS_REFRESH_MODE_META') || {};
+  const previousRefreshMode = String(previousRefreshMeta.current_refresh_mode || '');
+
   const decisionBase = {
     schedule_reason_code: scheduleResp.reason_code,
     schedule_api_credit_usage: scheduleResp.api_credit_usage || 0,
@@ -538,9 +555,32 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     eligible_match_count: eligibleStarts.length,
     no_games_behavior: String(config.ODDS_NO_GAMES_BEHAVIOR || 'SKIP').toUpperCase(),
     runtime_credit_mode: runtimeConfig.mode,
+    bootstrap_mode: false,
+    bootstrap_window_hours: bootstrapWindowHours,
+    bootstrap_cached_payload_has_events: bootstrapCachedPayloadHasEvents,
+    bootstrap_cached_payload_source: cacheHasEvents ? (cachedPayload.source || 'script_cache') : (stalePayload.source || ''),
+    previous_refresh_mode: previousRefreshMode,
+    transitioned_from_bootstrap_to_active_window: false,
   };
 
   if (!eligibleStarts.length) {
+    if (decisionBase.no_games_behavior === 'SKIP' && !bootstrapCachedPayloadHasEvents) {
+      return Object.assign({}, decisionBase, {
+        should_fetch_odds: true,
+        decision_reason_code: 'odds_refresh_bootstrap_fetch',
+        decision_message: 'No eligible schedule matches and cache/stale payload has no events; forcing bootstrap odds fetch window.',
+        selected_source: 'bootstrap_static_window',
+        bootstrap_mode: true,
+        current_refresh_mode: 'bootstrap',
+        odds_fetch_window: {
+          startMs: nowMs,
+          endMs: nowMs + bootstrapWindowMs,
+        },
+        refresh_window_start_ms: nowMs,
+        refresh_window_end_ms: nowMs + bootstrapWindowMs,
+      });
+    }
+
     if (decisionBase.no_games_behavior === 'FALLBACK_STATIC_WINDOW') {
       return Object.assign({}, decisionBase, {
         should_fetch_odds: true,
@@ -553,6 +593,7 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
         },
         refresh_window_start_ms: nowMs,
         refresh_window_end_ms: nowMs + lookaheadMs,
+        current_refresh_mode: 'fallback_static_window',
       });
     }
 
@@ -563,6 +604,7 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
       odds_fetch_window: null,
       refresh_window_start_ms: null,
       refresh_window_end_ms: null,
+      current_refresh_mode: 'no_games_skipped',
     });
   }
 
@@ -579,6 +621,8 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     refresh_window_end_ms: refreshWindowEndMs,
     selected_source: inRefreshWindow ? 'fresh_api' : '',
     should_fetch_odds: inRefreshWindow,
+    current_refresh_mode: inRefreshWindow ? 'active_window' : 'outside_active_window',
+    transitioned_from_bootstrap_to_active_window: inRefreshWindow && previousRefreshMode === 'bootstrap',
     decision_reason_code: inRefreshWindow ? 'odds_refresh_executed_in_window' : 'odds_refresh_skipped_outside_window',
     decision_message: inRefreshWindow
       ? 'Current time is inside schedule-derived refresh window.'
