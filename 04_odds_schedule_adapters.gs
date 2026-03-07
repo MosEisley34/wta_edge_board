@@ -811,7 +811,9 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
     Logger.log(JSON.stringify(sanitizeForLog_({
       event: 'odds_api_request_validation_failed',
       reason_code: queryValidation.reason_code,
+      detail: queryValidation.detail,
       query_params: buildOddsApiDiagnosticQueryParams_(query),
+      request_param_diagnostics: queryValidation.diagnostics,
       validation_errors: queryValidation.errors,
     })));
     return {
@@ -1226,37 +1228,100 @@ function validateOddsApiOddsQuery_(query) {
   if (!oddsFormat) errors.push('odds_format_required');
   if (oddsFormat && ['american', 'decimal'].indexOf(oddsFormat) < 0) errors.push('odds_format_invalid');
 
-  const fromTime = new Date(commenceTimeFrom);
-  const toTime = new Date(commenceTimeTo);
-  const hasValidFrom = commenceTimeFrom && !Number.isNaN(fromTime.getTime());
-  const hasValidTo = commenceTimeTo && !Number.isNaN(toTime.getTime());
-  if (!hasValidFrom) errors.push('commence_time_from_invalid');
-  if (!hasValidTo) errors.push('commence_time_to_invalid');
-  if (hasValidFrom && hasValidTo && fromTime.getTime() >= toTime.getTime()) errors.push('commence_time_window_invalid');
+  const diagnostics = buildOddsApiTimeWindowDiagnostics_(commenceTimeFrom, commenceTimeTo);
+  if (!diagnostics.from_present) errors.push('commence_time_from_required');
+  if (!diagnostics.to_present) errors.push('commence_time_to_required');
+  if (diagnostics.from_present && !diagnostics.from_is_rfc3339_utc) errors.push('commence_time_from_not_rfc3339_utc');
+  if (diagnostics.to_present && !diagnostics.to_is_rfc3339_utc) errors.push('commence_time_to_not_rfc3339_utc');
+  if (diagnostics.from_parsed_ms === null && diagnostics.from_present && diagnostics.from_is_rfc3339_utc) errors.push('commence_time_from_invalid');
+  if (diagnostics.to_parsed_ms === null && diagnostics.to_present && diagnostics.to_is_rfc3339_utc) errors.push('commence_time_to_invalid');
+  if (diagnostics.has_valid_window_bounds && !diagnostics.from_before_to) errors.push('commence_time_window_invalid');
+  if (diagnostics.has_valid_window_bounds && diagnostics.duration_minutes < 0) errors.push('commence_time_duration_negative');
 
   const timeErrors = {
+    commence_time_from_required: true,
+    commence_time_to_required: true,
+    commence_time_from_not_rfc3339_utc: true,
+    commence_time_to_not_rfc3339_utc: true,
     commence_time_from_invalid: true,
     commence_time_to_invalid: true,
     commence_time_window_invalid: true,
+    commence_time_duration_negative: true,
   };
 
   const reasonCode = errors.some(function (err) { return !!timeErrors[err]; }) ? 'invalid_time_window' : 'invalid_query_params';
   return {
     ok: errors.length === 0,
     reason_code: reasonCode,
+    detail: errors.length ? errors[0] : '',
     errors: errors,
+    diagnostics: diagnostics,
   };
 }
 
 function buildOddsApiDiagnosticQueryParams_(query) {
   const q = query || {};
+  const diagnostics = buildOddsApiTimeWindowDiagnostics_(String(q.commenceTimeFrom || ''), String(q.commenceTimeTo || ''));
   return {
     markets: String(q.markets || ''),
     regions: String(q.regions || ''),
     oddsFormat: String(q.oddsFormat || ''),
     commenceTimeFrom: String(q.commenceTimeFrom || ''),
     commenceTimeTo: String(q.commenceTimeTo || ''),
+    duration_minutes: diagnostics.duration_minutes,
+    known_good_cli_pattern: diagnostics.known_good_cli_pattern,
+    known_good_cli_match: diagnostics.known_good_cli_match,
+    known_good_cli_mismatches: diagnostics.known_good_cli_mismatches,
   };
+}
+
+function buildOddsApiTimeWindowDiagnostics_(commenceTimeFrom, commenceTimeTo) {
+  const fromValue = String(commenceTimeFrom || '').trim();
+  const toValue = String(commenceTimeTo || '').trim();
+  const rfc3339UtcRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+
+  const fromIsRfc3339Utc = !!fromValue && rfc3339UtcRegex.test(fromValue);
+  const toIsRfc3339Utc = !!toValue && rfc3339UtcRegex.test(toValue);
+  const fromParsedMs = fromIsRfc3339Utc ? parseUtcIsoMillis_(fromValue) : null;
+  const toParsedMs = toIsRfc3339Utc ? parseUtcIsoMillis_(toValue) : null;
+  const hasValidWindowBounds = fromParsedMs !== null && toParsedMs !== null;
+  const durationMs = hasValidWindowBounds ? (toParsedMs - fromParsedMs) : null;
+  const durationMinutes = durationMs === null ? null : (durationMs / 60000);
+
+  const knownGoodPattern = {
+    sport_key: 'tennis_wta_indian_wells',
+    commenceTimeFrom_format: 'RFC3339_UTC',
+    commenceTimeTo_format: 'RFC3339_UTC',
+    ordering_rule: 'commenceTimeFrom_before_commenceTimeTo',
+  };
+  const knownGoodMismatches = [];
+  if (!fromIsRfc3339Utc) knownGoodMismatches.push('commenceTimeFrom_format');
+  if (!toIsRfc3339Utc) knownGoodMismatches.push('commenceTimeTo_format');
+  if (hasValidWindowBounds && fromParsedMs >= toParsedMs) knownGoodMismatches.push('window_ordering');
+
+  return {
+    commenceTimeFrom: fromValue,
+    commenceTimeTo: toValue,
+    from_present: !!fromValue,
+    to_present: !!toValue,
+    from_is_rfc3339_utc: fromIsRfc3339Utc,
+    to_is_rfc3339_utc: toIsRfc3339Utc,
+    from_parsed_ms: fromParsedMs,
+    to_parsed_ms: toParsedMs,
+    has_valid_window_bounds: hasValidWindowBounds,
+    from_before_to: hasValidWindowBounds ? fromParsedMs < toParsedMs : false,
+    duration_minutes: durationMinutes,
+    known_good_cli_pattern: knownGoodPattern,
+    known_good_cli_match: knownGoodMismatches.length === 0,
+    known_good_cli_mismatches: knownGoodMismatches,
+  };
+}
+
+function parseUtcIsoMillis_(isoUtc) {
+  const parsed = new Date(String(isoUtc || ''));
+  if (Number.isNaN(parsed.getTime())) return null;
+  if (parsed.toISOString() !== String(isoUtc)) return null;
+  return parsed.getTime();
 }
 
 function parseQueryParamsFromUrl_(url) {

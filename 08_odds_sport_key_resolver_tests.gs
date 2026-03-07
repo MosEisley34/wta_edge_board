@@ -447,7 +447,10 @@ function testValidateOddsApiOddsQuery_validWindowAndParams_() {
   });
 
   assertEquals_(true, result.ok);
+  assertEquals_('', result.detail);
   assertEquals_(0, result.errors.length);
+  assertEquals_(true, result.diagnostics.known_good_cli_match);
+  assertEquals_(1440, result.diagnostics.duration_minutes);
 }
 
 function testValidateOddsApiOddsQuery_invalidWindowFormatsTimeReason_() {
@@ -461,7 +464,8 @@ function testValidateOddsApiOddsQuery_invalidWindowFormatsTimeReason_() {
 
   assertEquals_(false, result.ok);
   assertEquals_('invalid_time_window', result.reason_code);
-  assertEquals_(true, result.errors.indexOf('commence_time_from_invalid') >= 0);
+  assertEquals_('commence_time_from_not_rfc3339_utc', result.detail);
+  assertEquals_(true, result.errors.indexOf('commence_time_from_not_rfc3339_utc') >= 0);
 }
 
 function testValidateOddsApiOddsQuery_startAfterEndIsInvalidWindow_() {
@@ -475,7 +479,41 @@ function testValidateOddsApiOddsQuery_startAfterEndIsInvalidWindow_() {
 
   assertEquals_(false, result.ok);
   assertEquals_('invalid_time_window', result.reason_code);
+  assertEquals_('commence_time_window_invalid', result.detail);
   assertEquals_(true, result.errors.indexOf('commence_time_window_invalid') >= 0);
+  assertEquals_(true, result.diagnostics.known_good_cli_mismatches.indexOf('window_ordering') >= 0);
+}
+
+function testValidateOddsApiOddsQuery_missingTimeBoundsAreRequired_() {
+  const result = validateOddsApiOddsQuery_({
+    regions: 'us',
+    markets: 'h2h',
+    oddsFormat: 'american',
+    commenceTimeFrom: '',
+    commenceTimeTo: '',
+  });
+
+  assertEquals_(false, result.ok);
+  assertEquals_('invalid_time_window', result.reason_code);
+  assertEquals_('commence_time_from_required', result.detail);
+  assertEquals_(true, result.errors.indexOf('commence_time_from_required') >= 0);
+  assertEquals_(true, result.errors.indexOf('commence_time_to_required') >= 0);
+}
+
+function testValidateOddsApiOddsQuery_rejectsNonUtcOffsetTimes_() {
+  const result = validateOddsApiOddsQuery_({
+    regions: 'us',
+    markets: 'h2h',
+    oddsFormat: 'american',
+    commenceTimeFrom: '2025-01-01T00:00:00-08:00',
+    commenceTimeTo: '2025-01-01T01:00:00-08:00',
+  });
+
+  assertEquals_(false, result.ok);
+  assertEquals_('invalid_time_window', result.reason_code);
+  assertEquals_('commence_time_from_not_rfc3339_utc', result.detail);
+  assertEquals_(true, result.errors.indexOf('commence_time_from_not_rfc3339_utc') >= 0);
+  assertEquals_(true, result.errors.indexOf('commence_time_to_not_rfc3339_utc') >= 0);
 }
 
 function testValidateOddsApiOddsQuery_missingParamsReturnsInvalidQueryParams_() {
@@ -509,7 +547,80 @@ function testBuildOddsApiDiagnosticQueryParams_returnsExpectedSubset_() {
   assertEquals_('american', diagnostic.oddsFormat);
   assertEquals_('2025-01-01T00:00:00.000Z', diagnostic.commenceTimeFrom);
   assertEquals_('2025-01-01T04:00:00.000Z', diagnostic.commenceTimeTo);
+  assertEquals_(240, diagnostic.duration_minutes);
+  assertEquals_(true, diagnostic.known_good_cli_match);
+  assertArrayEquals_([], diagnostic.known_good_cli_mismatches);
   assertEquals_(undefined, diagnostic.apiKey);
+}
+
+function testBuildOddsApiDiagnosticQueryParams_surfacesKnownGoodCliDiffs_() {
+  const diagnostic = buildOddsApiDiagnosticQueryParams_({
+    markets: 'h2h',
+    regions: 'us',
+    oddsFormat: 'american',
+    commenceTimeFrom: '2025-01-01T02:00:00.000Z',
+    commenceTimeTo: '2025-01-01T01:00:00.000Z',
+  });
+
+  assertEquals_(-60, diagnostic.duration_minutes);
+  assertEquals_(false, diagnostic.known_good_cli_match);
+  assertEquals_(true, diagnostic.known_good_cli_mismatches.indexOf('window_ordering') >= 0);
+}
+
+function testResolveOddsWindowForPipeline_bootstrapWindowHasPositiveUtcDuration_() {
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+
+  fetchScheduleFromOddsApi_ = function () {
+    return {
+      events: [],
+      reason_code: 'schedule_active_keys_no_events',
+      api_credit_usage: 0,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  updateCreditStateFromHeaders_ = function () {};
+  getCachedPayload_ = function () { return null; };
+  getStateJson_ = function () { return null; };
+  getCreditAwareRuntimeConfig_ = function () { return { mode: 'OFF', snapshot: {} }; };
+
+  const nowMs = Date.parse('2025-03-01T00:00:00.000Z');
+  try {
+    const decision = resolveOddsWindowForPipeline_({
+      ODDS_NO_GAMES_BEHAVIOR: 'SKIP',
+      ODDS_BOOTSTRAP_LOOKAHEAD_HOURS: 6,
+      LOOKAHEAD_HOURS: 12,
+      ODDS_WINDOW_PRE_FIRST_MIN: 45,
+      ODDS_WINDOW_POST_LAST_MIN: 180,
+      API_CREDIT_HARD_LIMIT: 0,
+      CREDIT_USAGE_ENFORCEMENT_MODE: 'OFF',
+    }, nowMs);
+
+    assertEquals_(true, decision.bootstrap_mode);
+    assertEquals_(nowMs, decision.refresh_window_start_ms);
+    assertEquals_(nowMs + (12 * 60 * 60000), decision.refresh_window_end_ms);
+
+    const query = {
+      regions: 'us',
+      markets: 'h2h',
+      oddsFormat: 'american',
+      commenceTimeFrom: new Date(decision.refresh_window_start_ms).toISOString(),
+      commenceTimeTo: new Date(decision.refresh_window_end_ms).toISOString(),
+    };
+    const validation = validateOddsApiOddsQuery_(query);
+    assertEquals_(true, validation.ok);
+    assertEquals_(720, validation.diagnostics.duration_minutes);
+  } finally {
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    getCachedPayload_ = originalGetCachedPayload;
+    getStateJson_ = originalGetStateJson;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+  }
 }
 
 function testClassifyOddsApiClientErrorReason_splitsClientErrorCodes_() {
