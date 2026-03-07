@@ -171,12 +171,20 @@ function runEdgeBoard() {
         players: matchStage.canonicalizationExamples.slice(0, 25),
       },
       unresolved_competitions: scheduleStage.unresolvedCompetitions.slice(0, 50),
+      top_unresolved_competitions: scheduleStage.topUnresolvedCompetitions,
       sample_unmatched_cases: matchStage.unmatched.slice(0, 20),
       top_rejection_reasons: getTopReasonCodes_(combinedReasonCodes, 10),
       reason_codes: combinedReasonCodes,
     };
 
     setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
+    setStateValue_('LAST_RUN_COMPETITION_DIAGNOSTICS_JSON', JSON.stringify({
+      run_id: runId,
+      generated_at: new Date().toISOString(),
+      source_fields_priority: (scheduleStage.canonicalExamples[0] && scheduleStage.canonicalExamples[0].resolver_fields || []).map((f) => f.field),
+      top_unresolved_competitions: scheduleStage.topUnresolvedCompetitions,
+      unresolved_competition_counts: scheduleStage.unresolvedCompetitionCounts,
+    }, null, 2));
 
     appendLogRow_({
       row_type: 'summary',
