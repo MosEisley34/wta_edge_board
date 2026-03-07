@@ -121,6 +121,14 @@ function runEdgeBoard() {
     scriptProps.setProperty(PROPS.LAST_PIPELINE_RUN_TS, String(nowMs));
 
     const oddsWindowDecision = resolveOddsWindowForPipeline_(config, nowMs);
+    setStateValue_('ODDS_REFRESH_MODE_META', JSON.stringify({
+      run_id: runId,
+      decided_at: new Date().toISOString(),
+      current_refresh_mode: oddsWindowDecision.current_refresh_mode || '',
+      decision_reason_code: oddsWindowDecision.decision_reason_code || '',
+      bootstrap_mode: !!oddsWindowDecision.bootstrap_mode,
+      transitioned_from_bootstrap_to_active_window: !!oddsWindowDecision.transitioned_from_bootstrap_to_active_window,
+    }));
     appendLogRow_({
       row_type: 'ops',
       run_id: runId,
@@ -130,13 +138,33 @@ function runEdgeBoard() {
       message: oddsWindowDecision.decision_message,
     });
 
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: runId,
+      stage: 'odds_bootstrap_metadata',
+      status: 'success',
+      reason_code: oddsWindowDecision.bootstrap_mode ? 'odds_refresh_bootstrap_fetch' : 'odds_refresh_bootstrap_inactive',
+      message: JSON.stringify({
+        bootstrap_mode: !!oddsWindowDecision.bootstrap_mode,
+        bootstrap_window_hours: Number(oddsWindowDecision.bootstrap_window_hours || 0),
+        bootstrap_cached_payload_has_events: !!oddsWindowDecision.bootstrap_cached_payload_has_events,
+        bootstrap_cached_payload_source: oddsWindowDecision.bootstrap_cached_payload_source || '',
+        current_refresh_mode: oddsWindowDecision.current_refresh_mode || '',
+        previous_refresh_mode: oddsWindowDecision.previous_refresh_mode || '',
+        transitioned_from_bootstrap_to_active_window: !!oddsWindowDecision.transitioned_from_bootstrap_to_active_window,
+        transition_state: oddsWindowDecision.transitioned_from_bootstrap_to_active_window
+          ? 'bootstrap_to_active_window'
+          : (oddsWindowDecision.bootstrap_mode ? 'bootstrap_active' : 'active_window_or_skipped'),
+      }),
+    });
+
     const oddsStage = oddsWindowDecision.should_fetch_odds
       ? stageFetchOdds(runId, config, oddsWindowDecision.odds_fetch_window)
       : buildSkippedOddsStage_(runId, oddsWindowDecision.decision_reason_code, oddsWindowDecision.decision_message);
     appendStageLog_(runId, oddsStage.summary);
 
-    const selectedOddsSource = oddsWindowDecision.selected_source === 'fallback_static_window'
-      ? 'fallback_static_window'
+    const selectedOddsSource = (oddsWindowDecision.selected_source === 'fallback_static_window' || oddsWindowDecision.selected_source === 'bootstrap_static_window')
+      ? oddsWindowDecision.selected_source
       : (oddsStage.selected_source || 'cached_stale_fallback');
     appendLogRow_({
       row_type: 'ops',
@@ -190,6 +218,16 @@ function runEdgeBoard() {
         refresh_window_start: oddsWindowDecision.refresh_window_start_ms ? new Date(oddsWindowDecision.refresh_window_start_ms).toISOString() : '',
         refresh_window_end: oddsWindowDecision.refresh_window_end_ms ? new Date(oddsWindowDecision.refresh_window_end_ms).toISOString() : '',
         eligible_match_count: oddsWindowDecision.eligible_match_count || 0,
+        bootstrap_mode: !!oddsWindowDecision.bootstrap_mode,
+        bootstrap_window_hours: Number(oddsWindowDecision.bootstrap_window_hours || 0),
+        bootstrap_cached_payload_has_events: !!oddsWindowDecision.bootstrap_cached_payload_has_events,
+        bootstrap_cached_payload_source: oddsWindowDecision.bootstrap_cached_payload_source || '',
+        current_refresh_mode: oddsWindowDecision.current_refresh_mode || '',
+        previous_refresh_mode: oddsWindowDecision.previous_refresh_mode || '',
+        transitioned_from_bootstrap_to_active_window: !!oddsWindowDecision.transitioned_from_bootstrap_to_active_window,
+        transition_state: oddsWindowDecision.transitioned_from_bootstrap_to_active_window
+          ? 'bootstrap_to_active_window'
+          : (oddsWindowDecision.bootstrap_mode ? 'bootstrap_active' : 'active_window_or_skipped'),
       },
       stage_summaries: [
         oddsStage.summary,
