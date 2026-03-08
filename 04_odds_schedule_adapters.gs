@@ -903,17 +903,37 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
         fetched.window_request_start_ms = fallbackQueryBuild.window_start_ms;
         fetched.window_request_end_ms = fallbackQueryBuild.window_end_ms;
       } else {
+        const relaxedFallback = fetchOddsWindowWithoutWindowParams_(config, fallbackQueryBuild.query, {
+          start_ms: fallbackQueryBuild.window_start_ms,
+          end_ms: fallbackQueryBuild.window_end_ms,
+        });
+        if (relaxedFallback.ok) {
+          fetched.ok = true;
+          fetched.status_code = relaxedFallback.status_code;
+          fetched.payload = relaxedFallback.payload;
+          fetched.reason_code = 'invalid_time_window_recovered_relaxed_query';
+          fetched.api_credit_usage = Number(fetched.api_credit_usage || 0) + Number(fallbackFetched.api_credit_usage || 0) + Number(relaxedFallback.api_credit_usage || 0);
+          fetched.api_call_count = Number(fetched.api_call_count || 0) + Number(fallbackFetched.api_call_count || 0) + Number(relaxedFallback.api_call_count || 0);
+          fetched.credit_headers = relaxedFallback.credit_headers;
+          fetched.selected_sport_keys = relaxedFallback.selected_sport_keys;
+          fetched.selected_sport_key_count = relaxedFallback.selected_sport_key_count;
+          fetched.selected_sport_key_source = relaxedFallback.selected_sport_key_source;
+          fetched.selected_sport_key_fallback = relaxedFallback.selected_sport_key_fallback;
+          fetched.window_request_start_ms = fallbackQueryBuild.window_start_ms;
+          fetched.window_request_end_ms = fallbackQueryBuild.window_end_ms;
+        } else {
         return {
           events: [],
           reason_code: 'invalid_time_window_retry_failed',
           detail: fallbackFetched.detail || fetched.detail,
           detail_code: fallbackFetched.detail_code || fetched.detail_code,
-          api_credit_usage: Number(fetched.api_credit_usage || 0) + Number(fallbackFetched.api_credit_usage || 0),
-          api_call_count: Number(fetched.api_call_count || 0) + Number(fallbackFetched.api_call_count || 0),
-          credit_headers: fallbackFetched.credit_headers || fetched.credit_headers || {},
+          api_credit_usage: Number(fetched.api_credit_usage || 0) + Number(fallbackFetched.api_credit_usage || 0) + Number(relaxedFallback.api_credit_usage || 0),
+          api_call_count: Number(fetched.api_call_count || 0) + Number(fallbackFetched.api_call_count || 0) + Number(relaxedFallback.api_call_count || 0),
+          credit_headers: relaxedFallback.credit_headers || fallbackFetched.credit_headers || fetched.credit_headers || {},
           window_request_start_ms: fallbackQueryBuild.window_start_ms,
           window_request_end_ms: fallbackQueryBuild.window_end_ms,
         };
+        }
       }
     }
   }
@@ -1006,8 +1026,8 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
 
   return {
     events,
-    reason_code: fetched.reason_code === 'invalid_time_window_recovered'
-      ? 'invalid_time_window_recovered'
+    reason_code: (fetched.reason_code === 'invalid_time_window_recovered' || fetched.reason_code === 'invalid_time_window_recovered_relaxed_query')
+      ? fetched.reason_code
       : (fetched.selected_sport_key_fallback && fetched.selected_sport_key_fallback !== 'none' ? 'odds_api_success_sport_key_fallback' : 'odds_api_success'),
     api_credit_usage: fetched.api_credit_usage,
     api_call_count: fetched.api_call_count || 1,
@@ -1017,6 +1037,31 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
     window_request_start_ms: Number(fetched.window_request_start_ms || initialWindowMeta.window_request_start_ms),
     window_request_end_ms: Number(fetched.window_request_end_ms || initialWindowMeta.window_request_end_ms),
   };
+}
+
+function fetchOddsWindowWithoutWindowParams_(config, query, expectedWindow) {
+  const relaxedQuery = Object.assign({}, query || {});
+  delete relaxedQuery.commenceTimeFrom;
+  delete relaxedQuery.commenceTimeTo;
+
+  const fetched = callOddsApiWithSportKeyFallback_(config, {
+    endpoint: 'odds',
+    query: relaxedQuery,
+  });
+  if (!fetched.ok) return fetched;
+
+  const parsedStartMs = Number(expectedWindow && expectedWindow.start_ms);
+  const parsedEndMs = Number(expectedWindow && expectedWindow.end_ms);
+  const hasWindow = Number.isFinite(parsedStartMs) && Number.isFinite(parsedEndMs) && parsedEndMs > parsedStartMs;
+  if (!hasWindow) return fetched;
+
+  const payload = ensureArrayPayload_(fetched.payload) || [];
+  fetched.payload = payload.filter(function (event) {
+    if (!event || !event.commence_time) return false;
+    const commenceMs = new Date(event.commence_time).getTime();
+    return Number.isFinite(commenceMs) && commenceMs >= parsedStartMs && commenceMs <= parsedEndMs;
+  });
+  return fetched;
 }
 
 function fetchScheduleFromOddsApi_(config, window, opts) {

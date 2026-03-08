@@ -97,8 +97,8 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     };
   }
 
-  const baseUrl = String(config.PLAYER_STATS_API_BASE_URL || '').trim();
-  if (!baseUrl) {
+  const sourceConfigs = parsePlayerStatsSourceConfigs_(config);
+  if (!sourceConfigs.length) {
     return {
       ok: false,
       reason_code: 'player_stats_provider_not_configured',
@@ -107,7 +107,60 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     };
   }
 
-  const endpoint = baseUrl.replace(/\/$/, '') + '/players/stats/batch';
+  const attempts = [];
+  let totalApiCalls = 0;
+  const normalizedMaps = [];
+
+  sourceConfigs.forEach(function (sourceConfig) {
+    const result = fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTime);
+    attempts.push(result.reason_code || 'player_stats_unknown_source_result');
+    totalApiCalls += Number(result.api_call_count || 0);
+    if (result.ok && result.stats_by_player) normalizedMaps.push(result.stats_by_player);
+  });
+
+  if (normalizedMaps.length) {
+    const merged = mergePlayerStatsMaps_(normalizedMaps, players);
+    return {
+      ok: true,
+      reason_code: normalizedMaps.length > 1 ? 'player_stats_multi_source_success' : 'player_stats_api_success',
+      detail: attempts.join(','),
+      stats_by_player: merged,
+      api_credit_usage: 0,
+      api_call_count: totalApiCalls,
+    };
+  }
+
+  const scraped = fetchPlayerStatsFromScrapeSources_(config, players);
+  if (scraped.ok) {
+    return {
+      ok: true,
+      reason_code: 'player_stats_scrape_success',
+      detail: attempts.join(','),
+      stats_by_player: scraped.stats_by_player || {},
+      api_credit_usage: 0,
+      api_call_count: totalApiCalls + Number(scraped.api_call_count || 0),
+    };
+  }
+
+  return {
+    ok: false,
+    reason_code: attempts.length ? attempts[attempts.length - 1] : 'player_stats_provider_not_configured',
+    detail: attempts.join(','),
+    api_credit_usage: 0,
+    api_call_count: totalApiCalls + Number(scraped.api_call_count || 0),
+  };
+}
+
+function parsePlayerStatsSourceConfigs_(config) {
+  const baseValue = String(config.PLAYER_STATS_API_BASE_URL || '').trim();
+  if (!baseValue) return [];
+  return baseValue.split(',')
+    .map(function (value) { return String(value || '').trim().replace(/\/+$/, ''); })
+    .filter(function (value) { return !!value; });
+}
+
+function fetchPlayerStatsFromSingleSource_(baseUrl, config, players, asOfTime) {
+  const endpoint = String(baseUrl || '').replace(/\/$/, '') + '/players/stats/batch';
   const body = JSON.stringify({
     players: players,
     as_of_time: asOfTime.toISOString(),
@@ -133,7 +186,6 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     return {
       ok: false,
       reason_code: 'player_stats_transport_error',
-      api_credit_usage: 0,
       api_call_count: 1,
     };
   }
@@ -143,7 +195,6 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     return {
       ok: false,
       reason_code: 'player_stats_http_' + status,
-      api_credit_usage: 0,
       api_call_count: 1,
     };
   }
@@ -155,19 +206,124 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     return {
       ok: false,
       reason_code: 'player_stats_parse_error',
-      api_credit_usage: 0,
       api_call_count: 1,
     };
   }
 
-  const normalized = normalizePlayerStatsResponse_(parsed, players);
   return {
     ok: true,
     reason_code: 'player_stats_api_success',
-    stats_by_player: normalized,
-    api_credit_usage: 0,
+    stats_by_player: normalizePlayerStatsResponse_(parsed, players),
     api_call_count: 1,
   };
+}
+
+function fetchPlayerStatsFromScrapeSources_(config, canonicalPlayers) {
+  const templates = parseScrapeUrlTemplates_(config.PLAYER_STATS_SCRAPE_URLS);
+  if (!templates.length || !canonicalPlayers.length) {
+    return {
+      ok: false,
+      reason_code: 'player_stats_scrape_not_configured',
+      stats_by_player: {},
+      api_call_count: 0,
+    };
+  }
+
+  const statsByPlayer = {};
+  let apiCallCount = 0;
+
+  canonicalPlayers.forEach(function (playerName) {
+    const slug = buildPlayerSlug_(playerName);
+    let playerStats = null;
+
+    templates.forEach(function (template) {
+      if (playerStats) return;
+      const url = String(template || '').replace(/\{player\}/g, encodeURIComponent(slug));
+      if (!url) return;
+
+      apiCallCount += 1;
+      try {
+        const response = UrlFetchApp.fetch(url, {
+          method: 'get',
+          muteHttpExceptions: true,
+          headers: { Accept: 'text/html,application/json' },
+        });
+
+        if (Number(response.getResponseCode() || 0) < 200 || Number(response.getResponseCode() || 0) >= 300) return;
+        playerStats = extractStatsFromScrapeContent_(response.getContentText() || '', playerName);
+      } catch (e) {
+        playerStats = null;
+      }
+    });
+
+    if (playerStats) statsByPlayer[playerName] = playerStats;
+  });
+
+  return {
+    ok: Object.keys(statsByPlayer).length > 0,
+    reason_code: Object.keys(statsByPlayer).length > 0 ? 'player_stats_scrape_success' : 'player_stats_scrape_empty',
+    stats_by_player: statsByPlayer,
+    api_call_count: apiCallCount,
+  };
+}
+
+function parseScrapeUrlTemplates_(value) {
+  return String(value || '').split(',')
+    .map(function (part) { return String(part || '').trim(); })
+    .filter(function (part) { return !!part; });
+}
+
+function buildPlayerSlug_(canonicalPlayerName) {
+  return String(canonicalPlayerName || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function extractStatsFromScrapeContent_(content, playerName) {
+  const text = String(content || '');
+  if (!text) return null;
+
+  const statLineRegex = /(ranking|rank|recent_form|recent win rate|surface_win_rate|hold_pct|break_pct)\s*[:=]\s*([0-9]{1,3}(?:\.[0-9]+)?)/ig;
+  const values = {};
+  let match;
+  while ((match = statLineRegex.exec(text)) !== null) {
+    values[String(match[1] || '').toLowerCase().replace(/\s+/g, '_')] = Number(match[2]);
+  }
+
+  if (!Object.keys(values).length) return null;
+  const normalized = normalizePlayerStatsResponse_([Object.assign({ player_name: playerName }, values)], [playerName]);
+  return normalized[canonicalizePlayerName_(playerName, {})] || null;
+}
+
+function mergePlayerStatsMaps_(maps, canonicalPlayers) {
+  const merged = {};
+  const players = dedupePlayerNames_(canonicalPlayers || []);
+
+  players.forEach(function (player) {
+    let ranking = null;
+    let recentForm = null;
+    let surfaceWinRate = null;
+    let holdPct = null;
+    let breakPct = null;
+
+    maps.forEach(function (statsMap) {
+      const stats = statsMap && statsMap[player];
+      if (!stats) return;
+      if (ranking === null && stats.ranking !== null && stats.ranking !== undefined) ranking = stats.ranking;
+      if (recentForm === null && stats.recent_form !== null && stats.recent_form !== undefined) recentForm = stats.recent_form;
+      if (surfaceWinRate === null && stats.surface_win_rate !== null && stats.surface_win_rate !== undefined) surfaceWinRate = stats.surface_win_rate;
+      if (holdPct === null && stats.hold_pct !== null && stats.hold_pct !== undefined) holdPct = stats.hold_pct;
+      if (breakPct === null && stats.break_pct !== null && stats.break_pct !== undefined) breakPct = stats.break_pct;
+    });
+
+    merged[player] = {
+      ranking: ranking,
+      recent_form: recentForm,
+      surface_win_rate: surfaceWinRate,
+      hold_pct: holdPct,
+      break_pct: breakPct,
+    };
+  });
+
+  return merged;
 }
 
 function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers) {

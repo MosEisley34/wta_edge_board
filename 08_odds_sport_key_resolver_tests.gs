@@ -238,6 +238,54 @@ function testFetchOddsWindowFromOddsApi_invalidWindow_onlyRetriesOnce_() {
   }
 }
 
+function testFetchOddsWindowFromOddsApi_invalidWindow_recoversWithRelaxedQuery_() {
+  const originalCaller = callOddsApiWithSportKeyFallback_;
+  const originalNow = Date.now;
+  const calls = [];
+
+  Date.now = function () { return 1735689600123; };
+  callOddsApiWithSportKeyFallback_ = function (config, opts) {
+    calls.push(opts);
+    if (calls.length < 3) {
+      return {
+        ok: false,
+        reason_code: 'invalid_time_window',
+        api_credit_usage: 1,
+        api_call_count: 1,
+        credit_headers: {},
+      };
+    }
+    return {
+      ok: true,
+      status_code: 200,
+      payload: [{ id: 'evt_1', commence_time: '2025-01-01T03:00:00Z', bookmakers: [] }],
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: { requests_last: 1 },
+      selected_sport_keys: ['tennis_wta_us_open'],
+      selected_sport_key_count: 1,
+      selected_sport_key_source: 'cache',
+      selected_sport_key_fallback: 'none',
+    };
+  };
+
+  try {
+    const result = fetchOddsWindowFromOddsApi_({
+      ODDS_API_KEY: 'test',
+      ODDS_REGIONS: 'us',
+      ODDS_MARKETS: 'h2h',
+      ODDS_ODDS_FORMAT: 'decimal',
+      ODDS_BOOTSTRAP_LOOKAHEAD_HOURS: 18,
+    }, 1735689601123, 1735689602123);
+
+    assertEquals_('invalid_time_window_recovered_relaxed_query', result.reason_code);
+    assertEquals_(3, calls.length);
+  } finally {
+    callOddsApiWithSportKeyFallback_ = originalCaller;
+    Date.now = originalNow;
+  }
+}
+
 
 function testBuildOddsApiOddsQuery_normalizesToSecondAndMinWindow_() {
   const result = buildOddsApiOddsQuery_({
@@ -1574,8 +1622,10 @@ function runStageFetchPlayerStatsScenario_(options) {
   const opts = options || {};
   const originalFetchPlayerStatsBatch = fetchPlayerStatsBatch_;
   const originalBuildStageSummary = buildStageSummary_;
+  const originalGetStateJson = getStateJson_;
+  const originalDeserializeScheduleEvent = deserializeScheduleEvent_;
 
-  const oddsEvents = [{
+  const defaultOddsEvents = [{
     event_id: 'odds_evt_1',
     player_1: 'Player One',
     player_2: 'Player Two',
@@ -1586,7 +1636,7 @@ function runStageFetchPlayerStatsScenario_(options) {
     bookmaker: 'book_a',
     price: 1.9,
   }];
-  const matchRows = [{
+  const defaultMatchRows = [{
     odds_event_id: 'odds_evt_1',
     schedule_event_id: 'sched_evt_1',
     competition_tier: 'WTA_500',
@@ -1613,8 +1663,15 @@ function runStageFetchPlayerStatsScenario_(options) {
       api_credit_usage: values.api_credit_usage,
     };
   };
+  getStateJson_ = function (key) {
+    if (key === 'SCHEDULE_WINDOW_STALE_PAYLOAD') return opts.schedulePayload || null;
+    return null;
+  };
+  deserializeScheduleEvent_ = function (event) { return event; };
 
   try {
+    const oddsEvents = opts.oddsEvents || defaultOddsEvents;
+    const matchRows = opts.matchRows || defaultMatchRows;
     return {
       stage: stageFetchPlayerStats('run_test_player_stats', {}, oddsEvents, matchRows),
       fetchPlayers: fetchPlayers,
@@ -1622,7 +1679,32 @@ function runStageFetchPlayerStatsScenario_(options) {
   } finally {
     fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
     buildStageSummary_ = originalBuildStageSummary;
+    getStateJson_ = originalGetStateJson;
+    deserializeScheduleEvent_ = originalDeserializeScheduleEvent;
   }
+}
+
+function testStageFetchPlayerStats_scheduleSeedWritesRowsWithoutOdds_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    oddsEvents: [],
+    matchRows: [],
+    schedulePayload: {
+      events: [{ event_id: 'sched_evt_1', player_1: 'Player One', player_2: 'Player Two' }],
+    },
+    batchResult: {
+      stats_by_player: {
+        'player one': { ranking: 15, recent_form: 0.55, surface_win_rate: 0.58, hold_pct: 0.66, break_pct: 0.31 },
+        'player two': { ranking: 22, recent_form: 0.52, surface_win_rate: 0.54, hold_pct: 0.64, break_pct: 0.29 },
+      },
+      provider_available: true,
+      api_credit_usage: 1,
+      reason_code: 'player_stats_api_success',
+    },
+  });
+
+  assertEquals_(2, result.stage.rows.length);
+  assertEquals_(true, result.stage.byOddsEventId.sched_evt_1.synthetic_schedule_seed);
+  assertEquals_(2, result.fetchPlayers.length);
 }
 
 function testNormalizePlayerStatsResponse_mapsCoreFields_() {
@@ -1642,6 +1724,40 @@ function testNormalizePlayerStatsResponse_mapsCoreFields_() {
   assertEquals_(0.58, normalized['player one'].surface_win_rate);
   assertEquals_(0.71, normalized['player one'].hold_pct);
   assertEquals_(0.39, normalized['player one'].break_pct);
+}
+
+function testFetchPlayerStatsFromProvider_multiSourceMerge_() {
+  const originalFetch = UrlFetchApp.fetch;
+  const calls = [];
+  UrlFetchApp.fetch = function (url, opts) {
+    calls.push(url);
+    if (url.indexOf('provider-a') >= 0) {
+      return {
+        getResponseCode: function () { return 200; },
+        getContentText: function () { return JSON.stringify({ data: [{ player_name: 'Player One', rank: 10 }] }); },
+      };
+    }
+    return {
+      getResponseCode: function () { return 200; },
+      getContentText: function () { return JSON.stringify({ data: [{ player_name: 'Player One', hold_pct: 71 }] }); },
+    };
+  };
+
+  try {
+    const result = fetchPlayerStatsFromProvider_({
+      PLAYER_STATS_API_BASE_URL: 'https://provider-a.test,https://provider-b.test',
+      PLAYER_STATS_API_KEY: '',
+    }, ['Player One'], new Date('2025-03-01T00:00:00.000Z'));
+
+    assertEquals_(true, result.ok);
+    assertEquals_('player_stats_multi_source_success', result.reason_code);
+    assertEquals_(2, result.api_call_count);
+    assertEquals_(10, result.stats_by_player['player one'].ranking);
+    assertEquals_(0.71, result.stats_by_player['player one'].hold_pct);
+    assertEquals_(2, calls.length);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
 }
 
 function testFetchPlayerStatsBatch_providerUnavailableReturnsNoProvider_() {
