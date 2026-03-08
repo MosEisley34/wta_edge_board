@@ -35,7 +35,7 @@ function stagePersist(runId, payload) {
     'player_1_form_score', 'player_2_form_score',
     'h2h_p1_wins', 'h2h_p2_wins', 'h2h_total_matches',
     'surface', 'stats_source', 'h2h_source', 'stats_as_of',
-    'canonical_tier', 'is_allowed', 'reason_code', 'source', 'updated_at',
+    'canonical_tier', 'resolved_source_field', 'resolved_source_value', 'is_allowed', 'reason_code', 'source', 'updated_at',
   ], payload.schedule);
 
   upsertSheetRows_(SHEETS.RAW_PLAYER_STATS, [

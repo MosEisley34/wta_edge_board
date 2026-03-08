@@ -2829,3 +2829,91 @@ function testFetchPlayerStatsFromLeadersSource_reasonCodes_() {
     UrlFetchApp.fetch = originalFetch;
   }
 }
+
+function testResolveCompetitionTier_acceptsWtaIndianWellsAsWta1000_() {
+  const resolverConfig = buildCompetitionTierResolverConfig_({
+    ALLOW_WTA_250: true,
+    COMPETITION_SOURCE_FIELDS_JSON: DEFAULT_CONFIG.COMPETITION_SOURCE_FIELDS_JSON,
+    GRAND_SLAM_ALIASES_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON,
+    WTA_1000_ALIASES_JSON: DEFAULT_CONFIG.WTA_1000_ALIASES_JSON,
+    WTA_500_ALIASES_JSON: DEFAULT_CONFIG.WTA_500_ALIASES_JSON,
+    COMPETITION_DENY_ALIASES_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIASES_JSON,
+    GRAND_SLAM_ALIAS_MAP_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIAS_MAP_JSON,
+    WTA_500_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON,
+    WTA_1000_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON,
+    COMPETITION_DENY_ALIAS_MAP_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON,
+  });
+
+  const resolved = resolveCompetitionTier_({ competition: 'WTA Indian Wells' }, resolverConfig);
+
+  assertEquals_('WTA_1000', resolved.canonical_tier);
+  assertEquals_('competition', resolved.matched_field);
+  assertEquals_('WTA Indian Wells', resolved.matched_value);
+}
+
+function testResolveCompetitionTier_acceptsWta1000HyphenAsWta1000_() {
+  const resolverConfig = buildCompetitionTierResolverConfig_({
+    ALLOW_WTA_250: true,
+    COMPETITION_SOURCE_FIELDS_JSON: DEFAULT_CONFIG.COMPETITION_SOURCE_FIELDS_JSON,
+    GRAND_SLAM_ALIASES_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON,
+    WTA_1000_ALIASES_JSON: DEFAULT_CONFIG.WTA_1000_ALIASES_JSON,
+    WTA_500_ALIASES_JSON: DEFAULT_CONFIG.WTA_500_ALIASES_JSON,
+    COMPETITION_DENY_ALIASES_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIASES_JSON,
+    GRAND_SLAM_ALIAS_MAP_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIAS_MAP_JSON,
+    WTA_500_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON,
+    WTA_1000_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON,
+    COMPETITION_DENY_ALIAS_MAP_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON,
+  });
+
+  const resolved = resolveCompetitionTier_({ competition: 'WTA-1000 Miami' }, resolverConfig);
+
+  assertEquals_('WTA_1000', resolved.canonical_tier);
+  assertEquals_('competition', resolved.matched_field);
+}
+
+function testResolveCompetitionTier_mixedSourceFieldsUsesEventNameWhenCompetitionEmpty_() {
+  const resolverConfig = buildCompetitionTierResolverConfig_({
+    ALLOW_WTA_250: true,
+    COMPETITION_SOURCE_FIELDS_JSON: '["competition","sport_title","event_name"]',
+    GRAND_SLAM_ALIASES_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON,
+    WTA_1000_ALIASES_JSON: DEFAULT_CONFIG.WTA_1000_ALIASES_JSON,
+    WTA_500_ALIASES_JSON: DEFAULT_CONFIG.WTA_500_ALIASES_JSON,
+    COMPETITION_DENY_ALIASES_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIASES_JSON,
+    GRAND_SLAM_ALIAS_MAP_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIAS_MAP_JSON,
+    WTA_500_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON,
+    WTA_1000_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON,
+    COMPETITION_DENY_ALIAS_MAP_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON,
+  });
+
+  const resolved = resolveCompetitionTier_({
+    competition: '',
+    sport_title: 'Tennis',
+    event_name: 'WTA Indian Wells',
+  }, resolverConfig);
+
+  assertEquals_('WTA_1000', resolved.canonical_tier);
+  assertEquals_('event_name', resolved.matched_field);
+  assertEquals_('WTA Indian Wells', resolved.matched_value);
+}
+
+function testResolveRejectionSource_prefersMatchedFieldThenFallback_() {
+  const fromMatched = resolveRejectionSource_({
+    matched_field: 'competition',
+    matched_value: 'WTA 750 Demo',
+    raw_fields: [{ field: 'competition', value: 'WTA 750 Demo' }],
+  });
+  assertEquals_('competition', fromMatched.field);
+  assertEquals_('WTA 750 Demo', fromMatched.value);
+
+  const fromFallback = resolveRejectionSource_({
+    matched_field: '',
+    matched_value: '',
+    raw_fields: [
+      { field: 'competition', value: '' },
+      { field: 'sport_title', value: 'WTA Tour' },
+      { field: 'event_name', value: 'Qualifier Draw' },
+    ],
+  });
+  assertEquals_('sport_title', fromFallback.field);
+  assertEquals_('WTA Tour', fromFallback.value);
+}
