@@ -1495,3 +1495,187 @@ function testResolveActiveWtaSportKeys_forceDiscoveryBypassesCache_() {
   assertArrayEquals_(['tennis_wta_catalog_1'], result.sport_keys);
   assertEquals_('catalog', result.source);
 }
+
+function testStageFetchPlayerStats_realStatsPathEnrichesBothPlayers_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    batchResult: {
+      stats_by_player: {
+        'player one': { ranking: 9, recent_form: 0.72, surface_win_rate: 0.63, hold_pct: 0.68, break_pct: 0.37 },
+        'player two': { ranking: 28, recent_form: 0.51, surface_win_rate: 0.45, hold_pct: 0.62, break_pct: 0.31 },
+      },
+      provider_available: true,
+      api_credit_usage: 2,
+      reason_code: 'player_stats_api_success',
+    },
+  });
+
+  assertEquals_(2, result.fetchPlayers.length);
+  assertEquals_('player one', result.fetchPlayers[0]);
+  assertEquals_('player two', result.fetchPlayers[1]);
+  assertEquals_(2, result.stage.rows.length);
+  assertEquals_(2, result.stage.summary.reason_codes.stats_enriched);
+  assertEquals_(0, result.stage.summary.reason_codes.stats_missing_player_a);
+  assertEquals_(0, result.stage.summary.reason_codes.stats_missing_player_b);
+
+  const bundle = result.stage.byOddsEventId.odds_evt_1;
+  assertTrue_(bundle.player_a.has_stats, 'player a should be enriched');
+  assertTrue_(bundle.player_b.has_stats, 'player b should be enriched');
+  assertEquals_(9, bundle.player_a.features.ranking);
+  assertEquals_(28, bundle.player_b.features.ranking);
+}
+
+function testStageFetchPlayerStats_partialMissingIncrementsReasonCodes_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    batchResult: {
+      stats_by_player: {
+        'player one': { ranking: 11, recent_form: 0.6, surface_win_rate: 0.58, hold_pct: 0.66, break_pct: 0.33 },
+      },
+      provider_available: true,
+      api_credit_usage: 1,
+      reason_code: 'player_stats_api_success',
+    },
+  });
+
+  assertEquals_(1, result.stage.summary.reason_codes.stats_enriched);
+  assertEquals_(0, result.stage.summary.reason_codes.stats_missing_player_a);
+  assertEquals_(1, result.stage.summary.reason_codes.stats_missing_player_b);
+  assertEquals_(0, result.stage.summary.reason_codes.stats_fallback_model_used);
+
+  const bundle = result.stage.byOddsEventId.odds_evt_1;
+  assertTrue_(bundle.player_a.has_stats, 'player a should have provider stats');
+  assertEquals_(false, bundle.player_b.has_stats);
+  assertEquals_(null, bundle.player_b.features.ranking);
+}
+
+function testStageFetchPlayerStats_providerUnavailableFallsBackDeterministically_() {
+  const first = runStageFetchPlayerStatsScenario_({
+    batchResult: {
+      stats_by_player: {},
+      provider_available: false,
+      api_credit_usage: 0,
+      reason_code: 'player_stats_provider_not_configured',
+    },
+  });
+  const second = runStageFetchPlayerStatsScenario_({
+    batchResult: {
+      stats_by_player: {},
+      provider_available: false,
+      api_credit_usage: 0,
+      reason_code: 'player_stats_provider_not_configured',
+    },
+  });
+
+  assertEquals_(2, first.stage.summary.reason_codes.stats_fallback_model_used);
+  assertEquals_(JSON.stringify(first.stage.byOddsEventId), JSON.stringify(second.stage.byOddsEventId));
+  assertEquals_(JSON.stringify(first.stage.rows), JSON.stringify(second.stage.rows));
+}
+
+function runStageFetchPlayerStatsScenario_(options) {
+  const opts = options || {};
+  const originalFetchPlayerStatsBatch = fetchPlayerStatsBatch_;
+  const originalBuildStageSummary = buildStageSummary_;
+
+  const oddsEvents = [{
+    event_id: 'odds_evt_1',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    odds_updated_time: new Date('2025-03-01T00:00:00.000Z'),
+    commence_time: new Date('2025-03-01T03:00:00.000Z'),
+    market: 'h2h',
+    outcome: 'Player One',
+    bookmaker: 'book_a',
+    price: 1.9,
+  }];
+  const matchRows = [{
+    odds_event_id: 'odds_evt_1',
+    schedule_event_id: 'sched_evt_1',
+    competition_tier: 'WTA_500',
+  }];
+  let fetchPlayers = [];
+
+  fetchPlayerStatsBatch_ = function (config, canonicalPlayers) {
+    fetchPlayers = canonicalPlayers.slice();
+    return opts.batchResult || {
+      stats_by_player: {},
+      provider_available: true,
+      api_credit_usage: 0,
+      reason_code: 'player_stats_api_success',
+    };
+  };
+  buildStageSummary_ = function (runId, stage, startMs, values) {
+    return {
+      run_id: runId,
+      stage: stage,
+      input_count: values.input_count,
+      output_count: values.output_count,
+      provider: values.provider,
+      reason_codes: values.reason_codes,
+      api_credit_usage: values.api_credit_usage,
+    };
+  };
+
+  try {
+    return {
+      stage: stageFetchPlayerStats('run_test_player_stats', {}, oddsEvents, matchRows),
+      fetchPlayers: fetchPlayers,
+    };
+  } finally {
+    fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
+    buildStageSummary_ = originalBuildStageSummary;
+  }
+}
+
+function testNormalizePlayerStatsResponse_mapsCoreFields_() {
+  const normalized = normalizePlayerStatsResponse_({
+    data: [{
+      player_name: 'Player One',
+      rank: 14,
+      recent_win_rate: 62,
+      surfaceWinRate: 0.58,
+      hold_percentage: 71,
+      break_percentage: 39,
+    }],
+  }, ['Player One']);
+
+  assertEquals_(14, normalized['player one'].ranking);
+  assertEquals_(0.62, normalized['player one'].recent_form);
+  assertEquals_(0.58, normalized['player one'].surface_win_rate);
+  assertEquals_(0.71, normalized['player one'].hold_pct);
+  assertEquals_(0.39, normalized['player one'].break_pct);
+}
+
+function testFetchPlayerStatsBatch_providerUnavailableReturnsNoProvider_() {
+  const originalFetchPlayerStatsFromProvider = fetchPlayerStatsFromProvider_;
+  const originalGetCachedPlayerStatsPayload = getCachedPlayerStatsPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+
+  fetchPlayerStatsFromProvider_ = function () {
+    return {
+      ok: false,
+      reason_code: 'player_stats_transport_error',
+      api_credit_usage: 0,
+      api_call_count: 1,
+    };
+  };
+  getCachedPlayerStatsPayload_ = function () { return null; };
+  getStateJson_ = function () { return null; };
+  setStateValue_ = function () {};
+
+  try {
+    const result = fetchPlayerStatsBatch_({
+      PLAYER_STATS_CACHE_TTL_MIN: 10,
+      PLAYER_STATS_REFRESH_MIN: 5,
+      PLAYER_STATS_FORCE_REFRESH: false,
+    }, ['Player One'], new Date('2025-03-01T00:00:00.000Z'));
+
+    assertEquals_(false, result.provider_available);
+    assertEquals_('provider_unavailable', result.source);
+    assertEquals_('player_stats_transport_error', result.reason_code);
+  } finally {
+    fetchPlayerStatsFromProvider_ = originalFetchPlayerStatsFromProvider;
+    getCachedPlayerStatsPayload_ = originalGetCachedPlayerStatsPayload;
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+  }
+}
