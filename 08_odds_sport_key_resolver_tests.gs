@@ -1194,3 +1194,32 @@ function runStageFetchScheduleScenario_(options) {
     setStateValue_ = originalSetStateValue;
   }
 }
+
+
+function testResolveActiveWtaSportKeys_forceDiscoveryBypassesCache_() {
+  let catalogCalls = 0;
+  const result = resolveActiveWtaSportKeys_({
+    ODDS_CACHE_TTL_SEC: 300,
+    ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+    ODDS_API_KEY: 'test',
+  }, {
+    getCachedOddsSportKeys: function () { return ['tennis_wta_cached_only']; },
+    setCachedOddsSportKeys: function () {},
+    callOddsApi: function () {
+      catalogCalls += 1;
+      return {
+        ok: true,
+        payload: [
+          { key: 'tennis_wta_catalog_1', active: true },
+        ],
+      };
+    },
+    logOddsSportKeyResolution: function () {},
+  }, {
+    force_discovery: true,
+  });
+
+  assertEquals_(1, catalogCalls);
+  assertArrayEquals_(['tennis_wta_catalog_1'], result.sport_keys);
+  assertEquals_('catalog', result.source);
+}
