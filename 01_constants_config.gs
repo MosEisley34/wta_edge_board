@@ -7,6 +7,7 @@ const SHEETS = {
   MATCH_MAP: 'Match_Map',
   SIGNALS: 'Signals',
   STATE: 'State',
+  PROVIDER_HEALTH: 'ProviderHealth',
 };
 
 const DEFAULT_CONFIG = {
