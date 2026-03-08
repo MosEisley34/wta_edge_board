@@ -111,6 +111,19 @@ function stageFetchOdds(runId, config, fetchWindow) {
     away_team: event.away_team || '',
     player_1: event.player_1,
     player_2: event.player_2,
+    player_1_hold_pct: pickEventValue_(event, ['player_1_hold_pct']),
+    player_2_hold_pct: pickEventValue_(event, ['player_2_hold_pct']),
+    player_1_break_pct: pickEventValue_(event, ['player_1_break_pct']),
+    player_2_break_pct: pickEventValue_(event, ['player_2_break_pct']),
+    player_1_form_score: pickEventValue_(event, ['player_1_form_score', 'player_1_recent_form']),
+    player_2_form_score: pickEventValue_(event, ['player_2_form_score', 'player_2_recent_form']),
+    h2h_p1_wins: pickEventValue_(event, ['h2h_p1_wins']),
+    h2h_p2_wins: pickEventValue_(event, ['h2h_p2_wins']),
+    h2h_total_matches: pickEventValue_(event, ['h2h_total_matches']),
+    surface: pickEventValue_(event, ['surface', 'court_surface']),
+    stats_source: pickEventValue_(event, ['stats_source']),
+    h2h_source: pickEventValue_(event, ['h2h_source']),
+    stats_as_of: pickEventValue_(event, ['stats_as_of', 'as_of_time']),
     source,
     updated_at: new Date().toISOString(),
   }));
@@ -348,6 +361,19 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
       competition: event.competition,
       player_1: event.player_1,
       player_2: event.player_2,
+      player_1_hold_pct: pickEventValue_(event, ['player_1_hold_pct']),
+      player_2_hold_pct: pickEventValue_(event, ['player_2_hold_pct']),
+      player_1_break_pct: pickEventValue_(event, ['player_1_break_pct']),
+      player_2_break_pct: pickEventValue_(event, ['player_2_break_pct']),
+      player_1_form_score: pickEventValue_(event, ['player_1_form_score', 'player_1_recent_form']),
+      player_2_form_score: pickEventValue_(event, ['player_2_form_score', 'player_2_recent_form']),
+      h2h_p1_wins: pickEventValue_(event, ['h2h_p1_wins']),
+      h2h_p2_wins: pickEventValue_(event, ['h2h_p2_wins']),
+      h2h_total_matches: pickEventValue_(event, ['h2h_total_matches']),
+      surface: pickEventValue_(event, ['surface', 'court_surface']),
+      stats_source: pickEventValue_(event, ['stats_source']),
+      h2h_source: pickEventValue_(event, ['h2h_source']),
+      stats_as_of: pickEventValue_(event, ['stats_as_of', 'as_of_time']),
       canonical_tier: canonical,
       is_allowed: decision.allowed,
       reason_code: decision.reason_code,
@@ -364,6 +390,7 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
         canonical_tier: canonical,
         player_1: event.player_1,
         player_2: event.player_2,
+        surface: pickEventValue_(event, ['surface', 'court_surface']),
       });
     }
   });
@@ -1065,6 +1092,7 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
         away_team: event.away_team || '',
         player_1: event.home_team || '',
         player_2: event.away_team || '',
+        surface: pickEventValue_(event, ['surface', 'court_surface']),
       });
     });
   });
@@ -1213,6 +1241,7 @@ function normalizeAndDeduplicateScheduleEvents_(payloadLists) {
         away_team: event.away_team || '',
         player_1: event.home_team || '',
         player_2: event.away_team || '',
+        surface: pickEventValue_(event, ['surface', 'court_surface']),
       };
 
       const dedupeKey = buildScheduleEventDedupeKey_(normalizedEvent);
@@ -1951,6 +1980,19 @@ function serializeScheduleEvent_(event) {
     away_team: event.away_team || '',
     player_1: event.player_1,
     player_2: event.player_2,
+    player_1_hold_pct: pickEventValue_(event, ['player_1_hold_pct']),
+    player_2_hold_pct: pickEventValue_(event, ['player_2_hold_pct']),
+    player_1_break_pct: pickEventValue_(event, ['player_1_break_pct']),
+    player_2_break_pct: pickEventValue_(event, ['player_2_break_pct']),
+    player_1_form_score: pickEventValue_(event, ['player_1_form_score', 'player_1_recent_form']),
+    player_2_form_score: pickEventValue_(event, ['player_2_form_score', 'player_2_recent_form']),
+    h2h_p1_wins: pickEventValue_(event, ['h2h_p1_wins']),
+    h2h_p2_wins: pickEventValue_(event, ['h2h_p2_wins']),
+    h2h_total_matches: pickEventValue_(event, ['h2h_total_matches']),
+    surface: pickEventValue_(event, ['surface', 'court_surface']),
+    stats_source: pickEventValue_(event, ['stats_source']),
+    h2h_source: pickEventValue_(event, ['h2h_source']),
+    stats_as_of: pickEventValue_(event, ['stats_as_of', 'as_of_time']),
   };
 }
 
@@ -1967,6 +2009,19 @@ function deserializeScheduleEvent_(event) {
     away_team: event.away_team || '',
     player_1: event.player_1,
     player_2: event.player_2,
+    player_1_hold_pct: pickEventValue_(event, ['player_1_hold_pct']),
+    player_2_hold_pct: pickEventValue_(event, ['player_2_hold_pct']),
+    player_1_break_pct: pickEventValue_(event, ['player_1_break_pct']),
+    player_2_break_pct: pickEventValue_(event, ['player_2_break_pct']),
+    player_1_form_score: pickEventValue_(event, ['player_1_form_score', 'player_1_recent_form']),
+    player_2_form_score: pickEventValue_(event, ['player_2_form_score', 'player_2_recent_form']),
+    h2h_p1_wins: pickEventValue_(event, ['h2h_p1_wins']),
+    h2h_p2_wins: pickEventValue_(event, ['h2h_p2_wins']),
+    h2h_total_matches: pickEventValue_(event, ['h2h_total_matches']),
+    surface: pickEventValue_(event, ['surface', 'court_surface']),
+    stats_source: pickEventValue_(event, ['stats_source']),
+    h2h_source: pickEventValue_(event, ['h2h_source']),
+    stats_as_of: pickEventValue_(event, ['stats_as_of', 'as_of_time']),
   };
 }
 
@@ -1991,6 +2046,19 @@ function serializeOddsEvent_(event) {
     away_team: event.away_team || '',
     player_1: event.player_1,
     player_2: event.player_2,
+    player_1_hold_pct: pickEventValue_(event, ['player_1_hold_pct']),
+    player_2_hold_pct: pickEventValue_(event, ['player_2_hold_pct']),
+    player_1_break_pct: pickEventValue_(event, ['player_1_break_pct']),
+    player_2_break_pct: pickEventValue_(event, ['player_2_break_pct']),
+    player_1_form_score: pickEventValue_(event, ['player_1_form_score', 'player_1_recent_form']),
+    player_2_form_score: pickEventValue_(event, ['player_2_form_score', 'player_2_recent_form']),
+    h2h_p1_wins: pickEventValue_(event, ['h2h_p1_wins']),
+    h2h_p2_wins: pickEventValue_(event, ['h2h_p2_wins']),
+    h2h_total_matches: pickEventValue_(event, ['h2h_total_matches']),
+    surface: pickEventValue_(event, ['surface', 'court_surface']),
+    stats_source: pickEventValue_(event, ['stats_source']),
+    h2h_source: pickEventValue_(event, ['h2h_source']),
+    stats_as_of: pickEventValue_(event, ['stats_as_of', 'as_of_time']),
   };
 }
 
@@ -2015,5 +2083,28 @@ function deserializeOddsEvent_(event) {
     away_team: event.away_team || '',
     player_1: event.player_1,
     player_2: event.player_2,
+    player_1_hold_pct: pickEventValue_(event, ['player_1_hold_pct']),
+    player_2_hold_pct: pickEventValue_(event, ['player_2_hold_pct']),
+    player_1_break_pct: pickEventValue_(event, ['player_1_break_pct']),
+    player_2_break_pct: pickEventValue_(event, ['player_2_break_pct']),
+    player_1_form_score: pickEventValue_(event, ['player_1_form_score', 'player_1_recent_form']),
+    player_2_form_score: pickEventValue_(event, ['player_2_form_score', 'player_2_recent_form']),
+    h2h_p1_wins: pickEventValue_(event, ['h2h_p1_wins']),
+    h2h_p2_wins: pickEventValue_(event, ['h2h_p2_wins']),
+    h2h_total_matches: pickEventValue_(event, ['h2h_total_matches']),
+    surface: pickEventValue_(event, ['surface', 'court_surface']),
+    stats_source: pickEventValue_(event, ['stats_source']),
+    h2h_source: pickEventValue_(event, ['h2h_source']),
+    stats_as_of: pickEventValue_(event, ['stats_as_of', 'as_of_time']),
   };
+}
+
+function pickEventValue_(event, keys) {
+  const source = event || {};
+  const keyList = keys || [];
+  for (let i = 0; i < keyList.length; i += 1) {
+    const key = keyList[i];
+    if (source[key] !== undefined && source[key] !== null) return source[key];
+  }
+  return '';
 }
