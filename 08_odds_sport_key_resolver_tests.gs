@@ -475,12 +475,43 @@ function testFetchScheduleFromOddsApi_marksActiveKeysNoEventsReason_() {
       endIso: '2025-01-02T00:00:00Z',
     });
 
-    assertEquals_('schedule_active_keys_no_events', result.reason_code);
+    assertEquals_('schedule_no_games_in_window', result.reason_code);
     assertEquals_(0, result.events.length);
   } finally {
     resolveActiveWtaSportKeys_ = originalResolver;
     callOddsApi_ = originalCaller;
   }
+}
+
+function testComputeCanonicalTimeWindow_referenceClockHandlesUtcBoundary_() {
+  const referenceMs = Date.parse('2025-03-09T07:55:00.000Z');
+  const window = computeCanonicalTimeWindow_({
+    reference_ms: referenceMs,
+    lookahead_hours: 4,
+    buffer_before_min: 90,
+    buffer_after_min: 45,
+  });
+
+  assertEquals_('2025-03-09T06:25:00.000Z', window.start_iso);
+  assertEquals_('2025-03-09T12:40:00.000Z', window.end_iso);
+  assertEquals_('reference_clock', window.source);
+}
+
+function testComputeCanonicalTimeWindow_eventTimesHandlesLocalOffsetInputs_() {
+  const eventTimes = [
+    new Date('2025-03-08T23:50:00-08:00').getTime(),
+    new Date('2025-03-09T01:15:00-08:00').getTime(),
+  ];
+  const window = computeCanonicalTimeWindow_({
+    reference_ms: Date.parse('2025-03-09T08:00:00.000Z'),
+    event_times_ms: eventTimes,
+    buffer_before_min: 30,
+    buffer_after_min: 60,
+  });
+
+  assertEquals_('2025-03-09T07:20:00.000Z', window.start_iso);
+  assertEquals_('2025-03-09T10:15:00.000Z', window.end_iso);
+  assertEquals_('event_times', window.source);
 }
 
 function testSanitizeStringForLog_redactsQuerySecrets_() {
@@ -935,7 +966,7 @@ function testResolveOddsWindowForPipeline_bootstrapWindowSerializationIsUtcAndOr
   fetchScheduleFromOddsApi_ = function () {
     return {
       events: [],
-      reason_code: 'schedule_active_keys_no_events',
+      reason_code: 'schedule_no_games_in_window',
       api_credit_usage: 0,
       api_call_count: 1,
       credit_headers: {},
@@ -988,7 +1019,7 @@ function testResolveOddsWindowForPipeline_bootstrapWindowHasPositiveUtcDuration_
   fetchScheduleFromOddsApi_ = function () {
     return {
       events: [],
-      reason_code: 'schedule_active_keys_no_events',
+      reason_code: 'schedule_no_games_in_window',
       api_credit_usage: 0,
       api_call_count: 1,
       credit_headers: {},
@@ -1025,6 +1056,50 @@ function testResolveOddsWindowForPipeline_bootstrapWindowHasPositiveUtcDuration_
     const validation = validateOddsApiOddsQuery_(query);
     assertEquals_(true, validation.ok);
     assertEquals_(720, validation.diagnostics.duration_minutes);
+  } finally {
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    getCachedPayload_ = originalGetCachedPayload;
+    getStateJson_ = originalGetStateJson;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+  }
+}
+
+function testResolveOddsWindowForPipeline_bootstrapModeNoEligibleRows_() {
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+
+  fetchScheduleFromOddsApi_ = function () {
+    return {
+      events: [],
+      reason_code: 'schedule_no_games_in_window',
+      api_credit_usage: 0,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  updateCreditStateFromHeaders_ = function () {};
+  getCachedPayload_ = function () { return null; };
+  getStateJson_ = function () { return null; };
+  getCreditAwareRuntimeConfig_ = function () { return { mode: 'OFF', snapshot: {} }; };
+
+  try {
+    const nowMs = Date.parse('2025-03-01T00:00:00.000Z');
+    const decision = resolveOddsWindowForPipeline_({
+      ODDS_NO_GAMES_BEHAVIOR: 'SKIP',
+      ODDS_BOOTSTRAP_LOOKAHEAD_HOURS: 12,
+      LOOKAHEAD_HOURS: 24,
+      API_CREDIT_HARD_LIMIT: 0,
+      CREDIT_USAGE_ENFORCEMENT_MODE: 'OFF',
+    }, nowMs);
+
+    assertEquals_(true, decision.should_fetch_odds);
+    assertEquals_(true, decision.bootstrap_mode);
+    assertEquals_('odds_refresh_bootstrap_fetch', decision.decision_reason_code);
+    assertEquals_('bootstrap', decision.current_refresh_mode);
   } finally {
     fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
     updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
@@ -1387,7 +1462,7 @@ function testStageFetchSchedule_staleEmpty_forcesLiveAndPersistsFlagsOnLiveEmpty
     },
     fetchResponses: [{
       events: [],
-      reason_code: 'schedule_active_keys_no_events',
+      reason_code: 'schedule_no_games_in_window',
       api_credit_usage: 1,
       api_call_count: 1,
       credit_headers: liveHeaders,
@@ -1395,12 +1470,50 @@ function testStageFetchSchedule_staleEmpty_forcesLiveAndPersistsFlagsOnLiveEmpty
   });
 
   assertEquals_('fresh_api', result.stage.selected_source);
-  assertEquals_(1, result.stage.summary.reason_codes.schedule_active_keys_no_events || 0);
+  assertEquals_(1, result.stage.summary.reason_codes.schedule_no_games_in_window || 0);
   assertEquals_(1, result.fetchCalls.length);
   assertEquals_(1, result.lastMeta.live_fetch_happened ? 1 : 0);
   assertEquals_(1, result.lastMeta.stale_fallback_empty_forced_live ? 1 : 0);
   assertEquals_(1, result.creditHeadersCaptured.length);
   assertEquals_('489', String(result.creditHeadersCaptured[0].x_requests_remaining || ''));
+}
+
+function testStageFetchSchedule_invalidWindowMismatch_autoExpandsOnce_() {
+  const oddsEvents = [{
+    event_id: 'odds_1',
+    commence_time: new Date('2025-03-01T03:00:00.000Z'),
+    player_1: 'Player One',
+    player_2: 'Player Two',
+  }];
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    match_id: 'sched_1',
+    start_time: new Date('2025-03-01T03:00:00.000Z'),
+    competition: 'WTA 500',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+  }];
+  const result = runStageFetchScheduleScenario_({
+    oddsEvents: oddsEvents,
+    fetchResponses: [{
+      events: [],
+      reason_code: 'invalid_time_window',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: { x_requests_remaining: '490' },
+    }, {
+      events: scheduleEvents,
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: { x_requests_remaining: '489' },
+    }],
+  });
+
+  assertEquals_(2, result.fetchCalls.length);
+  assertEquals_(1, result.stage.summary.reason_codes.odds_schedule_window_mismatch_high_severity || 0);
+  assertEquals_(1, result.stage.summary.reason_codes.invalid_time_window_auto_expanded || 0);
+  assertEquals_(1, result.stage.summary.reason_codes.expanded_window_fallback_used || 0);
 }
 
 function testBuildCanonicalSchedulePlayers_filtersPastEventsAndDedupes_() {
@@ -1488,6 +1601,7 @@ function runStageFetchScheduleScenario_(options) {
       odds_window_refresh_min: 30,
       mode: 'normal',
       schedule_refresh_non_critical_enabled: false,
+      match_fallback_expansion_min: 90,
     };
   };
   getCachedSchedulePayload_ = function () { return opts.cacheResult || null; };
@@ -1553,7 +1667,7 @@ function runStageFetchScheduleScenario_(options) {
   };
 
   try {
-    const stage = stageFetchSchedule('run_stage_fetch_schedule_test', {}, []);
+    const stage = stageFetchSchedule('run_stage_fetch_schedule_test', {}, opts.oddsEvents || []);
     return {
       stage: stage,
       fetchCalls: fetchCalls,
