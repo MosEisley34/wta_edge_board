@@ -328,6 +328,34 @@ function runEdgeBoard() {
     });
     appendStageLog_(runId, persistStage.summary);
 
+    logDiagnosticEvent_(config, 'pipeline_stage_counts', {
+      run_id: runId,
+      fetched_odds: oddsStage.events.length,
+      fetched_schedule: scheduleStage.events.length,
+      matched: matchStage.matchedCount,
+      unmatched: matchStage.unmatchedCount,
+      player_stats_rows: playerStatsStage.rows.length,
+      signals_found: signalStage.rows.length,
+      signals_sent: signalStage.sentCount,
+      cooldown_suppressed: signalStage.cooldownSuppressedCount,
+      duplicate_suppressed: signalStage.duplicateSuppressedCount,
+      persist_total_rows: oddsStage.rows.length + scheduleStage.rows.length + playerStatsStage.rows.length + matchStage.rows.length + signalStage.rows.length,
+    }, 2);
+
+    logDiagnosticEvent_(config, 'pipeline_sampling', {
+      run_id: runId,
+      sample_odds_event_ids: oddsStage.events.slice(0, 10).map((event) => event.event_id),
+      sample_unmatched_cases: matchStage.unmatched.slice(0, 5),
+      sample_top_unresolved_competitions: scheduleStage.topUnresolvedCompetitions.slice(0, 5),
+      sample_signals: signalStage.rows.slice(0, 5).map((row) => ({
+        odds_event_id: row.odds_event_id,
+        market: row.market,
+        side: row.side,
+        edge_value: row.edge_value,
+        reason_code: row.reason_code,
+      })),
+    }, 3);
+
     const combinedReasonCodes = mergeReasonCounts_([
       oddsStage.summary.reason_codes,
       scheduleStage.summary.reason_codes,
