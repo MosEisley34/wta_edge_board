@@ -22,6 +22,9 @@ const MATCHMX_ROW_IDX = {
 
 const PLAYER_STATS_H2H_CACHE_KEY = 'PLAYER_STATS_H2H_DATASET';
 const PLAYER_STATS_LEADERS_CACHE_KEY = 'PLAYER_STATS_TA_LEADERS_PAYLOAD';
+const PLAYER_STATS_CACHE_MAX_BYTES = 95000;
+const PLAYER_STATS_CACHE_CHUNK_BYTES = 90000;
+const PLAYER_STATS_LEADERS_CHUNK_KEY_PREFIX = PLAYER_STATS_LEADERS_CACHE_KEY + '::chunk::';
 
 function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
   const players = dedupePlayerNames_(canonicalPlayers || []);
@@ -314,8 +317,23 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
     cached_at_ms: Date.now(),
     rows: structuredRows,
   };
-  setCachedTaLeadersPayload_(cachePayload);
-  setStateValue_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD', JSON.stringify(cachePayload));
+  const cacheWriteResult = setCachedTaLeadersPayload_(cachePayload);
+  if (!cacheWriteResult.ok) {
+    logTaLeadersCacheDiagnostic_('cache_write_failed_non_fatal', {
+      reason_code: cacheWriteResult.reason_code || 'cache_write_failed',
+      storage_path: cacheWriteResult.storage_path || 'none',
+      bytes: Number(cacheWriteResult.bytes || 0),
+      chunk_count: Number(cacheWriteResult.chunk_count || 0),
+    });
+  }
+  try {
+    setStateValue_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD', JSON.stringify(cachePayload));
+  } catch (e) {
+    logTaLeadersCacheDiagnostic_('state_stale_payload_write_failed_non_fatal', {
+      reason_code: 'state_write_failed',
+      error: String((e && e.message) || e || ''),
+    });
+  }
 
   const statsByPlayer = normalizePlayerStatsResponse_(structuredRows, canonicalPlayers, {
     as_of_time: asOfTime,
@@ -1107,14 +1125,230 @@ function getCachedTaLeadersPayload_() {
   try {
     const raw = CacheService.getScriptCache().get(PLAYER_STATS_LEADERS_CACHE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed._cache_encoding === 'chunked_gzip_base64') {
+      const chunkCount = Math.max(0, Number(parsed.chunk_count || 0));
+      if (!chunkCount) return null;
+      const chunkKeys = [];
+      for (let i = 0; i < chunkCount; i += 1) {
+        chunkKeys.push((parsed.chunk_key_prefix || PLAYER_STATS_LEADERS_CHUNK_KEY_PREFIX) + i);
+      }
+      const chunks = CacheService.getScriptCache().getAll(chunkKeys);
+      const joined = chunkKeys.map(function (key) { return chunks[key] || ''; }).join('');
+      if (!joined || joined.length < Number(parsed.compressed_base64_length || 0)) return null;
+      const compressedBytes = Utilities.base64Decode(joined);
+      const inflated = Utilities.ungzip(Utilities.newBlob(compressedBytes));
+      return JSON.parse(inflated.getDataAsString());
+    }
+    return parsed;
   } catch (e) {
+    logTaLeadersCacheDiagnostic_('cache_read_failed_non_fatal', {
+      reason_code: 'cache_read_failed',
+      error: String((e && e.message) || e || ''),
+    });
     return null;
   }
 }
 
 function setCachedTaLeadersPayload_(payload) {
-  CacheService.getScriptCache().put(PLAYER_STATS_LEADERS_CACHE_KEY, JSON.stringify(payload || {}), 21600);
+  const cache = CacheService.getScriptCache();
+  const serial = JSON.stringify(payload || {});
+  const serialBytes = utf8ByteLength_(serial);
+  logTaLeadersCacheDiagnostic_('cache_payload_size_measured', {
+    bytes: serialBytes,
+    limit_bytes: PLAYER_STATS_CACHE_MAX_BYTES,
+  });
+
+  const writeDirect = function (text) {
+    cache.put(PLAYER_STATS_LEADERS_CACHE_KEY, text, 21600);
+    clearTaLeadersChunkKeys_(cache);
+    return {
+      ok: true,
+      storage_path: 'direct',
+      bytes: utf8ByteLength_(text),
+      chunk_count: 0,
+    };
+  };
+
+  try {
+    if (serialBytes <= PLAYER_STATS_CACHE_MAX_BYTES) {
+      const directResult = writeDirect(serial);
+      logTaLeadersCacheDiagnostic_('cache_write_succeeded', directResult);
+      return directResult;
+    }
+
+    const prunedPayload = pruneTaLeadersPayloadForCache_(payload);
+    const prunedSerial = JSON.stringify(prunedPayload);
+    const prunedBytes = utf8ByteLength_(prunedSerial);
+    if (prunedBytes <= PLAYER_STATS_CACHE_MAX_BYTES) {
+      const prunedResult = writeDirect(prunedSerial);
+      prunedResult.storage_path = 'pruned';
+      logTaLeadersCacheDiagnostic_('cache_write_succeeded', {
+        storage_path: 'pruned',
+        bytes: prunedBytes,
+        original_bytes: serialBytes,
+      });
+      return prunedResult;
+    }
+
+    const chunkedResult = setChunkedCompressedTaLeadersPayload_(cache, payload, serialBytes);
+    if (chunkedResult.ok) {
+      logTaLeadersCacheDiagnostic_('cache_write_succeeded', chunkedResult);
+      return chunkedResult;
+    }
+
+    const normalizedPayload = normalizeTaLeadersPayloadForCache_(payload);
+    const normalizedSerial = JSON.stringify(normalizedPayload);
+    const normalizedBytes = utf8ByteLength_(normalizedSerial);
+    if (normalizedBytes <= PLAYER_STATS_CACHE_MAX_BYTES) {
+      const normalizedResult = writeDirect(normalizedSerial);
+      normalizedResult.storage_path = 'normalized_subset';
+      logTaLeadersCacheDiagnostic_('cache_write_succeeded', {
+        storage_path: 'normalized_subset',
+        bytes: normalizedBytes,
+        original_bytes: serialBytes,
+      });
+      return normalizedResult;
+    }
+
+    logTaLeadersCacheDiagnostic_('cache_write_skipped_over_limit', {
+      storage_path: 'none',
+      bytes: serialBytes,
+      pruned_bytes: prunedBytes,
+      normalized_bytes: normalizedBytes,
+    });
+    return {
+      ok: false,
+      reason_code: 'cache_payload_exceeds_limit',
+      storage_path: 'none',
+      bytes: serialBytes,
+      chunk_count: 0,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      reason_code: 'cache_write_exception',
+      storage_path: 'none',
+      bytes: serialBytes,
+      chunk_count: 0,
+      error: String((e && e.message) || e || ''),
+    };
+  }
+}
+
+function setChunkedCompressedTaLeadersPayload_(cache, payload, originalBytes) {
+  const jsonText = JSON.stringify(payload || {});
+  const gzBlob = Utilities.gzip(Utilities.newBlob(jsonText), 'ta_leaders_cache.gz');
+  const compressedBase64 = Utilities.base64Encode(gzBlob.getBytes());
+  const compressedBytes = utf8ByteLength_(compressedBase64);
+  const chunks = [];
+  for (let start = 0; start < compressedBase64.length; start += PLAYER_STATS_CACHE_CHUNK_BYTES) {
+    chunks.push(compressedBase64.slice(start, start + PLAYER_STATS_CACHE_CHUNK_BYTES));
+  }
+  if (!chunks.length || chunks.length > 25) {
+    return {
+      ok: false,
+      reason_code: 'chunk_count_out_of_bounds',
+      storage_path: 'chunked_compressed',
+      bytes: compressedBytes,
+      chunk_count: chunks.length,
+    };
+  }
+
+  const keyValues = {};
+  chunks.forEach(function (chunk, idx) {
+    keyValues[PLAYER_STATS_LEADERS_CHUNK_KEY_PREFIX + idx] = chunk;
+  });
+  cache.putAll(keyValues, 21600);
+  const manifest = {
+    _cache_encoding: 'chunked_gzip_base64',
+    chunk_key_prefix: PLAYER_STATS_LEADERS_CHUNK_KEY_PREFIX,
+    chunk_count: chunks.length,
+    compressed_base64_length: compressedBase64.length,
+    cached_at_ms: Date.now(),
+  };
+  cache.put(PLAYER_STATS_LEADERS_CACHE_KEY, JSON.stringify(manifest), 21600);
+
+  return {
+    ok: true,
+    storage_path: 'chunked_compressed',
+    bytes: compressedBytes,
+    original_bytes: Number(originalBytes || 0),
+    chunk_count: chunks.length,
+  };
+}
+
+function clearTaLeadersChunkKeys_(cache) {
+  const keys = [];
+  for (let i = 0; i < 25; i += 1) {
+    keys.push(PLAYER_STATS_LEADERS_CHUNK_KEY_PREFIX + i);
+  }
+  cache.removeAll(keys);
+}
+
+function normalizeTaLeadersPayloadForCache_(payload) {
+  const base = payload || {};
+  return {
+    source: base.source || '',
+    fetched_at: base.fetched_at || '',
+    cached_at_ms: Number(base.cached_at_ms || Date.now()),
+    rows: ((base.rows || []).map(function (row) {
+      return {
+        date: row.date,
+        player_name: row.player_name,
+        ranking: row.ranking,
+        recent_form: row.recent_form,
+        surface_win_rate: row.surface_win_rate,
+        hold_pct: row.hold_pct,
+        break_pct: row.break_pct,
+        bp_saved_pct: row.bp_saved_pct,
+        bp_conv_pct: row.bp_conv_pct,
+        first_serve_in_pct: row.first_serve_in_pct,
+        first_serve_points_won_pct: row.first_serve_points_won_pct,
+        second_serve_points_won_pct: row.second_serve_points_won_pct,
+        return_points_won_pct: row.return_points_won_pct,
+        dr: row.dr,
+        tpw_pct: row.tpw_pct,
+        numeric_stats: row.numeric_stats,
+      };
+    })),
+  };
+}
+
+function pruneTaLeadersPayloadForCache_(payload) {
+  const base = payload || {};
+  const pruned = {
+    source: base.source || '',
+    fetched_at: base.fetched_at || '',
+    cached_at_ms: Number(base.cached_at_ms || Date.now()),
+    rows: (base.rows || []).map(function (row) {
+      const copy = Object.assign({}, row || {});
+      delete copy.event;
+      delete copy.surface;
+      delete copy.opponent;
+      delete copy.score;
+      return copy;
+    }),
+  };
+  return pruned;
+}
+
+function utf8ByteLength_(text) {
+  return Utilities.newBlob(String(text || '')).getBytes().length;
+}
+
+function logTaLeadersCacheDiagnostic_(eventName, payload) {
+  const entry = {
+    event: eventName,
+    payload: payload || {},
+    logged_at: new Date().toISOString(),
+  };
+  Logger.log(JSON.stringify(entry));
+  try {
+    setStateValue_('PLAYER_STATS_TA_LEADERS_CACHE_DIAGNOSTIC', JSON.stringify(entry));
+  } catch (e) {
+    // Non-fatal best-effort diagnostics only.
+  }
 }
 
 function getCachedTaH2hDataset_() {
