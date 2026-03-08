@@ -232,8 +232,14 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const start = Date.now();
   const nowMs = Date.now();
   const rows = [];
+  const sampledDecisions = [];
+  const sampledDecisionLimit = Number(config.SIGNAL_DECISION_SAMPLE_LIMIT || 50);
+  let processedCandidateCount = 0;
   const reasonCounts = {
     sent: 0,
+    missing_schedule_match: 0,
+    missing_player_stats: 0,
+    insufficient_features: 0,
     notify_disabled: 0,
     duplicate_suppressed: 0,
     cooldown_suppressed: 0,
@@ -250,18 +256,57 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     matchByOddsEventId[row.odds_event_id] = row;
   });
 
+  function captureDecision_(event, match, decisionReasonCode, detail) {
+    processedCandidateCount += 1;
+    reasonCounts[decisionReasonCode] = (reasonCounts[decisionReasonCode] || 0) + 1;
+
+    if (sampledDecisions.length < sampledDecisionLimit) {
+      sampledDecisions.push({
+        odds_event_id: event && event.event_id ? event.event_id : '',
+        schedule_event_id: (match && match.schedule_event_id) || '',
+        decision_reason_code: decisionReasonCode,
+        market: event && event.market ? event.market : '',
+        side: event && event.outcome ? event.outcome : '',
+        bookmaker: event && event.bookmaker ? event.bookmaker : '',
+        price: event && event.price,
+        detail: detail || {},
+      });
+    }
+  }
+
   oddsEvents.forEach((event) => {
     const match = matchByOddsEventId[event.event_id];
-    if (!match || !match.schedule_event_id) return;
+    if (!match || !match.schedule_event_id) {
+      captureDecision_(event, match, 'missing_schedule_match', {
+        scored: false,
+      });
+      return;
+    }
 
     const statsBundle = (playerStatsByOddsEventId || {})[event.event_id] || null;
+    const hasPlayerStats = !!(statsBundle
+      && statsBundle.player_a && statsBundle.player_a.has_stats
+      && statsBundle.player_b && statsBundle.player_b.has_stats);
+    if (!hasPlayerStats) {
+      captureDecision_(event, match, 'missing_player_stats', {
+        scored: false,
+      });
+      return;
+    }
+
     const modelVersion = statsBundle && statsBundle.player_a && statsBundle.player_b
       && statsBundle.player_a.has_stats && statsBundle.player_b.has_stats
       ? config.MODEL_VERSION
       : config.MODEL_VERSION + '_fallback';
 
     const impliedProbability = oddsPriceToImpliedProbability_(event.price);
-    if (impliedProbability === null) return;
+    if (impliedProbability === null) {
+      captureDecision_(event, match, 'insufficient_features', {
+        scored: false,
+        field: 'implied_probability',
+      });
+      return;
+    }
 
     const startCutoffMs = config.MINUTES_BEFORE_START_CUTOFF * 60000;
     if (event.commence_time.getTime() <= nowMs + startCutoffMs) {
@@ -275,7 +320,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         signal_hash: buildSignalHash_(event.event_id, event.market, event.outcome, modelVersion),
         model_version: modelVersion,
       }));
-      reasonCounts.too_close_to_start_skip += 1;
+      captureDecision_(event, match, 'too_close_to_start_skip', {
+        scored: true,
+      });
       return;
     }
 
@@ -291,7 +338,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         signal_hash: buildSignalHash_(event.event_id, event.market, event.outcome, modelVersion),
         model_version: modelVersion,
       }));
-      reasonCounts.stale_odds_skip += 1;
+      captureDecision_(event, match, 'stale_odds_skip', {
+        scored: true,
+      });
       return;
     }
 
@@ -311,7 +360,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         signal_hash: signalHash,
         model_version: modelVersion,
       }));
-      reasonCounts.edge_below_threshold += 1;
+      captureDecision_(event, match, 'edge_below_threshold', {
+        scored: true,
+      });
       return;
     }
 
@@ -363,7 +414,14 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       });
     }
 
-    reasonCounts[notifyOutcome] = (reasonCounts[notifyOutcome] || 0) + 1;
+    captureDecision_(event, match, notifyOutcome, {
+      scored: true,
+      model_probability: modelProbability,
+      market_implied_probability: impliedProbability,
+      edge_value: edgeValue,
+      edge_tier: edgeTierAndStake.edge_tier,
+      stake_units: edgeTierAndStake.stake_units,
+    });
 
     rows.push(buildSignalRow_(runId, config, event, match, {
       notification_outcome: notifyOutcome,
@@ -421,10 +479,17 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     generated_at: signalDecisionsGeneratedAt.local,
     generated_at_utc: signalDecisionsGeneratedAt.utc,
     reason_counts: reasonCounts,
+    sampled_decisions: sampledDecisions,
+    input_count: oddsEvents.length,
+    processed_count: processedCandidateCount,
   }));
 
+  if (processedCandidateCount !== oddsEvents.length) {
+    throw new Error('stageGenerateSignals invariant violated: reason_counts do not account for all input candidates');
+  }
+
   const summary = buildStageSummary_(runId, 'stageGenerateSignals', start, {
-    input_count: matchRows.length,
+    input_count: oddsEvents.length,
     output_count: rows.length,
     provider: 'internal_signal_builder',
     api_credit_usage: 0,

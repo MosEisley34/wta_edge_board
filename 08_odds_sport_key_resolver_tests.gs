@@ -1364,6 +1364,236 @@ function testStageGenerateSignals_notifyDisabledDoesNotMarkSentHash_() {
   }
 }
 
+function testStageGenerateSignals_recordsMissingScheduleMatchReasonCode_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_missing_match',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 150,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: '',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_missing_match', config, [event], [], {});
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+
+    assertEquals_(0, result.rows.length);
+    assertEquals_(1, result.summary.reason_codes.missing_schedule_match || 0);
+    assertEquals_(1, result.summary.input_count);
+    assertEquals_(1, decisionState.processed_count || 0);
+    assertEquals_(1, decisionState.input_count || 0);
+    assertEquals_(1, (decisionState.reason_counts && decisionState.reason_counts.missing_schedule_match) || 0);
+    assertEquals_(1, (decisionState.sampled_decisions || []).length);
+    assertEquals_('missing_schedule_match', decisionState.sampled_decisions[0].decision_reason_code);
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testStageGenerateSignals_recordsMissingPlayerStatsReasonCode_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_missing_stats',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 150,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+    };
+    const match = {
+      odds_event_id: 'evt_missing_stats',
+      schedule_event_id: 'sched_missing_stats',
+      competition_tier: 'WTA_500',
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: '',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_missing_stats', config, [event], [match], {});
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+
+    assertEquals_(0, result.rows.length);
+    assertEquals_(1, result.summary.reason_codes.missing_player_stats || 0);
+    assertEquals_(1, decisionState.processed_count || 0);
+    assertEquals_(1, (decisionState.reason_counts && decisionState.reason_counts.missing_player_stats) || 0);
+    assertEquals_('missing_player_stats', (decisionState.sampled_decisions[0] || {}).decision_reason_code || '');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testStageGenerateSignals_thresholdRejectionIncludedInDecisionDiagnostics_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_threshold_reject',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 1.95,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+    };
+    const match = {
+      odds_event_id: 'evt_threshold_reject',
+      schedule_event_id: 'sched_threshold_reject',
+      competition_tier: 'WTA_500',
+    };
+    const stats = {
+      evt_threshold_reject: {
+        player_a: {
+          has_stats: true,
+          features: { ranking: 10, recent_form: 0.6, surface_win_rate: 0.58, hold_pct: 0.64, break_pct: 0.36 },
+        },
+        player_b: {
+          has_stats: true,
+          features: { ranking: 12, recent_form: 0.59, surface_win_rate: 0.57, hold_pct: 0.63, break_pct: 0.35 },
+        },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.2,
+      EDGE_THRESHOLD_SMALL: 0.3,
+      EDGE_THRESHOLD_MED: 0.4,
+      EDGE_THRESHOLD_STRONG: 0.5,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: '',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_threshold_reject', config, [event], [match], stats);
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+    const decisionRow = (decisionState.sampled_decisions || [])[0] || {};
+
+    assertEquals_(1, result.rows.length);
+    assertEquals_('edge_below_threshold', result.rows[0].notification_outcome);
+    assertEquals_(1, result.summary.reason_codes.edge_below_threshold || 0);
+    assertEquals_(1, decisionState.processed_count || 0);
+    assertEquals_(1, (decisionState.reason_counts && decisionState.reason_counts.edge_below_threshold) || 0);
+    assertEquals_('edge_below_threshold', decisionRow.decision_reason_code || '');
+    assertEquals_(true, !!(decisionRow.detail && decisionRow.detail.scored));
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+
 function testGetConfig_allowWta250Missing_usesDefaultTrue_() {
   const originalGetActiveSpreadsheet = SpreadsheetApp.getActiveSpreadsheet;
 
