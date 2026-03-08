@@ -324,6 +324,9 @@ function runEdgeBoard() {
       schedule: scheduleStage.rows,
       playerStats: playerStatsStage.rows,
       matchMap: matchStage.rows,
+      matchMapMatchedCount: matchStage.matchedCount,
+      matchMapRejectedCount: matchStage.rejectedCount,
+      matchMapDiagnosticRecordsWritten: matchStage.diagnosticRecordsWritten,
       signals: signalStage.rows,
     });
     appendStageLog_(runId, persistStage.summary);
@@ -334,6 +337,7 @@ function runEdgeBoard() {
       fetched_schedule: scheduleStage.events.length,
       matched: matchStage.matchedCount,
       unmatched: matchStage.unmatchedCount,
+      rejected: matchStage.rejectedCount,
       player_stats_rows: playerStatsStage.rows.length,
       signals_found: signalStage.rows.length,
       signals_sent: signalStage.sentCount,
@@ -467,6 +471,7 @@ function runEdgeBoard() {
       allowed_tournaments: scheduleStage.allowedCount,
       matched: matchStage.matchedCount,
       unmatched: matchStage.unmatchedCount,
+      rejected: matchStage.rejectedCount,
       signals_found: signalStage.sentCount,
       rejection_codes: JSON.stringify(combinedReasonCodes),
       stage_summaries: JSON.stringify(verbosePayload.stage_summaries),

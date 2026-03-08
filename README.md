@@ -62,3 +62,14 @@ Use the `Config` tab to tune logging detail:
   - `3`: includes sampled payload-level diagnostics for deeper debugging
 
 All logs continue to pass through secret redaction before being persisted.
+
+
+### Matcher counters in logs and dashboards
+
+`stageMatchEvents` now reports explicit counters so operators can quickly distinguish successful pairings from persisted rejections:
+
+- `matched_count`: successful odds ↔ schedule pairings.
+- `rejected_count`: odds events that were not paired and were written with a rejection code (for example `no_player_match`).
+- `diagnostic_records_written`: optional diagnostic records written to `MATCH_MAP` that should not be interpreted as successful matches.
+
+`matched` and `unmatched` summary fields are derived from these explicit counters rather than total `MATCH_MAP` upsert rows, so a run can clearly show patterns like **`0 matched / N rejected`** while still persisting rejection rows for troubleshooting.

@@ -54,6 +54,9 @@ function stagePersist(runId, payload) {
     'signal_hash', 'notification_outcome', 'reason_code', 'created_at',
   ], payload.signals);
 
+  const matchedMapUpserts = Number(payload.matchMapMatchedCount || 0);
+  const rejectedMapUpserts = Number(payload.matchMapRejectedCount || 0);
+  const diagnosticMatchMapUpserts = Number(payload.matchMapDiagnosticRecordsWritten || 0);
   const total = payload.odds.length + payload.schedule.length + payload.playerStats.length + payload.matchMap.length + payload.signals.length;
   const summary = buildStageSummary_(runId, 'stagePersist', start, {
     input_count: total,
@@ -65,6 +68,9 @@ function stagePersist(runId, payload) {
       raw_schedule_upserts: payload.schedule.length,
       raw_player_stats_upserts: payload.playerStats.length,
       match_map_upserts: payload.matchMap.length,
+      match_map_upserts_matched: matchedMapUpserts,
+      match_map_upserts_rejected: rejectedMapUpserts,
+      match_map_diagnostic_records_written: diagnosticMatchMapUpserts,
       signals_upserts: payload.signals.length,
     },
   });

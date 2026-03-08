@@ -7,6 +7,8 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
   const rows = [];
   const unmatched = [];
   let matchedCount = 0;
+  let rejectedCount = 0;
+  let diagnosticRecordsWritten = 0;
   const canonicalizationExamples = [];
 
   if ((!oddsEvents || !oddsEvents.length) && scheduleEvents && scheduleEvents.length) {
@@ -24,19 +26,26 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
     });
 
     reasonCounts.schedule_seed_no_odds = (reasonCounts.schedule_seed_no_odds || 0) + scheduleEvents.length;
+    diagnosticRecordsWritten += scheduleEvents.length;
 
     const summaryNoOdds = buildStageSummary_(runId, 'stageMatchEvents', start, {
       input_count: 0,
-      output_count: rows.length,
+      output_count: 0,
       provider: 'internal_matcher',
       api_credit_usage: 0,
-      reason_codes: reasonCounts,
+      reason_codes: Object.assign({}, reasonCounts, {
+        matched_count: 0,
+        rejected_count: 0,
+        diagnostic_records_written: diagnosticRecordsWritten,
+      }),
     });
 
     return {
       rows,
       summary: summaryNoOdds,
       matchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten,
       unmatchedCount: 0,
       unmatched,
       canonicalizationExamples,
@@ -89,6 +98,8 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
       updated_at: new Date().toISOString(),
     });
     reasonCounts[result.rejection_code] = (reasonCounts[result.rejection_code] || 0) + 1;
+    rejectedCount += 1;
+    diagnosticRecordsWritten += 1;
     unmatched.push({
       odds_event_id: result.odds.event_id,
       competition: result.odds.competition,
@@ -101,17 +112,23 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
 
   const summary = buildStageSummary_(runId, 'stageMatchEvents', start, {
     input_count: oddsEvents.length,
-    output_count: rows.length,
+    output_count: matchedCount,
     provider: 'internal_matcher',
     api_credit_usage: 0,
-    reason_codes: reasonCounts,
+    reason_codes: Object.assign({}, reasonCounts, {
+      matched_count: matchedCount,
+      rejected_count: rejectedCount,
+      diagnostic_records_written: diagnosticRecordsWritten,
+    }),
   });
 
   return {
     rows,
     summary,
     matchedCount,
-    unmatchedCount: oddsEvents.length - matchedCount,
+    rejectedCount,
+    diagnosticRecordsWritten,
+    unmatchedCount: rejectedCount,
     unmatched,
     canonicalizationExamples,
   };
