@@ -2015,6 +2015,79 @@ function testStageMatchEvents_withoutOddsSeedsMatchRowsFromSchedule_() {
   assertEquals_(1, stage.summary.reason_codes.schedule_seed_no_odds);
 }
 
+
+function testStageMatchEvents_countsFullyUnmatchedOddsAsRejected_() {
+  const oddsEvents = [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }];
+
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: 'Different',
+    player_2: 'Names',
+    start_time: new Date('2025-03-01T12:05:00.000Z'),
+  }];
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, oddsEvents, scheduleEvents);
+
+  assertEquals_(0, stage.matchedCount);
+  assertEquals_(1, stage.rejectedCount);
+  assertEquals_(1, stage.unmatchedCount);
+  assertEquals_(1, stage.diagnosticRecordsWritten);
+  assertEquals_(0, stage.summary.output_count);
+  assertEquals_(1, stage.summary.reason_codes.rejected_count);
+  assertEquals_(1, stage.summary.reason_codes.no_player_match);
+}
+
+function testStageMatchEvents_countsPartialMatchesAndRejectionsSeparately_() {
+  const oddsEvents = [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }, {
+    event_id: 'odds_2',
+    competition: 'WTA 500 Doha',
+    player_1: 'Unmatched',
+    player_2: 'Pairing',
+    commence_time: new Date('2025-03-01T13:00:00.000Z'),
+  }];
+
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    start_time: new Date('2025-03-01T12:10:00.000Z'),
+  }];
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, oddsEvents, scheduleEvents);
+
+  assertEquals_(1, stage.matchedCount);
+  assertEquals_(1, stage.rejectedCount);
+  assertEquals_(1, stage.unmatchedCount);
+  assertEquals_(1, stage.diagnosticRecordsWritten);
+  assertEquals_(1, stage.summary.output_count);
+  assertEquals_(1, stage.summary.reason_codes.matched_count);
+  assertEquals_(1, stage.summary.reason_codes.rejected_count);
+  assertEquals_(1, stage.summary.reason_codes.primary_match);
+  assertEquals_(1, stage.summary.reason_codes.no_player_match);
+}
+
 function testExtractLeadersJsUrl_matchesLeadersourceWtaScript_() {
   const html = '<html><script src="/jsmatches/abc_leadersource_latest_wta.js"></script></html>';
   const result = extractLeadersJsUrl_(html, 'https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top');
