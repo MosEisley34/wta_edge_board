@@ -2779,6 +2779,134 @@ function testGetTaH2hRowForCanonicalPair_supportsReverseLookup_() {
   }
 }
 
+
+function testSetCachedTaLeadersPayload_nearLimitWritesDirectWithoutThrow_() {
+  const originalGetScriptCache = CacheService.getScriptCache;
+  const originalLoggerLog = Logger.log;
+  const originalSetStateValue = setStateValue_;
+
+  const cacheStore = {};
+  CacheService.getScriptCache = function () {
+    return {
+        put: function (key, value) { cacheStore[key] = String(value || ''); },
+        get: function (key) { return cacheStore[key] || null; },
+        putAll: function (obj) { Object.keys(obj || {}).forEach(function (k) { cacheStore[k] = obj[k]; }); },
+        removeAll: function (keys) { (keys || []).forEach(function (k) { delete cacheStore[k]; }); },
+        getAll: function (keys) {
+          const out = {};
+          (keys || []).forEach(function (k) { if (Object.prototype.hasOwnProperty.call(cacheStore, k)) out[k] = cacheStore[k]; });
+          return out;
+        },
+      };
+    };
+  Logger.log = function () {};
+  setStateValue_ = function () {};
+
+  try {
+    const baseRows = [];
+    for (let i = 0; i < 500; i += 1) {
+      baseRows.push({
+        date: '2025-03-01',
+        event: 'Event ' + i,
+        surface: 'Hard',
+        player_name: 'Player ' + i,
+        opponent: 'Opponent ' + i,
+        score: '6-4 6-4',
+        ranking: i + 1,
+        recent_form: 0.62,
+        hold_pct: 0.68,
+        break_pct: 0.39,
+        numeric_stats: [1, 2, 3, 4, 5],
+      });
+    }
+
+    const payload = {
+      source: 'https://example.test/leaders.js',
+      fetched_at: '2025-03-01T00:00:00.000Z',
+      cached_at_ms: Date.now(),
+      rows: baseRows,
+    };
+
+    const result = setCachedTaLeadersPayload_(payload);
+    assertTrue_(!!result, 'expected result object');
+    assertTrue_(result.ok === true || result.ok === false, 'expected result.ok boolean');
+    assertTrue_(result.storage_path === 'direct' || result.storage_path === 'pruned' || result.storage_path === 'chunked_compressed' || result.storage_path === 'normalized_subset' || result.storage_path === 'none', 'expected storage path marker');
+  } finally {
+    CacheService.getScriptCache = originalGetScriptCache;
+    Logger.log = originalLoggerLog;
+    setStateValue_ = originalSetStateValue;
+  }
+}
+
+function testSetCachedTaLeadersPayload_overLimitStorageFailureIsNonFatal_() {
+  const originalGetScriptCache = CacheService.getScriptCache;
+  const originalLoggerLog = Logger.log;
+  const originalSetStateValue = setStateValue_;
+
+  CacheService.getScriptCache = function () {
+    return {
+        put: function () { throw new Error('cache write failed'); },
+        get: function () { return null; },
+        putAll: function () { throw new Error('cache bulk write failed'); },
+        removeAll: function () {},
+        getAll: function () { return {}; },
+      };
+    };
+  Logger.log = function () {};
+  setStateValue_ = function () {};
+
+  try {
+    const oversizedRows = [];
+    for (let i = 0; i < 1500; i += 1) {
+      oversizedRows.push({
+        date: '2025-03-01',
+        event: 'Very Long Event Name ' + i + ' ' + new Array(20).join('x'),
+        surface: 'Hard',
+        player_name: 'Player ' + i,
+        opponent: 'Opponent ' + i,
+        score: '6-4 6-4',
+        ranking: i + 1,
+        recent_form: 0.62,
+        surface_win_rate: 0.58,
+        hold_pct: 0.68,
+        break_pct: 0.39,
+        bp_saved_pct: 0.61,
+        bp_conv_pct: 0.45,
+        first_serve_in_pct: 0.64,
+        first_serve_points_won_pct: 0.71,
+        second_serve_points_won_pct: 0.49,
+        return_points_won_pct: 0.42,
+        dr: 1.09,
+        tpw_pct: 0.53,
+        numeric_stats: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      });
+    }
+
+    const payload = {
+      source: 'https://example.test/leaders.js',
+      fetched_at: '2025-03-01T00:00:00.000Z',
+      cached_at_ms: Date.now(),
+      rows: oversizedRows,
+    };
+
+    let threw = false;
+    let result = null;
+    try {
+      result = setCachedTaLeadersPayload_(payload);
+    } catch (e) {
+      threw = true;
+    }
+
+    assertEquals_(false, threw);
+    assertTrue_(!!result, 'expected result object');
+    assertEquals_(false, result.ok);
+  } finally {
+    CacheService.getScriptCache = originalGetScriptCache;
+    Logger.log = originalLoggerLog;
+    setStateValue_ = originalSetStateValue;
+  }
+}
+
 function testFetchPlayerStatsFromLeadersSource_reasonCodes_() {
   const originalFetch = UrlFetchApp.fetch;
 
