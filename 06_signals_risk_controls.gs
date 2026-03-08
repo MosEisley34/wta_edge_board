@@ -1,10 +1,10 @@
 function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
   const start = Date.now();
-  const source = 'derived_player_stats_v1';
   const reasonCounts = {
     stats_enriched: 0,
     stats_missing_player_a: 0,
     stats_missing_player_b: 0,
+    stats_fallback_model_used: 0,
   };
 
   const matchByOddsEventId = {};
@@ -14,6 +14,24 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
 
   const rows = [];
   const byOddsEventId = {};
+  const playersToFetch = [];
+
+  oddsEvents.forEach((event) => {
+    const match = matchByOddsEventId[event.event_id];
+    if (!match || !match.schedule_event_id) return;
+    playersToFetch.push(canonicalizePlayerName_(event.player_1, {}));
+    playersToFetch.push(canonicalizePlayerName_(event.player_2, {}));
+  });
+
+  const asOfTime = oddsEvents.reduce(function (latest, event) {
+    if (!(event && event.odds_updated_time instanceof Date)) return latest;
+    return event.odds_updated_time.getTime() > latest.getTime() ? event.odds_updated_time : latest;
+  }, new Date(0));
+  const normalizedAsOfTime = asOfTime.getTime() > 0 ? asOfTime : new Date();
+  const statsBatch = fetchPlayerStatsBatch_(config, playersToFetch, normalizedAsOfTime);
+  const statsByPlayer = statsBatch.stats_by_player || {};
+  const providerUnavailable = statsBatch.provider_available === false;
+  const source = providerUnavailable ? 'derived_player_stats_v1_fallback' : 'player_stats_provider_v1';
 
   oddsEvents.forEach((event) => {
     const match = matchByOddsEventId[event.event_id];
@@ -23,8 +41,8 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     const playerB = canonicalizePlayerName_(event.player_2, {});
     const featureTimestamp = event.odds_updated_time.toISOString();
 
-    const playerAStats = computePseudoPlayerStats_(playerA, event, match, 'a');
-    const playerBStats = computePseudoPlayerStats_(playerB, event, match, 'b');
+    const playerAStats = resolvePlayerStatsPayload_(playerA, statsByPlayer, providerUnavailable, event, match, 'a', reasonCounts);
+    const playerBStats = resolvePlayerStatsPayload_(playerB, statsByPlayer, providerUnavailable, event, match, 'b', reasonCounts);
 
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerA, source, featureTimestamp, playerAStats));
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerB, source, featureTimestamp, playerBStats));
@@ -37,6 +55,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
 
     byOddsEventId[event.event_id] = {
       source,
+      stats_provider_unavailable: providerUnavailable,
       feature_timestamp: featureTimestamp,
       player_a: {
         canonical_name: playerA,
@@ -55,7 +74,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     input_count: oddsEvents.length,
     output_count: rows.length,
     provider: source,
-    api_credit_usage: 0,
+    api_credit_usage: Number(statsBatch.api_credit_usage || 0),
     reason_codes: reasonCounts,
   });
 
@@ -63,6 +82,47 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     rows,
     byOddsEventId,
     summary,
+  };
+}
+
+function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, providerUnavailable, event, match, slot, reasonCounts) {
+  const providerStats = statsByPlayer[canonicalPlayerName];
+
+  if (providerStats) {
+    const hasProviderStats = providerStats.ranking !== null
+      || providerStats.recent_form !== null
+      || providerStats.surface_win_rate !== null
+      || providerStats.hold_pct !== null
+      || providerStats.break_pct !== null;
+
+    if (hasProviderStats) {
+      return {
+        has_stats: true,
+        features: {
+          ranking: providerStats.ranking,
+          recent_form: providerStats.recent_form,
+          surface_win_rate: providerStats.surface_win_rate,
+          hold_pct: providerStats.hold_pct,
+          break_pct: providerStats.break_pct,
+        },
+      };
+    }
+  }
+
+  if (providerUnavailable) {
+    reasonCounts.stats_fallback_model_used += 1;
+    return computePseudoPlayerStats_(canonicalPlayerName, event, match, slot);
+  }
+
+  return {
+    has_stats: false,
+    features: {
+      ranking: null,
+      recent_form: null,
+      surface_win_rate: null,
+      hold_pct: null,
+      break_pct: null,
+    },
   };
 }
 
@@ -122,7 +182,9 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
   if (!playerB || !playerB.has_stats) reasonCodes.stats_missing_player_b = (reasonCodes.stats_missing_player_b || 0) + 1;
 
   if (!playerA || !playerB || !playerA.has_stats || !playerB.has_stats) {
-    reasonCodes.stats_fallback_model_used = (reasonCodes.stats_fallback_model_used || 0) + 1;
+    if (statsBundle.stats_provider_unavailable === true) {
+      reasonCodes.stats_fallback_model_used = (reasonCodes.stats_fallback_model_used || 0) + 1;
+    }
     return 0;
   }
 
