@@ -20,6 +20,8 @@ const MATCHMX_ROW_IDX = {
   TOTAL_POINTS_WON_PCT: 18,
 };
 
+const PLAYER_STATS_H2H_CACHE_KEY = 'PLAYER_STATS_H2H_DATASET';
+
 function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
   const players = dedupePlayerNames_(canonicalPlayers || []);
   const asOfDate = asOfTime instanceof Date ? asOfTime : new Date(asOfTime || Date.now());
@@ -723,5 +725,250 @@ function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime) 
     as_of_time: serializable.as_of_time,
     has_stats: serializable.has_stats,
     player_count: serializable.player_count,
+  }));
+}
+
+function getTaH2hRowForCanonicalPair_(config, playerA, playerB) {
+  const canonicalA = canonicalizePlayerName_(playerA || '', {});
+  const canonicalB = canonicalizePlayerName_(playerB || '', {});
+  if (!canonicalA || !canonicalB || canonicalA === canonicalB) return null;
+
+  const dataset = getTaH2hDataset_(config || {});
+  if (!dataset || !dataset.by_pair) return null;
+
+  const directKey = buildTaH2hPairKey_(canonicalA, canonicalB);
+  const direct = dataset.by_pair[directKey];
+  if (direct) return direct;
+
+  const reverseKey = buildTaH2hPairKey_(canonicalB, canonicalA);
+  const reverse = dataset.by_pair[reverseKey];
+  if (!reverse) return null;
+
+  return {
+    player_a: canonicalA,
+    player_b: canonicalB,
+    wins_a: Number(reverse.wins_b || 0),
+    wins_b: Number(reverse.wins_a || 0),
+    source_updated_date: reverse.source_updated_date || dataset.source_updated_date || '',
+  };
+}
+
+function getTaH2hDataset_(config) {
+  const runtimeConfig = config || {};
+  const forceRefresh = toBoolean_(runtimeConfig.PLAYER_STATS_FORCE_REFRESH, false);
+  const ttlMs = Math.max(1, Number(runtimeConfig.PLAYER_STATS_CACHE_TTL_MIN || 10)) * 60000;
+  const nowMs = Date.now();
+
+  if (!forceRefresh) {
+    const cached = getCachedTaH2hDataset_();
+    if (cached && Number.isFinite(cached.cached_at_ms) && nowMs - cached.cached_at_ms <= ttlMs) {
+      return cached;
+    }
+  }
+
+  const fresh = fetchTaH2hDatasetFromSource_(runtimeConfig);
+  if (fresh.ok) {
+    const payload = fresh.payload || { rows: [], by_pair: {} };
+    payload.cached_at_ms = nowMs;
+    setCachedTaH2hDataset_(payload);
+    persistTaH2hDatasetState_(payload, 'fresh_h2h_page');
+    return payload;
+  }
+
+  const stale = getStateJson_('PLAYER_STATS_H2H_STALE_PAYLOAD');
+  if (stale && stale.by_pair) {
+    return stale;
+  }
+
+  return null;
+}
+
+function fetchTaH2hDatasetFromSource_(config) {
+  const url = String(config.PLAYER_STATS_TA_H2H_URL || 'https://tennisabstract.com/reports/h2hMatrixWta.html').trim();
+  if (!url) return { ok: false, reason_code: 'ta_h2h_url_missing' };
+
+  const headers = {
+    Accept: 'text/html',
+    'User-Agent': String(config.PLAYER_STATS_FETCH_USER_AGENT || 'Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'),
+  };
+  let response;
+  try {
+    response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: headers,
+      muteHttpExceptions: true,
+      followRedirects: true,
+      validateHttpsCertificates: true,
+    });
+  } catch (e) {
+    return { ok: false, reason_code: 'ta_h2h_fetch_failed', error: e && e.message };
+  }
+
+  const status = Number(response.getResponseCode() || 0);
+  if (status < 200 || status >= 300) return { ok: false, reason_code: 'ta_h2h_http_' + status };
+
+  const html = String(response.getContentText() || '');
+  const rows = extractTaH2hMatrixRows_(html);
+  if (!rows.length) return { ok: false, reason_code: 'ta_h2h_parse_failed' };
+
+  const sourceUpdatedDate = extractTaH2hSourceUpdatedDate_(html);
+  const byPair = {};
+  rows.forEach(function (row) {
+    row.source_updated_date = sourceUpdatedDate;
+    byPair[buildTaH2hPairKey_(row.player_a, row.player_b)] = row;
+  });
+
+  return {
+    ok: true,
+    reason_code: 'ta_h2h_ok',
+    payload: {
+      source: url,
+      source_updated_date: sourceUpdatedDate,
+      fetched_at: new Date().toISOString(),
+      rows: rows,
+      by_pair: byPair,
+    },
+  };
+}
+
+function extractTaH2hMatrixRows_(html) {
+  const text = String(html || '');
+  const rows = [];
+  const seen = {};
+  const anchorRegex = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+
+  while ((match = anchorRegex.exec(text)) !== null) {
+    const href = String(match[1] || '');
+    const bodyText = stripHtmlTags_(match[2] || '');
+    const score = extractH2hWinsFromText_(bodyText) || extractH2hWinsFromText_(href);
+    if (!score) continue;
+
+    const names = extractTaH2hPlayersFromHref_(href);
+    if (!names) continue;
+
+    const playerA = canonicalizePlayerName_(names.player_a, {});
+    const playerB = canonicalizePlayerName_(names.player_b, {});
+    if (!playerA || !playerB || playerA === playerB) continue;
+
+    const key = buildTaH2hPairKey_(playerA, playerB);
+    if (seen[key]) continue;
+    seen[key] = true;
+
+    rows.push({
+      player_a: playerA,
+      player_b: playerB,
+      wins_a: score.wins_a,
+      wins_b: score.wins_b,
+      source_updated_date: '',
+    });
+  }
+
+  return rows;
+}
+
+function extractTaH2hSourceUpdatedDate_(html) {
+  const plain = stripHtmlTags_(html || '').replace(/\s+/g, ' ').trim();
+  const match = plain.match(/last\s+update\s*:?\s*([^|\-]{4,40})/i);
+  if (!match || !match[1]) return '';
+
+  const value = String(match[1] || '').trim().replace(/[.;,]$/, '');
+  const parsedMs = Date.parse(value);
+  if (!Number.isFinite(parsedMs)) return value;
+  return new Date(parsedMs).toISOString().slice(0, 10);
+}
+
+function extractTaH2hPlayersFromHref_(href) {
+  const query = String(href || '').split('?')[1] || '';
+  if (!query) return null;
+
+  const params = {};
+  query.split('&').forEach(function (entry) {
+    if (!entry) return;
+    const parts = entry.split('=');
+    const key = decodeURIComponentSafe_(parts[0] || '').toLowerCase();
+    const value = decodeURIComponentSafe_(parts.slice(1).join('=') || '');
+    if (!key) return;
+    params[key] = value;
+  });
+
+  const playerA = params.player1 || params.playera || params.p1 || params.a || params.winner || '';
+  const playerB = params.player2 || params.playerb || params.p2 || params.b || params.loser || '';
+  if (!playerA || !playerB) return null;
+
+  return { player_a: playerA, player_b: playerB };
+}
+
+function extractH2hWinsFromText_(text) {
+  const match = String(text || '').match(/(\d+)\s*[-–:]\s*(\d+)/);
+  if (!match) return null;
+  return {
+    wins_a: Number(match[1]),
+    wins_b: Number(match[2]),
+  };
+}
+
+function stripHtmlTags_(html) {
+  return String(html || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&');
+}
+
+function decodeURIComponentSafe_(value) {
+  try {
+    return decodeURIComponent(String(value || '').replace(/\+/g, ' '));
+  } catch (e) {
+    return String(value || '');
+  }
+}
+
+function buildTaH2hPairKey_(playerA, playerB) {
+  return [String(playerA || ''), String(playerB || '')].join('||');
+}
+
+function getCachedTaH2hDataset_() {
+  try {
+    const raw = CacheService.getScriptCache().get(PLAYER_STATS_H2H_CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function setCachedTaH2hDataset_(payload) {
+  CacheService.getScriptCache().put(PLAYER_STATS_H2H_CACHE_KEY, JSON.stringify(payload || {}), 21600);
+}
+
+function persistTaH2hDatasetState_(payload, source) {
+  const rows = (payload && payload.rows) || [];
+  const byPair = (payload && payload.by_pair) || {};
+  const sourceUpdatedDate = (payload && payload.source_updated_date) || '';
+  const serializableRows = rows.map(function (row) {
+    return {
+      player_a: row.player_a,
+      player_b: row.player_b,
+      wins_a: Number(row.wins_a || 0),
+      wins_b: Number(row.wins_b || 0),
+      source_updated_date: sourceUpdatedDate,
+    };
+  });
+
+  const serializable = {
+    source: (payload && payload.source) || '',
+    source_updated_date: sourceUpdatedDate,
+    fetched_at: (payload && payload.fetched_at) || new Date().toISOString(),
+    cached_at_ms: Number((payload && payload.cached_at_ms) || Date.now()),
+    row_count: serializableRows.length,
+    rows: serializableRows,
+    by_pair: byPair,
+  };
+
+  setStateValue_('PLAYER_STATS_H2H_STALE_PAYLOAD', JSON.stringify(serializable));
+  setStateValue_('PLAYER_STATS_H2H_LAST_FETCH_META', JSON.stringify({
+    source: serializable.source,
+    source_updated_date: serializable.source_updated_date,
+    fetched_at: serializable.fetched_at,
+    cached_at_ms: serializable.cached_at_ms,
+    source_type: source || '',
+    row_count: serializable.row_count,
   }));
 }
