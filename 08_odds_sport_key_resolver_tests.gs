@@ -100,6 +100,18 @@ function assertArrayEquals_(expected, actual) {
   }
 }
 
+function assertTrue_(condition, message) {
+  if (!condition) {
+    throw new Error('Assertion failed. ' + String(message || 'expected true'));
+  }
+}
+
+function assertDoesNotContain_(haystack, needle) {
+  if (String(haystack || '').indexOf(String(needle || '')) >= 0) {
+    throw new Error('Assertion failed. Expected text to exclude "' + needle + '" but was: ' + haystack);
+  }
+}
+
 function testNormalizeAndDeduplicateScheduleEvents_dedupesByEventIdAndCommenceTime_() {
   const payloadLists = [
     [
@@ -211,7 +223,8 @@ function testCallOddsApiWithSportKeyFallback_noActiveWtaKeys_returnsDedicatedRea
 
 function testBuildOddsApiRequestPathForLog_stripsOriginAndSecrets_() {
   const path = buildOddsApiRequestPathForLog_('https://api.the-odds-api.com/v4/sports/tennis_wta_indian_wells/events?apiKey=abc123&regions=us');
-  assertEquals_('/v4/sports/tennis_wta_indian_wells/events?apiKey=[REDACTED]&regions=us', path);
+  assertDoesNotContain_(path, 'abc123');
+  assertEquals_('/v4/sports/tennis_wta_indian_wells/events?apiKey=ab***23&regions=us', path);
 }
 
 function testFetchScheduleFromOddsApi_marksActiveKeysNoEventsReason_() {
@@ -258,7 +271,10 @@ function testFetchScheduleFromOddsApi_marksActiveKeysNoEventsReason_() {
 function testSanitizeStringForLog_redactsQuerySecrets_() {
   const raw = 'https://api.the-odds-api.com/v4/sports?apiKey=abc123&regions=us&token=xyz';
   const sanitized = sanitizeStringForLog_(raw);
-  assertEquals_('https://api.the-odds-api.com/v4/sports?apiKey=[REDACTED]&regions=us&token=[REDACTED]', sanitized);
+  assertDoesNotContain_(sanitized, 'abc123');
+  assertDoesNotContain_(sanitized, 'token=xyz');
+  assertTrue_(sanitized.indexOf('apiKey=ab***23') >= 0, 'apiKey should be masked in prefix/suffix form');
+  assertTrue_(sanitized.indexOf('token=x***z') >= 0, 'token should be masked in prefix/suffix form');
 }
 
 function testSanitizeForLog_redactsSensitiveObjectFields_() {
@@ -271,9 +287,42 @@ function testSanitizeForLog_redactsSensitiveObjectFields_() {
   };
 
   const sanitized = sanitizeForLog_(payload);
-  assertEquals_('[REDACTED]', sanitized.apiKey);
-  assertEquals_('[REDACTED]', sanitized.nested.Authorization);
-  assertEquals_('https://x.test/path?api_key=[REDACTED]', sanitized.nested.url);
+  assertDoesNotContain_(sanitized.apiKey, 'abc123');
+  assertDoesNotContain_(sanitized.nested.Authorization, 'topsecret');
+  assertEquals_('ab***23', sanitized.apiKey);
+  assertEquals_('Bear***ret', sanitized.nested.Authorization);
+  assertEquals_('https://x.test/path?api_key=x***z', sanitized.nested.url);
+}
+
+function testSetStateValue_masksVerboseJsonSecretsBeforePersist_() {
+  const originalUpsertSheetRows = upsertSheetRows_;
+  const captured = { row: null };
+
+  upsertSheetRows_ = function (sheetName, headers, rows) {
+    if (sheetName === SHEETS.STATE) captured.row = rows[0];
+  };
+
+  try {
+    const rawOddsKey = 'odds_secret_12345';
+    const rawWebhook = 'https://discord.com/api/webhooks/123456789012345678/AAABBBCCCDDDEEEFFF';
+    setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify({
+      config_snapshot: {
+        ODDS_API_KEY: rawOddsKey,
+        DISCORD_WEBHOOK: rawWebhook,
+      },
+      exception: 'transport failed token=tok_super_secret',
+    }));
+
+    const stored = String((captured.row && captured.row.value) || '');
+    assertDoesNotContain_(stored, rawOddsKey);
+    assertDoesNotContain_(stored, rawWebhook);
+    assertDoesNotContain_(stored, 'tok_super_secret');
+    assertTrue_(stored.indexOf('odds***345') >= 0, 'ODDS_API_KEY should be persisted as masked');
+    assertTrue_(stored.indexOf('http***FFF') >= 0, 'DISCORD_WEBHOOK should be persisted as masked');
+    assertTrue_(stored.indexOf('token=tok_***ret') >= 0, 'token query payload should be masked');
+  } finally {
+    upsertSheetRows_ = originalUpsertSheetRows;
+  }
 }
 
 

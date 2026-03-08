@@ -1,3 +1,20 @@
+const SECRET_REDACTION_MAP = {
+  exact_keys: [
+    'ODDS_API_KEY',
+    'DISCORD_WEBHOOK',
+    'WEBHOOK_URL',
+    'API_KEY',
+    'X_API_KEY',
+    'AUTHORIZATION',
+    'ACCESS_TOKEN',
+    'TOKEN',
+    'SECRET',
+    'PASSWORD',
+  ],
+  key_name_pattern: /(api[_-]?key|secret|token|authorization|password|webhook)/i,
+  query_param_pattern: /([?&](?:apiKey|api_key|token|access_token|key|secret|password|webhook|authorization)=)([^&#\s]*)/gi,
+};
+
 function stagePersist(runId, payload) {
   const start = Date.now();
 
@@ -101,11 +118,18 @@ function appendLogRow_(entry) {
 }
 
 function setStateValue_(key, value) {
+  const sanitizedValue = sanitizeForStateStorage_(value);
   upsertSheetRows_(SHEETS.STATE, ['key', 'value', 'updated_at'], [{
     key,
-    value,
+    value: sanitizedValue,
     updated_at: formatLocalIso_(new Date()),
   }]);
+}
+
+function sanitizeForStateStorage_(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') return sanitizeStringForLog_(value);
+  return JSON.stringify(sanitizeForLog_(value));
 }
 
 function upsertSheetRows_(sheetName, headers, rows) {
@@ -221,8 +245,8 @@ function sanitizeForLog_(value) {
     const sanitized = {};
     Object.keys(value).forEach((key) => {
       const keyLower = String(key || '').toLowerCase();
-      if (/(api[_-]?key|secret|token|authorization|password|webhook)/i.test(keyLower)) {
-        sanitized[key] = '[REDACTED]';
+      if (SECRET_REDACTION_MAP.key_name_pattern.test(keyLower)) {
+        sanitized[key] = maskSecretValue_(value[key]);
       } else {
         sanitized[key] = sanitizeForLog_(value[key]);
       }
@@ -236,13 +260,53 @@ function sanitizeForLog_(value) {
 function sanitizeStringForLog_(text) {
   let sanitized = String(text || '');
 
-  sanitized = sanitized.replace(/([?&](?:apiKey|api_key|token|access_token|key|secret|password)=)[^&#\s]*/gi, '$1[REDACTED]');
-  sanitized = sanitized.replace(/(x-api-key\s*[:=]\s*)[^\s"']+/gi, '$1[REDACTED]');
-  sanitized = sanitized.replace(/(authorization\s*[:=]\s*bearer\s+)[^\s"']+/gi, '$1[REDACTED]');
-  sanitized = sanitized.replace(/(hooks\.slack\.com\/services\/)[^\s"']+/gi, '$1[REDACTED]');
-  sanitized = sanitized.replace(/(discord(?:app)?\.com\/api\/webhooks\/)[^\s"']+/gi, '$1[REDACTED]');
+  SECRET_REDACTION_MAP.exact_keys.forEach((keyName) => {
+    const escaped = escapeRegex_(String(keyName || ''));
+    const doubleQuotePattern = new RegExp('("' + escaped + '"\\s*:\\s*")([^"\\n\\r]*)(")', 'gi');
+    const singleQuotePattern = new RegExp('(\'' + escaped + '\'\\s*:\\s*\')([^\'\\n\\r]*)(\')', 'gi');
+    sanitized = sanitized.replace(doubleQuotePattern, function (_, prefix, secretValue, suffix) {
+      return prefix + maskSecretValue_(secretValue) + suffix;
+    });
+    sanitized = sanitized.replace(singleQuotePattern, function (_, prefix, secretValue, suffix) {
+      return prefix + maskSecretValue_(secretValue) + suffix;
+    });
+  });
+
+  sanitized = sanitized.replace(SECRET_REDACTION_MAP.query_param_pattern, function (_, prefix, secretValue) {
+    return prefix + maskSecretValue_(secretValue);
+  });
+  sanitized = sanitized.replace(/(\b(?:apiKey|api_key|token|access_token|key|secret|password|webhook|authorization)\s*[:=]\s*)([^\s"'&,]+)/gi, function (_, prefix, secretValue) {
+    return prefix + maskSecretValue_(secretValue);
+  });
+  sanitized = sanitized.replace(/(x-api-key\s*[:=]\s*)([^\s"']+)/gi, function (_, prefix, secretValue) {
+    return prefix + maskSecretValue_(secretValue);
+  });
+  sanitized = sanitized.replace(/(authorization\s*[:=]\s*bearer\s+)([^\s"']+)/gi, function (_, prefix, secretValue) {
+    return prefix + maskSecretValue_(secretValue);
+  });
+  sanitized = sanitized.replace(/(hooks\.slack\.com\/services\/)([^\s"']+)/gi, function (_, prefix, secretValue) {
+    return prefix + maskSecretValue_(secretValue);
+  });
+  sanitized = sanitized.replace(/(discord(?:app)?\.com\/api\/webhooks\/)([^\s"']+)/gi, function (_, prefix, secretValue) {
+    return prefix + maskSecretValue_(secretValue);
+  });
 
   return sanitized;
+}
+
+function maskSecretValue_(value) {
+  const text = String(value === null || value === undefined ? '' : value);
+  if (!text) return '';
+
+  const prefixLen = Math.min(4, Math.max(1, Math.floor(text.length / 3)));
+  const suffixLen = Math.min(3, Math.max(1, Math.floor(text.length / 3)));
+  const prefix = text.slice(0, prefixLen);
+  const suffix = text.slice(text.length - suffixLen);
+  return prefix + '***' + suffix;
+}
+
+function escapeRegex_(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function stringHashCode_(value) {
