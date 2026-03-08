@@ -192,6 +192,7 @@ function resolveCompetitionTier_(event, resolverConfig) {
         canonical_tier: canonical,
         matched_by: source.rule,
         matched_field: source.field,
+        matched_value: source.value,
         raw_fields: sourceFields,
       };
     }
@@ -201,7 +202,23 @@ function resolveCompetitionTier_(event, resolverConfig) {
     canonical_tier: 'UNKNOWN',
     matched_by: 'none',
     matched_field: '',
+    matched_value: '',
     raw_fields: sourceFields,
+  };
+}
+
+function resolveRejectionSource_(resolved) {
+  const fields = (resolved && resolved.raw_fields) ? resolved.raw_fields : [];
+  const fallback = fields.find((field) => normalizeCompetitionValue_(field.value));
+  if (resolved && resolved.matched_field) {
+    return {
+      field: resolved.matched_field,
+      value: resolved.matched_value || '',
+    };
+  }
+  return {
+    field: fallback ? fallback.field : '',
+    value: fallback ? fallback.value : '',
   };
 }
 

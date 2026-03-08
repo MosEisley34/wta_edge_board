@@ -362,6 +362,7 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   const canonicalExamples = [];
   const unresolvedCompetitions = [];
   const unresolvedCompetitionCounts = {};
+  const rejectionDiagnostics = [];
   const rows = [];
   const allowedEvents = [];
   const tierResolverConfig = buildCompetitionTierResolverConfig_(config);
@@ -377,6 +378,7 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
       reason_code: decision.reason_code,
       matched_by: resolved.matched_by,
       matched_field: resolved.matched_field,
+      matched_value: resolved.matched_value || '',
       resolver_fields: resolved.raw_fields,
     });
 
@@ -414,11 +416,24 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
       h2h_source: pickEventValue_(event, ['h2h_source']),
       stats_as_of: pickEventValue_(event, ['stats_as_of', 'as_of_time']),
       canonical_tier: canonical,
+      resolved_source_field: resolved.matched_field || '',
+      resolved_source_value: resolved.matched_value || '',
       is_allowed: decision.allowed,
       reason_code: decision.reason_code,
       source,
       updated_at: new Date().toISOString(),
     });
+
+    if (!decision.allowed) {
+      const rejectionSource = resolveRejectionSource_(resolved);
+      rejectionDiagnostics.push({
+        event_id: event.event_id,
+        reason_code: decision.reason_code,
+        canonical_tier: canonical,
+        source_field: rejectionSource.field,
+        source_value: rejectionSource.value,
+      });
+    }
 
     if (decision.allowed) {
       allowedEvents.push({
@@ -546,6 +561,7 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     rows,
     summary,
     canonicalExamples,
+    rejectionDiagnostics,
     unresolvedCompetitions,
     unresolvedCompetitionCounts,
     topUnresolvedCompetitions: topUnresolvedCompetitions,
