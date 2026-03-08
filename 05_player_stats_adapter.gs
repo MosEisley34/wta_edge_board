@@ -1,3 +1,25 @@
+const MATCHMX_ROW_IDX = {
+  DATE: 0,
+  EVENT: 1,
+  SURFACE: 2,
+  PLAYER_NAME: 3,
+  OPPONENT: 4,
+  SCORE: 5,
+  RANKING: 6,
+  RECENT_FORM: 7,
+  SURFACE_WIN_RATE: 8,
+  HOLD_PCT: 9,
+  BREAK_PCT: 10,
+  BP_SAVED_PCT: 11,
+  BP_CONV_PCT: 12,
+  FIRST_SERVE_IN_PCT: 13,
+  FIRST_SERVE_POINTS_WON_PCT: 14,
+  SECOND_SERVE_POINTS_WON_PCT: 15,
+  RETURN_POINTS_WON_PCT: 16,
+  DOMINANCE_RATIO: 17,
+  TOTAL_POINTS_WON_PCT: 18,
+};
+
 function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
   const players = dedupePlayerNames_(canonicalPlayers || []);
   const asOfDate = asOfTime instanceof Date ? asOfTime : new Date(asOfTime || Date.now());
@@ -122,7 +144,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     };
   }
 
-  const leadersSource = fetchPlayerStatsFromLeadersSource_(players);
+  const leadersSource = fetchPlayerStatsFromLeadersSource_(players, config, asOfTime);
   if (leadersSource.ok) {
     return {
       ok: true,
@@ -155,7 +177,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
   };
 }
 
-function fetchPlayerStatsFromLeadersSource_(canonicalPlayers) {
+function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) {
   const leadersUrl = 'https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top';
   let pageResponse;
 
@@ -200,7 +222,11 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers) {
     return { ok: false, reason_code: 'ta_matchmx_parse_failed', stats_by_player: {}, api_call_count: 2 };
   }
 
-  const statsByPlayer = normalizePlayerStatsResponse_(structuredRows, canonicalPlayers);
+  const statsByPlayer = normalizePlayerStatsResponse_(structuredRows, canonicalPlayers, {
+    as_of_time: asOfTime,
+    match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
+    recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
+  });
   return {
     ok: Object.keys(statsByPlayer).length > 0,
     reason_code: Object.keys(statsByPlayer).length > 0 ? 'ta_matchmx_ok' : 'ta_matchmx_parse_failed',
@@ -261,26 +287,39 @@ function parseJsArrayTokens_(arrayLiteralBody) {
 }
 
 function buildStructuredMatchMxRow_(tokens) {
-  const score = String(tokens[5] || '').trim();
+  const score = String(tokens[MATCHMX_ROW_IDX.SCORE] || '').trim();
   const hasWalkoverOrRet = /\b(?:ret|wo)\b/i.test(score);
   const numericStats = [];
-  for (let i = 6; i < tokens.length; i += 1) {
+  for (let i = MATCHMX_ROW_IDX.RANKING; i < tokens.length; i += 1) {
     const value = Number(tokens[i]);
     numericStats.push(Number.isFinite(value) ? value : null);
   }
 
+  function take(index) {
+    const value = Number(tokens[index]);
+    return Number.isFinite(value) ? value : null;
+  }
+
   return {
-    date: String(tokens[0] || ''),
-    event: String(tokens[1] || ''),
-    surface: String(tokens[2] || ''),
-    player_name: String(tokens[3] || ''),
-    opponent: String(tokens[4] || ''),
+    date: String(tokens[MATCHMX_ROW_IDX.DATE] || ''),
+    event: String(tokens[MATCHMX_ROW_IDX.EVENT] || ''),
+    surface: String(tokens[MATCHMX_ROW_IDX.SURFACE] || ''),
+    player_name: String(tokens[MATCHMX_ROW_IDX.PLAYER_NAME] || ''),
+    opponent: String(tokens[MATCHMX_ROW_IDX.OPPONENT] || ''),
     score: score,
-    ranking: numericStats.length ? numericStats[0] : null,
-    recent_form: hasWalkoverOrRet ? null : (numericStats.length > 1 ? numericStats[1] : null),
-    surface_win_rate: hasWalkoverOrRet ? null : (numericStats.length > 2 ? numericStats[2] : null),
-    hold_pct: hasWalkoverOrRet ? null : (numericStats.length > 3 ? numericStats[3] : null),
-    break_pct: hasWalkoverOrRet ? null : (numericStats.length > 4 ? numericStats[4] : null),
+    ranking: take(MATCHMX_ROW_IDX.RANKING),
+    recent_form: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.RECENT_FORM),
+    surface_win_rate: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.SURFACE_WIN_RATE),
+    hold_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.HOLD_PCT),
+    break_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.BREAK_PCT),
+    bp_saved_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.BP_SAVED_PCT),
+    bp_conv_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.BP_CONV_PCT),
+    first_serve_in_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.FIRST_SERVE_IN_PCT),
+    first_serve_points_won_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.FIRST_SERVE_POINTS_WON_PCT),
+    second_serve_points_won_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.SECOND_SERVE_POINTS_WON_PCT),
+    return_points_won_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.RETURN_POINTS_WON_PCT),
+    dr: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.DOMINANCE_RATIO),
+    tpw_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT),
     numeric_stats: numericStats,
   };
 }
@@ -437,6 +476,14 @@ function mergePlayerStatsMaps_(maps, canonicalPlayers) {
     let surfaceWinRate = null;
     let holdPct = null;
     let breakPct = null;
+    let bpSavedPct = null;
+    let bpConvPct = null;
+    let firstServeInPct = null;
+    let firstServePointsWonPct = null;
+    let secondServePointsWonPct = null;
+    let returnPointsWonPct = null;
+    let dr = null;
+    let tpwPct = null;
 
     maps.forEach(function (statsMap) {
       const stats = statsMap && statsMap[player];
@@ -446,6 +493,14 @@ function mergePlayerStatsMaps_(maps, canonicalPlayers) {
       if (surfaceWinRate === null && stats.surface_win_rate !== null && stats.surface_win_rate !== undefined) surfaceWinRate = stats.surface_win_rate;
       if (holdPct === null && stats.hold_pct !== null && stats.hold_pct !== undefined) holdPct = stats.hold_pct;
       if (breakPct === null && stats.break_pct !== null && stats.break_pct !== undefined) breakPct = stats.break_pct;
+      if (bpSavedPct === null && stats.bp_saved_pct !== null && stats.bp_saved_pct !== undefined) bpSavedPct = stats.bp_saved_pct;
+      if (bpConvPct === null && stats.bp_conv_pct !== null && stats.bp_conv_pct !== undefined) bpConvPct = stats.bp_conv_pct;
+      if (firstServeInPct === null && stats.first_serve_in_pct !== null && stats.first_serve_in_pct !== undefined) firstServeInPct = stats.first_serve_in_pct;
+      if (firstServePointsWonPct === null && stats.first_serve_points_won_pct !== null && stats.first_serve_points_won_pct !== undefined) firstServePointsWonPct = stats.first_serve_points_won_pct;
+      if (secondServePointsWonPct === null && stats.second_serve_points_won_pct !== null && stats.second_serve_points_won_pct !== undefined) secondServePointsWonPct = stats.second_serve_points_won_pct;
+      if (returnPointsWonPct === null && stats.return_points_won_pct !== null && stats.return_points_won_pct !== undefined) returnPointsWonPct = stats.return_points_won_pct;
+      if (dr === null && stats.dr !== null && stats.dr !== undefined) dr = stats.dr;
+      if (tpwPct === null && stats.tpw_pct !== null && stats.tpw_pct !== undefined) tpwPct = stats.tpw_pct;
     });
 
     merged[player] = {
@@ -454,14 +509,25 @@ function mergePlayerStatsMaps_(maps, canonicalPlayers) {
       surface_win_rate: surfaceWinRate,
       hold_pct: holdPct,
       break_pct: breakPct,
+      bp_saved_pct: bpSavedPct,
+      bp_conv_pct: bpConvPct,
+      first_serve_in_pct: firstServeInPct,
+      first_serve_points_won_pct: firstServePointsWonPct,
+      second_serve_points_won_pct: secondServePointsWonPct,
+      return_points_won_pct: returnPointsWonPct,
+      dr: dr,
+      tpw_pct: tpwPct,
     };
   });
 
   return merged;
 }
 
-function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers) {
+function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers, options) {
   const rows = extractPlayerStatsRows_(providerPayload);
+  if (isMatchMxRows_(rows)) {
+    return aggregateMatchMxRowsToStatsByPlayer_(rows, canonicalPlayers, options || {});
+  }
   const normalized = {};
 
   rows.forEach(function (row) {
@@ -473,6 +539,14 @@ function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers) {
       surface_win_rate: normalizeRateMetric_(row.surface_win_rate, row.surfaceWinRate, row.surface_rate),
       hold_pct: normalizeRateMetric_(row.hold_pct, row.hold_percentage, row.serve_hold_pct),
       break_pct: normalizeRateMetric_(row.break_pct, row.break_percentage, row.return_break_pct),
+      bp_saved_pct: normalizeRateMetric_(row.bp_saved_pct, row.break_points_saved_pct),
+      bp_conv_pct: normalizeRateMetric_(row.bp_conv_pct, row.break_points_converted_pct),
+      first_serve_in_pct: normalizeRateMetric_(row.first_serve_in_pct, row.first_serve_pct),
+      first_serve_points_won_pct: normalizeRateMetric_(row.first_serve_points_won_pct, row.first_serve_won_pct),
+      second_serve_points_won_pct: normalizeRateMetric_(row.second_serve_points_won_pct, row.second_serve_won_pct),
+      return_points_won_pct: normalizeRateMetric_(row.return_points_won_pct, row.return_won_pct),
+      dr: normalizeFloatMetric_(row.dr, row.dominance_ratio),
+      tpw_pct: normalizeRateMetric_(row.tpw_pct, row.total_points_won_pct),
     };
   });
 
@@ -484,6 +558,86 @@ function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers) {
   });
 
   return map;
+}
+
+function isMatchMxRows_(rows) {
+  return !!(rows && rows.length && Object.prototype.hasOwnProperty.call(rows[0], 'numeric_stats'));
+}
+
+function aggregateMatchMxRowsToStatsByPlayer_(rows, canonicalPlayers, options) {
+  const grouped = {};
+  const asOfDate = options.as_of_time instanceof Date ? options.as_of_time : new Date(options.as_of_time || Date.now());
+  const weeks = Math.max(0, Number(options.match_window_weeks || 52));
+  const recentMatchCount = Math.max(0, Number(options.recent_match_count || 0));
+  const windowStartMs = asOfDate.getTime() - (weeks * 7 * 24 * 60 * 60 * 1000);
+
+  rows.forEach(function (row) {
+    const canonicalName = canonicalizePlayerName_(row.player_name || row.player || row.name || '', {});
+    if (!canonicalName) return;
+    const matchDate = parseDateMs_(row.date);
+    if (Number.isFinite(matchDate) && matchDate > asOfDate.getTime()) return;
+    if (weeks > 0 && Number.isFinite(matchDate) && matchDate < windowStartMs) return;
+
+    if (!grouped[canonicalName]) grouped[canonicalName] = [];
+    grouped[canonicalName].push(row);
+  });
+
+  const stats = {};
+  Object.keys(grouped).forEach(function (player) {
+    const playerRows = grouped[player]
+      .slice()
+      .sort(function (a, b) { return parseDateMs_(b.date) - parseDateMs_(a.date); });
+    const scopedRows = recentMatchCount > 0 ? playerRows.slice(0, recentMatchCount) : playerRows;
+
+    stats[player] = {
+      ranking: parseIntegerMetric_(scopedRows[0] && scopedRows[0].ranking),
+      recent_form: normalizeRateMetric_(averageMetric_(scopedRows, 'recent_form')),
+      surface_win_rate: normalizeRateMetric_(averageMetric_(scopedRows, 'surface_win_rate')),
+      hold_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'hold_pct')),
+      break_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'break_pct')),
+      bp_saved_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'bp_saved_pct')),
+      bp_conv_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'bp_conv_pct')),
+      first_serve_in_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'first_serve_in_pct')),
+      first_serve_points_won_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'first_serve_points_won_pct')),
+      second_serve_points_won_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'second_serve_points_won_pct')),
+      return_points_won_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'return_points_won_pct')),
+      dr: normalizeFloatMetric_(averageMetric_(scopedRows, 'dr')),
+      tpw_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'tpw_pct')),
+    };
+  });
+
+  const map = {};
+  (canonicalPlayers || []).forEach(function (name) {
+    const canonical = canonicalizePlayerName_(name, {});
+    if (!canonical) return;
+    map[canonical] = stats[canonical] || null;
+  });
+  return map;
+}
+
+function parseDateMs_(value) {
+  const ms = Date.parse(String(value || ''));
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function averageMetric_(rows, key) {
+  let sum = 0;
+  let count = 0;
+  (rows || []).forEach(function (row) {
+    const value = Number(row && row[key]);
+    if (!Number.isFinite(value)) return;
+    sum += value;
+    count += 1;
+  });
+  return count ? (sum / count) : null;
+}
+
+function normalizeFloatMetric_() {
+  for (let i = 0; i < arguments.length; i += 1) {
+    const value = Number(arguments[i]);
+    if (Number.isFinite(value)) return roundNumber_(value, 3);
+  }
+  return null;
 }
 
 function extractPlayerStatsRows_(providerPayload) {

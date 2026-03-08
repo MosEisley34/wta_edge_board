@@ -1846,8 +1846,8 @@ function testExtractLeadersJsUrl_matchesLeadersourceWtaScript_() {
 
 function testExtractMatchMxRows_parsesStructuredRowsAndRetSafely_() {
   const payload = [
-    'matchmx[0]=["2025-03-01","Doha","Hard","Player One","Opponent A","6-4 6-4",11,62,58,70,40];',
-    'matchmx[1]=["2025-03-02","Dubai","Hard","Player One","Opponent B","RET",12,65,59,71,41];',
+    'matchmx[0]=["2025-03-01","Doha","Hard","Player One","Opponent A","6-4 6-4",11,62,58,70,40,65,42,61,68,51,47,1.05,53];',
+    'matchmx[1]=["2025-03-02","Dubai","Hard","Player One","Opponent B","RET",12,65,59,71,41,66,43,62,69,52,48,1.06,54];',
   ].join('\n');
 
   const rows = extractMatchMxRows_(payload);
@@ -1860,8 +1860,81 @@ function testExtractMatchMxRows_parsesStructuredRowsAndRetSafely_() {
   assertEquals_('Opponent A', rows[0].opponent);
   assertEquals_(11, rows[0].ranking);
   assertEquals_(62, rows[0].recent_form);
+  assertEquals_(65, rows[0].bp_saved_pct);
+  assertEquals_(1.05, rows[0].dr);
   assertEquals_(null, rows[1].recent_form);
   assertEquals_(null, rows[1].hold_pct);
+  assertEquals_(null, rows[1].bp_saved_pct);
+}
+
+function testNormalizePlayerStatsResponse_aggregatesMatchMxMetricsWithWindowAndCount_() {
+  const rows = [
+    {
+      date: '2025-03-10',
+      player_name: 'Player One',
+      ranking: 10,
+      recent_form: 70,
+      surface_win_rate: 58,
+      hold_pct: 71,
+      break_pct: 39,
+      bp_saved_pct: 63,
+      bp_conv_pct: 44,
+      first_serve_in_pct: 61,
+      first_serve_points_won_pct: 67,
+      second_serve_points_won_pct: 50,
+      return_points_won_pct: 46,
+      dr: 1.08,
+      tpw_pct: 54,
+      numeric_stats: [],
+    },
+    {
+      date: '2025-02-20',
+      player_name: 'Player One',
+      ranking: 11,
+      recent_form: 60,
+      surface_win_rate: 56,
+      hold_pct: 69,
+      break_pct: 37,
+      bp_saved_pct: 61,
+      bp_conv_pct: 43,
+      first_serve_in_pct: 59,
+      first_serve_points_won_pct: 65,
+      second_serve_points_won_pct: 49,
+      return_points_won_pct: 44,
+      dr: 1.02,
+      tpw_pct: 52,
+      numeric_stats: [],
+    },
+    {
+      date: '2023-01-15',
+      player_name: 'Player One',
+      ranking: 20,
+      recent_form: 40,
+      hold_pct: 50,
+      break_pct: 30,
+      numeric_stats: [],
+    },
+  ];
+
+  const normalized = normalizePlayerStatsResponse_(rows, ['Player One'], {
+    as_of_time: new Date('2025-03-15T00:00:00.000Z'),
+    match_window_weeks: 52,
+    recent_match_count: 2,
+  });
+
+  assertEquals_(0.65, normalized['player one'].recent_form);
+  assertEquals_(0.57, normalized['player one'].surface_win_rate);
+  assertEquals_(0.7, normalized['player one'].hold_pct);
+  assertEquals_(0.38, normalized['player one'].break_pct);
+  assertEquals_(0.62, normalized['player one'].bp_saved_pct);
+  assertEquals_(0.435, normalized['player one'].bp_conv_pct);
+  assertEquals_(0.6, normalized['player one'].first_serve_in_pct);
+  assertEquals_(0.66, normalized['player one'].first_serve_points_won_pct);
+  assertEquals_(0.495, normalized['player one'].second_serve_points_won_pct);
+  assertEquals_(0.45, normalized['player one'].return_points_won_pct);
+  assertEquals_(1.05, normalized['player one'].dr);
+  assertEquals_(0.53, normalized['player one'].tpw_pct);
+  assertEquals_(10, normalized['player one'].ranking);
 }
 
 function testFetchPlayerStatsFromLeadersSource_reasonCodes_() {
