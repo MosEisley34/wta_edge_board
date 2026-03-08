@@ -10,6 +10,10 @@ function onOpen() {
     .addItem('Remove Triggers', 'menuRemoveTriggers')
     .addSeparator()
     .addItem('Diagnostics / Health Check', 'menuDiagnosticsHealthCheck')
+    .addSeparator()
+    .addItem('Validate TennisAbstract Sources', 'menuValidateTennisAbstractSources')
+    .addItem('Refresh H2H Cache', 'menuRefreshH2hCache')
+    .addItem('Preview Player Stats Mapping', 'menuPreviewPlayerStatsMapping')
     .addToUi();
 }
 
@@ -62,6 +66,22 @@ function menuDiagnosticsHealthCheck() {
   SpreadsheetApp.getUi().alert('Diagnostics complete', JSON.stringify(report, null, 2), SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
+
+function menuValidateTennisAbstractSources() {
+  const report = runProviderHealthCheck_({ forceH2hRefresh: false, includeMappingPreview: true });
+  SpreadsheetApp.getUi().alert('TennisAbstract source validation complete. Status: ' + report.status + '. Check ProviderHealth tab.');
+}
+
+function menuRefreshH2hCache() {
+  const report = runProviderHealthCheck_({ forceH2hRefresh: true, includeMappingPreview: false });
+  SpreadsheetApp.getUi().alert('H2H cache refresh complete. Status: ' + report.status + '. Check ProviderHealth tab.');
+}
+
+function menuPreviewPlayerStatsMapping() {
+  const report = runProviderHealthCheck_({ forceH2hRefresh: false, includeMappingPreview: true });
+  SpreadsheetApp.getUi().alert('Player stats mapping preview complete. Status: ' + report.status + '. Check ProviderHealth tab.');
+}
+
 function diagnosticsHealthCheck() {
   ensureTabsAndConfig_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -95,6 +115,160 @@ function diagnosticsHealthCheck() {
   });
 
   return report;
+}
+
+
+function runProviderHealthCheck_(options) {
+  ensureTabsAndConfig_();
+  const opts = options || {};
+  const config = getConfig_();
+  const now = new Date();
+
+  const leadersValidation = validateTaLeadersSource_(config);
+  const h2hValidation = validateTaH2hSource_(config, !!opts.forceH2hRefresh);
+  const samplePlayers = buildProviderSamplePlayers_(leadersValidation.structured_rows || []);
+
+  const checks = [leadersValidation.status, h2hValidation.status];
+  if (samplePlayers.length === 0) checks.push('warn');
+
+  const finalStatus = checks.indexOf('fail') >= 0 ? 'fail' : (checks.indexOf('warn') >= 0 ? 'warn' : 'pass');
+  const stamp = localAndUtcTimestamps_(now);
+  const rows = [
+    ['last_run_timestamp', stamp.local, finalStatus, ''],
+    ['leaders_js_url_detected', leadersValidation.leaders_js_url || '', leadersValidation.status, leadersValidation.reason_code || ''],
+    ['matchmx_row_count', leadersValidation.matchmx_row_count, leadersValidation.status, leadersValidation.reason_code || ''],
+    ['h2h_pair_count', h2hValidation.h2h_pair_count, h2hValidation.status, h2hValidation.reason_code || ''],
+    ['sample_parsed_players', samplePlayers.join(', '), samplePlayers.length ? 'pass' : 'warn', samplePlayers.length ? '' : 'no_sample_players'],
+  ];
+
+  writeProviderHealthRows_(rows, stamp.local);
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: buildRunId_(),
+    stage: 'providerHealthCheck',
+    status: finalStatus,
+    reason_code: finalStatus === 'pass' ? 'provider_health_ok' : 'provider_health_attention',
+    message: JSON.stringify({
+      leaders_status: leadersValidation.status,
+      leaders_reason_code: leadersValidation.reason_code,
+      h2h_status: h2hValidation.status,
+      h2h_reason_code: h2hValidation.reason_code,
+      sample_players: samplePlayers,
+      include_mapping_preview: !!opts.includeMappingPreview,
+      force_h2h_refresh: !!opts.forceH2hRefresh,
+    }),
+  });
+
+  return {
+    status: finalStatus,
+    checked_at: stamp.local,
+    checked_at_utc: stamp.utc,
+    leaders_js_url_detected: leadersValidation.leaders_js_url || '',
+    matchmx_row_count: Number(leadersValidation.matchmx_row_count || 0),
+    h2h_pair_count: Number(h2hValidation.h2h_pair_count || 0),
+    sample_parsed_players: samplePlayers,
+  };
+}
+
+function validateTaLeadersSource_(config) {
+  const leadersUrl = String(config.PLAYER_STATS_TA_LEADERS_URL || DEFAULT_CONFIG.PLAYER_STATS_TA_LEADERS_URL).trim();
+  const headers = {
+    Accept: 'text/html',
+    'User-Agent': String(config.PLAYER_STATS_FETCH_USER_AGENT || DEFAULT_CONFIG.PLAYER_STATS_FETCH_USER_AGENT),
+  };
+
+  const pageFetch = playerStatsFetchWithRetry_(leadersUrl, {
+    method: 'get',
+    muteHttpExceptions: true,
+    headers: headers,
+    followRedirects: true,
+    validateHttpsCertificates: true,
+  }, config);
+
+  if (!pageFetch.ok) {
+    return { status: 'fail', reason_code: pageFetch.reason_code || 'ta_leaders_page_fetch_failed', leaders_js_url: '', matchmx_row_count: 0, structured_rows: [] };
+  }
+
+  const html = String(pageFetch.response.getContentText() || '');
+  const leadersJsUrl = extractLeadersJsUrl_(html, leadersUrl);
+  if (!leadersJsUrl) {
+    return { status: 'fail', reason_code: 'ta_leaders_js_url_missing', leaders_js_url: '', matchmx_row_count: 0, structured_rows: [] };
+  }
+
+  sleepTennisAbstractRequestGap_(config);
+  const jsFetch = playerStatsFetchWithRetry_(leadersJsUrl, {
+    method: 'get',
+    muteHttpExceptions: true,
+    headers: headers,
+    followRedirects: true,
+    validateHttpsCertificates: true,
+  }, config);
+
+  if (!jsFetch.ok) {
+    return { status: 'fail', reason_code: jsFetch.reason_code || 'ta_leaders_js_fetch_failed', leaders_js_url: leadersJsUrl, matchmx_row_count: 0, structured_rows: [] };
+  }
+
+  const jsPayload = String(jsFetch.response.getContentText() || '');
+  const structuredRows = extractMatchMxRows_(jsPayload);
+  const rowCount = structuredRows.length;
+  const status = rowCount > 0 ? 'pass' : 'warn';
+
+  return {
+    status: status,
+    reason_code: rowCount > 0 ? 'ta_matchmx_ok' : 'ta_matchmx_empty',
+    leaders_js_url: leadersJsUrl,
+    matchmx_row_count: rowCount,
+    structured_rows: structuredRows,
+  };
+}
+
+function validateTaH2hSource_(config, forceRefresh) {
+  const runtimeConfig = Object.assign({}, config, { PLAYER_STATS_FORCE_REFRESH: !!forceRefresh });
+  const dataset = getTaH2hDataset_(runtimeConfig);
+  const pairCount = Number(dataset && dataset.rows ? dataset.rows.length : 0);
+  if (pairCount <= 0) {
+    const meta = getStateJson_('PLAYER_STATS_H2H_LAST_FETCH_META') || {};
+    const reason = String(meta.last_failure_reason || meta.source_type || 'ta_h2h_parse_failed');
+    return { status: 'warn', reason_code: reason, h2h_pair_count: 0 };
+  }
+
+  return {
+    status: 'pass',
+    reason_code: forceRefresh ? 'ta_h2h_refreshed' : 'ta_h2h_ok',
+    h2h_pair_count: pairCount,
+  };
+}
+
+function buildProviderSamplePlayers_(matchMxRows) {
+  const samples = [];
+  const seen = {};
+
+  (matchMxRows || []).forEach(function (row) {
+    const canonical = canonicalizePlayerName_(row.player_name || '', {});
+    if (!canonical || seen[canonical]) return;
+    seen[canonical] = true;
+    samples.push(canonical);
+  });
+
+  return samples.slice(0, 8);
+}
+
+function writeProviderHealthRows_(rows, updatedAt) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.PROVIDER_HEALTH);
+  const headers = ['metric', 'value', 'status', 'details', 'updated_at'];
+  sh.clearContents();
+  sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+  const output = (rows || []).map(function (row) {
+    return [row[0], row[1], row[2], row[3], updatedAt];
+  });
+
+  if (output.length) {
+    sh.getRange(2, 1, output.length, headers.length).setValues(output);
+  }
+
+  if (sh.getFrozenRows() !== 1) sh.setFrozenRows(1);
 }
 
 function ensureTabsAndConfig_() {
@@ -135,6 +309,7 @@ function ensureTabsAndConfig_() {
     'signal_hash', 'notification_outcome', 'reason_code', 'created_at',
   ]);
   ensureHeaders_(SHEETS.STATE, ['key', 'value', 'updated_at']);
+  ensureHeaders_(SHEETS.PROVIDER_HEALTH, ['metric', 'value', 'status', 'details', 'updated_at']);
 
   ensureConfigDefaults_();
 }
