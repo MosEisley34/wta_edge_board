@@ -208,6 +208,8 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     primary_window_matched: 0,
     expanded_window_fallback_used: 0,
     expanded_window_short_circuit: 0,
+    invalid_time_window_auto_expanded: 0,
+    odds_schedule_window_mismatch_high_severity: 0,
   };
 
   if (!window) {
@@ -292,6 +294,40 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   scheduleResp.live_fetch_happened = liveFetchHappened;
   scheduleResp.stale_fallback_used_with_events = staleFallbackUsedWithEvents;
   scheduleResp.stale_fallback_empty_forced_live = staleFallbackEmptyForcedLive;
+
+  const scheduleInvalidWindowMismatch = !!window
+    && !!(oddsEvents && oddsEvents.length)
+    && (!scheduleResp.events || !scheduleResp.events.length)
+    && scheduleResp.reason_code === 'invalid_time_window';
+
+  if (scheduleInvalidWindowMismatch) {
+    scheduleWindowMetrics.odds_schedule_window_mismatch_high_severity = 1;
+    logDiagnosticEvent_(config, 'stageFetchSchedule_invalid_window_mismatch', {
+      severity: 'HIGH',
+      run_id: runId,
+      odds_event_count: oddsEvents.length,
+      schedule_event_count: (scheduleResp.events || []).length,
+      reason_code: scheduleResp.reason_code,
+      window_start: window.startIso,
+      window_end: window.endIso,
+    }, 1);
+
+    const autoExpandMinutes = Math.max(Number(runtimeConfig.match_fallback_expansion_min || 0), 180);
+    const autoExpandedWindow = expandScheduleWindow_(window, autoExpandMinutes);
+    const autoExpandedResp = fetchScheduleFromOddsApi_(config, autoExpandedWindow, {
+      allow_invalid_window_relaxed_retry: false,
+    });
+    scheduleResp.api_credit_usage = Number(scheduleResp.api_credit_usage || 0) + Number(autoExpandedResp.api_credit_usage || 0);
+    scheduleResp.api_call_count = Number(scheduleResp.api_call_count || 0) + Number(autoExpandedResp.api_call_count || 0);
+    scheduleResp.credit_headers = mergeCreditHeaders_(scheduleResp.credit_headers || {}, autoExpandedResp.credit_headers || {});
+
+    if (autoExpandedResp.events && autoExpandedResp.events.length) {
+      scheduleResp.events = mergeScheduleEventsById_(scheduleResp.events || [], autoExpandedResp.events || []);
+      scheduleResp.reason_code = 'invalid_time_window_recovered_relaxed_query';
+      scheduleWindowMetrics.invalid_time_window_auto_expanded = 1;
+      scheduleWindowMetrics.expanded_window_fallback_used = 1;
+    }
+  }
 
   if (window && oddsEvents && oddsEvents.length) {
     const primaryCoverage = assessScheduleCoverage_(oddsEvents, scheduleResp.events || [], config);
@@ -440,6 +476,8 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   summary.reason_codes.primary_window_matched = (summary.reason_codes.primary_window_matched || 0) + scheduleWindowMetrics.primary_window_matched;
   summary.reason_codes.expanded_window_fallback_used = (summary.reason_codes.expanded_window_fallback_used || 0) + scheduleWindowMetrics.expanded_window_fallback_used;
   summary.reason_codes.expanded_window_short_circuit = (summary.reason_codes.expanded_window_short_circuit || 0) + scheduleWindowMetrics.expanded_window_short_circuit;
+  summary.reason_codes.invalid_time_window_auto_expanded = (summary.reason_codes.invalid_time_window_auto_expanded || 0) + scheduleWindowMetrics.invalid_time_window_auto_expanded;
+  summary.reason_codes.odds_schedule_window_mismatch_high_severity = (summary.reason_codes.odds_schedule_window_mismatch_high_severity || 0) + scheduleWindowMetrics.odds_schedule_window_mismatch_high_severity;
   summary.reason_codes.stale_fallback_used_with_events = (summary.reason_codes.stale_fallback_used_with_events || 0) + Number(scheduleResp.stale_fallback_used_with_events || 0);
   summary.reason_codes.stale_fallback_empty_forced_live = (summary.reason_codes.stale_fallback_empty_forced_live || 0) + Number(scheduleResp.stale_fallback_empty_forced_live || 0);
   summary.reason_codes.live_fetch_happened = (summary.reason_codes.live_fetch_happened || 0) + (scheduleResp.live_fetch_happened ? 1 : 0);
@@ -792,6 +830,38 @@ function buildSkippedOddsStage_(runId, reasonCode, message) {
   };
 }
 
+function computeCanonicalTimeWindow_(opts) {
+  const options = opts || {};
+  const referenceMsRaw = Number(options.reference_ms);
+  const referenceMs = Number.isFinite(referenceMsRaw) ? referenceMsRaw : Date.now();
+  const lookaheadHours = Math.max(0, Number(options.lookahead_hours || 0));
+  const lookaheadMs = lookaheadHours * 60 * 60 * 1000;
+  const beforeMs = Math.max(0, Number(options.buffer_before_min || 0)) * 60000;
+  const afterMs = Math.max(0, Number(options.buffer_after_min || 0)) * 60000;
+  const eventTimes = (options.event_times_ms || []).filter(function (value) {
+    return Number.isFinite(Number(value));
+  }).map(function (value) {
+    return Number(value);
+  });
+
+  const hasEventTimes = eventTimes.length > 0;
+  const startCandidateMs = hasEventTimes
+    ? (Math.min.apply(null, eventTimes) - beforeMs)
+    : (referenceMs - beforeMs);
+  const endCandidateMs = hasEventTimes
+    ? (Math.max.apply(null, eventTimes) + afterMs)
+    : (referenceMs + lookaheadMs + afterMs);
+
+  const normalized = normalizeOddsWindowMs_(startCandidateMs, endCandidateMs);
+  return {
+    start_ms: normalized.start_ms,
+    end_ms: normalized.end_ms,
+    start_iso: Number.isFinite(normalized.start_ms) ? new Date(normalized.start_ms).toISOString() : '',
+    end_iso: Number.isFinite(normalized.end_ms) ? new Date(normalized.end_ms).toISOString() : '',
+    source: hasEventTimes ? 'event_times' : 'reference_clock',
+  };
+}
+
 function resolveOddsWindowForPipeline_(config, nowMs) {
   const runtimeConfig = getCreditAwareRuntimeConfig_(config);
   const runtimeSnapshot = runtimeConfig.snapshot || {};
@@ -803,12 +873,18 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
   const emptyCycleThreshold = Math.max(1, Number(config.BOOTSTRAP_EMPTY_CYCLE_THRESHOLD || 3));
   const emptyCycleCount = Number(emptyCycleState.consecutive_empty_cycles || 0);
   const emptyCycleMitigationReady = emptyCycleCount >= emptyCycleThreshold && !emptyCycleState.mitigation_applied_for_cycle;
-  const sourceStartMs = emptyCycleMitigationReady ? (nowMs - (3 * 60 * 60 * 1000)) : nowMs;
-  const sourceEndMs = emptyCycleMitigationReady ? (nowMs + lookaheadMs + (6 * 60 * 60 * 1000)) : (nowMs + lookaheadMs);
+  const sourceWindowCanonical = computeCanonicalTimeWindow_({
+    reference_ms: nowMs,
+    lookahead_hours: config.LOOKAHEAD_HOURS + (emptyCycleMitigationReady ? 6 : 0),
+    buffer_before_min: emptyCycleMitigationReady ? 180 : 0,
+    buffer_after_min: 0,
+  });
+  const sourceStartMs = sourceWindowCanonical.start_ms;
+  const sourceEndMs = sourceWindowCanonical.end_ms;
 
   const sourceWindow = {
-    startIso: new Date(sourceStartMs).toISOString(),
-    endIso: new Date(sourceEndMs).toISOString(),
+    startIso: sourceWindowCanonical.start_iso,
+    endIso: sourceWindowCanonical.end_iso,
   };
   const scheduleResp = fetchScheduleFromOddsApi_(config, sourceWindow, {
     force_multi_key_discovery: emptyCycleMitigationReady,
@@ -843,7 +919,6 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
   const staleHasEvents = !!((stalePayload.events || []).length || Number(stalePayload.event_count || 0) > 0 || stalePayload.has_games);
   const bootstrapCachedPayloadHasEvents = cacheHasEvents || staleHasEvents;
   const bootstrapWindowHours = Math.max(12, Number(config.ODDS_BOOTSTRAP_LOOKAHEAD_HOURS || 18));
-  const bootstrapWindowMs = bootstrapWindowHours * 60 * 60 * 1000;
   const previousRefreshMeta = getStateJson_('ODDS_REFRESH_MODE_META') || {};
   const previousRefreshMode = String(previousRefreshMeta.current_refresh_mode || '');
 
@@ -871,6 +946,10 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     && !bootstrapCachedPayloadHasEvents;
 
   if (bootstrapEligible) {
+    const bootstrapWindow = computeCanonicalTimeWindow_({
+      reference_ms: nowMs,
+      lookahead_hours: bootstrapWindowHours,
+    });
     if (hardLimitEnforced) {
       return Object.assign({}, decisionBase, {
         should_fetch_odds: false,
@@ -895,11 +974,11 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
       bootstrap_mode: true,
       current_refresh_mode: 'bootstrap',
       odds_fetch_window: {
-        startMs: nowMs,
-        endMs: nowMs + bootstrapWindowMs,
+        startMs: bootstrapWindow.start_ms,
+        endMs: bootstrapWindow.end_ms,
       },
-      refresh_window_start_ms: nowMs,
-      refresh_window_end_ms: nowMs + bootstrapWindowMs,
+      refresh_window_start_ms: bootstrapWindow.start_ms,
+      refresh_window_end_ms: bootstrapWindow.end_ms,
     });
   }
 
@@ -930,17 +1009,21 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     }
 
     if (decisionBase.no_games_behavior === 'FALLBACK_STATIC_WINDOW') {
+      const staticWindow = computeCanonicalTimeWindow_({
+        reference_ms: nowMs,
+        lookahead_hours: config.LOOKAHEAD_HOURS,
+      });
       return Object.assign({}, decisionBase, {
         should_fetch_odds: true,
         decision_reason_code: 'odds_refresh_executed_in_window',
         decision_message: 'No eligible schedule matches; using fallback static odds window.',
         selected_source: 'fallback_static_window',
         odds_fetch_window: {
-          startMs: nowMs,
-          endMs: nowMs + lookaheadMs,
+          startMs: staticWindow.start_ms,
+          endMs: staticWindow.end_ms,
         },
-        refresh_window_start_ms: nowMs,
-        refresh_window_end_ms: nowMs + lookaheadMs,
+        refresh_window_start_ms: staticWindow.start_ms,
+        refresh_window_end_ms: staticWindow.end_ms,
         current_refresh_mode: 'fallback_static_window',
       });
     }
@@ -958,8 +1041,14 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
 
   const firstEligibleStartMs = Math.min.apply(null, eligibleStarts);
   const lastEligibleStartMs = Math.max.apply(null, eligibleStarts);
-  const refreshWindowStartMs = firstEligibleStartMs - (config.ODDS_WINDOW_PRE_FIRST_MIN * 60000);
-  const refreshWindowEndMs = lastEligibleStartMs + (config.ODDS_WINDOW_POST_LAST_MIN * 60000);
+  const refreshWindow = computeCanonicalTimeWindow_({
+    reference_ms: nowMs,
+    event_times_ms: [firstEligibleStartMs, lastEligibleStartMs],
+    buffer_before_min: config.ODDS_WINDOW_PRE_FIRST_MIN,
+    buffer_after_min: config.ODDS_WINDOW_POST_LAST_MIN,
+  });
+  const refreshWindowStartMs = refreshWindow.start_ms;
+  const refreshWindowEndMs = refreshWindow.end_ms;
   const inRefreshWindow = nowMs >= refreshWindowStartMs && nowMs <= refreshWindowEndMs;
 
   return Object.assign({}, decisionBase, {
@@ -983,23 +1072,19 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
 }
 
 function deriveScheduleWindowFromOdds_(oddsEvents, config) {
-  if (!oddsEvents || !oddsEvents.length) {
-    const nowMs = Date.now();
-    const lookaheadHours = Math.max(1, Number(config.LOOKAHEAD_HOURS || 36));
-    const lookaheadMs = lookaheadHours * 60 * 60 * 1000;
-    const beforeMs = Math.max(0, Number(config.SCHEDULE_BUFFER_BEFORE_MIN || 0)) * 60000;
-    const afterMs = Math.max(0, Number(config.SCHEDULE_BUFFER_AFTER_MIN || 0)) * 60000;
-    return {
-      startIso: new Date(nowMs - beforeMs).toISOString(),
-      endIso: new Date(nowMs + lookaheadMs + afterMs).toISOString(),
-    };
-  }
-  const commenceTimes = oddsEvents.map((e) => e.commence_time.getTime());
-  const minMs = Math.min.apply(null, commenceTimes) - config.SCHEDULE_BUFFER_BEFORE_MIN * 60000;
-  const maxMs = Math.max.apply(null, commenceTimes) + config.SCHEDULE_BUFFER_AFTER_MIN * 60000;
+  const commenceTimes = (oddsEvents || []).map(function (event) {
+    return event && event.commence_time ? event.commence_time.getTime() : NaN;
+  });
+  const window = computeCanonicalTimeWindow_({
+    reference_ms: Date.now(),
+    lookahead_hours: Math.max(1, Number(config.LOOKAHEAD_HOURS || 36)),
+    buffer_before_min: Number(config.SCHEDULE_BUFFER_BEFORE_MIN || 0),
+    buffer_after_min: Number(config.SCHEDULE_BUFFER_AFTER_MIN || 0),
+    event_times_ms: commenceTimes,
+  });
   return {
-    startIso: new Date(minMs).toISOString(),
-    endIso: new Date(maxMs).toISOString(),
+    startIso: window.start_iso,
+    endIso: window.end_iso,
   };
 }
 
@@ -1307,11 +1392,75 @@ function fetchOddsWindowWithoutWindowParams_(config, query, expectedWindow) {
   return fetched;
 }
 
+function fetchScheduleWindowWithoutWindowParams_(config, sportKeys, expectedWindow) {
+  const responses = [];
+
+  (sportKeys || []).forEach(function (sportKey) {
+    const url = buildOddsApiSportUrl_(config, sportKey, 'events', {});
+    const resp = callOddsApi_(url, {
+      debug: config.VERBOSE_LOGGING,
+      resolved_sport_keys: sportKeys,
+      max_retries: Number(config.ODDS_API_MAX_RETRIES || 3),
+      backoff_base_ms: Number(config.ODDS_API_BACKOFF_BASE_MS || 250),
+      backoff_max_ms: Number(config.ODDS_API_BACKOFF_MAX_MS || 3000),
+    });
+    resp.sport_key = sportKey;
+    responses.push(resp);
+  });
+
+  const successful = responses.filter(function (resp) { return resp.ok; });
+  const firstFailure = responses[0] || {
+    ok: false,
+    status_code: 404,
+    payload: [],
+    reason_code: 'api_http_404',
+    api_credit_usage: 0,
+    api_call_count: 0,
+    credit_headers: {},
+  };
+
+  if (!successful.length) {
+    return {
+      ok: false,
+      status_code: firstFailure.status_code,
+      payload: [],
+      reason_code: firstFailure.reason_code,
+      api_credit_usage: responses.reduce(function (sum, resp) { return sum + Number(resp.api_credit_usage || 0); }, 0),
+      api_call_count: responses.reduce(function (sum, resp) { return sum + Number(resp.api_call_count || 0); }, 0),
+      credit_headers: responses.length ? responses[responses.length - 1].credit_headers : {},
+    };
+  }
+
+  let normalizedEvents = normalizeAndDeduplicateScheduleEvents_(successful.map(function (resp) {
+    return ensureArrayPayload_(resp.payload) || [];
+  }));
+  const parsedStartMs = Number(expectedWindow && expectedWindow.start_ms);
+  const parsedEndMs = Number(expectedWindow && expectedWindow.end_ms);
+  const hasWindow = Number.isFinite(parsedStartMs) && Number.isFinite(parsedEndMs) && parsedEndMs > parsedStartMs;
+  if (hasWindow) {
+    normalizedEvents = normalizedEvents.filter(function (event) {
+      const startMs = event && event.start_time instanceof Date ? event.start_time.getTime() : NaN;
+      return Number.isFinite(startMs) && startMs >= parsedStartMs && startMs <= parsedEndMs;
+    });
+  }
+
+  return {
+    ok: true,
+    status_code: successful[0].status_code,
+    payload: normalizedEvents,
+    reason_code: 'invalid_time_window_recovered_relaxed_query',
+    api_credit_usage: responses.reduce(function (sum, resp) { return sum + Number(resp.api_credit_usage || 0); }, 0),
+    api_call_count: responses.reduce(function (sum, resp) { return sum + Number(resp.api_call_count || 0); }, 0),
+    credit_headers: responses.length ? responses[responses.length - 1].credit_headers : {},
+  };
+}
+
 function fetchScheduleFromOddsApi_(config, window, opts) {
   if (!config.ODDS_API_KEY) {
     return { events: [], reason_code: 'missing_api_key', api_credit_usage: 0, api_call_count: 0, credit_headers: {} };
   }
   const options = opts || {};
+  const allowInvalidWindowRelaxedRetry = options.allow_invalid_window_relaxed_retry !== false;
   const resolvedSportKeys = resolveActiveWtaSportKeys_(config, null, {
     force_discovery: !!options.force_multi_key_discovery,
   });
@@ -1327,6 +1476,36 @@ function fetchScheduleFromOddsApi_(config, window, opts) {
     };
   }
   const responses = [];
+  const expectedWindowMs = {
+    start_ms: new Date(window.startIso).getTime(),
+    end_ms: new Date(window.endIso).getTime(),
+  };
+  const windowPreflight = validateOddsFetchWindowMs_(expectedWindowMs.start_ms, expectedWindowMs.end_ms);
+
+  if (!windowPreflight.ok && allowInvalidWindowRelaxedRetry) {
+    const relaxedPreflight = fetchScheduleWindowWithoutWindowParams_(config, sportKeys, {
+      start_ms: windowPreflight.start_ms,
+      end_ms: windowPreflight.end_ms,
+    });
+    if (relaxedPreflight.ok) {
+      return {
+        events: relaxedPreflight.payload || [],
+        reason_code: relaxedPreflight.reason_code,
+        api_credit_usage: relaxedPreflight.api_credit_usage,
+        api_call_count: relaxedPreflight.api_call_count,
+        credit_headers: relaxedPreflight.credit_headers,
+        resolved_sport_keys: sportKeys,
+      };
+    }
+    return {
+      events: [],
+      reason_code: 'invalid_time_window',
+      api_credit_usage: Number(relaxedPreflight.api_credit_usage || 0),
+      api_call_count: Number(relaxedPreflight.api_call_count || 0),
+      credit_headers: relaxedPreflight.credit_headers || {},
+      resolved_sport_keys: sportKeys,
+    };
+  }
 
   sportKeys.forEach((sportKey) => {
     const url = buildOddsApiSportUrl_(config, sportKey, 'events', {
@@ -1357,6 +1536,31 @@ function fetchScheduleFromOddsApi_(config, window, opts) {
   };
 
   if (!firstSuccess) {
+    const hadInvalidTimeWindow = responses.some(function (resp) { return resp.reason_code === 'invalid_time_window'; });
+    if (hadInvalidTimeWindow && allowInvalidWindowRelaxedRetry) {
+      const relaxedFallback = fetchScheduleWindowWithoutWindowParams_(config, sportKeys, {
+        start_ms: expectedWindowMs.start_ms,
+        end_ms: expectedWindowMs.end_ms,
+      });
+      if (relaxedFallback.ok) {
+        return {
+          events: relaxedFallback.payload || [],
+          reason_code: relaxedFallback.reason_code,
+          api_credit_usage: responses.reduce((sum, resp) => sum + Number(resp.api_credit_usage || 0), 0) + Number(relaxedFallback.api_credit_usage || 0),
+          api_call_count: responses.reduce((sum, resp) => sum + Number(resp.api_call_count || 0), 0) + Number(relaxedFallback.api_call_count || 0),
+          credit_headers: relaxedFallback.credit_headers || (responses.length ? responses[responses.length - 1].credit_headers : {}),
+          resolved_sport_keys: sportKeys,
+        };
+      }
+      return {
+        events: [],
+        reason_code: 'invalid_time_window',
+        api_credit_usage: responses.reduce((sum, resp) => sum + Number(resp.api_credit_usage || 0), 0) + Number(relaxedFallback.api_credit_usage || 0),
+        api_call_count: responses.reduce((sum, resp) => sum + Number(resp.api_call_count || 0), 0) + Number(relaxedFallback.api_call_count || 0),
+        credit_headers: relaxedFallback.credit_headers || (responses.length ? responses[responses.length - 1].credit_headers : {}),
+        resolved_sport_keys: sportKeys,
+      };
+    }
     if (resolvedSportKeys.fallback === 'none_active_wta_keys') {
       return {
         events: [],
@@ -1377,7 +1581,7 @@ function fetchScheduleFromOddsApi_(config, window, opts) {
   if (!normalizedEvents.length) {
     reasonCode = resolvedSportKeys.fallback === 'none_active_wta_keys'
       ? 'schedule_no_active_wta_keys'
-      : 'schedule_active_keys_no_events';
+      : 'schedule_no_games_in_window';
   }
 
   return {
