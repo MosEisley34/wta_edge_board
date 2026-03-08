@@ -147,9 +147,10 @@ function stageFetchOdds(runId, config, fetchWindow) {
   return { events: filtered, rows, summary, selected_source: selectedSource };
 }
 
-function stageFetchSchedule(runId, config, oddsEvents) {
+function stageFetchSchedule(runId, config, oddsEvents, opts) {
   const start = Date.now();
   const source = 'the_odds_api_schedule';
+  const options = opts || {};
   const now = Date.now();
   const window = deriveScheduleWindowFromOdds_(oddsEvents, config);
   const runtimeConfig = getCreditAwareRuntimeConfig_(config);
@@ -391,6 +392,9 @@ function stageFetchSchedule(runId, config, oddsEvents) {
   summary.reason_codes.stale_fallback_used_with_events = (summary.reason_codes.stale_fallback_used_with_events || 0) + Number(scheduleResp.stale_fallback_used_with_events || 0);
   summary.reason_codes.stale_fallback_empty_forced_live = (summary.reason_codes.stale_fallback_empty_forced_live || 0) + Number(scheduleResp.stale_fallback_empty_forced_live || 0);
   summary.reason_codes.live_fetch_happened = (summary.reason_codes.live_fetch_happened || 0) + (scheduleResp.live_fetch_happened ? 1 : 0);
+  if (options.bootstrap_empty_cycle_mitigation_active) {
+    summary.reason_codes.bootstrap_empty_cycle_detected = (summary.reason_codes.bootstrap_empty_cycle_detected || 0) + 1;
+  }
   summary.reason_codes.runtime_mode_soft_degraded = (summary.reason_codes.runtime_mode_soft_degraded || 0) + (runtimeConfig.mode === 'soft' ? 1 : 0);
   if (!runtimeConfig.schedule_refresh_non_critical_enabled) {
     summary.reason_codes.schedule_refresh_non_critical_skipped = (summary.reason_codes.schedule_refresh_non_critical_skipped || 0) + 1;
@@ -561,13 +565,31 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     && runtimeSnapshot.limit_enforced === true
     && runtimeSnapshot.remaining_is_numeric === true;
   const lookaheadMs = config.LOOKAHEAD_HOURS * 60 * 60 * 1000;
+  const emptyCycleState = getStateJson_('BOOTSTRAP_EMPTY_CYCLE_STATE') || {};
+  const emptyCycleThreshold = Math.max(1, Number(config.BOOTSTRAP_EMPTY_CYCLE_THRESHOLD || 3));
+  const emptyCycleCount = Number(emptyCycleState.consecutive_empty_cycles || 0);
+  const emptyCycleMitigationReady = emptyCycleCount >= emptyCycleThreshold && !emptyCycleState.mitigation_applied_for_cycle;
+  const sourceStartMs = emptyCycleMitigationReady ? (nowMs - (3 * 60 * 60 * 1000)) : nowMs;
+  const sourceEndMs = emptyCycleMitigationReady ? (nowMs + lookaheadMs + (6 * 60 * 60 * 1000)) : (nowMs + lookaheadMs);
 
   const sourceWindow = {
-    startIso: new Date(nowMs).toISOString(),
-    endIso: new Date(nowMs + lookaheadMs).toISOString(),
+    startIso: new Date(sourceStartMs).toISOString(),
+    endIso: new Date(sourceEndMs).toISOString(),
   };
-  const scheduleResp = fetchScheduleFromOddsApi_(config, sourceWindow);
+  const scheduleResp = fetchScheduleFromOddsApi_(config, sourceWindow, {
+    force_multi_key_discovery: emptyCycleMitigationReady,
+  });
   updateCreditStateFromHeaders_('', scheduleResp.credit_headers || {});
+
+  if (emptyCycleMitigationReady) {
+    setStateValue_('BOOTSTRAP_EMPTY_CYCLE_STATE', JSON.stringify(Object.assign({}, emptyCycleState, {
+      mitigation_applied_for_cycle: true,
+      mitigation_applied_at: formatLocalIso_(new Date()),
+      mitigation_applied_at_utc: new Date().toISOString(),
+      mitigation_window_start_ms: sourceStartMs,
+      mitigation_window_end_ms: sourceEndMs,
+    })));
+  }
   const targetTiers = {
     WTA_250: true,
     WTA_500: true,
@@ -605,6 +627,9 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     bootstrap_cached_payload_source: cacheHasEvents ? (cachedPayload.source || 'script_cache') : (stalePayload.source || ''),
     previous_refresh_mode: previousRefreshMode,
     transitioned_from_bootstrap_to_active_window: false,
+    bootstrap_empty_cycle_mitigation_active: emptyCycleMitigationReady,
+    bootstrap_empty_cycle_count: emptyCycleCount,
+    bootstrap_empty_cycle_threshold: emptyCycleThreshold,
   };
 
   const bootstrapEligible = !eligibleStarts.length
@@ -629,7 +654,9 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
     return Object.assign({}, decisionBase, {
       should_fetch_odds: true,
       decision_reason_code: 'odds_refresh_bootstrap_fetch',
-      decision_message: 'No eligible schedule matches and cache/stale payload has no events; forcing bootstrap odds fetch window.',
+      decision_message: emptyCycleMitigationReady
+        ? 'No eligible schedule matches; bootstrap empty-cycle mitigation broadened schedule scan and forced multi-key discovery once.'
+        : 'No eligible schedule matches and cache/stale payload has no events; forcing bootstrap odds fetch window.',
       selected_source: 'bootstrap_static_window',
       bootstrap_mode: true,
       current_refresh_mode: 'bootstrap',
@@ -936,11 +963,14 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
   };
 }
 
-function fetchScheduleFromOddsApi_(config, window) {
+function fetchScheduleFromOddsApi_(config, window, opts) {
   if (!config.ODDS_API_KEY) {
     return { events: [], reason_code: 'missing_api_key', api_credit_usage: 0, api_call_count: 0, credit_headers: {} };
   }
-  const resolvedSportKeys = resolveActiveWtaSportKeys_(config);
+  const options = opts || {};
+  const resolvedSportKeys = resolveActiveWtaSportKeys_(config, null, {
+    force_discovery: !!options.force_multi_key_discovery,
+  });
   const sportKeys = resolvedSportKeys.sport_keys || [];
   if (!sportKeys.length) {
     return {
@@ -1113,17 +1143,18 @@ function callOddsApiWithSportKeyFallback_(config, opts) {
   };
 }
 
-function resolveActiveWtaSportKeys_(config, deps) {
+function resolveActiveWtaSportKeys_(config, deps, opts) {
   const cacheKey = 'ODDS_ACTIVE_WTA_SPORT_KEYS';
   const cacheTtlSec = Math.max(60, Math.min(600, Number(config.ODDS_CACHE_TTL_SEC || 300)));
   const adapters = deps || {};
+  const options = opts || {};
   const getCached = adapters.getCachedOddsSportKeys || getCachedOddsSportKeys_;
   const setCached = adapters.setCachedOddsSportKeys || setCachedOddsSportKeys_;
   const callOddsApi = adapters.callOddsApi || callOddsApi_;
   const logResolution = adapters.logOddsSportKeyResolution || logOddsSportKeyResolution_;
 
   const cached = getCached(cacheKey);
-  if (cached && cached.length) {
+  if (!options.force_discovery && cached && cached.length) {
     logResolution('selected_cached', cached, 'none');
     return { sport_keys: cached, source: 'cache', fallback: 'none' };
   }

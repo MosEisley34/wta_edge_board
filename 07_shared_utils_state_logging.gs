@@ -145,6 +145,45 @@ function incrementDuplicatePreventedCount_() {
   return next;
 }
 
+function updateBootstrapEmptyCycleState_(runId, oddsRowsEmitted, scheduleEventCount) {
+  const previous = getStateJson_('BOOTSTRAP_EMPTY_CYCLE_STATE') || {};
+  const config = getConfig_();
+  const threshold = Math.max(1, Number(config.BOOTSTRAP_EMPTY_CYCLE_THRESHOLD || 3));
+  const oddsCount = Number(oddsRowsEmitted || 0);
+  const scheduleCount = Number(scheduleEventCount || 0);
+  const now = new Date();
+  const timestamps = localAndUtcTimestamps_(now);
+  const hadNonEmptyOutput = oddsCount > 0 || scheduleCount > 0;
+
+  const next = {
+    run_id: runId,
+    consecutive_empty_cycles: hadNonEmptyOutput ? 0 : (Number(previous.consecutive_empty_cycles || 0) + 1),
+    diagnostics_counter: hadNonEmptyOutput
+      ? Number(previous.diagnostics_counter || 0)
+      : (Number(previous.diagnostics_counter || 0) + 1),
+    threshold: threshold,
+    mitigation_applied_for_cycle: hadNonEmptyOutput ? false : !!previous.mitigation_applied_for_cycle,
+    last_non_empty_fetch_at: hadNonEmptyOutput ? timestamps.local : String(previous.last_non_empty_fetch_at || ''),
+    last_non_empty_fetch_at_utc: hadNonEmptyOutput ? timestamps.utc : String(previous.last_non_empty_fetch_at_utc || ''),
+    updated_at: timestamps.local,
+    updated_at_utc: timestamps.utc,
+  };
+
+  setStateValue_('BOOTSTRAP_EMPTY_CYCLE_STATE', JSON.stringify(next));
+
+  return {
+    consecutive_empty_cycles: next.consecutive_empty_cycles,
+    diagnostics_counter: next.diagnostics_counter,
+    threshold: threshold,
+    warning_needed: !hadNonEmptyOutput && next.consecutive_empty_cycles >= threshold,
+    reason_code: (!hadNonEmptyOutput && next.consecutive_empty_cycles >= threshold)
+      ? 'bootstrap_empty_cycle_detected'
+      : '',
+    last_non_empty_fetch_at: next.last_non_empty_fetch_at,
+    last_non_empty_fetch_at_utc: next.last_non_empty_fetch_at_utc,
+  };
+}
+
 function buildStageSummary_(runId, stage, startMs, opts) {
   const endMs = Date.now();
   const summary = {

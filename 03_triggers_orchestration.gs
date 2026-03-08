@@ -276,6 +276,9 @@ function runEdgeBoard() {
         bootstrap_window_hours: Number(oddsWindowDecision.bootstrap_window_hours || 0),
         bootstrap_cached_payload_has_events: !!oddsWindowDecision.bootstrap_cached_payload_has_events,
         bootstrap_cached_payload_source: oddsWindowDecision.bootstrap_cached_payload_source || '',
+        bootstrap_empty_cycle_mitigation_active: !!oddsWindowDecision.bootstrap_empty_cycle_mitigation_active,
+        bootstrap_empty_cycle_count: Number(oddsWindowDecision.bootstrap_empty_cycle_count || 0),
+        bootstrap_empty_cycle_threshold: Number(oddsWindowDecision.bootstrap_empty_cycle_threshold || 0),
         current_refresh_mode: oddsWindowDecision.current_refresh_mode || '',
         previous_refresh_mode: oddsWindowDecision.previous_refresh_mode || '',
         transitioned_from_bootstrap_to_active_window: !!oddsWindowDecision.transitioned_from_bootstrap_to_active_window,
@@ -302,7 +305,9 @@ function runEdgeBoard() {
       message: 'Odds source selected for this run: ' + selectedOddsSource,
     });
 
-    const scheduleStage = stageFetchSchedule(runId, config, oddsStage.events);
+    const scheduleStage = stageFetchSchedule(runId, config, oddsStage.events, {
+      bootstrap_empty_cycle_mitigation_active: !!oddsWindowDecision.bootstrap_empty_cycle_mitigation_active,
+    });
     appendStageLog_(runId, scheduleStage.summary);
 
     const matchStage = stageMatchEvents(runId, config, oddsStage.events, scheduleStage.events);
@@ -331,6 +336,27 @@ function runEdgeBoard() {
       signalStage.summary.reason_codes,
       persistStage.summary.reason_codes,
     ]);
+
+    const emptyCycleState = updateBootstrapEmptyCycleState_(runId, oddsStage.rows.length, scheduleStage.events.length);
+    if (emptyCycleState.reason_code) {
+      combinedReasonCodes[emptyCycleState.reason_code] = (combinedReasonCodes[emptyCycleState.reason_code] || 0) + 1;
+    }
+    if (emptyCycleState.warning_needed) {
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'bootstrap_empty_cycle_watchdog',
+        status: 'warning',
+        reason_code: 'bootstrap_empty_cycle_detected',
+        message: JSON.stringify({
+          consecutive_empty_cycles: emptyCycleState.consecutive_empty_cycles,
+          threshold: emptyCycleState.threshold,
+          diagnostics_counter: emptyCycleState.diagnostics_counter,
+          last_non_empty_fetch_at: emptyCycleState.last_non_empty_fetch_at || '',
+          last_non_empty_fetch_at_utc: emptyCycleState.last_non_empty_fetch_at_utc || '',
+        }),
+      });
+    }
 
     const runStartedAt = localAndUtcTimestamps_(startedAt);
     const runEndedAt = localAndUtcTimestamps_(new Date());
