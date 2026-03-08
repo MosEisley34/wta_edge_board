@@ -9,6 +9,40 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
   let matchedCount = 0;
   const canonicalizationExamples = [];
 
+  if ((!oddsEvents || !oddsEvents.length) && scheduleEvents && scheduleEvents.length) {
+    scheduleEvents.forEach((event) => {
+      rows.push({
+        key: ['schedule_seed_no_odds', event.event_id].join('|'),
+        odds_event_id: event.event_id,
+        schedule_event_id: event.event_id,
+        match_type: 'schedule_seed_no_odds',
+        rejection_code: '',
+        time_diff_min: '',
+        competition_tier: event.canonical_tier || 'UNKNOWN',
+        updated_at: new Date().toISOString(),
+      });
+    });
+
+    reasonCounts.schedule_seed_no_odds = (reasonCounts.schedule_seed_no_odds || 0) + scheduleEvents.length;
+
+    const summaryNoOdds = buildStageSummary_(runId, 'stageMatchEvents', start, {
+      input_count: 0,
+      output_count: rows.length,
+      provider: 'internal_matcher',
+      api_credit_usage: 0,
+      reason_codes: reasonCounts,
+    });
+
+    return {
+      rows,
+      summary: summaryNoOdds,
+      matchedCount: 0,
+      unmatchedCount: 0,
+      unmatched,
+      canonicalizationExamples,
+    };
+  }
+
   const primary = oddsEvents.map((odds) => matchSingleOddsEvent_(odds, scheduleEvents, toleranceMin, aliasMap, canonicalizationExamples));
   const unmatchedPrimary = primary.filter((res) => !res.matched);
 

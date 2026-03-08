@@ -1795,3 +1795,44 @@ function testFetchPlayerStatsBatch_providerUnavailableReturnsNoProvider_() {
     setStateValue_ = originalSetStateValue;
   }
 }
+
+function testDeriveScheduleWindowFromOdds_noOddsFallsBackToLookaheadWindow_() {
+  const originalDateNow = Date.now;
+  Date.now = function () { return Date.parse('2025-03-01T12:00:00.000Z'); };
+
+  try {
+    const config = {
+      LOOKAHEAD_HOURS: 24,
+      SCHEDULE_BUFFER_BEFORE_MIN: 120,
+      SCHEDULE_BUFFER_AFTER_MIN: 180,
+    };
+    const window = deriveScheduleWindowFromOdds_([], config);
+
+    assertEquals_('2025-03-01T10:00:00.000Z', window.startIso);
+    assertEquals_('2025-03-02T15:00:00.000Z', window.endIso);
+  } finally {
+    Date.now = originalDateNow;
+  }
+}
+
+function testStageMatchEvents_withoutOddsSeedsMatchRowsFromSchedule_() {
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: 'A',
+    player_2: 'B',
+    start_time: new Date('2025-03-01T12:00:00.000Z'),
+  }];
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, [], scheduleEvents);
+
+  assertEquals_(1, stage.rows.length);
+  assertEquals_('schedule_seed_no_odds', stage.rows[0].match_type);
+  assertEquals_('sched_1', stage.rows[0].odds_event_id);
+  assertEquals_('sched_1', stage.rows[0].schedule_event_id);
+  assertEquals_(1, stage.summary.reason_codes.schedule_seed_no_odds);
+}

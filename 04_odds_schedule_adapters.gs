@@ -396,6 +396,9 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   summary.reason_codes.stale_fallback_used_with_events = (summary.reason_codes.stale_fallback_used_with_events || 0) + Number(scheduleResp.stale_fallback_used_with_events || 0);
   summary.reason_codes.stale_fallback_empty_forced_live = (summary.reason_codes.stale_fallback_empty_forced_live || 0) + Number(scheduleResp.stale_fallback_empty_forced_live || 0);
   summary.reason_codes.live_fetch_happened = (summary.reason_codes.live_fetch_happened || 0) + (scheduleResp.live_fetch_happened ? 1 : 0);
+  if (!oddsEvents || !oddsEvents.length) {
+    summary.reason_codes.schedule_window_fallback_no_odds = (summary.reason_codes.schedule_window_fallback_no_odds || 0) + 1;
+  }
   if (options.bootstrap_empty_cycle_mitigation_active) {
     summary.reason_codes.bootstrap_empty_cycle_detected = (summary.reason_codes.bootstrap_empty_cycle_detected || 0) + 1;
   }
@@ -751,7 +754,17 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
 }
 
 function deriveScheduleWindowFromOdds_(oddsEvents, config) {
-  if (!oddsEvents || !oddsEvents.length) return null;
+  if (!oddsEvents || !oddsEvents.length) {
+    const nowMs = Date.now();
+    const lookaheadHours = Math.max(1, Number(config.LOOKAHEAD_HOURS || 36));
+    const lookaheadMs = lookaheadHours * 60 * 60 * 1000;
+    const beforeMs = Math.max(0, Number(config.SCHEDULE_BUFFER_BEFORE_MIN || 0)) * 60000;
+    const afterMs = Math.max(0, Number(config.SCHEDULE_BUFFER_AFTER_MIN || 0)) * 60000;
+    return {
+      startIso: new Date(nowMs - beforeMs).toISOString(),
+      endIso: new Date(nowMs + lookaheadMs + afterMs).toISOString(),
+    };
+  }
   const commenceTimes = oddsEvents.map((e) => e.commence_time.getTime());
   const minMs = Math.min.apply(null, commenceTimes) - config.SCHEDULE_BUFFER_BEFORE_MIN * 60000;
   const maxMs = Math.max.apply(null, commenceTimes) + config.SCHEDULE_BUFFER_AFTER_MIN * 60000;
