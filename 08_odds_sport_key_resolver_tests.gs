@@ -1194,6 +1194,106 @@ function testRunEdgeBoard_crashDoesNotSetDebounceTimestamp_() {
   }
 }
 
+function testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }],
+      oddsRows: [{ key: 'odds_1|book|h2h|p1' }],
+      scheduleEvents: [],
+      scheduleReasonCodes: { schedule_enrichment_no_schedule_events: 1 },
+      matchedCount: 0,
+      unmatchedCount: 1,
+      rejectedCount: 1,
+      diagnosticRecordsWritten: 1,
+      unmatched: [{
+        odds_event_id: 'odds_1',
+        competition: 'WTA 500 Doha',
+        player_1: 'Player One',
+        player_2: 'Player Two',
+        commence_time: '2025-03-01T12:00:00.000Z',
+        rejection_code: 'no_player_match',
+      }],
+      matchReasonCodes: { no_player_match: 1, rejected_count: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    assertEquals_('run_health_no_matches_from_odds', harness.summaryReasonCode());
+
+    let summary = null;
+    let healthWarning = null;
+    for (let i = 0; i < harness.logs.length; i += 1) {
+      const row = harness.logs[i];
+      if (row.row_type === 'summary' && row.stage === 'runEdgeBoard') summary = row;
+      if (row.row_type === 'ops' && row.stage === 'run_health_guard') healthWarning = row;
+    }
+
+    assertEquals_('degraded', summary.status);
+    assertEquals_('run_health_no_matches_from_odds', summary.reason_code);
+    assertEquals_(1, summary.fetched_odds);
+    assertEquals_(0, summary.matched);
+
+    const warningPayload = JSON.parse(healthWarning.message || '{}');
+    assertEquals_('run_health_no_matches_from_odds', warningPayload.reason_code);
+    assertEquals_(1, warningPayload.failure_reasons.schedule_enrichment_no_schedule_events);
+    assertEquals_(1, warningPayload.failure_reasons.no_player_match);
+    assertEquals_('odds_1', warningPayload.sample_unmatched_events[0].odds_event_id);
+    assertEquals_('no_player_match', warningPayload.sample_unmatched_events[0].rejection_code);
+  } finally {
+    harness.restore();
+  }
+}
+
+function testUpdateEmptyProductiveOutputState_warnsAtThreshold_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const writes = {};
+
+  getStateJson_ = function () {
+    return { consecutive_count: 2 };
+  };
+  setStateValue_ = function (key, value) {
+    writes[key] = value;
+  };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2025-03-01T00:00:00-07:00',
+      utc: '2025-03-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const result = updateEmptyProductiveOutputState_('run_test', {
+      fetched_odds: 4,
+      signals_found: 0,
+    }, {
+      EMPTY_PRODUCTIVE_OUTPUT_THRESHOLD: 3,
+    });
+
+    assertEquals_(3, result.consecutive_count);
+    assertEquals_(true, result.warning_needed);
+    assertEquals_('productive_output_empty_streak_detected', result.reason_code);
+
+    const stored = JSON.parse(writes.EMPTY_PRODUCTIVE_OUTPUT_STATE || '{}');
+    assertEquals_(3, stored.consecutive_count);
+    assertEquals_(4, stored.fetched_odds);
+    assertEquals_(0, stored.signals_found);
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+
 function createRunEdgeBoardTestHarness_(options) {
   const opts = options || {};
   const originalDateNow = Date.now;
@@ -1204,12 +1304,26 @@ function createRunEdgeBoardTestHarness_(options) {
   const originalAppendLogRow = appendLogRow_;
   const originalIncrementDuplicatePreventedCount = incrementDuplicatePreventedCount_;
   const originalResolveOddsWindowForPipeline = resolveOddsWindowForPipeline_;
+  const originalStageFetchOdds = stageFetchOdds;
+  const originalStageFetchSchedule = stageFetchSchedule;
+  const originalStageMatchEvents = stageMatchEvents;
+  const originalStageFetchPlayerStats = stageFetchPlayerStats;
+  const originalStageGenerateSignals = stageGenerateSignals;
+  const originalStagePersist = stagePersist;
+  const originalAppendStageLog = appendStageLog_;
+  const originalLogDiagnosticEvent = logDiagnosticEvent_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const originalMergeReasonCounts = mergeReasonCounts_;
+  const originalGetTopReasonCodes = getTopReasonCodes_;
+  const originalUpdateBootstrapEmptyCycleState = updateBootstrapEmptyCycleState_;
+  const originalUpdateEmptyProductiveOutputState = updateEmptyProductiveOutputState_;
   const originalSetStateValue = setStateValue_;
   const originalGetScriptProperties = PropertiesService.getScriptProperties;
   const originalGetScriptLock = LockService.getScriptLock;
 
   const logs = [];
   const setPropertyCalls = [];
+  const stateWrites = {};
   let duplicatePreventedCount = 0;
   let releaseLockCalls = 0;
 
@@ -1231,9 +1345,91 @@ function createRunEdgeBoardTestHarness_(options) {
   };
   resolveOddsWindowForPipeline_ = function () {
     if (opts.throwDuringOrchestration) throw new Error('stage crash');
+    if (opts.orchestrationScenario) {
+      return {
+        should_fetch_odds: true,
+        odds_fetch_window: {},
+        selected_source: 'fallback_static_window',
+        decision_reason_code: 'odds_refresh_test',
+        bootstrap_mode: false,
+        transitioned_from_bootstrap_to_active_window: false,
+      };
+    }
     throw new Error('unexpected test path: orchestration should not execute in this harness');
   };
-  setStateValue_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+
+  if (opts.orchestrationScenario) {
+    appendStageLog_ = function () {};
+    logDiagnosticEvent_ = function () {};
+    localAndUtcTimestamps_ = function () {
+      return { local: '2025-03-01T00:00:00-07:00', utc: '2025-03-01T07:00:00.000Z' };
+    };
+    mergeReasonCounts_ = function (maps) {
+      const out = {};
+      (maps || []).forEach(function (map) {
+        Object.keys(map || {}).forEach(function (key) {
+          out[key] = Number(out[key] || 0) + Number(map[key] || 0);
+        });
+      });
+      return out;
+    };
+    getTopReasonCodes_ = function () { return []; };
+    updateBootstrapEmptyCycleState_ = function () {
+      return { reason_code: '', warning_needed: false };
+    };
+    updateEmptyProductiveOutputState_ = function () {
+      return { reason_code: '', warning_needed: false, consecutive_count: 0, threshold: 3 };
+    };
+
+    stageFetchOdds = function () {
+      return {
+        events: (opts.orchestrationScenario.oddsEvents || []).slice(),
+        rows: (opts.orchestrationScenario.oddsRows || []).slice(),
+        summary: { reason_codes: {} },
+        selected_source: 'fallback_static_window',
+      };
+    };
+    stageFetchSchedule = function () {
+      return {
+        events: (opts.orchestrationScenario.scheduleEvents || []).slice(),
+        rows: (opts.orchestrationScenario.scheduleRows || []).slice(),
+        summary: { reason_codes: Object.assign({}, opts.orchestrationScenario.scheduleReasonCodes || {}) },
+        canonicalExamples: [],
+        unresolvedCompetitions: [],
+        unresolvedCompetitionCounts: {},
+        topUnresolvedCompetitions: [],
+        allowedCount: Number(opts.orchestrationScenario.allowedCount || 0),
+      };
+    };
+    stageMatchEvents = function () {
+      return {
+        rows: (opts.orchestrationScenario.matchRows || []).slice(),
+        summary: { reason_codes: Object.assign({}, opts.orchestrationScenario.matchReasonCodes || {}) },
+        matchedCount: Number(opts.orchestrationScenario.matchedCount || 0),
+        unmatchedCount: Number(opts.orchestrationScenario.unmatchedCount || 0),
+        rejectedCount: Number(opts.orchestrationScenario.rejectedCount || 0),
+        diagnosticRecordsWritten: Number(opts.orchestrationScenario.diagnosticRecordsWritten || 0),
+        unmatched: (opts.orchestrationScenario.unmatched || []).slice(),
+        canonicalizationExamples: [],
+      };
+    };
+    stageFetchPlayerStats = function () {
+      return { rows: [], byOddsEventId: {}, summary: { reason_codes: {} } };
+    };
+    stageGenerateSignals = function () {
+      return {
+        rows: (opts.orchestrationScenario.signalRows || []).slice(),
+        sentCount: Number(opts.orchestrationScenario.sentCount || 0),
+        cooldownSuppressedCount: 0,
+        duplicateSuppressedCount: 0,
+        summary: { reason_codes: {} },
+      };
+    };
+    stagePersist = function () {
+      return { summary: { reason_codes: {} } };
+    };
+  }
 
   PropertiesService.getScriptProperties = function () {
     return {
@@ -1265,6 +1461,19 @@ function createRunEdgeBoardTestHarness_(options) {
       appendLogRow_ = originalAppendLogRow;
       incrementDuplicatePreventedCount_ = originalIncrementDuplicatePreventedCount;
       resolveOddsWindowForPipeline_ = originalResolveOddsWindowForPipeline;
+      stageFetchOdds = originalStageFetchOdds;
+      stageFetchSchedule = originalStageFetchSchedule;
+      stageMatchEvents = originalStageMatchEvents;
+      stageFetchPlayerStats = originalStageFetchPlayerStats;
+      stageGenerateSignals = originalStageGenerateSignals;
+      stagePersist = originalStagePersist;
+      appendStageLog_ = originalAppendStageLog;
+      logDiagnosticEvent_ = originalLogDiagnosticEvent;
+      localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+      mergeReasonCounts_ = originalMergeReasonCounts;
+      getTopReasonCodes_ = originalGetTopReasonCodes;
+      updateBootstrapEmptyCycleState_ = originalUpdateBootstrapEmptyCycleState;
+      updateEmptyProductiveOutputState_ = originalUpdateEmptyProductiveOutputState;
       setStateValue_ = originalSetStateValue;
       PropertiesService.getScriptProperties = originalGetScriptProperties;
       LockService.getScriptLock = originalGetScriptLock;
@@ -1279,6 +1488,7 @@ function createRunEdgeBoardTestHarness_(options) {
     },
     get duplicatePreventedCount() { return duplicatePreventedCount; },
     get releaseLockCalls() { return releaseLockCalls; },
+    get stateWrites() { return stateWrites; },
   };
 }
 

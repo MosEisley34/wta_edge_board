@@ -360,6 +360,30 @@ function runEdgeBoard() {
       })),
     }, 3);
 
+    const fetchedOddsCount = Number(oddsStage.events.length || 0);
+    const matchedCount = Number(matchStage.matchedCount || 0);
+    const signalsFoundCount = Number(signalStage.rows.length || 0);
+    const runHealthDiagnostics = evaluateRunHealthDiagnostics_({
+      fetched_odds: fetchedOddsCount,
+      matched: matchedCount,
+      signals_found: signalsFoundCount,
+      sample_unmatched_cases: matchStage.unmatched,
+      schedule_reason_codes: scheduleStage.summary.reason_codes,
+      match_reason_codes: matchStage.summary.reason_codes,
+    });
+
+    if (runHealthDiagnostics.warning_payload) {
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'run_health_guard',
+        status: 'warning',
+        reason_code: runHealthDiagnostics.warning_payload.reason_code,
+        message: JSON.stringify(runHealthDiagnostics.warning_payload),
+      });
+      logDiagnosticEvent_(config, 'run_health_guard_warning', runHealthDiagnostics.warning_payload, 1);
+    }
+
     const combinedReasonCodes = mergeReasonCounts_([
       oddsStage.summary.reason_codes,
       scheduleStage.summary.reason_codes,
@@ -372,6 +396,9 @@ function runEdgeBoard() {
     const emptyCycleState = updateBootstrapEmptyCycleState_(runId, oddsStage.rows.length, scheduleStage.events.length);
     if (emptyCycleState.reason_code) {
       combinedReasonCodes[emptyCycleState.reason_code] = (combinedReasonCodes[emptyCycleState.reason_code] || 0) + 1;
+    }
+    if (runHealthDiagnostics.degraded_reason_code) {
+      combinedReasonCodes[runHealthDiagnostics.degraded_reason_code] = (combinedReasonCodes[runHealthDiagnostics.degraded_reason_code] || 0) + 1;
     }
     if (emptyCycleState.warning_needed) {
       appendLogRow_({
@@ -388,6 +415,33 @@ function runEdgeBoard() {
           last_non_empty_fetch_at_utc: emptyCycleState.last_non_empty_fetch_at_utc || '',
         }),
       });
+    }
+
+    const productiveOutputState = updateEmptyProductiveOutputState_(runId, {
+      fetched_odds: fetchedOddsCount,
+      signals_found: signalsFoundCount,
+    }, config);
+    if (productiveOutputState.reason_code) {
+      combinedReasonCodes[productiveOutputState.reason_code] = (combinedReasonCodes[productiveOutputState.reason_code] || 0) + 1;
+    }
+    if (productiveOutputState.warning_needed) {
+      const productiveWarningPayload = {
+        reason_code: productiveOutputState.reason_code || 'productive_output_empty_streak_detected',
+        streak_count: productiveOutputState.consecutive_count,
+        threshold: productiveOutputState.threshold,
+        fetched_odds: fetchedOddsCount,
+        signals_found: signalsFoundCount,
+        run_id: runId,
+      };
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'productive_output_watchdog',
+        status: 'warning',
+        reason_code: productiveWarningPayload.reason_code,
+        message: JSON.stringify(productiveWarningPayload),
+      });
+      logDiagnosticEvent_(config, 'productive_output_watchdog_warning', productiveWarningPayload, 1);
     }
 
     const runStartedAt = localAndUtcTimestamps_(startedAt);
@@ -441,6 +495,12 @@ function runEdgeBoard() {
       sample_unmatched_cases: matchStage.unmatched.slice(0, 20),
       top_rejection_reasons: getTopReasonCodes_(combinedReasonCodes, 10),
       reason_codes: combinedReasonCodes,
+      run_health: {
+        status: runHealthDiagnostics.is_degraded ? 'degraded' : 'healthy',
+        reason_code: runHealthDiagnostics.degraded_reason_code || '',
+        diagnostics: runHealthDiagnostics.warning_payload,
+      },
+      productive_output_watchdog: productiveOutputState,
     };
 
     setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
@@ -463,13 +523,15 @@ function runEdgeBoard() {
       stage: 'runEdgeBoard',
       started_at: startedAt,
       ended_at: new Date(),
-      status: 'success',
-      reason_code: 'run_success',
-      message: 'Pipeline run completed.',
-      fetched_odds: oddsStage.events.length,
+      status: runHealthDiagnostics.is_degraded ? 'degraded' : 'success',
+      reason_code: runHealthDiagnostics.degraded_reason_code || 'run_success',
+      message: runHealthDiagnostics.is_degraded
+        ? 'Pipeline run completed with degraded run-health guard.'
+        : 'Pipeline run completed.',
+      fetched_odds: fetchedOddsCount,
       fetched_schedule: scheduleStage.events.length,
       allowed_tournaments: scheduleStage.allowedCount,
-      matched: matchStage.matchedCount,
+      matched: matchedCount,
       unmatched: matchStage.unmatchedCount,
       rejected: matchStage.rejectedCount,
       signals_found: signalStage.sentCount,
@@ -495,4 +557,49 @@ function runEdgeBoard() {
   } finally {
     lock.releaseLock();
   }
+}
+
+function evaluateRunHealthDiagnostics_(metrics) {
+  const fetchedOdds = Number(metrics && metrics.fetched_odds || 0);
+  const matched = Number(metrics && metrics.matched || 0);
+  const signalsFound = Number(metrics && metrics.signals_found || 0);
+  const sampleUnmatchedCases = (metrics && metrics.sample_unmatched_cases) || [];
+  const scheduleReasonCodes = Object.assign({}, (metrics && metrics.schedule_reason_codes) || {});
+  const matchReasonCodes = Object.assign({}, (metrics && metrics.match_reason_codes) || {});
+
+  const degraded = fetchedOdds > 0 && matched === 0;
+  if (!degraded) {
+    return {
+      is_degraded: false,
+      degraded_reason_code: '',
+      warning_payload: null,
+    };
+  }
+
+  const warningPayload = {
+    reason_code: 'run_health_no_matches_from_odds',
+    fetched_odds: fetchedOdds,
+    matched: matched,
+    signals_found: signalsFound,
+    failure_reasons: {
+      schedule_enrichment_no_schedule_events: Number(scheduleReasonCodes.schedule_enrichment_no_schedule_events || 0),
+      no_player_match: Number(matchReasonCodes.no_player_match || 0),
+    },
+    sample_unmatched_events: sampleUnmatchedCases.slice(0, 5).map(function (entry) {
+      return {
+        odds_event_id: entry.odds_event_id,
+        competition: entry.competition,
+        player_1: entry.player_1,
+        player_2: entry.player_2,
+        commence_time: entry.commence_time,
+        rejection_code: entry.rejection_code,
+      };
+    }),
+  };
+
+  return {
+    is_degraded: true,
+    degraded_reason_code: warningPayload.reason_code,
+    warning_payload: warningPayload,
+  };
 }
