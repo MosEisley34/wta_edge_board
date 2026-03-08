@@ -106,10 +106,19 @@ function ensureTabsAndConfig_() {
   ensureHeaders_(SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
     'odds_updated_epoch_ms', 'provider_odds_updated_time', 'ingestion_timestamp', 'commence_time',
-    'commence_epoch_ms', 'competition', 'player_1', 'player_2', 'source', 'updated_at',
+    'commence_epoch_ms', 'competition', 'player_1', 'player_2',
+    'player_1_hold_pct', 'player_2_hold_pct', 'player_1_break_pct', 'player_2_break_pct',
+    'player_1_form_score', 'player_2_form_score',
+    'h2h_p1_wins', 'h2h_p2_wins', 'h2h_total_matches',
+    'surface', 'stats_source', 'h2h_source', 'stats_as_of',
+    'source', 'updated_at',
   ]);
   ensureHeaders_(SHEETS.RAW_SCHEDULE, [
     'key', 'event_id', 'match_id', 'start_time', 'start_epoch_ms', 'competition', 'player_1', 'player_2',
+    'player_1_hold_pct', 'player_2_hold_pct', 'player_1_break_pct', 'player_2_break_pct',
+    'player_1_form_score', 'player_2_form_score',
+    'h2h_p1_wins', 'h2h_p2_wins', 'h2h_total_matches',
+    'surface', 'stats_source', 'h2h_source', 'stats_as_of',
     'canonical_tier', 'is_allowed', 'reason_code', 'source', 'updated_at',
   ]);
   ensureHeaders_(SHEETS.RAW_PLAYER_STATS, [
@@ -138,11 +147,21 @@ function ensureSheet_(ss, name) {
 
 function ensureHeaders_(sheetName, headers) {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  const firstRow = sh.getRange(1, 1, 1, headers.length).getValues()[0];
-  const needsUpdate = headers.some((h, i) => firstRow[i] !== h);
+  const existingHeaderWidth = Math.max(1, sh.getLastColumn() || 1);
+  const existingHeaders = sh.getRange(1, 1, 1, existingHeaderWidth).getValues()[0];
 
-  if (needsUpdate) {
+  if (!existingHeaders[0]) {
     sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+  } else {
+    const hasSamePrefix = headers.slice(0, existingHeaders.length).every((h, i) => existingHeaders[i] === h);
+    const hasAllColumns = headers.every((h) => existingHeaders.indexOf(h) !== -1);
+
+    if (hasSamePrefix && !hasAllColumns) {
+      sh.getRange(1, existingHeaders.length + 1, 1, headers.length - existingHeaders.length)
+        .setValues([headers.slice(existingHeaders.length)]);
+    } else if (!hasSamePrefix) {
+      sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+    }
   }
 
   if (sh.getFrozenRows() !== 1) sh.setFrozenRows(1);

@@ -21,11 +21,20 @@ function stagePersist(runId, payload) {
   upsertSheetRows_(SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
     'odds_updated_epoch_ms', 'provider_odds_updated_time', 'ingestion_timestamp', 'commence_time',
-    'commence_epoch_ms', 'competition', 'player_1', 'player_2', 'source', 'updated_at',
+    'commence_epoch_ms', 'competition', 'player_1', 'player_2',
+    'player_1_hold_pct', 'player_2_hold_pct', 'player_1_break_pct', 'player_2_break_pct',
+    'player_1_form_score', 'player_2_form_score',
+    'h2h_p1_wins', 'h2h_p2_wins', 'h2h_total_matches',
+    'surface', 'stats_source', 'h2h_source', 'stats_as_of',
+    'source', 'updated_at',
   ], payload.odds);
 
   upsertSheetRows_(SHEETS.RAW_SCHEDULE, [
     'key', 'event_id', 'match_id', 'start_time', 'start_epoch_ms', 'competition', 'player_1', 'player_2',
+    'player_1_hold_pct', 'player_2_hold_pct', 'player_1_break_pct', 'player_2_break_pct',
+    'player_1_form_score', 'player_2_form_score',
+    'h2h_p1_wins', 'h2h_p2_wins', 'h2h_total_matches',
+    'surface', 'stats_source', 'h2h_source', 'stats_as_of',
     'canonical_tier', 'is_allowed', 'reason_code', 'source', 'updated_at',
   ], payload.schedule);
 
