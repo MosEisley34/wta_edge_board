@@ -223,6 +223,41 @@ function updateBootstrapEmptyCycleState_(runId, oddsRowsEmitted, scheduleEventCo
   };
 }
 
+
+function updateEmptyProductiveOutputState_(runId, metrics, config) {
+  const previous = getStateJson_('EMPTY_PRODUCTIVE_OUTPUT_STATE') || {};
+  const runtimeConfig = config || getConfig_();
+  const threshold = Math.max(1, Number(runtimeConfig.EMPTY_PRODUCTIVE_OUTPUT_THRESHOLD || 3));
+  const fetchedOdds = Number(metrics && metrics.fetched_odds || 0);
+  const signalsFound = Number(metrics && metrics.signals_found || 0);
+  const isEmptyProductiveRun = fetchedOdds > 0 && signalsFound === 0;
+  const now = new Date();
+  const timestamps = localAndUtcTimestamps_(now);
+
+  const next = {
+    run_id: runId,
+    consecutive_count: isEmptyProductiveRun ? (Number(previous.consecutive_count || 0) + 1) : 0,
+    threshold: threshold,
+    fetched_odds: fetchedOdds,
+    signals_found: signalsFound,
+    updated_at: timestamps.local,
+    updated_at_utc: timestamps.utc,
+  };
+
+  setStateValue_('EMPTY_PRODUCTIVE_OUTPUT_STATE', JSON.stringify(next));
+
+  return {
+    consecutive_count: next.consecutive_count,
+    threshold: threshold,
+    warning_needed: isEmptyProductiveRun && next.consecutive_count >= threshold,
+    reason_code: (isEmptyProductiveRun && next.consecutive_count >= threshold)
+      ? 'productive_output_empty_streak_detected'
+      : '',
+    fetched_odds: fetchedOdds,
+    signals_found: signalsFound,
+  };
+}
+
 function getLogVerbosityLevel_(config) {
   const runtimeConfig = config || {};
   if (Number.isFinite(Number(runtimeConfig.LOG_VERBOSITY_LEVEL))) {
