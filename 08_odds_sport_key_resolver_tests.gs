@@ -86,6 +86,173 @@ function testResolveActiveWtaSportKeys_ignoresInactiveWtaKeys_() {
   assertArrayEquals_([], result.sport_keys);
 }
 
+
+function testFetchOddsWindowFromOddsApi_invalidWindow_recoversWithFallbackWindow_() {
+  const originalCaller = callOddsApiWithSportKeyFallback_;
+  const originalNow = Date.now;
+  const calls = [];
+
+  Date.now = function () { return 1735689600123; };
+  callOddsApiWithSportKeyFallback_ = function (config, opts) {
+    calls.push(opts);
+    if (calls.length === 1) {
+      return {
+        ok: false,
+        reason_code: 'invalid_time_window',
+        api_credit_usage: 1,
+        api_call_count: 2,
+        credit_headers: {},
+      };
+    }
+    return {
+      ok: true,
+      status_code: 200,
+      payload: [{
+        id: 'evt_1',
+        commence_time: '2025-01-01T03:00:00Z',
+        bookmakers: [{
+          key: 'book_a',
+          markets: [{
+            key: 'h2h',
+            outcomes: [
+              { name: 'Player A', price: 1.9 },
+              { name: 'Player B', price: 2.0 },
+            ],
+          }],
+        }],
+      }],
+      reason_code: 'api_success',
+      api_credit_usage: 3,
+      api_call_count: 4,
+      credit_headers: { requests_last: 4 },
+      selected_sport_keys: ['tennis_wta_us_open', 'tennis_wta_wimbledon'],
+      selected_sport_key_count: 2,
+      selected_sport_key_source: 'catalog',
+      selected_sport_key_fallback: 'none',
+      window_request_start_ms: 0,
+      window_request_end_ms: 0,
+    };
+  };
+
+  try {
+    const result = fetchOddsWindowFromOddsApi_({
+      ODDS_API_KEY: 'test',
+      ODDS_REGIONS: 'us',
+      ODDS_MARKETS: 'h2h',
+      ODDS_ODDS_FORMAT: 'decimal',
+      ODDS_BOOTSTRAP_LOOKAHEAD_HOURS: 1,
+    }, 1735689601123, 1735689602123);
+
+    assertEquals_('invalid_time_window_recovered', result.reason_code);
+    assertEquals_(2, calls.length);
+    assertEquals_(2, result.events.length);
+    assertEquals_(4, result.api_credit_usage);
+    assertEquals_(6, result.api_call_count);
+    assertEquals_('2025-01-01T00:00:00.000Z', calls[1].query.commenceTimeFrom);
+    assertEquals_('2025-01-01T06:00:00.000Z', calls[1].query.commenceTimeTo);
+    assertEquals_(1735689600000, result.window_request_start_ms);
+    assertEquals_(1735711200000, result.window_request_end_ms);
+  } finally {
+    callOddsApiWithSportKeyFallback_ = originalCaller;
+    Date.now = originalNow;
+  }
+}
+
+function testFetchOddsWindowFromOddsApi_invalidWindow_retryFailure_() {
+  const originalCaller = callOddsApiWithSportKeyFallback_;
+  const originalNow = Date.now;
+  const calls = [];
+
+  Date.now = function () { return 1735689600123; };
+  callOddsApiWithSportKeyFallback_ = function (config, opts) {
+    calls.push(opts);
+    if (calls.length === 1) {
+      return {
+        ok: false,
+        reason_code: 'invalid_time_window',
+        api_credit_usage: 1,
+        api_call_count: 2,
+        credit_headers: {},
+      };
+    }
+    return {
+      ok: false,
+      reason_code: 'api_http_422',
+      detail_code: 'commence_time_window_invalid',
+      api_credit_usage: 3,
+      api_call_count: 4,
+      credit_headers: { requests_last: 4 },
+    };
+  };
+
+  try {
+    const result = fetchOddsWindowFromOddsApi_({
+      ODDS_API_KEY: 'test',
+      ODDS_REGIONS: 'us',
+      ODDS_MARKETS: 'h2h',
+      ODDS_ODDS_FORMAT: 'decimal',
+      ODDS_BOOTSTRAP_LOOKAHEAD_HOURS: 1,
+    }, 1735689601123, 1735689602123);
+
+    assertEquals_('invalid_time_window_retry_failed', result.reason_code);
+    assertEquals_(2, calls.length);
+    assertEquals_(0, result.events.length);
+    assertEquals_(4, result.credit_headers.requests_last);
+  } finally {
+    callOddsApiWithSportKeyFallback_ = originalCaller;
+    Date.now = originalNow;
+  }
+}
+
+function testFetchOddsWindowFromOddsApi_invalidWindow_onlyRetriesOnce_() {
+  const originalCaller = callOddsApiWithSportKeyFallback_;
+  const originalNow = Date.now;
+  let callCount = 0;
+
+  Date.now = function () { return 1735689600123; };
+  callOddsApiWithSportKeyFallback_ = function () {
+    callCount += 1;
+    return {
+      ok: false,
+      reason_code: 'invalid_time_window',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+
+  try {
+    const result = fetchOddsWindowFromOddsApi_({
+      ODDS_API_KEY: 'test',
+      ODDS_REGIONS: 'us',
+      ODDS_MARKETS: 'h2h',
+      ODDS_ODDS_FORMAT: 'decimal',
+      ODDS_BOOTSTRAP_LOOKAHEAD_HOURS: 24,
+    }, 1735689601123, 1735689602123);
+
+    assertEquals_('invalid_time_window_retry_failed', result.reason_code);
+    assertEquals_(2, callCount);
+  } finally {
+    callOddsApiWithSportKeyFallback_ = originalCaller;
+    Date.now = originalNow;
+  }
+}
+
+
+function testBuildOddsApiOddsQuery_normalizesToSecondAndMinWindow_() {
+  const result = buildOddsApiOddsQuery_({
+    ODDS_REGIONS: 'us',
+    ODDS_MARKETS: 'h2h',
+    ODDS_ODDS_FORMAT: 'decimal',
+  }, 1735689600123, 1735689600456);
+
+  assertEquals_(true, result.ok);
+  assertEquals_('2025-01-01T00:00:00.000Z', result.query.commenceTimeFrom);
+  assertEquals_('2025-01-01T00:01:00.000Z', result.query.commenceTimeTo);
+  assertEquals_(1735689600000, result.window_start_ms);
+  assertEquals_(1735689660000, result.window_end_ms);
+}
+
 function assertEquals_(expected, actual) {
   if (expected !== actual) {
     throw new Error('Assertion failed. Expected: ' + expected + ', actual: ' + actual);

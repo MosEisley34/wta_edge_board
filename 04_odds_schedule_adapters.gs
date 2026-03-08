@@ -66,14 +66,16 @@ function stageFetchOdds(runId, config, fetchWindow) {
 
   const selectedSource = adapter.selected_source || 'fresh_api';
   const selectedMeta = adapter.window_meta || buildWindowMeta_(filtered, Date.now(), selectedSource, windowStartMs, windowEndMs);
+  const actualWindowStartMs = Number.isFinite(adapter.window_request_start_ms) ? adapter.window_request_start_ms : windowStartMs;
+  const actualWindowEndMs = Number.isFinite(adapter.window_request_end_ms) ? adapter.window_request_end_ms : windowEndMs;
 
   setStateValue_('ODDS_WINDOW_STALE_PAYLOAD', JSON.stringify({
     cached_at_ms: selectedMeta.cached_at_ms,
     source: selectedSource,
     has_games: filtered.length > 0,
     event_count: filtered.length,
-    window_start_ms: windowStartMs,
-    window_end_ms: windowEndMs,
+    window_start_ms: actualWindowStartMs,
+    window_end_ms: actualWindowEndMs,
     events: filtered.map(serializeOddsEvent_),
   }));
 
@@ -82,8 +84,8 @@ function stageFetchOdds(runId, config, fetchWindow) {
     source: selectedSource,
     has_games: filtered.length > 0,
     event_count: filtered.length,
-    window_start_ms: windowStartMs,
-    window_end_ms: windowEndMs,
+    window_start_ms: actualWindowStartMs,
+    window_end_ms: actualWindowEndMs,
   }));
 
   const rows = filtered.map((event) => ({
@@ -845,6 +847,10 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
     };
   }
   const query = queryBuild.query;
+  const initialWindowMeta = {
+    window_request_start_ms: queryBuild.window_start_ms,
+    window_request_end_ms: queryBuild.window_end_ms,
+  };
   const queryValidation = validateOddsApiOddsQuery_(query);
   if (!queryValidation.ok) {
     Logger.log(JSON.stringify(sanitizeForLog_({
@@ -869,7 +875,53 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
     endpoint: 'odds',
     query: query,
   });
-  if (!fetched.ok) return fetched;
+  if (!fetched.ok && fetched.reason_code === 'invalid_time_window') {
+    const fallbackStart = Date.now();
+    const bootstrapLookaheadHours = Number(config.ODDS_BOOTSTRAP_LOOKAHEAD_HOURS || 0);
+    const fallbackLookaheadHours = Math.max(6, Number.isFinite(bootstrapLookaheadHours) ? bootstrapLookaheadHours : 0);
+    const fallbackEnd = fallbackStart + (fallbackLookaheadHours * 60 * 60 * 1000);
+    const fallbackQueryBuild = buildOddsApiOddsQuery_(config, fallbackStart, fallbackEnd);
+
+    if (fallbackQueryBuild.ok) {
+      const fallbackFetched = callOddsApiWithSportKeyFallback_(config, {
+        endpoint: 'odds',
+        query: fallbackQueryBuild.query,
+      });
+
+      if (fallbackFetched.ok) {
+        fetched.ok = true;
+        fetched.status_code = fallbackFetched.status_code;
+        fetched.payload = fallbackFetched.payload;
+        fetched.reason_code = 'invalid_time_window_recovered';
+        fetched.api_credit_usage = Number(fetched.api_credit_usage || 0) + Number(fallbackFetched.api_credit_usage || 0);
+        fetched.api_call_count = Number(fetched.api_call_count || 0) + Number(fallbackFetched.api_call_count || 0);
+        fetched.credit_headers = fallbackFetched.credit_headers;
+        fetched.selected_sport_keys = fallbackFetched.selected_sport_keys;
+        fetched.selected_sport_key_count = fallbackFetched.selected_sport_key_count;
+        fetched.selected_sport_key_source = fallbackFetched.selected_sport_key_source;
+        fetched.selected_sport_key_fallback = fallbackFetched.selected_sport_key_fallback;
+        fetched.window_request_start_ms = fallbackQueryBuild.window_start_ms;
+        fetched.window_request_end_ms = fallbackQueryBuild.window_end_ms;
+      } else {
+        return {
+          events: [],
+          reason_code: 'invalid_time_window_retry_failed',
+          detail: fallbackFetched.detail || fetched.detail,
+          detail_code: fallbackFetched.detail_code || fetched.detail_code,
+          api_credit_usage: Number(fetched.api_credit_usage || 0) + Number(fallbackFetched.api_credit_usage || 0),
+          api_call_count: Number(fetched.api_call_count || 0) + Number(fallbackFetched.api_call_count || 0),
+          credit_headers: fallbackFetched.credit_headers || fetched.credit_headers || {},
+          window_request_start_ms: fallbackQueryBuild.window_start_ms,
+          window_request_end_ms: fallbackQueryBuild.window_end_ms,
+        };
+      }
+    }
+  }
+  if (!fetched.ok) {
+    fetched.window_request_start_ms = initialWindowMeta.window_request_start_ms;
+    fetched.window_request_end_ms = initialWindowMeta.window_request_end_ms;
+    return fetched;
+  }
 
   const events = [];
   let eventsMissingH2hOutcomes = 0;
@@ -954,12 +1006,16 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
 
   return {
     events,
-    reason_code: fetched.selected_sport_key_fallback && fetched.selected_sport_key_fallback !== 'none' ? 'odds_api_success_sport_key_fallback' : 'odds_api_success',
+    reason_code: fetched.reason_code === 'invalid_time_window_recovered'
+      ? 'invalid_time_window_recovered'
+      : (fetched.selected_sport_key_fallback && fetched.selected_sport_key_fallback !== 'none' ? 'odds_api_success_sport_key_fallback' : 'odds_api_success'),
     api_credit_usage: fetched.api_credit_usage,
     api_call_count: fetched.api_call_count || 1,
     credit_headers: fetched.credit_headers,
     events_missing_h2h_outcomes: eventsMissingH2hOutcomes,
     bookmakers_without_h2h_market: bookmakersWithoutH2hMarket,
+    window_request_start_ms: Number(fetched.window_request_start_ms || initialWindowMeta.window_request_start_ms),
+    window_request_end_ms: Number(fetched.window_request_end_ms || initialWindowMeta.window_request_end_ms),
   };
 }
 
@@ -1306,7 +1362,8 @@ function validateOddsApiOddsQuery_(query) {
 }
 
 function buildOddsApiOddsQuery_(config, startMs, endMs) {
-  const preflight = validateOddsFetchWindowMs_(startMs, endMs);
+  const normalizedWindow = normalizeOddsWindowMs_(startMs, endMs);
+  const preflight = validateOddsFetchWindowMs_(normalizedWindow.start_ms, normalizedWindow.end_ms);
   const query = {
     regions: config.ODDS_REGIONS,
     markets: config.ODDS_MARKETS,
@@ -1344,12 +1401,36 @@ function buildOddsApiOddsQuery_(config, startMs, endMs) {
     errors: preflight.errors,
     diagnostics: diagnostics,
     query: query,
+    window_start_ms: preflight.start_ms,
+    window_end_ms: preflight.end_ms,
     query_params: buildOddsApiDiagnosticQueryParams_(query, {
       start_ms: preflight.start_ms,
       end_ms: preflight.end_ms,
       duration_minutes: preflight.duration_minutes,
       preflight_detail_code: preflight.detail_code,
     }),
+  };
+}
+
+function normalizeOddsWindowMs_(startMs, endMs) {
+  const start = Number(startMs);
+  const end = Number(endMs);
+  const hasStart = Number.isFinite(start);
+  const hasEnd = Number.isFinite(end);
+  if (!hasStart || !hasEnd) {
+    return {
+      start_ms: hasStart ? start : startMs,
+      end_ms: hasEnd ? end : endMs,
+    };
+  }
+
+  const normalizedStart = Math.floor(start / 1000) * 1000;
+  let normalizedEnd = Math.floor(end / 1000) * 1000;
+  if (normalizedEnd < normalizedStart + 60000) normalizedEnd = normalizedStart + 60000;
+
+  return {
+    start_ms: normalizedStart,
+    end_ms: normalizedEnd,
   };
 }
 
