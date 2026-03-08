@@ -67,23 +67,27 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
 
   const live = fetchPlayerStatsFromProvider_(config, players, asOfDate);
   if (live.ok) {
+    const liveStatsByPlayer = live.stats_by_player || {};
+    const dataAvailable = Object.keys(liveStatsByPlayer).length > 0;
     const cachePayload = {
       cache_key: cacheKey,
       cached_at_ms: nowMs,
       as_of_time: asOfDate.toISOString(),
       player_count: players.length,
-      stats_by_player: live.stats_by_player || {},
+      stats_by_player: liveStatsByPlayer,
     };
     setCachedPlayerStatsPayload_(cacheKey, cachePayload);
     persistPlayerStatsMeta_(cachePayload, 'fresh_api', nowMs, players.length, asOfDate, {
       api_call_count: Number(live.api_call_count || 0),
       scrape_call_count: Number(live.scrape_call_count || 0),
       provider_available: true,
+      data_available: dataAvailable,
       last_success_at: new Date(nowMs).toISOString(),
+      last_failure_reason: dataAvailable ? '' : String(live.reason_code || 'player_stats_data_unavailable'),
     });
 
     return {
-      stats_by_player: live.stats_by_player || {},
+      stats_by_player: liveStatsByPlayer,
       reason_code: live.reason_code || 'player_stats_api_success',
       source: 'fresh_api',
       provider_available: true,
@@ -857,6 +861,9 @@ function setCachedPlayerStatsPayload_(cacheKey, payload) {
 
 function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime, telemetry) {
   const metrics = telemetry || {};
+  const dataAvailable = metrics.data_available !== undefined
+    ? metrics.data_available === true
+    : Object.keys(payload.stats_by_player || {}).length > 0;
   const serializable = {
     cache_key: payload.cache_key || '',
     cached_at_ms: Number(payload.cached_at_ms || nowMs),
@@ -878,6 +885,7 @@ function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime, 
     api_call_count: Number(metrics.api_call_count || 0),
     scrape_call_count: Number(metrics.scrape_call_count || 0),
     provider_available: metrics.provider_available !== false,
+    data_available: dataAvailable,
     last_success_at: String(metrics.last_success_at || ''),
     last_failure_reason: String(metrics.last_failure_reason || ''),
   }));

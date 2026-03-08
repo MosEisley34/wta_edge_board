@@ -5,6 +5,9 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     stats_missing_player_a: 0,
     stats_missing_player_b: 0,
     stats_fallback_model_used: 0,
+    skipped_no_matched_events: 0,
+    skipped_no_player_keys: 0,
+    provider_returned_empty: 0,
   };
 
   const matchByOddsEventId = {};
@@ -23,6 +26,10 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     playersToFetch.push(canonicalizePlayerName_(event.player_1, {}));
     playersToFetch.push(canonicalizePlayerName_(event.player_2, {}));
   });
+
+  if (!matchRows.length) {
+    reasonCounts.skipped_no_matched_events += 1;
+  }
 
   const asOfTime = oddsEvents.reduce(function (latest, event) {
     if (!(event && event.odds_updated_time instanceof Date)) return latest;
@@ -52,9 +59,17 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     });
   }
 
+  if (!playersToFetch.length) {
+    reasonCounts.skipped_no_player_keys += 1;
+  }
+
   const statsBatch = fetchPlayerStatsBatch_(config, playersToFetch, normalizedAsOfTime);
   const statsByPlayer = statsBatch.stats_by_player || {};
   const providerUnavailable = statsBatch.provider_available === false;
+  const providerReturnedEmpty = !providerUnavailable
+    && playersToFetch.length > 0
+    && Object.keys(statsByPlayer).length === 0;
+  if (providerReturnedEmpty) reasonCounts.provider_returned_empty += 1;
   const source = providerUnavailable ? 'derived_player_stats_v1_fallback' : 'player_stats_provider_v1';
 
   const statsInputEvents = seedEvents.length ? seedEvents : oddsEvents;
