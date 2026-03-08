@@ -2115,6 +2115,56 @@ function testStageFetchPlayerStats_scheduleSeedWritesRowsWithoutOdds_() {
   assertEquals_(2, result.fetchPlayers.length);
 }
 
+function testStageFetchPlayerStats_noMatchedEventsTracksSkipReason_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    oddsEvents: [{
+      event_id: 'odds_evt_1',
+      player_1: 'Player One',
+      player_2: 'Player Two',
+      odds_updated_time: new Date('2025-03-01T00:00:00.000Z'),
+    }],
+    matchRows: [],
+  });
+
+  assertEquals_(0, result.stage.summary.output_count);
+  assertEquals_(1, result.stage.summary.reason_codes.skipped_no_matched_events);
+  assertEquals_(1, result.stage.summary.reason_codes.skipped_no_player_keys);
+}
+
+function testStageFetchPlayerStats_providerAvailableButEmptyTracksReason_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    batchResult: {
+      stats_by_player: {},
+      provider_available: true,
+      api_credit_usage: 1,
+      reason_code: 'player_stats_api_success_empty',
+    },
+  });
+
+  assertEquals_(2, result.stage.summary.output_count);
+  assertEquals_(1, result.stage.summary.reason_codes.provider_returned_empty);
+  assertEquals_(0, result.stage.summary.reason_codes.stats_enriched);
+  assertEquals_(0, result.stage.summary.reason_codes.stats_fallback_model_used);
+}
+
+function testStageFetchPlayerStats_successfulEnrichmentTracksReason_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    batchResult: {
+      stats_by_player: {
+        'player one': { ranking: 9, recent_form: 0.72, surface_win_rate: 0.63, hold_pct: 0.68, break_pct: 0.37 },
+        'player two': { ranking: 28, recent_form: 0.51, surface_win_rate: 0.45, hold_pct: 0.62, break_pct: 0.31 },
+      },
+      provider_available: true,
+      api_credit_usage: 2,
+      reason_code: 'player_stats_api_success',
+    },
+  });
+
+  assertEquals_(2, result.stage.summary.output_count);
+  assertEquals_(2, result.stage.summary.reason_codes.stats_enriched);
+  assertEquals_(0, result.stage.summary.reason_codes.provider_returned_empty);
+}
+
 function testNormalizePlayerStatsResponse_mapsCoreFields_() {
   const normalized = normalizePlayerStatsResponse_({
     data: [{
@@ -2196,6 +2246,47 @@ function testFetchPlayerStatsBatch_providerUnavailableReturnsNoProvider_() {
     assertEquals_(false, result.provider_available);
     assertEquals_('provider_unavailable', result.source);
     assertEquals_('player_stats_transport_error', result.reason_code);
+  } finally {
+    fetchPlayerStatsFromProvider_ = originalFetchPlayerStatsFromProvider;
+    getCachedPlayerStatsPayload_ = originalGetCachedPlayerStatsPayload;
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+  }
+}
+
+function testFetchPlayerStatsBatch_providerAvailableButDataUnavailableMeta_() {
+  const originalFetchPlayerStatsFromProvider = fetchPlayerStatsFromProvider_;
+  const originalGetCachedPlayerStatsPayload = getCachedPlayerStatsPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const writes = {};
+
+  fetchPlayerStatsFromProvider_ = function () {
+    return {
+      ok: true,
+      reason_code: 'player_stats_api_success_empty',
+      stats_by_player: {},
+      api_credit_usage: 0,
+      api_call_count: 1,
+      scrape_call_count: 0,
+    };
+  };
+  getCachedPlayerStatsPayload_ = function () { return null; };
+  getStateJson_ = function () { return null; };
+  setStateValue_ = function (key, value) { writes[key] = value; };
+
+  try {
+    const result = fetchPlayerStatsBatch_({
+      PLAYER_STATS_CACHE_TTL_MIN: 10,
+      PLAYER_STATS_REFRESH_MIN: 5,
+      PLAYER_STATS_FORCE_REFRESH: false,
+    }, ['Player One'], new Date('2025-03-01T00:00:00.000Z'));
+
+    const meta = JSON.parse(writes.PLAYER_STATS_LAST_FETCH_META || '{}');
+    assertEquals_(true, result.provider_available);
+    assertEquals_(true, meta.provider_available);
+    assertEquals_(false, meta.data_available);
+    assertEquals_('player_stats_api_success_empty', meta.last_failure_reason);
   } finally {
     fetchPlayerStatsFromProvider_ = originalFetchPlayerStatsFromProvider;
     getCachedPlayerStatsPayload_ = originalGetCachedPlayerStatsPayload;
