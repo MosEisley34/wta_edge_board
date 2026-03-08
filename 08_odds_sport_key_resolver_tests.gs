@@ -547,6 +547,62 @@ function testCallOddsApi_malformedJson_returnsParseFailure_() {
   }
 }
 
+
+function testCallOddsApi_mixedCaseHeaders_areNormalized_() {
+  const originalFetch = UrlFetchApp.fetch;
+
+  UrlFetchApp.fetch = function () {
+    return {
+      getResponseCode: function () { return 200; },
+      getAllHeaders: function () {
+        return {
+          'X-Requests-Used': 21,
+          'x-REQUESTS-remaining': '479',
+          'X-REQUESTS-LAST': '2',
+        };
+      },
+      getContentText: function () { return '[]'; },
+    };
+  };
+
+  try {
+    const result = callOddsApi_('https://api.the-odds-api.com/v4/sports?apiKey=secret123', { debug: true });
+    assertEquals_(true, result.ok);
+    assertEquals_('api_ok', result.reason_code);
+    assertEquals_(21, result.credit_headers.requests_used);
+    assertEquals_(479, result.credit_headers.requests_remaining);
+    assertEquals_(2, result.credit_headers.requests_last);
+    assertEquals_(true, result.credit_headers.has_credit_headers);
+    assertEquals_(2, result.api_credit_usage);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
+function testCallOddsApi_missingCreditHeaders_marksCreditHeaderMissing_() {
+  const originalFetch = UrlFetchApp.fetch;
+
+  UrlFetchApp.fetch = function () {
+    return {
+      getResponseCode: function () { return 200; },
+      getAllHeaders: function () { return { 'content-type': 'application/json' }; },
+      getContentText: function () { return '[]'; },
+    };
+  };
+
+  try {
+    const result = callOddsApi_('https://api.the-odds-api.com/v4/sports?apiKey=secret123', { debug: true });
+    assertEquals_(true, result.ok);
+    assertEquals_('credit_header_missing', result.reason_code);
+    assertEquals_(null, result.credit_headers.requests_used);
+    assertEquals_(null, result.credit_headers.requests_remaining);
+    assertEquals_(null, result.credit_headers.requests_last);
+    assertEquals_(false, result.credit_headers.has_credit_headers);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
 function testCallOddsApi_objectPayloadWithListLikeField_isNormalized_() {
   const originalFetch = UrlFetchApp.fetch;
 

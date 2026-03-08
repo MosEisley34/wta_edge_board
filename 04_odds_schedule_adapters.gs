@@ -115,6 +115,8 @@ function stageFetchOdds(runId, config, fetchWindow) {
     updated_at: new Date().toISOString(),
   }));
 
+  const normalizedOddsCreditHeaders = normalizeCreditHeaders_(adapter.credit_headers || {});
+
   const summary = buildStageSummary_(runId, 'stageFetchOdds', start, {
     input_count: raw.length,
     output_count: filtered.length,
@@ -134,7 +136,7 @@ function stageFetchOdds(runId, config, fetchWindow) {
 
   if (runtimeConfig.reason_code) summary.reason_codes[runtimeConfig.reason_code] = (summary.reason_codes[runtimeConfig.reason_code] || 0) + 1;
 
-  const creditSnapshot = updateCreditStateFromHeaders_(runId, adapter.credit_headers || {});
+  const creditSnapshot = updateCreditStateFromHeaders_(runId, normalizedOddsCreditHeaders);
   if (!creditSnapshot.header_present) summary.reason_codes.credit_header_missing = (summary.reason_codes.credit_header_missing || 0) + 1;
 
   const oddsCreditsObservedAt = localAndUtcTimestamps_(new Date());
@@ -143,7 +145,7 @@ function stageFetchOdds(runId, config, fetchWindow) {
     observed_at: oddsCreditsObservedAt.local,
     observed_at_utc: oddsCreditsObservedAt.utc,
     api_call_count: adapter.api_call_count || 0,
-    credit_headers: adapter.credit_headers || {},
+    credit_headers: normalizedOddsCreditHeaders,
   }));
 
   return { events: filtered, rows, summary, selected_source: selectedSource };
@@ -403,7 +405,8 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   }
   if (runtimeConfig.reason_code) summary.reason_codes[runtimeConfig.reason_code] = (summary.reason_codes[runtimeConfig.reason_code] || 0) + 1;
 
-  const scheduleCreditSnapshot = updateCreditStateFromHeaders_(runId, scheduleResp.credit_headers || {});
+  const normalizedScheduleCreditHeaders = normalizeCreditHeaders_(scheduleResp.credit_headers || {});
+  const scheduleCreditSnapshot = updateCreditStateFromHeaders_(runId, normalizedScheduleCreditHeaders);
   if (!scheduleCreditSnapshot.header_present) {
     summary.reason_codes.credit_header_missing = (summary.reason_codes.credit_header_missing || 0) + 1;
   }
@@ -414,7 +417,7 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     observed_at: scheduleCreditsObservedAt.local,
     observed_at_utc: scheduleCreditsObservedAt.utc,
     api_call_count: scheduleResp.api_call_count || 0,
-    credit_headers: scheduleResp.credit_headers || {},
+    credit_headers: normalizedScheduleCreditHeaders,
   }));
 
   return {
@@ -516,14 +519,11 @@ function getCreditAwareRuntimeConfig_(config) {
 }
 
 function updateCreditStateFromHeaders_(runId, headers) {
-  const creditHeaders = headers || {};
+  const creditHeaders = normalizeCreditHeaders_(headers || {});
   const used = Number(creditHeaders.requests_used);
   const remaining = Number(creditHeaders.requests_remaining);
   const last = Number(creditHeaders.requests_last);
-  const hasUsed = creditHeaders.requests_used !== undefined && creditHeaders.requests_used !== null;
-  const hasRemaining = creditHeaders.requests_remaining !== undefined && creditHeaders.requests_remaining !== null;
-  const hasLast = creditHeaders.requests_last !== undefined && creditHeaders.requests_last !== null;
-  const hasHeaderValues = hasUsed || hasRemaining || hasLast;
+  const hasHeaderValues = hasCreditHeaders_(creditHeaders);
   const remainingIsNumeric = Number.isFinite(remaining);
 
   const snapshot = {
@@ -1631,16 +1631,9 @@ function callOddsApi_(url, opts) {
   }
 
   const status = resp.getResponseCode();
-  const headers = resp.getAllHeaders();
-  const rawUsed = headers['x-requests-used'] || headers['X-Requests-Used'];
-  const rawRemaining = headers['x-requests-remaining'] || headers['X-Requests-Remaining'];
-  const rawLast = headers['x-requests-last'] || headers['X-Requests-Last'];
-  const hasCreditHeaders = rawUsed !== undefined || rawRemaining !== undefined || rawLast !== undefined;
-  const creditHeaders = {
-    requests_used: rawUsed === undefined || rawUsed === null || rawUsed === '' ? null : Number(rawUsed),
-    requests_remaining: rawRemaining === undefined || rawRemaining === null || rawRemaining === '' ? null : Number(rawRemaining),
-    requests_last: rawLast === undefined || rawLast === null || rawLast === '' ? null : Number(rawLast),
-  };
+  const normalizedHeaders = buildLowercaseHeaderMap_(resp.getAllHeaders() || {});
+  const creditHeaders = normalizeCreditHeaders_(normalizedHeaders);
+  const hasCreditHeaders = hasCreditHeaders_(creditHeaders);
 
   if (debugEnabled) {
     Logger.log(JSON.stringify({
@@ -1707,6 +1700,55 @@ function callOddsApi_(url, opts) {
     credit_headers: creditHeaders,
     reason_code: hasCreditHeaders ? 'api_ok' : 'credit_header_missing',
   };
+}
+
+function buildLowercaseHeaderMap_(headers) {
+  const source = headers || {};
+  const normalized = {};
+  Object.keys(source).forEach(function (key) {
+    normalized[String(key || '').toLowerCase()] = source[key];
+  });
+  return normalized;
+}
+
+function parseHeaderNumber_(value) {
+  if (value === undefined || value === null) return null;
+  if (Array.isArray(value)) {
+    if (!value.length) return null;
+    return parseHeaderNumber_(value[0]);
+  }
+  if (typeof value === 'number') return value;
+  const trimmed = String(value).trim();
+  if (!trimmed) return NaN;
+  return Number(trimmed);
+}
+
+function normalizeCreditHeaders_(headers) {
+  const normalized = buildLowercaseHeaderMap_(headers || {});
+  const hasUsedHeader = Object.prototype.hasOwnProperty.call(normalized, 'x-requests-used')
+    || Object.prototype.hasOwnProperty.call(normalized, 'requests_used');
+  const hasRemainingHeader = Object.prototype.hasOwnProperty.call(normalized, 'x-requests-remaining')
+    || Object.prototype.hasOwnProperty.call(normalized, 'requests_remaining');
+  const hasLastHeader = Object.prototype.hasOwnProperty.call(normalized, 'x-requests-last')
+    || Object.prototype.hasOwnProperty.call(normalized, 'requests_last');
+
+  const rawUsed = hasUsedHeader ? (normalized['x-requests-used'] !== undefined ? normalized['x-requests-used'] : normalized.requests_used) : null;
+  const rawRemaining = hasRemainingHeader ? (normalized['x-requests-remaining'] !== undefined ? normalized['x-requests-remaining'] : normalized.requests_remaining) : null;
+  const rawLast = hasLastHeader ? (normalized['x-requests-last'] !== undefined ? normalized['x-requests-last'] : normalized.requests_last) : null;
+
+  return {
+    requests_used: parseHeaderNumber_(rawUsed),
+    requests_remaining: parseHeaderNumber_(rawRemaining),
+    requests_last: parseHeaderNumber_(rawLast),
+    has_requests_used: hasUsedHeader,
+    has_requests_remaining: hasRemainingHeader,
+    has_requests_last: hasLastHeader,
+    has_credit_headers: hasUsedHeader || hasRemainingHeader || hasLastHeader,
+  };
+}
+
+function hasCreditHeaders_(creditHeaders) {
+  return !!(creditHeaders && creditHeaders.has_credit_headers === true);
 }
 
 function buildOddsApiRequestPathForLog_(url) {
