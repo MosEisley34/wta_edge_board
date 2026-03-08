@@ -1403,6 +1403,55 @@ function testStageFetchSchedule_staleEmpty_forcesLiveAndPersistsFlagsOnLiveEmpty
   assertEquals_('489', String(result.creditHeadersCaptured[0].x_requests_remaining || ''));
 }
 
+function testBuildCanonicalSchedulePlayers_filtersPastEventsAndDedupes_() {
+  const nowMs = Date.parse('2025-03-01T00:00:00.000Z');
+  const players = buildCanonicalSchedulePlayers_([
+    {
+      start_time: new Date('2025-02-28T23:59:59.000Z'),
+      player_1: 'Past A',
+      player_2: 'Past B',
+    },
+    {
+      start_time: new Date('2025-03-01T01:00:00.000Z'),
+      player_1: 'Future One',
+      player_2: 'Future Two',
+    },
+    {
+      start_time: new Date('2025-03-01T02:00:00.000Z'),
+      player_1: 'Future One',
+      player_2: 'Future Three',
+    },
+  ], nowMs);
+
+  assertArrayEquals_(['future one', 'future two', 'future three'], players);
+}
+
+function testEnrichScheduleEventsFromTennisAbstract_nonFatalOnFailure_() {
+  const originalFetchPlayerStatsBatch = fetchPlayerStatsBatch_;
+
+  fetchPlayerStatsBatch_ = function () {
+    throw new Error('stats provider blew up');
+  };
+
+  try {
+    const event = {
+      event_id: 'sched_1',
+      start_time: new Date('2025-03-01T03:00:00.000Z'),
+      player_1: 'Player One',
+      player_2: 'Player Two',
+    };
+    const result = enrichScheduleEventsFromTennisAbstract_({}, [event]);
+
+    assertEquals_('schedule_enrichment_ta_failed_non_fatal', result.reason_code);
+    assertEquals_(1, result.events.length);
+    assertEquals_('sched_1', result.events[0].event_id);
+    assertEquals_(true, result.failed);
+    assertTrue_(String(result.error || '').indexOf('stats provider blew up') >= 0, 'error should be captured');
+  } finally {
+    fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
+  }
+}
+
 function runStageFetchScheduleScenario_(options) {
   const opts = options || {};
   const originalDateNow = Date.now;
@@ -1419,6 +1468,7 @@ function runStageFetchScheduleScenario_(options) {
   const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
   const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
   const originalSetStateValue = setStateValue_;
+  const originalEnrichScheduleEventsFromTennisAbstract = enrichScheduleEventsFromTennisAbstract_;
 
   const fetchResponses = (opts.fetchResponses || []).slice();
   const fetchCalls = [];
@@ -1488,6 +1538,19 @@ function runStageFetchScheduleScenario_(options) {
   setStateValue_ = function (key, value) {
     stateWrites[key] = value;
   };
+  enrichScheduleEventsFromTennisAbstract_ = function (config, events) {
+    return {
+      events: events,
+      reason_code: 'schedule_enrichment_test_passthrough',
+      stats_reason_code: '',
+      canonical_player_count: 0,
+      stats_rows_applied: 0,
+      h2h_rows_applied: 0,
+      h2h_missing: 0,
+      failed: false,
+      error: '',
+    };
+  };
 
   try {
     const stage = stageFetchSchedule('run_stage_fetch_schedule_test', {}, []);
@@ -1512,6 +1575,7 @@ function runStageFetchScheduleScenario_(options) {
     updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
     localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
     setStateValue_ = originalSetStateValue;
+    enrichScheduleEventsFromTennisAbstract_ = originalEnrichScheduleEventsFromTennisAbstract;
   }
 }
 

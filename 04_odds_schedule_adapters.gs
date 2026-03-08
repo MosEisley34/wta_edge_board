@@ -317,6 +317,9 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     }
   }
 
+  const scheduleEnrichment = enrichScheduleEventsFromTennisAbstract_(config, scheduleResp.events || []);
+  scheduleResp.events = scheduleEnrichment.events;
+
   const inWindow = scheduleResp.events || [];
 
   const reasonCounts = {};
@@ -440,6 +443,14 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   summary.reason_codes.stale_fallback_used_with_events = (summary.reason_codes.stale_fallback_used_with_events || 0) + Number(scheduleResp.stale_fallback_used_with_events || 0);
   summary.reason_codes.stale_fallback_empty_forced_live = (summary.reason_codes.stale_fallback_empty_forced_live || 0) + Number(scheduleResp.stale_fallback_empty_forced_live || 0);
   summary.reason_codes.live_fetch_happened = (summary.reason_codes.live_fetch_happened || 0) + (scheduleResp.live_fetch_happened ? 1 : 0);
+  summary.reason_codes[scheduleEnrichment.reason_code] = (summary.reason_codes[scheduleEnrichment.reason_code] || 0) + 1;
+  if (scheduleEnrichment.stats_reason_code) {
+    const statsReason = 'schedule_enrichment_stats_' + scheduleEnrichment.stats_reason_code;
+    summary.reason_codes[statsReason] = (summary.reason_codes[statsReason] || 0) + 1;
+  }
+  summary.reason_codes.schedule_enrichment_stats_rows_applied = (summary.reason_codes.schedule_enrichment_stats_rows_applied || 0) + Number(scheduleEnrichment.stats_rows_applied || 0);
+  summary.reason_codes.schedule_enrichment_h2h_rows_applied = (summary.reason_codes.schedule_enrichment_h2h_rows_applied || 0) + Number(scheduleEnrichment.h2h_rows_applied || 0);
+  summary.reason_codes.schedule_enrichment_h2h_missing = (summary.reason_codes.schedule_enrichment_h2h_missing || 0) + Number(scheduleEnrichment.h2h_missing || 0);
   if (!oddsEvents || !oddsEvents.length) {
     summary.reason_codes.schedule_window_fallback_no_odds = (summary.reason_codes.schedule_window_fallback_no_odds || 0) + 1;
   }
@@ -480,6 +491,16 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     top_unresolved_competitions: topUnresolvedCompetitions.slice(0, 10),
     window_metrics: scheduleWindowMetrics,
     credit_headers: normalizedScheduleCreditHeaders,
+    schedule_enrichment: {
+      reason_code: scheduleEnrichment.reason_code,
+      stats_reason_code: scheduleEnrichment.stats_reason_code,
+      canonical_player_count: scheduleEnrichment.canonical_player_count,
+      stats_rows_applied: scheduleEnrichment.stats_rows_applied,
+      h2h_rows_applied: scheduleEnrichment.h2h_rows_applied,
+      h2h_missing: scheduleEnrichment.h2h_missing,
+      failed: scheduleEnrichment.failed,
+      error: scheduleEnrichment.error || '',
+    },
   }, 2);
 
   return {
@@ -493,6 +514,155 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     allowedCount: allowedEvents.length,
     selected_source: selectedSource,
   };
+}
+
+function enrichScheduleEventsFromTennisAbstract_(config, events) {
+  const scheduleEvents = events || [];
+  if (!scheduleEvents.length) {
+    return {
+      events: scheduleEvents,
+      reason_code: 'schedule_enrichment_no_schedule_events',
+      stats_reason_code: '',
+      canonical_player_count: 0,
+      stats_rows_applied: 0,
+      h2h_rows_applied: 0,
+      h2h_missing: 0,
+      failed: false,
+      error: '',
+    };
+  }
+
+  try {
+    const canonicalPlayers = buildCanonicalSchedulePlayers_(scheduleEvents, Date.now());
+    if (!canonicalPlayers.length) {
+      return {
+        events: scheduleEvents,
+        reason_code: 'schedule_enrichment_no_upcoming_players',
+        stats_reason_code: '',
+        canonical_player_count: 0,
+        stats_rows_applied: 0,
+        h2h_rows_applied: 0,
+        h2h_missing: 0,
+        failed: false,
+        error: '',
+      };
+    }
+
+    const asOfTime = scheduleEvents.reduce(function (latest, event) {
+      if (!(event && event.start_time instanceof Date)) return latest;
+      return event.start_time.getTime() > latest.getTime() ? event.start_time : latest;
+    }, new Date(0));
+    const statsBatch = fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime.getTime() > 0 ? asOfTime : new Date());
+    const statsByPlayer = statsBatch.stats_by_player || {};
+    let statsRowsApplied = 0;
+    let h2hRowsApplied = 0;
+    let h2hMissing = 0;
+
+    const enrichedEvents = scheduleEvents.map(function (event) {
+      const playerA = canonicalizePlayerName_(event.player_1, {});
+      const playerB = canonicalizePlayerName_(event.player_2, {});
+      const statsA = playerA ? statsByPlayer[playerA] : null;
+      const statsB = playerB ? statsByPlayer[playerB] : null;
+      const h2hRow = getTaH2hRowForCanonicalPair_(config, playerA, playerB);
+
+      const merged = Object.assign({}, event);
+      const didApplyA = mergeScheduleStatsIntoEvent_(merged, 'player_1', statsA);
+      const didApplyB = mergeScheduleStatsIntoEvent_(merged, 'player_2', statsB);
+      if (didApplyA || didApplyB) {
+        merged.stats_source = merged.stats_source || (statsBatch.source || 'ta_enrichment');
+        merged.stats_as_of = merged.stats_as_of || new Date().toISOString();
+      }
+      if (didApplyA) statsRowsApplied += 1;
+      if (didApplyB) statsRowsApplied += 1;
+
+      if (h2hRow) {
+        merged.h2h_p1_wins = Number(h2hRow.wins_a || 0);
+        merged.h2h_p2_wins = Number(h2hRow.wins_b || 0);
+        merged.h2h_total_matches = Number(h2hRow.wins_a || 0) + Number(h2hRow.wins_b || 0);
+        merged.h2h_source = merged.h2h_source || 'ta_h2h_matrix';
+        h2hRowsApplied += 1;
+      } else {
+        h2hMissing += 1;
+      }
+
+      return merged;
+    });
+
+    return {
+      events: enrichedEvents,
+      reason_code: 'schedule_enrichment_ta_completed',
+      stats_reason_code: statsBatch.reason_code || '',
+      canonical_player_count: canonicalPlayers.length,
+      stats_rows_applied: statsRowsApplied,
+      h2h_rows_applied: h2hRowsApplied,
+      h2h_missing: h2hMissing,
+      failed: false,
+      error: '',
+    };
+  } catch (error) {
+    return {
+      events: scheduleEvents,
+      reason_code: 'schedule_enrichment_ta_failed_non_fatal',
+      stats_reason_code: '',
+      canonical_player_count: 0,
+      stats_rows_applied: 0,
+      h2h_rows_applied: 0,
+      h2h_missing: 0,
+      failed: true,
+      error: String(error && error.message ? error.message : error),
+    };
+  }
+}
+
+function buildCanonicalSchedulePlayers_(events, nowMs) {
+  const now = Number(nowMs || Date.now());
+  const canonicalPlayers = [];
+
+  (events || []).forEach(function (event) {
+    const startMs = event && event.start_time instanceof Date ? event.start_time.getTime() : NaN;
+    if (!Number.isFinite(startMs) || startMs < now) return;
+
+    const playerA = canonicalizePlayerName_(event.player_1, {});
+    const playerB = canonicalizePlayerName_(event.player_2, {});
+    if (playerA) canonicalPlayers.push(playerA);
+    if (playerB) canonicalPlayers.push(playerB);
+  });
+
+  return dedupePlayerNames_(canonicalPlayers);
+}
+
+function mergeScheduleStatsIntoEvent_(event, playerKeyPrefix, statsPayload) {
+  if (!statsPayload) return false;
+  const holdPct = toNullableNumber_(statsPayload.hold_pct);
+  const breakPct = toNullableNumber_(statsPayload.break_pct);
+  const formScore = toNullableNumber_(statsPayload.recent_form);
+
+  let updated = false;
+  if (!hasNumericValue_(event[playerKeyPrefix + '_hold_pct']) && holdPct !== null) {
+    event[playerKeyPrefix + '_hold_pct'] = holdPct;
+    updated = true;
+  }
+  if (!hasNumericValue_(event[playerKeyPrefix + '_break_pct']) && breakPct !== null) {
+    event[playerKeyPrefix + '_break_pct'] = breakPct;
+    updated = true;
+  }
+  const currentForm = pickEventValue_(event, [playerKeyPrefix + '_form_score', playerKeyPrefix + '_recent_form']);
+  if (!hasNumericValue_(currentForm) && formScore !== null) {
+    event[playerKeyPrefix + '_form_score'] = formScore;
+    updated = true;
+  }
+
+  return updated;
+}
+
+function hasNumericValue_(value) {
+  return Number.isFinite(Number(value));
+}
+
+function toNullableNumber_(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function getUnresolvedCompetitionKey_(sourceFields) {
