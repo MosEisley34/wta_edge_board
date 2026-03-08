@@ -98,14 +98,6 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
   }
 
   const sourceConfigs = parsePlayerStatsSourceConfigs_(config);
-  if (!sourceConfigs.length) {
-    return {
-      ok: false,
-      reason_code: 'player_stats_provider_not_configured',
-      api_credit_usage: 0,
-      api_call_count: 0,
-    };
-  }
 
   const attempts = [];
   let totalApiCalls = 0;
@@ -130,6 +122,18 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     };
   }
 
+  const leadersSource = fetchPlayerStatsFromLeadersSource_(players);
+  if (leadersSource.ok) {
+    return {
+      ok: true,
+      reason_code: leadersSource.reason_code || 'ta_matchmx_ok',
+      detail: attempts.join(','),
+      stats_by_player: leadersSource.stats_by_player || {},
+      api_credit_usage: 0,
+      api_call_count: totalApiCalls + Number(leadersSource.api_call_count || 0),
+    };
+  }
+
   const scraped = fetchPlayerStatsFromScrapeSources_(config, players);
   if (scraped.ok) {
     return {
@@ -144,10 +148,140 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
 
   return {
     ok: false,
-    reason_code: attempts.length ? attempts[attempts.length - 1] : 'player_stats_provider_not_configured',
+    reason_code: leadersSource.reason_code || (attempts.length ? attempts[attempts.length - 1] : 'player_stats_provider_not_configured'),
     detail: attempts.join(','),
     api_credit_usage: 0,
-    api_call_count: totalApiCalls + Number(scraped.api_call_count || 0),
+    api_call_count: totalApiCalls + Number(leadersSource.api_call_count || 0) + Number(scraped.api_call_count || 0),
+  };
+}
+
+function fetchPlayerStatsFromLeadersSource_(canonicalPlayers) {
+  const leadersUrl = 'https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top';
+  let pageResponse;
+
+  try {
+    pageResponse = UrlFetchApp.fetch(leadersUrl, {
+      method: 'get',
+      muteHttpExceptions: true,
+      headers: { Accept: 'text/html' },
+    });
+  } catch (e) {
+    return { ok: false, reason_code: 'ta_leaders_page_fetch_failed', stats_by_player: {}, api_call_count: 1 };
+  }
+
+  if (Number(pageResponse.getResponseCode() || 0) < 200 || Number(pageResponse.getResponseCode() || 0) >= 300) {
+    return { ok: false, reason_code: 'ta_leaders_page_fetch_failed', stats_by_player: {}, api_call_count: 1 };
+  }
+
+  const pageText = String(pageResponse.getContentText() || '');
+  const jsUrl = extractLeadersJsUrl_(pageText, leadersUrl);
+  if (!jsUrl) {
+    return { ok: false, reason_code: 'ta_leaders_js_url_missing', stats_by_player: {}, api_call_count: 1 };
+  }
+
+  let jsResponse;
+  try {
+    jsResponse = UrlFetchApp.fetch(jsUrl, {
+      method: 'get',
+      muteHttpExceptions: true,
+      headers: { Accept: 'application/javascript,text/plain' },
+    });
+  } catch (e) {
+    return { ok: false, reason_code: 'ta_leaders_js_fetch_failed', stats_by_player: {}, api_call_count: 2 };
+  }
+
+  if (Number(jsResponse.getResponseCode() || 0) < 200 || Number(jsResponse.getResponseCode() || 0) >= 300) {
+    return { ok: false, reason_code: 'ta_leaders_js_fetch_failed', stats_by_player: {}, api_call_count: 2 };
+  }
+
+  const jsPayload = String(jsResponse.getContentText() || '');
+  const structuredRows = extractMatchMxRows_(jsPayload);
+  if (!structuredRows.length) {
+    return { ok: false, reason_code: 'ta_matchmx_parse_failed', stats_by_player: {}, api_call_count: 2 };
+  }
+
+  const statsByPlayer = normalizePlayerStatsResponse_(structuredRows, canonicalPlayers);
+  return {
+    ok: Object.keys(statsByPlayer).length > 0,
+    reason_code: Object.keys(statsByPlayer).length > 0 ? 'ta_matchmx_ok' : 'ta_matchmx_parse_failed',
+    stats_by_player: statsByPlayer,
+    api_call_count: 2,
+  };
+}
+
+function extractLeadersJsUrl_(html, baseUrl) {
+  const text = String(html || '');
+  const match = text.match(/(?:https?:)?\/\/[^"'\s]*jsmatches\/[^"'\s]*leadersource[^"'\s]*wta\.js|\/?jsmatches\/[^"'\s]*leadersource[^"'\s]*wta\.js/i);
+  if (!match || !match[0]) return '';
+
+  const value = String(match[0]);
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^\/\//.test(value)) return 'https:' + value;
+
+  const base = String(baseUrl || 'https://www.tennisabstract.com/').replace(/\/[^/]*$/, '/');
+  const originMatch = String(baseUrl || '').match(/^https?:\/\/[^/]+/i);
+  if (/^\//.test(value) && originMatch && originMatch[0]) return originMatch[0] + value;
+  return base + value.replace(/^\/+/, '');
+}
+
+function extractMatchMxRows_(payload) {
+  const text = String(payload || '');
+  const rows = [];
+  const rowRegex = /matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[([\s\S]*?)\]\s*;/g;
+  let match;
+
+  while ((match = rowRegex.exec(text)) !== null) {
+    const tokens = parseJsArrayTokens_(match[1]);
+    if (tokens.length < 6) continue;
+    const structured = buildStructuredMatchMxRow_(tokens);
+    if (!structured.player_name || !structured.score) continue;
+    rows.push(structured);
+  }
+
+  return rows;
+}
+
+function parseJsArrayTokens_(arrayLiteralBody) {
+  const body = String(arrayLiteralBody || '');
+  const pattern = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^,]+)/g;
+  const tokens = [];
+  let part;
+
+  while ((part = pattern.exec(body)) !== null) {
+    const raw = part[1] !== undefined ? part[1] : (part[2] !== undefined ? part[2] : part[3]);
+    const normalized = String(raw || '').trim();
+    if (normalized === 'null' || normalized === 'undefined') {
+      tokens.push('');
+      continue;
+    }
+    tokens.push(normalized.replace(/\\"/g, '"').replace(/\\'/g, "'"));
+  }
+
+  return tokens;
+}
+
+function buildStructuredMatchMxRow_(tokens) {
+  const score = String(tokens[5] || '').trim();
+  const hasWalkoverOrRet = /\b(?:ret|wo)\b/i.test(score);
+  const numericStats = [];
+  for (let i = 6; i < tokens.length; i += 1) {
+    const value = Number(tokens[i]);
+    numericStats.push(Number.isFinite(value) ? value : null);
+  }
+
+  return {
+    date: String(tokens[0] || ''),
+    event: String(tokens[1] || ''),
+    surface: String(tokens[2] || ''),
+    player_name: String(tokens[3] || ''),
+    opponent: String(tokens[4] || ''),
+    score: score,
+    ranking: numericStats.length ? numericStats[0] : null,
+    recent_form: hasWalkoverOrRet ? null : (numericStats.length > 1 ? numericStats[1] : null),
+    surface_win_rate: hasWalkoverOrRet ? null : (numericStats.length > 2 ? numericStats[2] : null),
+    hold_pct: hasWalkoverOrRet ? null : (numericStats.length > 3 ? numericStats[3] : null),
+    break_pct: hasWalkoverOrRet ? null : (numericStats.length > 4 ? numericStats[4] : null),
+    numeric_stats: numericStats,
   };
 }
 

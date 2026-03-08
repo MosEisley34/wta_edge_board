@@ -1836,3 +1836,81 @@ function testStageMatchEvents_withoutOddsSeedsMatchRowsFromSchedule_() {
   assertEquals_('sched_1', stage.rows[0].schedule_event_id);
   assertEquals_(1, stage.summary.reason_codes.schedule_seed_no_odds);
 }
+
+function testExtractLeadersJsUrl_matchesLeadersourceWtaScript_() {
+  const html = '<html><script src="/jsmatches/abc_leadersource_latest_wta.js"></script></html>';
+  const result = extractLeadersJsUrl_(html, 'https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top');
+
+  assertEquals_('https://www.tennisabstract.com/jsmatches/abc_leadersource_latest_wta.js', result);
+}
+
+function testExtractMatchMxRows_parsesStructuredRowsAndRetSafely_() {
+  const payload = [
+    'matchmx[0]=["2025-03-01","Doha","Hard","Player One","Opponent A","6-4 6-4",11,62,58,70,40];',
+    'matchmx[1]=["2025-03-02","Dubai","Hard","Player One","Opponent B","RET",12,65,59,71,41];',
+  ].join('\n');
+
+  const rows = extractMatchMxRows_(payload);
+
+  assertEquals_(2, rows.length);
+  assertEquals_('2025-03-01', rows[0].date);
+  assertEquals_('Doha', rows[0].event);
+  assertEquals_('Hard', rows[0].surface);
+  assertEquals_('Player One', rows[0].player_name);
+  assertEquals_('Opponent A', rows[0].opponent);
+  assertEquals_(11, rows[0].ranking);
+  assertEquals_(62, rows[0].recent_form);
+  assertEquals_(null, rows[1].recent_form);
+  assertEquals_(null, rows[1].hold_pct);
+}
+
+function testFetchPlayerStatsFromLeadersSource_reasonCodes_() {
+  const originalFetch = UrlFetchApp.fetch;
+
+  try {
+    UrlFetchApp.fetch = function () {
+      throw new Error('network error');
+    };
+
+    const fetchFailed = fetchPlayerStatsFromLeadersSource_(['Player One']);
+    assertEquals_(false, fetchFailed.ok);
+    assertEquals_('ta_leaders_page_fetch_failed', fetchFailed.reason_code);
+
+    UrlFetchApp.fetch = function (url) {
+      if (url.indexOf('leaders_wta.cgi') >= 0) {
+        return {
+          getResponseCode: function () { return 200; },
+          getContentText: function () { return '<html>No matching js</html>'; },
+        };
+      }
+      return {
+        getResponseCode: function () { return 404; },
+        getContentText: function () { return ''; },
+      };
+    };
+
+    const missingJs = fetchPlayerStatsFromLeadersSource_(['Player One']);
+    assertEquals_(false, missingJs.ok);
+    assertEquals_('ta_leaders_js_url_missing', missingJs.reason_code);
+
+    UrlFetchApp.fetch = function (url) {
+      if (url.indexOf('leaders_wta.cgi') >= 0) {
+        return {
+          getResponseCode: function () { return 200; },
+          getContentText: function () { return '<script src="/jsmatches/test_leadersource_wta.js"></script>'; },
+        };
+      }
+      return {
+        getResponseCode: function () { return 200; },
+        getContentText: function () { return 'matchmx[0]=["2025-03-01","Doha","Hard","Player One","Opponent A","6-4 6-4",14,62,58,71,39];'; },
+      };
+    };
+
+    const ok = fetchPlayerStatsFromLeadersSource_(['Player One']);
+    assertEquals_(true, ok.ok);
+    assertEquals_('ta_matchmx_ok', ok.reason_code);
+    assertEquals_(14, ok.stats_by_player['player one'].ranking);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
