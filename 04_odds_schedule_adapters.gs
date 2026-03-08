@@ -118,6 +118,7 @@ function stageFetchOdds(runId, config, fetchWindow) {
   const normalizedOddsCreditHeaders = normalizeCreditHeaders_(adapter.credit_headers || {});
 
   const summary = buildStageSummary_(runId, 'stageFetchOdds', start, {
+    config: config,
     input_count: raw.length,
     output_count: filtered.length,
     provider: source,
@@ -147,6 +148,21 @@ function stageFetchOdds(runId, config, fetchWindow) {
     api_call_count: adapter.api_call_count || 0,
     credit_headers: normalizedOddsCreditHeaders,
   }));
+
+
+  logDiagnosticEvent_(config, 'stageFetchOdds_window_diagnostics', {
+    run_id: runId,
+    selected_source: selectedSource,
+    requested_window_start: formatLocalIso_(new Date(windowStartMs)),
+    requested_window_end: formatLocalIso_(new Date(windowEndMs)),
+    actual_window_start: formatLocalIso_(new Date(actualWindowStartMs)),
+    actual_window_end: formatLocalIso_(new Date(actualWindowEndMs)),
+    raw_event_count: raw.length,
+    filtered_event_count: filtered.length,
+    dropped_outside_window_count: raw.length - filtered.length,
+    sample_event_ids: filtered.slice(0, 10).map((event) => event.event_id),
+    credit_headers: normalizedOddsCreditHeaders,
+  }, 2);
 
   return { events: filtered, rows, summary, selected_source: selectedSource };
 }
@@ -381,6 +397,7 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   }));
 
   const summary = buildStageSummary_(runId, 'stageFetchSchedule', start, {
+    config: config,
     input_count: inWindow.length,
     output_count: inWindow.length,
     provider: source,
@@ -423,6 +440,21 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     credit_headers: normalizedScheduleCreditHeaders,
   }));
 
+  
+  const topUnresolvedCompetitions = getTopCompetitionStrings_(unresolvedCompetitionCounts, 20);
+
+  logDiagnosticEvent_(config, 'stageFetchSchedule_window_diagnostics', {
+    run_id: runId,
+    selected_source: selectedSource,
+    in_window_count: inWindow.length,
+    allowed_count: allowedEvents.length,
+    blocked_count: inWindow.length - allowedEvents.length,
+    unresolved_competition_count: unresolvedCompetitions.length,
+    top_unresolved_competitions: topUnresolvedCompetitions.slice(0, 10),
+    window_metrics: scheduleWindowMetrics,
+    credit_headers: normalizedScheduleCreditHeaders,
+  }, 2);
+
   return {
     events: allowedEvents,
     rows,
@@ -430,7 +462,7 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     canonicalExamples,
     unresolvedCompetitions,
     unresolvedCompetitionCounts,
-    topUnresolvedCompetitions: getTopCompetitionStrings_(unresolvedCompetitionCounts, 20),
+    topUnresolvedCompetitions: topUnresolvedCompetitions,
     allowedCount: allowedEvents.length,
     selected_source: selectedSource,
   };

@@ -208,6 +208,28 @@ function updateBootstrapEmptyCycleState_(runId, oddsRowsEmitted, scheduleEventCo
   };
 }
 
+function getLogVerbosityLevel_(config) {
+  const runtimeConfig = config || {};
+  if (Number.isFinite(Number(runtimeConfig.LOG_VERBOSITY_LEVEL))) {
+    return Math.max(0, Math.min(3, Number(runtimeConfig.LOG_VERBOSITY_LEVEL)));
+  }
+  return runtimeConfig.VERBOSE_LOGGING ? 2 : 1;
+}
+
+function shouldLogVerbose_(config, minLevel) {
+  return getLogVerbosityLevel_(config) >= Number(minLevel || 1);
+}
+
+function logDiagnosticEvent_(config, eventName, payload, minLevel) {
+  if (!shouldLogVerbose_(config, minLevel || 1)) return;
+  Logger.log(JSON.stringify(sanitizeForLog_({
+    event: eventName,
+    verbosity_level: getLogVerbosityLevel_(config),
+    logged_at: formatLocalIso_(new Date()),
+    payload: payload || {},
+  })));
+}
+
 function buildStageSummary_(runId, stage, startMs, opts) {
   const endMs = Date.now();
   const summary = {
@@ -222,7 +244,7 @@ function buildStageSummary_(runId, stage, startMs, opts) {
     api_credit_usage: opts.api_credit_usage,
     reason_codes: opts.reason_codes || {},
   };
-  Logger.log(JSON.stringify(sanitizeForLog_(summary)));
+  logDiagnosticEvent_(opts.config || null, "stage_summary", summary, 1);
   return summary;
 }
 

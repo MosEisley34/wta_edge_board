@@ -49,3 +49,16 @@ curl -sS "https://api.the-odds-api.com/v4/sports" \
 ```
 
 If you must debug requests, sanitize output before sharing logs.
+
+## Logging verbosity controls
+
+Use the `Config` tab to tune logging detail:
+
+- `VERBOSE_LOGGING` keeps compatibility with existing on/off behavior.
+- `LOG_VERBOSITY_LEVEL` provides granular control (`0` to `3`):
+  - `0`: minimal logging
+  - `1`: stage summaries only
+  - `2`: stage summaries + window/coverage diagnostics (recommended for optimization)
+  - `3`: includes sampled payload-level diagnostics for deeper debugging
+
+All logs continue to pass through secret redaction before being persisted.
