@@ -15,6 +15,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
   const rows = [];
   const byOddsEventId = {};
   const playersToFetch = [];
+  const seedEvents = [];
 
   oddsEvents.forEach((event) => {
     const match = matchByOddsEventId[event.event_id];
@@ -28,21 +29,50 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     return event.odds_updated_time.getTime() > latest.getTime() ? event.odds_updated_time : latest;
   }, new Date(0));
   const normalizedAsOfTime = asOfTime.getTime() > 0 ? asOfTime : new Date();
+
+  if (!playersToFetch.length) {
+    const schedulePayload = getStateJson_('SCHEDULE_WINDOW_STALE_PAYLOAD') || {};
+    const scheduleEvents = Array.isArray(schedulePayload.events)
+      ? schedulePayload.events.map(deserializeScheduleEvent_)
+      : [];
+
+    scheduleEvents.forEach(function (scheduleEvent) {
+      const playerA = canonicalizePlayerName_(scheduleEvent.player_1, {});
+      const playerB = canonicalizePlayerName_(scheduleEvent.player_2, {});
+      if (!playerA || !playerB) return;
+      playersToFetch.push(playerA);
+      playersToFetch.push(playerB);
+      seedEvents.push({
+        event_id: scheduleEvent.event_id,
+        player_1: playerA,
+        player_2: playerB,
+        odds_updated_time: normalizedAsOfTime,
+        synthetic_schedule_seed: true,
+      });
+    });
+  }
+
   const statsBatch = fetchPlayerStatsBatch_(config, playersToFetch, normalizedAsOfTime);
   const statsByPlayer = statsBatch.stats_by_player || {};
   const providerUnavailable = statsBatch.provider_available === false;
   const source = providerUnavailable ? 'derived_player_stats_v1_fallback' : 'player_stats_provider_v1';
 
-  oddsEvents.forEach((event) => {
+  const statsInputEvents = seedEvents.length ? seedEvents : oddsEvents;
+  statsInputEvents.forEach((event) => {
     const match = matchByOddsEventId[event.event_id];
-    if (!match || !match.schedule_event_id) return;
+    if (!event.synthetic_schedule_seed && (!match || !match.schedule_event_id)) return;
 
     const playerA = canonicalizePlayerName_(event.player_1, {});
     const playerB = canonicalizePlayerName_(event.player_2, {});
     const featureTimestamp = event.odds_updated_time.toISOString();
 
-    const playerAStats = resolvePlayerStatsPayload_(playerA, statsByPlayer, providerUnavailable, event, match, 'a', reasonCounts);
-    const playerBStats = resolvePlayerStatsPayload_(playerB, statsByPlayer, providerUnavailable, event, match, 'b', reasonCounts);
+    const effectiveMatch = match || {
+      competition_tier: 'UNKNOWN',
+      schedule_event_id: event.event_id,
+    };
+
+    const playerAStats = resolvePlayerStatsPayload_(playerA, statsByPlayer, providerUnavailable, event, effectiveMatch, 'a', reasonCounts);
+    const playerBStats = resolvePlayerStatsPayload_(playerB, statsByPlayer, providerUnavailable, event, effectiveMatch, 'b', reasonCounts);
 
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerA, source, featureTimestamp, playerAStats));
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerB, source, featureTimestamp, playerBStats));
@@ -56,6 +86,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     byOddsEventId[event.event_id] = {
       source,
       stats_provider_unavailable: providerUnavailable,
+      synthetic_schedule_seed: !!event.synthetic_schedule_seed,
       feature_timestamp: featureTimestamp,
       player_a: {
         canonical_name: playerA,
@@ -71,7 +102,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
   });
 
   const summary = buildStageSummary_(runId, 'stageFetchPlayerStats', start, {
-    input_count: oddsEvents.length,
+    input_count: statsInputEvents.length,
     output_count: rows.length,
     provider: source,
     api_credit_usage: Number(statsBatch.api_credit_usage || 0),
