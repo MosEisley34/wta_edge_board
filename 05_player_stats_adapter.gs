@@ -21,6 +21,7 @@ const MATCHMX_ROW_IDX = {
 };
 
 const PLAYER_STATS_H2H_CACHE_KEY = 'PLAYER_STATS_H2H_DATASET';
+const PLAYER_STATS_LEADERS_CACHE_KEY = 'PLAYER_STATS_TA_LEADERS_PAYLOAD';
 
 function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
   const players = dedupePlayerNames_(canonicalPlayers || []);
@@ -33,7 +34,10 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
   const cachedPayload = getCachedPlayerStatsPayload_(cacheKey);
 
   if (!forceRefresh && cachedPayload && Number.isFinite(cachedPayload.cached_at_ms) && (nowMs - cachedPayload.cached_at_ms <= ttlMs)) {
-    persistPlayerStatsMeta_(cachedPayload, 'cached_fresh', nowMs, players.length, asOfDate);
+    persistPlayerStatsMeta_(cachedPayload, 'cached_fresh', nowMs, players.length, asOfDate, {
+      provider_available: true,
+      last_success_at: new Date(cachedPayload.cached_at_ms || nowMs).toISOString(),
+    });
     return {
       stats_by_player: cachedPayload.stats_by_player || {},
       reason_code: 'stats_cache_hit',
@@ -41,11 +45,15 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
       provider_available: true,
       api_credit_usage: 0,
       api_call_count: 0,
+      scrape_call_count: 0,
     };
   }
 
   if (!forceRefresh && cachedPayload && Number.isFinite(cachedPayload.cached_at_ms) && (nowMs - cachedPayload.cached_at_ms < refreshMinMs)) {
-    persistPlayerStatsMeta_(cachedPayload, 'cached_stale_refresh_throttled', nowMs, players.length, asOfDate);
+    persistPlayerStatsMeta_(cachedPayload, 'cached_stale_refresh_throttled', nowMs, players.length, asOfDate, {
+      provider_available: true,
+      last_success_at: new Date(cachedPayload.cached_at_ms || nowMs).toISOString(),
+    });
     return {
       stats_by_player: cachedPayload.stats_by_player || {},
       reason_code: 'stats_cache_stale_refresh_throttled',
@@ -53,6 +61,7 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
       provider_available: true,
       api_credit_usage: 0,
       api_call_count: 0,
+      scrape_call_count: 0,
     };
   }
 
@@ -66,7 +75,12 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
       stats_by_player: live.stats_by_player || {},
     };
     setCachedPlayerStatsPayload_(cacheKey, cachePayload);
-    persistPlayerStatsMeta_(cachePayload, 'fresh_api', nowMs, players.length, asOfDate);
+    persistPlayerStatsMeta_(cachePayload, 'fresh_api', nowMs, players.length, asOfDate, {
+      api_call_count: Number(live.api_call_count || 0),
+      scrape_call_count: Number(live.scrape_call_count || 0),
+      provider_available: true,
+      last_success_at: new Date(nowMs).toISOString(),
+    });
 
     return {
       stats_by_player: live.stats_by_player || {},
@@ -80,7 +94,13 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
 
   const stalePayload = getStateJson_('PLAYER_STATS_STALE_PAYLOAD');
   if (stalePayload && stalePayload.stats_by_player) {
-    persistPlayerStatsMeta_(stalePayload, 'cached_stale_fallback', nowMs, players.length, asOfDate);
+    persistPlayerStatsMeta_(stalePayload, 'cached_stale_fallback', nowMs, players.length, asOfDate, {
+      api_call_count: Number(live.api_call_count || 0),
+      scrape_call_count: Number(live.scrape_call_count || 0),
+      provider_available: true,
+      last_success_at: String(stalePayload.last_success_at || ''),
+      last_failure_reason: String(live.reason_code || ''),
+    });
     return {
       stats_by_player: stalePayload.stats_by_player || {},
       reason_code: 'stats_stale_fallback',
@@ -97,7 +117,12 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
     as_of_time: asOfDate.toISOString(),
     player_count: players.length,
     stats_by_player: {},
-  }, 'provider_unavailable', nowMs, players.length, asOfDate);
+  }, 'provider_unavailable', nowMs, players.length, asOfDate, {
+    api_call_count: Number(live.api_call_count || 0),
+    scrape_call_count: Number(live.scrape_call_count || 0),
+    provider_available: false,
+    last_failure_reason: String(live.reason_code || 'player_stats_provider_unavailable'),
+  });
 
   return {
     stats_by_player: {},
@@ -118,6 +143,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       stats_by_player: {},
       api_credit_usage: 0,
       api_call_count: 0,
+      scrape_call_count: 0,
     };
   }
 
@@ -143,6 +169,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       stats_by_player: merged,
       api_credit_usage: 0,
       api_call_count: totalApiCalls,
+      scrape_call_count: 0,
     };
   }
 
@@ -155,6 +182,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       stats_by_player: leadersSource.stats_by_player || {},
       api_credit_usage: 0,
       api_call_count: totalApiCalls + Number(leadersSource.api_call_count || 0),
+      scrape_call_count: 0,
     };
   }
 
@@ -167,6 +195,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       stats_by_player: scraped.stats_by_player || {},
       api_credit_usage: 0,
       api_call_count: totalApiCalls + Number(scraped.api_call_count || 0),
+      scrape_call_count: Number(scraped.api_call_count || 0),
     };
   }
 
@@ -176,53 +205,113 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     detail: attempts.join(','),
     api_credit_usage: 0,
     api_call_count: totalApiCalls + Number(leadersSource.api_call_count || 0) + Number(scraped.api_call_count || 0),
+    scrape_call_count: Number(scraped.api_call_count || 0),
   };
 }
 
 function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) {
-  const leadersUrl = 'https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top';
-  let pageResponse;
+  const ttlMs = Math.max(1, Number(config.PLAYER_STATS_CACHE_TTL_MIN || 10)) * 60000;
+  const forceRefresh = !!config.PLAYER_STATS_FORCE_REFRESH;
+  const nowMs = Date.now();
 
-  try {
-    pageResponse = UrlFetchApp.fetch(leadersUrl, {
-      method: 'get',
-      muteHttpExceptions: true,
-      headers: { Accept: 'text/html' },
-    });
-  } catch (e) {
-    return { ok: false, reason_code: 'ta_leaders_page_fetch_failed', stats_by_player: {}, api_call_count: 1 };
+  if (!forceRefresh) {
+    const cached = getCachedTaLeadersPayload_();
+    if (cached && Array.isArray(cached.rows) && Number.isFinite(cached.cached_at_ms) && nowMs - cached.cached_at_ms <= ttlMs) {
+      return {
+        ok: true,
+        reason_code: 'ta_matchmx_cache_hit',
+        stats_by_player: normalizePlayerStatsResponse_(cached.rows, canonicalPlayers, {
+          as_of_time: asOfTime,
+          match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
+          recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
+        }),
+        api_call_count: 0,
+      };
+    }
   }
 
-  if (Number(pageResponse.getResponseCode() || 0) < 200 || Number(pageResponse.getResponseCode() || 0) >= 300) {
-    return { ok: false, reason_code: 'ta_leaders_page_fetch_failed', stats_by_player: {}, api_call_count: 1 };
+  const leadersUrl = String(config.PLAYER_STATS_TA_LEADERS_URL || 'https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top').trim();
+  const headers = {
+    Accept: 'text/html',
+    'User-Agent': String(config.PLAYER_STATS_FETCH_USER_AGENT || 'Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'),
+  };
+
+  const pageFetch = playerStatsFetchWithRetry_(leadersUrl, {
+    method: 'get',
+    muteHttpExceptions: true,
+    headers: headers,
+    followRedirects: true,
+    validateHttpsCertificates: true,
+  }, config);
+
+  if (!pageFetch.ok) {
+    const stale = getStateJson_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD');
+    if (stale && Array.isArray(stale.rows) && stale.rows.length) {
+      return {
+        ok: true,
+        reason_code: 'ta_matchmx_stale_fallback',
+        stats_by_player: normalizePlayerStatsResponse_(stale.rows, canonicalPlayers, {
+          as_of_time: asOfTime,
+          match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
+          recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
+        }),
+        api_call_count: Number(pageFetch.api_call_count || 0),
+      };
+    }
+    return { ok: false, reason_code: pageFetch.reason_code || 'ta_leaders_page_fetch_failed', stats_by_player: {}, api_call_count: Number(pageFetch.api_call_count || 0) };
   }
 
-  const pageText = String(pageResponse.getContentText() || '');
+  const pageText = String(pageFetch.response.getContentText() || '');
   const jsUrl = extractLeadersJsUrl_(pageText, leadersUrl);
   if (!jsUrl) {
-    return { ok: false, reason_code: 'ta_leaders_js_url_missing', stats_by_player: {}, api_call_count: 1 };
+    return { ok: false, reason_code: 'ta_leaders_js_url_missing', stats_by_player: {}, api_call_count: Number(pageFetch.api_call_count || 0) };
   }
 
-  let jsResponse;
-  try {
-    jsResponse = UrlFetchApp.fetch(jsUrl, {
-      method: 'get',
-      muteHttpExceptions: true,
-      headers: { Accept: 'application/javascript,text/plain' },
-    });
-  } catch (e) {
-    return { ok: false, reason_code: 'ta_leaders_js_fetch_failed', stats_by_player: {}, api_call_count: 2 };
+  sleepTennisAbstractRequestGap_(config);
+
+  const jsFetch = playerStatsFetchWithRetry_(jsUrl, {
+    method: 'get',
+    muteHttpExceptions: true,
+    headers: {
+      Accept: 'application/javascript,text/plain',
+      'User-Agent': String(config.PLAYER_STATS_FETCH_USER_AGENT || 'Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'),
+    },
+    followRedirects: true,
+    validateHttpsCertificates: true,
+  }, config);
+
+  const totalCalls = Number(pageFetch.api_call_count || 0) + Number(jsFetch.api_call_count || 0);
+  if (!jsFetch.ok) {
+    const stale = getStateJson_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD');
+    if (stale && Array.isArray(stale.rows) && stale.rows.length) {
+      return {
+        ok: true,
+        reason_code: 'ta_matchmx_stale_fallback',
+        stats_by_player: normalizePlayerStatsResponse_(stale.rows, canonicalPlayers, {
+          as_of_time: asOfTime,
+          match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
+          recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
+        }),
+        api_call_count: totalCalls,
+      };
+    }
+    return { ok: false, reason_code: jsFetch.reason_code || 'ta_leaders_js_fetch_failed', stats_by_player: {}, api_call_count: totalCalls };
   }
 
-  if (Number(jsResponse.getResponseCode() || 0) < 200 || Number(jsResponse.getResponseCode() || 0) >= 300) {
-    return { ok: false, reason_code: 'ta_leaders_js_fetch_failed', stats_by_player: {}, api_call_count: 2 };
-  }
-
-  const jsPayload = String(jsResponse.getContentText() || '');
+  const jsPayload = String(jsFetch.response.getContentText() || '');
   const structuredRows = extractMatchMxRows_(jsPayload);
   if (!structuredRows.length) {
-    return { ok: false, reason_code: 'ta_matchmx_parse_failed', stats_by_player: {}, api_call_count: 2 };
+    return { ok: false, reason_code: 'ta_matchmx_parse_failed', stats_by_player: {}, api_call_count: totalCalls };
   }
+
+  const cachePayload = {
+    source: jsUrl,
+    fetched_at: new Date().toISOString(),
+    cached_at_ms: Date.now(),
+    rows: structuredRows,
+  };
+  setCachedTaLeadersPayload_(cachePayload);
+  setStateValue_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD', JSON.stringify(cachePayload));
 
   const statsByPlayer = normalizePlayerStatsResponse_(structuredRows, canonicalPlayers, {
     as_of_time: asOfTime,
@@ -233,7 +322,7 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
     ok: Object.keys(statsByPlayer).length > 0,
     reason_code: Object.keys(statsByPlayer).length > 0 ? 'ta_matchmx_ok' : 'ta_matchmx_parse_failed',
     stats_by_player: statsByPlayer,
-    api_call_count: 2,
+    api_call_count: totalCalls,
   };
 }
 
@@ -326,6 +415,65 @@ function buildStructuredMatchMxRow_(tokens) {
   };
 }
 
+
+function playerStatsFetchWithRetry_(url, requestOptions, config) {
+  const maxRetries = Math.max(0, Number(config.PLAYER_STATS_FETCH_MAX_RETRIES || 3));
+  const baseMs = Math.max(0, Number(config.PLAYER_STATS_FETCH_BACKOFF_BASE_MS || 300));
+  const maxMs = Math.max(baseMs, Number(config.PLAYER_STATS_FETCH_BACKOFF_MAX_MS || 4000));
+  let attempts = 0;
+  let lastStatus = 0;
+
+  for (let retry = 0; retry <= maxRetries; retry += 1) {
+    attempts += 1;
+    let response;
+    try {
+      response = UrlFetchApp.fetch(url, Object.assign({}, requestOptions || {}, { muteHttpExceptions: true }));
+    } catch (e) {
+      if (retry >= maxRetries) {
+        return { ok: false, reason_code: 'ta_fetch_transport_error', api_call_count: attempts, error: e && e.message };
+      }
+      sleepBackoffWithJitter_(baseMs, maxMs, retry);
+      continue;
+    }
+
+    const status = Number(response.getResponseCode() || 0);
+    lastStatus = status;
+    if (status >= 200 && status < 300) {
+      return { ok: true, response: response, api_call_count: attempts, status_code: status };
+    }
+
+    if (!isTransientFetchStatus_(status) || retry >= maxRetries) {
+      return { ok: false, reason_code: 'ta_http_' + status, api_call_count: attempts, status_code: status };
+    }
+
+    sleepBackoffWithJitter_(baseMs, maxMs, retry);
+  }
+
+  return { ok: false, reason_code: lastStatus ? ('ta_http_' + lastStatus) : 'ta_fetch_failed', api_call_count: attempts };
+}
+
+function isTransientFetchStatus_(statusCode) {
+  const code = Number(statusCode || 0);
+  return code === 408 || code === 425 || code === 429 || code === 500 || code === 502 || code === 503 || code === 504;
+}
+
+function sleepBackoffWithJitter_(baseMs, maxMs, retry) {
+  const cap = Math.max(0, Number(maxMs || 0));
+  const base = Math.max(0, Number(baseMs || 0));
+  const exp = Math.min(cap || base, base * Math.pow(2, Math.max(0, Number(retry || 0))));
+  const jitter = exp > 0 ? Math.floor(Math.random() * (Math.floor(exp * 0.3) + 1)) : 0;
+  const delay = Math.min(cap || exp, exp + jitter);
+  if (delay > 0) Utilities.sleep(delay);
+}
+
+function sleepTennisAbstractRequestGap_(config) {
+  const baseDelay = Math.max(0, Number(config.PLAYER_STATS_TA_REQUEST_DELAY_MS || 0));
+  const jitterMax = Math.max(0, Number(config.PLAYER_STATS_TA_REQUEST_JITTER_MS || 0));
+  const jitter = jitterMax > 0 ? Math.floor(Math.random() * (jitterMax + 1)) : 0;
+  const delay = baseDelay + jitter;
+  if (delay > 0) Utilities.sleep(delay);
+}
+
 function parsePlayerStatsSourceConfigs_(config) {
   const baseValue = String(config.PLAYER_STATS_API_BASE_URL || '').trim();
   if (!baseValue) return [];
@@ -401,6 +549,7 @@ function fetchPlayerStatsFromScrapeSources_(config, canonicalPlayers) {
       reason_code: 'player_stats_scrape_not_configured',
       stats_by_player: {},
       api_call_count: 0,
+      scrape_call_count: 0,
     };
   }
 
@@ -706,7 +855,8 @@ function setCachedPlayerStatsPayload_(cacheKey, payload) {
   CacheService.getScriptCache().put(cacheKey, JSON.stringify(payload || {}), 21600);
 }
 
-function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime) {
+function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime, telemetry) {
+  const metrics = telemetry || {};
   const serializable = {
     cache_key: payload.cache_key || '',
     cached_at_ms: Number(payload.cached_at_ms || nowMs),
@@ -725,6 +875,11 @@ function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime) 
     as_of_time: serializable.as_of_time,
     has_stats: serializable.has_stats,
     player_count: serializable.player_count,
+    api_call_count: Number(metrics.api_call_count || 0),
+    scrape_call_count: Number(metrics.scrape_call_count || 0),
+    provider_available: metrics.provider_available !== false,
+    last_success_at: String(metrics.last_success_at || ''),
+    last_failure_reason: String(metrics.last_failure_reason || ''),
   }));
 }
 
@@ -771,14 +926,33 @@ function getTaH2hDataset_(config) {
     const payload = fresh.payload || { rows: [], by_pair: {} };
     payload.cached_at_ms = nowMs;
     setCachedTaH2hDataset_(payload);
-    persistTaH2hDatasetState_(payload, 'fresh_h2h_page');
+    persistTaH2hDatasetState_(payload, 'fresh_h2h_page', {
+      provider_available: true,
+      last_success_at: new Date(nowMs).toISOString(),
+      api_call_count: Number(fresh.api_call_count || 0),
+      scrape_call_count: Number(fresh.api_call_count || 0),
+    });
     return payload;
   }
 
   const stale = getStateJson_('PLAYER_STATS_H2H_STALE_PAYLOAD');
   if (stale && stale.by_pair) {
+    persistTaH2hDatasetState_(stale, 'cached_stale_fallback', {
+      provider_available: false,
+      last_success_at: String(stale.fetched_at || ''),
+      last_failure_reason: String(fresh.reason_code || 'ta_h2h_fetch_failed'),
+      api_call_count: Number(fresh.api_call_count || 0),
+      scrape_call_count: Number(fresh.api_call_count || 0),
+    });
     return stale;
   }
+
+  persistTaH2hDatasetState_({ rows: [], by_pair: {}, source: runtimeConfig.PLAYER_STATS_TA_H2H_URL || '', source_updated_date: '', fetched_at: new Date(nowMs).toISOString(), cached_at_ms: nowMs }, 'provider_unavailable', {
+    provider_available: false,
+    last_failure_reason: String(fresh.reason_code || 'ta_h2h_fetch_failed'),
+    api_call_count: Number(fresh.api_call_count || 0),
+    scrape_call_count: Number(fresh.api_call_count || 0),
+  });
 
   return null;
 }
@@ -791,25 +965,21 @@ function fetchTaH2hDatasetFromSource_(config) {
     Accept: 'text/html',
     'User-Agent': String(config.PLAYER_STATS_FETCH_USER_AGENT || 'Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'),
   };
-  let response;
-  try {
-    response = UrlFetchApp.fetch(url, {
-      method: 'get',
-      headers: headers,
-      muteHttpExceptions: true,
-      followRedirects: true,
-      validateHttpsCertificates: true,
-    });
-  } catch (e) {
-    return { ok: false, reason_code: 'ta_h2h_fetch_failed', error: e && e.message };
-  }
+  sleepTennisAbstractRequestGap_(config);
+  const fetchResult = playerStatsFetchWithRetry_(url, {
+    method: 'get',
+    headers: headers,
+    muteHttpExceptions: true,
+    followRedirects: true,
+    validateHttpsCertificates: true,
+  }, config);
 
-  const status = Number(response.getResponseCode() || 0);
-  if (status < 200 || status >= 300) return { ok: false, reason_code: 'ta_h2h_http_' + status };
+  if (!fetchResult.ok) return { ok: false, reason_code: fetchResult.reason_code || 'ta_h2h_fetch_failed', api_call_count: Number(fetchResult.api_call_count || 0) };
 
-  const html = String(response.getContentText() || '');
+  const status = Number(fetchResult.status_code || 0);
+  const html = String(fetchResult.response.getContentText() || '');
   const rows = extractTaH2hMatrixRows_(html);
-  if (!rows.length) return { ok: false, reason_code: 'ta_h2h_parse_failed' };
+  if (!rows.length) return { ok: false, reason_code: 'ta_h2h_parse_failed', api_call_count: Number(fetchResult.api_call_count || 0) };
 
   const sourceUpdatedDate = extractTaH2hSourceUpdatedDate_(html);
   const byPair = {};
@@ -828,6 +998,7 @@ function fetchTaH2hDatasetFromSource_(config) {
       rows: rows,
       by_pair: byPair,
     },
+    api_call_count: Number(fetchResult.api_call_count || 0),
   };
 }
 
@@ -924,6 +1095,20 @@ function buildTaH2hPairKey_(playerA, playerB) {
   return [String(playerA || ''), String(playerB || '')].join('||');
 }
 
+function getCachedTaLeadersPayload_() {
+  try {
+    const raw = CacheService.getScriptCache().get(PLAYER_STATS_LEADERS_CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function setCachedTaLeadersPayload_(payload) {
+  CacheService.getScriptCache().put(PLAYER_STATS_LEADERS_CACHE_KEY, JSON.stringify(payload || {}), 21600);
+}
+
 function getCachedTaH2hDataset_() {
   try {
     const raw = CacheService.getScriptCache().get(PLAYER_STATS_H2H_CACHE_KEY);
@@ -938,7 +1123,7 @@ function setCachedTaH2hDataset_(payload) {
   CacheService.getScriptCache().put(PLAYER_STATS_H2H_CACHE_KEY, JSON.stringify(payload || {}), 21600);
 }
 
-function persistTaH2hDatasetState_(payload, source) {
+function persistTaH2hDatasetState_(payload, source, telemetry) {
   const rows = (payload && payload.rows) || [];
   const byPair = (payload && payload.by_pair) || {};
   const sourceUpdatedDate = (payload && payload.source_updated_date) || '';
@@ -963,6 +1148,7 @@ function persistTaH2hDatasetState_(payload, source) {
   };
 
   setStateValue_('PLAYER_STATS_H2H_STALE_PAYLOAD', JSON.stringify(serializable));
+  const metrics = telemetry || {};
   setStateValue_('PLAYER_STATS_H2H_LAST_FETCH_META', JSON.stringify({
     source: serializable.source,
     source_updated_date: serializable.source_updated_date,
@@ -970,5 +1156,10 @@ function persistTaH2hDatasetState_(payload, source) {
     cached_at_ms: serializable.cached_at_ms,
     source_type: source || '',
     row_count: serializable.row_count,
+    api_call_count: Number(metrics.api_call_count || 0),
+    scrape_call_count: Number(metrics.scrape_call_count || 0),
+    provider_available: metrics.provider_available !== false,
+    last_success_at: String(metrics.last_success_at || ''),
+    last_failure_reason: String(metrics.last_failure_reason || ''),
   }));
 }

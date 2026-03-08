@@ -1336,6 +1336,9 @@ function fetchScheduleFromOddsApi_(config, window, opts) {
     const resp = callOddsApi_(url, {
       debug: config.VERBOSE_LOGGING,
       resolved_sport_keys: sportKeys,
+      max_retries: Number(config.ODDS_API_MAX_RETRIES || 3),
+      backoff_base_ms: Number(config.ODDS_API_BACKOFF_BASE_MS || 250),
+      backoff_max_ms: Number(config.ODDS_API_BACKOFF_MAX_MS || 3000),
     });
     resp.sport_key = sportKey;
     responses.push(resp);
@@ -1455,6 +1458,9 @@ function callOddsApiWithSportKeyFallback_(config, opts) {
     const resp = callOddsApi_(url, {
       debug: config.VERBOSE_LOGGING,
       resolved_sport_keys: sportKeys,
+      max_retries: Number(config.ODDS_API_MAX_RETRIES || 3),
+      backoff_base_ms: Number(config.ODDS_API_BACKOFF_BASE_MS || 250),
+      backoff_max_ms: Number(config.ODDS_API_BACKOFF_MAX_MS || 3000),
     });
     resp.sport_key = sportKey;
     responses.push(resp);
@@ -1876,6 +1882,58 @@ function classifyOddsApiClientErrorReason_(statusCode, bodyText, url) {
   return 'unknown_client_error';
 }
 
+function isTransientOddsHttpStatus_(statusCode) {
+  const status = Number(statusCode || 0);
+  return status === 408 || status === 425 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function computeBoundedBackoffMs_(baseMs, maxMs, retryIndex) {
+  const base = Math.max(0, Number(baseMs || 0));
+  const max = Math.max(base, Number(maxMs || 0));
+  const exponent = Math.max(0, Number(retryIndex || 0));
+  const expDelay = Math.min(max, base * Math.pow(2, exponent));
+  const jitter = expDelay > 0 ? Math.floor(Math.random() * (Math.floor(expDelay * 0.3) + 1)) : 0;
+  return Math.min(max, expDelay + jitter);
+}
+
+function fetchOddsApiWithRetry_(url, requestOptions, opts) {
+  const maxRetries = Math.max(0, Number((opts && opts.max_retries) || 0));
+  const backoffBaseMs = Math.max(0, Number((opts && opts.backoff_base_ms) || 0));
+  const backoffMaxMs = Math.max(backoffBaseMs, Number((opts && opts.backoff_max_ms) || 0));
+
+  let attempts = 0;
+  let lastStatus = 0;
+  for (let retry = 0; retry <= maxRetries; retry += 1) {
+    attempts += 1;
+    let response;
+    try {
+      response = UrlFetchApp.fetch(url, requestOptions || {});
+    } catch (e) {
+      if (retry >= maxRetries) {
+        return { ok: false, reason_code: 'api_transport_error', api_call_count: attempts, error: e && e.message };
+      }
+      const delayMs = computeBoundedBackoffMs_(backoffBaseMs, backoffMaxMs, retry);
+      if (delayMs > 0) Utilities.sleep(delayMs);
+      continue;
+    }
+
+    const status = Number(response.getResponseCode() || 0);
+    lastStatus = status;
+    if (status >= 200 && status < 300) {
+      return { ok: true, response: response, api_call_count: attempts, status_code: status };
+    }
+
+    if (!isTransientOddsHttpStatus_(status) || retry >= maxRetries) {
+      return { ok: true, response: response, api_call_count: attempts, status_code: status };
+    }
+
+    const delayMs = computeBoundedBackoffMs_(backoffBaseMs, backoffMaxMs, retry);
+    if (delayMs > 0) Utilities.sleep(delayMs);
+  }
+
+  return { ok: false, reason_code: lastStatus ? ('api_http_' + lastStatus) : 'api_transport_error', api_call_count: attempts, status_code: lastStatus };
+}
+
 function callOddsApi_(url, opts) {
   const debugEnabled = !!(opts && opts.debug);
   if (debugEnabled) {
@@ -1889,14 +1947,14 @@ function callOddsApi_(url, opts) {
     }));
   }
 
-  const failureResult = function (reasonCode, creditHeaders) {
+  const failureResult = function (reasonCode, creditHeaders, apiCallCount) {
     return {
       ok: false,
       status_code: 0,
       payload: [],
       reason_code: reasonCode,
       api_credit_usage: 0,
-      api_call_count: 1,
+      api_call_count: Number(apiCallCount || 0),
       credit_headers: creditHeaders || {},
     };
   };
@@ -1911,15 +1969,19 @@ function callOddsApi_(url, opts) {
     }));
   };
 
-  let resp;
-  try {
-    resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-  } catch (e) {
-    logApiException('odds_api_transport_error', e);
-    return failureResult('api_transport_error');
+  const fetchResult = fetchOddsApiWithRetry_(url, { muteHttpExceptions: true }, {
+    max_retries: Number(opts && opts.max_retries !== undefined ? opts.max_retries : 3),
+    backoff_base_ms: Number(opts && opts.backoff_base_ms !== undefined ? opts.backoff_base_ms : 250),
+    backoff_max_ms: Number(opts && opts.backoff_max_ms !== undefined ? opts.backoff_max_ms : 3000),
+  });
+
+  if (!fetchResult.ok || !fetchResult.response) {
+    logApiException('odds_api_transport_error', { message: fetchResult.error || fetchResult.reason_code || 'api_transport_error' });
+    return failureResult(fetchResult.reason_code || 'api_transport_error', {}, Number(fetchResult.api_call_count || 0));
   }
 
-  const status = resp.getResponseCode();
+  const resp = fetchResult.response;
+  const status = Number(fetchResult.status_code || 0);
   const normalizedHeaders = buildLowercaseHeaderMap_(resp.getAllHeaders() || {});
   const creditHeaders = normalizeCreditHeaders_(normalizedHeaders);
   const hasCreditHeaders = hasCreditHeaders_(creditHeaders);
@@ -1954,7 +2016,7 @@ function callOddsApi_(url, opts) {
       payload: [],
       reason_code: classifyOddsApiClientErrorReason_(status, responseBody, url),
       api_credit_usage: creditHeaders.requests_last || 0,
-      api_call_count: 1,
+      api_call_count: Number(fetchResult.api_call_count || 0),
       credit_headers: creditHeaders,
     };
   }
@@ -1964,7 +2026,7 @@ function callOddsApi_(url, opts) {
     parsedPayload = JSON.parse(responseBody || '[]');
   } catch (e) {
     logApiException('odds_api_parse_error', e);
-    return failureResult('api_parse_error', creditHeaders);
+    return failureResult('api_parse_error', creditHeaders, Number(fetchResult.api_call_count || 0));
   }
 
   const normalizedPayload = ensureArrayPayload_(parsedPayload);
@@ -1975,7 +2037,7 @@ function callOddsApi_(url, opts) {
       payload: [],
       reason_code: 'api_unexpected_payload_shape',
       api_credit_usage: creditHeaders.requests_last || 0,
-      api_call_count: 1,
+      api_call_count: Number(fetchResult.api_call_count || 0),
       credit_headers: creditHeaders,
     };
   }
@@ -1985,7 +2047,7 @@ function callOddsApi_(url, opts) {
     status_code: status,
     payload: normalizedPayload,
     api_credit_usage: creditHeaders.requests_last || 0,
-    api_call_count: 1,
+    api_call_count: Number(fetchResult.api_call_count || 0),
     credit_headers: creditHeaders,
     reason_code: hasCreditHeaders ? 'api_ok' : 'credit_header_missing',
   };
