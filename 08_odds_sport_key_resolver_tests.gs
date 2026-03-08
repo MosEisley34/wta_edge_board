@@ -1937,6 +1937,66 @@ function testNormalizePlayerStatsResponse_aggregatesMatchMxMetricsWithWindowAndC
   assertEquals_(10, normalized['player one'].ranking);
 }
 
+
+function testExtractTaH2hMatrixRows_parsesAnchorTuples_() {
+  const html = [
+    '<html>',
+    '<div>Last update: 2025-03-19</div>',
+    '<a href="/cgi-bin/wplayer-classic.cgi?player1=Iga+Swiatek&player2=Coco+Gauff">4-1</a>',
+    '<a href="/cgi-bin/wplayer-classic.cgi?p1=Aryna+Sabalenka&p2=Elena+Rybakina">2:3</a>',
+    '</html>',
+  ].join('');
+
+  const rows = extractTaH2hMatrixRows_(html);
+
+  assertEquals_(2, rows.length);
+  assertEquals_('iga swiatek', rows[0].player_a);
+  assertEquals_('coco gauff', rows[0].player_b);
+  assertEquals_(4, rows[0].wins_a);
+  assertEquals_(1, rows[0].wins_b);
+  assertEquals_('aryna sabalenka', rows[1].player_a);
+  assertEquals_('elena rybakina', rows[1].player_b);
+  assertEquals_(2, rows[1].wins_a);
+  assertEquals_(3, rows[1].wins_b);
+}
+
+function testExtractTaH2hSourceUpdatedDate_parsesFallbackValue_() {
+  const html = '<html><body><span>Last update: March 5, 2025</span></body></html>';
+  const value = extractTaH2hSourceUpdatedDate_(html);
+
+  assertEquals_('2025-03-05', value);
+}
+
+function testGetTaH2hRowForCanonicalPair_supportsReverseLookup_() {
+  const original = getTaH2hDataset_;
+  try {
+    getTaH2hDataset_ = function () {
+      return {
+        source_updated_date: '2025-03-20',
+        by_pair: {
+          'player one||player two': {
+            player_a: 'player one',
+            player_b: 'player two',
+            wins_a: 6,
+            wins_b: 2,
+            source_updated_date: '2025-03-20',
+          },
+        },
+      };
+    };
+
+    const reverse = getTaH2hRowForCanonicalPair_({}, 'Player Two', 'Player One');
+
+    assertEquals_('player two', reverse.player_a);
+    assertEquals_('player one', reverse.player_b);
+    assertEquals_(2, reverse.wins_a);
+    assertEquals_(6, reverse.wins_b);
+    assertEquals_('2025-03-20', reverse.source_updated_date);
+  } finally {
+    getTaH2hDataset_ = original;
+  }
+}
+
 function testFetchPlayerStatsFromLeadersSource_reasonCodes_() {
   const originalFetch = UrlFetchApp.fetch;
 
