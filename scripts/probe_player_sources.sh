@@ -4,6 +4,7 @@ set -euo pipefail
 UA='Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'
 OUT_DIR="${1:-./tmp/source_probe}"
 CATALOG_PATH="${2:-./config/probe_sources.tsv}"
+SCHEDULED_PLAYERS_PATH="${3:-}"
 
 RAW_DIR="$OUT_DIR/raw"
 LOGS_DIR="$OUT_DIR/logs"
@@ -391,5 +392,305 @@ with open(summary_out, 'w', encoding='utf-8') as fh:
 PY
 
 rm -f "$SUMMARY_TSV"
+
+run_ta_parser_probe() {
+  local summary_path="$1"
+  local ta_probe_out="$OUT_DIR/ta_parser_probe.json"
+  local ta_js_raw="$RAW_DIR/tennisabstract_leadersource_wta.body"
+  local ta_js_headers="$LOGS_DIR/tennisabstract_leadersource_wta.headers"
+  local ta_js_stderr="$LOGS_DIR/tennisabstract_leadersource_wta.curl.stderr"
+
+  python3 - "$summary_path" "$ta_probe_out" "$SCHEDULED_PLAYERS_PATH" "$ta_js_raw" "$ta_js_headers" "$ta_js_stderr" "$UA" <<'PY'
+import json
+import os
+import re
+import sys
+import urllib.request
+
+summary_path, out_path, scheduled_path, js_raw_path, js_headers_path, js_stderr_path, ua = sys.argv[1:]
+
+def canonicalize(name: str) -> str:
+    val = (name or "").strip().lower()
+    if not val:
+        return ""
+    try:
+        import unicodedata
+        val = ''.join(ch for ch in unicodedata.normalize('NFD', val) if unicodedata.category(ch) != 'Mn')
+    except Exception:
+        pass
+    val = re.sub(r"[^a-z0-9\s]", " ", val)
+    val = re.sub(r"\s+", " ", val).strip()
+    return val
+
+def parse_scheduled_players(path: str):
+    if not path or not os.path.exists(path):
+        return []
+    text = open(path, 'r', encoding='utf-8', errors='replace').read()
+    players = []
+    if path.lower().endswith('.json'):
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, list):
+                players = [str(x) for x in payload]
+            elif isinstance(payload, dict):
+                for key in ('players', 'scheduled_players', 'names'):
+                    if isinstance(payload.get(key), list):
+                        players = [str(x) for x in payload[key]]
+                        break
+        except Exception:
+            players = []
+    if not players:
+        players = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith('#')]
+    canon = []
+    seen = set()
+    for p in players:
+        c = canonicalize(p)
+        if c and c not in seen:
+            seen.add(c)
+            canon.append(c)
+    return canon
+
+def parse_js_array_tokens(body: str):
+    pattern = re.compile(r'"((?:\\.|[^"\\])*)"|\'((?:\\.|[^\'\\])*)\'|([^,]+)')
+    tokens = []
+    for m in pattern.finditer(body):
+        raw = m.group(1) if m.group(1) is not None else (m.group(2) if m.group(2) is not None else m.group(3))
+        norm = (raw or '').strip()
+        if norm in ('null', 'undefined'):
+            tokens.append('')
+            continue
+        tokens.append(norm.replace('\\"', '"').replace("\\'", "'"))
+    return tokens
+
+def build_structured(tokens):
+    idx = {
+        'player_name': 3,
+        'score': 5,
+        'ranking': 6,
+        'recent_form': 7,
+        'surface_win_rate': 8,
+        'hold_pct': 9,
+        'break_pct': 10,
+    }
+    score = str(tokens[idx['score']] if len(tokens) > idx['score'] else '').strip()
+    has_walkover_or_ret = bool(re.search(r'\b(?:ret|wo)\b', score, flags=re.I))
+    def take(i):
+        try:
+            return float(tokens[i])
+        except Exception:
+            return None
+    row = {
+        'player_name': str(tokens[idx['player_name']] if len(tokens) > idx['player_name'] else ''),
+        'score': score,
+        'ranking': take(idx['ranking']),
+        'recent_form': None if has_walkover_or_ret else take(idx['recent_form']),
+        'surface_win_rate': None if has_walkover_or_ret else take(idx['surface_win_rate']),
+        'hold_pct': None if has_walkover_or_ret else take(idx['hold_pct']),
+        'break_pct': None if has_walkover_or_ret else take(idx['break_pct']),
+    }
+    return row
+
+def parse_array_literal_rows(text: str):
+    m = re.search(r'\bvar\s+matchmx\s*=\s*', text)
+    if not m:
+        return []
+    start = text.find('[', m.end())
+    if start < 0:
+        return []
+    depth = 0
+    quote = ''
+    escaped = False
+    end = -1
+    for i in range(start, len(text)):
+        ch = text[i]
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == quote:
+                quote = ''
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            continue
+        if ch == '[':
+            depth += 1
+        elif ch == ']':
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end < 0:
+        return []
+    lit = text[start:end + 1]
+    rows, depth, quote, escaped, row_start = [], 0, '', False, -1
+    for i in range(1, len(lit)):
+        ch = lit[i]
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == quote:
+                quote = ''
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            continue
+        if ch == '[':
+            if depth == 0:
+                row_start = i
+            depth += 1
+            continue
+        if ch == ']':
+            if depth <= 0:
+                break
+            depth -= 1
+            if depth == 0 and row_start >= 0:
+                body = lit[row_start + 1:i]
+                tokens = parse_js_array_tokens(body)
+                if len(tokens) >= 6:
+                    r = build_structured(tokens)
+                    if r.get('player_name') and r.get('score'):
+                        rows.append(r)
+                row_start = -1
+    return rows
+
+def parse_legacy_rows(text: str):
+    rows = []
+    row_re = re.compile(r'matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[([\s\S]*?)\]\s*;')
+    for m in row_re.finditer(text):
+        tokens = parse_js_array_tokens(m.group(1))
+        if len(tokens) < 6:
+            continue
+        r = build_structured(tokens)
+        if r.get('player_name') and r.get('score'):
+            rows.append(r)
+    return rows
+
+def extract_rows(payload: str):
+    rows = parse_array_literal_rows(payload)
+    return rows if rows else parse_legacy_rows(payload)
+
+summary = json.load(open(summary_path, 'r', encoding='utf-8'))
+entries = summary.get('entries') or []
+ta = next((e for e in entries if e.get('source_key') == 'tennisabstract_leaders'), None)
+
+result = {
+    'available': False,
+    'reason': 'tennisabstract_leaders_entry_missing',
+    'structured_rows_count': 0,
+    'non_null_counts': {
+        'ranking': 0,
+        'recent_form': 0,
+        'surface_win_rate': 0,
+        'hold_pct': 0,
+        'break_pct': 0,
+    },
+    'unique_players_parsed': 0,
+    'sample_canonical_names': [],
+    'scheduled_players_sample_size': 0,
+    'scheduled_players_overlap_count': 0,
+    'scheduled_players_overlap_sample': [],
+    'ta_matchmx_ok': False,
+    'ta_matchmx_unusable_payload': False,
+    'ta_parse_coverage_mismatch': False,
+}
+
+if ta:
+    html = ''
+    raw_path = (((ta.get('paths') or {}).get('raw')) or '')
+    if raw_path and os.path.exists(raw_path):
+        html = open(raw_path, 'r', encoding='utf-8', errors='replace').read()
+    js_match = re.search(r'(?:https?:)?//[^"\'\s]*jsmatches/[^"\'\s]*leadersource[^"\'\s]*wta\.js|/?jsmatches/[^"\'\s]*leadersource[^"\'\s]*wta\.js', html, flags=re.I)
+    js_url = ''
+    if js_match:
+        token = js_match.group(0)
+        if token.startswith('http://') or token.startswith('https://'):
+            js_url = token
+        elif token.startswith('//'):
+            js_url = 'https:' + token
+        elif token.startswith('/'):
+            js_url = 'https://www.tennisabstract.com' + token
+        else:
+            js_url = 'https://www.tennisabstract.com/' + token.lstrip('/')
+    if js_url:
+        req = urllib.request.Request(js_url, headers={'User-Agent': ua})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+                payload = data.decode('utf-8', errors='replace')
+                open(js_raw_path, 'wb').write(data)
+                with open(js_headers_path, 'w', encoding='utf-8') as fh:
+                    for k, v in resp.headers.items():
+                        fh.write(f"{k}: {v}\n")
+        except Exception as e:
+            with open(js_stderr_path, 'w', encoding='utf-8') as fh:
+                fh.write(str(e) + "\n")
+            payload = ''
+            result['reason'] = 'ta_js_fetch_failed'
+        rows = extract_rows(payload) if payload else []
+        counts = {k: 0 for k in ['ranking','recent_form','surface_win_rate','hold_pct','break_pct']}
+        player_feature = {}
+        canonical_samples = []
+        seen_names = set()
+        for row in rows:
+            c = canonicalize(row.get('player_name', ''))
+            if c and c not in seen_names and len(canonical_samples) < 8:
+                canonical_samples.append(c)
+                seen_names.add(c)
+            if c and c not in player_feature:
+                player_feature[c] = {k: False for k in counts.keys()}
+            for k in counts.keys():
+                if row.get(k) is not None:
+                    counts[k] += 1
+                    if c:
+                        player_feature[c][k] = True
+
+        scheduled = parse_scheduled_players(scheduled_path)
+        parsed_players = sorted(player_feature.keys())
+        overlap = [p for p in parsed_players if p in set(scheduled)]
+        normalized_non_null_counts = {
+            k: sum(1 for _, f in player_feature.items() if f.get(k))
+            for k in counts.keys()
+        }
+        players_with_non_null_stats = sum(1 for _, f in player_feature.items() if any(f.values()))
+        normalized_total = int(normalized_non_null_counts.get('ranking', 0)) + int(normalized_non_null_counts.get('hold_pct', 0)) + int(normalized_non_null_counts.get('break_pct', 0))
+        ta_parse_coverage_mismatch = len(rows) > 500 and normalized_total <= 3
+        ta_matchmx_unusable_payload = len(rows) >= 500 and players_with_non_null_stats == 0
+        ta_matchmx_ok = len(rows) > 0 and not ta_parse_coverage_mismatch and not ta_matchmx_unusable_payload
+
+        result.update({
+            'available': True,
+            'reason': 'ta_matchmx_ok' if ta_matchmx_ok else ('ta_matchmx_unusable_payload' if ta_matchmx_unusable_payload else ('ta_parse_coverage_mismatch' if ta_parse_coverage_mismatch else ('ta_matchmx_parse_failed' if not rows else 'ta_matchmx_partial'))),
+            'ta_js_url': js_url,
+            'structured_rows_count': len(rows),
+            'non_null_counts': counts,
+            'unique_players_parsed': len(parsed_players),
+            'sample_canonical_names': canonical_samples,
+            'scheduled_players_sample_size': len(scheduled),
+            'scheduled_players_overlap_count': len(overlap),
+            'scheduled_players_overlap_sample': overlap[:8],
+            'normalized_non_null_counts': normalized_non_null_counts,
+            'players_with_non_null_stats': players_with_non_null_stats,
+            'ta_matchmx_ok': ta_matchmx_ok,
+            'ta_matchmx_unusable_payload': ta_matchmx_unusable_payload,
+            'ta_parse_coverage_mismatch': ta_parse_coverage_mismatch,
+        })
+    else:
+        result['reason'] = 'ta_js_url_missing'
+
+summary['ta_parser_probe'] = result
+with open(summary_path, 'w', encoding='utf-8') as fh:
+    json.dump(summary, fh, indent=2)
+    fh.write('\n')
+with open(out_path, 'w', encoding='utf-8') as fh:
+    json.dump(result, fh, indent=2)
+    fh.write('\n')
+PY
+}
+
+run_ta_parser_probe "$OUT_DIR/summary.json"
 
 echo "done"
