@@ -2,6 +2,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('WTA Pipeline Ops')
     .addItem('Setup / Verify Tabs', 'menuSetupVerifyTabs')
+    .addItem('Deduplicate Config Sheet', 'menuDedupeConfigSheet')
     .addItem('Run Pipeline Now', 'menuRunPipelineNow')
     .addSeparator()
     .addItem('Re-create / Reset Workbook', 'menuRecreateWorkbook')
@@ -20,6 +21,11 @@ function onOpen() {
 function menuSetupVerifyTabs() {
   ensureTabsAndConfig_();
   SpreadsheetApp.getUi().alert('Setup complete: WTA foundation tabs/headers verified.');
+}
+
+function menuDedupeConfigSheet() {
+  dedupeConfigSheetMenuAction_();
+  SpreadsheetApp.getUi().alert('Config sheet deduplicated.');
 }
 
 function menuRunPipelineNow() {
@@ -345,16 +351,129 @@ function ensureHeaders_(sheetName, headers) {
 function ensureConfigDefaults_() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
   const values = sh.getDataRange().getValues();
-  const existing = {};
-  for (let i = 1; i < values.length; i += 1) {
-    existing[values[i][0]] = values[i][1];
+  const parsed = parseConfigRows_(values, {
+    mode: 'warn_last_wins',
+    context: 'ensureConfigDefaults_',
+    logger: function (msg) { Logger.log(msg); },
+  });
+
+  if (parsed.duplicate_keys.length) {
+    dedupeConfigSheet_(sh, {
+      precedence: 'last_wins',
+      preserve_row_order: true,
+      include_missing_defaults: false,
+      log_summary: true,
+    });
   }
 
+  const existing = parsed.config;
   Object.keys(DEFAULT_CONFIG).forEach((key) => {
     if (existing[key] === undefined || existing[key] === '') {
       sh.appendRow([key, DEFAULT_CONFIG[key]]);
     }
   });
+}
+
+function dedupeConfigSheet_(sheet, options) {
+  const sh = sheet || SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
+  const opts = options || {};
+  const precedence = String(opts.precedence || 'last_wins');
+  const preserveRowOrder = opts.preserve_row_order !== false;
+  const includeMissingDefaults = opts.include_missing_defaults !== false;
+  const logSummary = !!opts.log_summary;
+  const values = sh.getDataRange().getValues();
+
+  if (!values.length) {
+    ensureHeaders_(SHEETS.CONFIG, ['key', 'value']);
+    return {
+      rewritten: false,
+      duplicate_keys: [],
+      removed_row_count: 0,
+      final_row_count: 1,
+      added_default_count: 0,
+    };
+  }
+
+  const header = values[0];
+  const body = values.slice(1);
+  const rowsByKey = {};
+  const firstRowIndexByKey = {};
+  const lastRowIndexByKey = {};
+
+  body.forEach(function (row, idx) {
+    const key = String(row[0] || '').trim();
+    if (!key) return;
+    if (!rowsByKey[key]) rowsByKey[key] = [];
+    rowsByKey[key].push(row);
+    if (firstRowIndexByKey[key] === undefined) firstRowIndexByKey[key] = idx;
+    lastRowIndexByKey[key] = idx;
+  });
+
+  const duplicateKeys = Object.keys(rowsByKey).filter(function (key) {
+    return rowsByKey[key].length > 1;
+  });
+
+  const keys = Object.keys(rowsByKey);
+  keys.sort(function (a, b) {
+    if (!preserveRowOrder) return a.localeCompare(b);
+    const ai = precedence === 'first_wins' ? firstRowIndexByKey[a] : lastRowIndexByKey[a];
+    const bi = precedence === 'first_wins' ? firstRowIndexByKey[b] : lastRowIndexByKey[b];
+    return ai - bi;
+  });
+
+  const dedupedBody = keys.map(function (key) {
+    const bucket = rowsByKey[key];
+    return precedence === 'first_wins' ? bucket[0] : bucket[bucket.length - 1];
+  });
+
+  let addedDefaultCount = 0;
+  if (includeMissingDefaults) {
+    const existing = {};
+    dedupedBody.forEach(function (row) {
+      existing[String(row[0] || '').trim()] = true;
+    });
+    Object.keys(DEFAULT_CONFIG).forEach(function (key) {
+      if (!existing[key]) {
+        dedupedBody.push([key, DEFAULT_CONFIG[key]]);
+        addedDefaultCount += 1;
+      }
+    });
+  }
+
+  const output = [header].concat(dedupedBody);
+  sh.clearContents();
+  sh.getRange(1, 1, output.length, header.length).setValues(output);
+  if (sh.getFrozenRows() !== 1) sh.setFrozenRows(1);
+
+  const summary = {
+    rewritten: true,
+    duplicate_keys: duplicateKeys,
+    removed_row_count: body.length - keys.length,
+    final_row_count: output.length,
+    added_default_count: addedDefaultCount,
+  };
+
+  if (logSummary) {
+    Logger.log('[Config] dedupeConfigSheet_ summary: ' + JSON.stringify(summary));
+  }
+
+  return summary;
+}
+
+function dedupeConfigSheetMenuAction_() {
+  ensureTabsAndConfig_();
+  const summary = dedupeConfigSheet_(null, {
+    precedence: 'last_wins',
+    preserve_row_order: true,
+    include_missing_defaults: true,
+    log_summary: true,
+  });
+
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    'Config dedupe complete: removed ' + summary.removed_row_count + ' duplicate rows; defaults added ' + summary.added_default_count + '.',
+    'WTA Edge Board',
+    8
+  );
 }
 
 function recreateWorkbook_() {

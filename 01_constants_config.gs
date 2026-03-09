@@ -111,13 +111,11 @@ const TIMESTAMP_TIMEZONE = {
 function getConfig_() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
   const values = sh.getDataRange().getValues();
-  const config = {};
-
-  for (let i = 1; i < values.length; i += 1) {
-    const key = String(values[i][0] || '').trim();
-    if (!key) continue;
-    config[key] = values[i][1];
-  }
+  const parsed = parseConfigRows_(values, {
+    mode: 'error',
+    context: 'getConfig_',
+  });
+  const config = parsed.config;
 
   return {
     RUN_ENABLED: toBoolean_(config.RUN_ENABLED, true),
@@ -198,4 +196,51 @@ function getConfig_() {
     PLAYER_STATS_REFRESH_MIN: toNumber_(config.PLAYER_STATS_REFRESH_MIN, 5),
     PLAYER_STATS_FORCE_REFRESH: toBoolean_(config.PLAYER_STATS_FORCE_REFRESH, false),
   };
+}
+
+function parseConfigRows_(values, options) {
+  const opts = options || {};
+  const mode = String(opts.mode || 'error').toLowerCase();
+  const context = String(opts.context || 'config');
+  const logger = typeof opts.logger === 'function' ? opts.logger : function () {};
+  const config = {};
+  const duplicateRowsByKey = {};
+
+  for (let i = 1; i < (values || []).length; i += 1) {
+    const key = String(values[i][0] || '').trim();
+    if (!key) continue;
+
+    if (Object.prototype.hasOwnProperty.call(config, key)) {
+      if (!duplicateRowsByKey[key]) duplicateRowsByKey[key] = [];
+      duplicateRowsByKey[key].push(i + 1);
+      if (mode === 'warn_last_wins') {
+        logger('[Config] Duplicate key "' + key + '" detected at row ' + (i + 1) + '; applying last-wins precedence.');
+      }
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(config, key) || mode === 'warn_last_wins') {
+      config[key] = values[i][1];
+    }
+  }
+
+  const duplicateKeys = Object.keys(duplicateRowsByKey);
+  if (duplicateKeys.length && mode === 'error') {
+    throw new Error(formatDuplicateConfigKeysError_(context, duplicateRowsByKey));
+  }
+
+  return {
+    config: config,
+    duplicate_keys: duplicateKeys,
+    duplicate_rows_by_key: duplicateRowsByKey,
+  };
+}
+
+function formatDuplicateConfigKeysError_(context, duplicateRowsByKey) {
+  const details = Object.keys(duplicateRowsByKey)
+    .sort()
+    .map(function (key) {
+      return key + ' (duplicate rows: ' + duplicateRowsByKey[key].join(', ') + ')';
+    })
+    .join('; ');
+  return '[Config] Duplicate keys detected while ' + context + ': ' + details + '. Run dedupeConfigSheet_() to repair the Config tab.';
 }
