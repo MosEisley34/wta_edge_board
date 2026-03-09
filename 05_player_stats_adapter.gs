@@ -32,6 +32,12 @@ const PLAYER_STATS_COMPLETENESS_KEYS = [
   'hold_pct',
   'break_pct',
 ];
+const PLAYER_STATS_CANONICAL_FEATURES = [
+  'ranking', 'recent_form', 'recent_form_last_10', 'surface_win_rate', 'hold_pct', 'break_pct',
+  'surface_hold_pct', 'surface_break_pct', 'surface_recent_form', 'bp_saved_pct', 'bp_conv_pct',
+  'first_serve_in_pct', 'first_serve_points_won_pct', 'second_serve_points_won_pct', 'return_points_won_pct',
+  'dr', 'tpw_pct',
+];
 
 function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
   const players = dedupePlayerNames_(canonicalPlayers || []);
@@ -176,25 +182,38 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
 
   const attempts = [];
   let totalApiCalls = 0;
-  const normalizedMaps = [];
+  const sourcePayloads = [];
 
   sourceConfigs.forEach(function (sourceConfig) {
     const result = fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTime);
     attempts.push(result.reason_code || 'player_stats_unknown_source_result');
     totalApiCalls += Number(result.api_call_count || 0);
-    if (result.ok && result.stats_by_player) normalizedMaps.push(result.stats_by_player);
+    if (result.ok && result.stats_by_player) {
+      sourcePayloads.push({
+        source_name: sourceConfig.source_name,
+        stats_by_player: result.stats_by_player,
+      });
+    }
   });
 
-  if (normalizedMaps.length) {
-    const merged = mergePlayerStatsMaps_(normalizedMaps, players);
+  if (sourcePayloads.length) {
+    const merged = mergePlayerStatsMaps_(sourcePayloads, players);
+    const mergeDiagnostics = buildPlayerStatsMergeDiagnostics_(sourcePayloads, merged, players);
+    const mergedHasData = Number((mergeDiagnostics.final || {}).players_with_non_null_stats || 0) > 0;
     return {
       ok: true,
-      reason_code: normalizedMaps.length > 1 ? 'player_stats_multi_source_success' : 'player_stats_api_success',
+      reason_code: mergedHasData
+        ? (sourcePayloads.length > 1 ? 'player_stats_multi_source_success' : 'player_stats_api_success')
+        : 'stats_zero_coverage',
       detail: attempts.join(','),
       stats_by_player: merged,
       api_credit_usage: 0,
       api_call_count: totalApiCalls,
       scrape_call_count: 0,
+      selection_metadata: {
+        source_count: sourcePayloads.length,
+        merge_diagnostics: mergeDiagnostics,
+      },
     };
   }
 
@@ -933,11 +952,28 @@ function parsePlayerStatsSourceConfigs_(config) {
   const baseValue = String(config.PLAYER_STATS_API_BASE_URL || '').trim();
   if (!baseValue) return [];
   return baseValue.split(',')
-    .map(function (value) { return String(value || '').trim().replace(/\/+$/, ''); })
-    .filter(function (value) { return !!value; });
+    .map(function (value) {
+      const token = String(value || '').trim();
+      if (!token) return null;
+      const pair = token.split('=');
+      let sourceName = '';
+      let baseUrl = token;
+      if (pair.length >= 2) {
+        sourceName = String(pair[0] || '').trim();
+        baseUrl = pair.slice(1).join('=').trim();
+      }
+      baseUrl = String(baseUrl || '').replace(/\/+$/, '');
+      if (!baseUrl) return null;
+      return {
+        source_name: canonicalizeStatsProviderName_(sourceName || inferStatsProviderNameFromUrl_(baseUrl)),
+        base_url: baseUrl,
+      };
+    })
+    .filter(function (value) { return !!value && !!value.base_url; });
 }
 
-function fetchPlayerStatsFromSingleSource_(baseUrl, config, players, asOfTime) {
+function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTime) {
+  const baseUrl = sourceConfig && sourceConfig.base_url ? sourceConfig.base_url : '';
   const endpoint = String(baseUrl || '').replace(/\/$/, '') + '/players/stats/batch';
   const body = JSON.stringify({
     players: players,
@@ -993,6 +1029,7 @@ function fetchPlayerStatsFromSingleSource_(baseUrl, config, players, asOfTime) {
     reason_code: 'player_stats_api_success',
     stats_by_player: normalizePlayerStatsResponse_(parsed, players),
     api_call_count: 1,
+    source_name: sourceConfig && sourceConfig.source_name ? sourceConfig.source_name : 'unknown',
   };
 }
 
@@ -1072,65 +1109,119 @@ function extractStatsFromScrapeContent_(content, playerName) {
   return normalized[canonicalizePlayerName_(playerName, {})] || null;
 }
 
-function mergePlayerStatsMaps_(maps, canonicalPlayers) {
+function mergePlayerStatsMaps_(sourcePayloads, canonicalPlayers) {
   const merged = {};
   const players = dedupePlayerNames_(canonicalPlayers || []);
+  const sourceMaps = (sourcePayloads || []).map(function (entry) {
+    return {
+      source_name: canonicalizeStatsProviderName_(entry && entry.source_name),
+      stats_map: (entry && entry.stats_by_player) || {},
+    };
+  });
 
   players.forEach(function (player) {
-    let ranking = null;
-    let recentForm = null;
-    let surfaceWinRate = null;
-    let holdPct = null;
-    let breakPct = null;
-    let bpSavedPct = null;
-    let bpConvPct = null;
-    let firstServeInPct = null;
-    let firstServePointsWonPct = null;
-    let secondServePointsWonPct = null;
-    let returnPointsWonPct = null;
-    let dr = null;
-    let tpwPct = null;
-
-    maps.forEach(function (statsMap) {
-      const stats = statsMap && statsMap[player];
-      if (!stats) return;
-      if (ranking === null && stats.ranking !== null && stats.ranking !== undefined) ranking = stats.ranking;
-      if (recentForm === null && stats.recent_form !== null && stats.recent_form !== undefined) recentForm = stats.recent_form;
-      if (surfaceWinRate === null && stats.surface_win_rate !== null && stats.surface_win_rate !== undefined) surfaceWinRate = stats.surface_win_rate;
-      if (holdPct === null && stats.hold_pct !== null && stats.hold_pct !== undefined) holdPct = stats.hold_pct;
-      if (breakPct === null && stats.break_pct !== null && stats.break_pct !== undefined) breakPct = stats.break_pct;
-      if (bpSavedPct === null && stats.bp_saved_pct !== null && stats.bp_saved_pct !== undefined) bpSavedPct = stats.bp_saved_pct;
-      if (bpConvPct === null && stats.bp_conv_pct !== null && stats.bp_conv_pct !== undefined) bpConvPct = stats.bp_conv_pct;
-      if (firstServeInPct === null && stats.first_serve_in_pct !== null && stats.first_serve_in_pct !== undefined) firstServeInPct = stats.first_serve_in_pct;
-      if (firstServePointsWonPct === null && stats.first_serve_points_won_pct !== null && stats.first_serve_points_won_pct !== undefined) firstServePointsWonPct = stats.first_serve_points_won_pct;
-      if (secondServePointsWonPct === null && stats.second_serve_points_won_pct !== null && stats.second_serve_points_won_pct !== undefined) secondServePointsWonPct = stats.second_serve_points_won_pct;
-      if (returnPointsWonPct === null && stats.return_points_won_pct !== null && stats.return_points_won_pct !== undefined) returnPointsWonPct = stats.return_points_won_pct;
-      if (dr === null && stats.dr !== null && stats.dr !== undefined) dr = stats.dr;
-      if (tpwPct === null && stats.tpw_pct !== null && stats.tpw_pct !== undefined) tpwPct = stats.tpw_pct;
-    });
-
     merged[player] = {
-      ranking: ranking,
-      recent_form: recentForm,
-      recent_form_last_10: firstDefinedMetric_(maps, player, 'recent_form_last_10'),
-      surface_win_rate: surfaceWinRate,
-      hold_pct: holdPct,
-      break_pct: breakPct,
-      surface_hold_pct: firstDefinedMetric_(maps, player, 'surface_hold_pct'),
-      surface_break_pct: firstDefinedMetric_(maps, player, 'surface_break_pct'),
-      surface_recent_form: firstDefinedMetric_(maps, player, 'surface_recent_form'),
-      bp_saved_pct: bpSavedPct,
-      bp_conv_pct: bpConvPct,
-      first_serve_in_pct: firstServeInPct,
-      first_serve_points_won_pct: firstServePointsWonPct,
-      second_serve_points_won_pct: secondServePointsWonPct,
-      return_points_won_pct: returnPointsWonPct,
-      dr: dr,
-      tpw_pct: tpwPct,
+      ranking: selectMetricBySourcePriority_(sourceMaps, player, 'ranking', ['wta_stats_zone', 'itf', 'tennis_abstract', 'tennis_explorer', 'sofascore']),
+      recent_form: selectMetricBySourcePriority_(sourceMaps, player, 'recent_form', ['sofascore', 'tennis_explorer', 'wta_stats_zone', 'tennis_abstract', 'itf']),
+      recent_form_last_10: selectMetricBySourcePriority_(sourceMaps, player, 'recent_form_last_10', ['sofascore', 'tennis_explorer', 'wta_stats_zone', 'tennis_abstract', 'itf']),
+      surface_win_rate: selectMetricBySourcePriority_(sourceMaps, player, 'surface_win_rate', ['tennis_abstract', 'wta_stats_zone', 'tennis_explorer', 'sofascore', 'itf']),
+      hold_pct: selectMetricBySourcePriority_(sourceMaps, player, 'hold_pct', ['tennis_abstract', 'wta_stats_zone', 'tennis_explorer', 'sofascore', 'itf']),
+      break_pct: selectMetricBySourcePriority_(sourceMaps, player, 'break_pct', ['tennis_abstract', 'wta_stats_zone', 'tennis_explorer', 'sofascore', 'itf']),
+      surface_hold_pct: selectMetricBySourcePriority_(sourceMaps, player, 'surface_hold_pct', ['tennis_abstract']),
+      surface_break_pct: selectMetricBySourcePriority_(sourceMaps, player, 'surface_break_pct', ['tennis_abstract']),
+      surface_recent_form: selectMetricBySourcePriority_(sourceMaps, player, 'surface_recent_form', ['tennis_abstract', 'sofascore', 'tennis_explorer', 'wta_stats_zone', 'itf']),
+      bp_saved_pct: selectMetricBySourcePriority_(sourceMaps, player, 'bp_saved_pct', ['tennis_abstract']),
+      bp_conv_pct: selectMetricBySourcePriority_(sourceMaps, player, 'bp_conv_pct', ['tennis_abstract']),
+      first_serve_in_pct: selectMetricBySourcePriority_(sourceMaps, player, 'first_serve_in_pct', ['tennis_abstract']),
+      first_serve_points_won_pct: selectMetricBySourcePriority_(sourceMaps, player, 'first_serve_points_won_pct', ['tennis_abstract']),
+      second_serve_points_won_pct: selectMetricBySourcePriority_(sourceMaps, player, 'second_serve_points_won_pct', ['tennis_abstract']),
+      return_points_won_pct: selectMetricBySourcePriority_(sourceMaps, player, 'return_points_won_pct', ['tennis_abstract']),
+      dr: selectMetricBySourcePriority_(sourceMaps, player, 'dr', ['tennis_abstract']),
+      tpw_pct: selectMetricBySourcePriority_(sourceMaps, player, 'tpw_pct', ['tennis_abstract']),
     };
   });
 
   return merged;
+}
+
+function selectMetricBySourcePriority_(sourceMaps, player, key, preferredSources) {
+  const preference = {};
+  (preferredSources || []).forEach(function (name, idx) {
+    preference[canonicalizeStatsProviderName_(name)] = idx;
+  });
+  const ordered = (sourceMaps || []).slice().sort(function (a, b) {
+    const rankA = Object.prototype.hasOwnProperty.call(preference, a.source_name) ? preference[a.source_name] : 1000;
+    const rankB = Object.prototype.hasOwnProperty.call(preference, b.source_name) ? preference[b.source_name] : 1000;
+    if (rankA !== rankB) return rankA - rankB;
+    return 0;
+  });
+  return firstDefinedMetric_(ordered.map(function (entry) { return entry.stats_map; }), player, key);
+}
+
+function canonicalizeStatsProviderName_(name) {
+  const raw = String(name || '').toLowerCase().trim();
+  if (!raw) return 'unknown';
+  if (raw.indexOf('tennis abstract') >= 0 || raw === 'ta' || raw === 'tennis_abstract') return 'tennis_abstract';
+  if (raw.indexOf('wta') >= 0) return 'wta_stats_zone';
+  if (raw.indexOf('itf') >= 0) return 'itf';
+  if (raw.indexOf('explorer') >= 0) return 'tennis_explorer';
+  if (raw.indexOf('sofascore') >= 0 || raw.indexOf('sofa') >= 0) return 'sofascore';
+  return raw.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
+}
+
+function inferStatsProviderNameFromUrl_(url) {
+  const host = String(url || '').toLowerCase();
+  if (host.indexOf('tennisabstract') >= 0) return 'tennis_abstract';
+  if (host.indexOf('wtastatszone') >= 0 || host.indexOf('wtatour') >= 0) return 'wta_stats_zone';
+  if (host.indexOf('itf') >= 0) return 'itf';
+  if (host.indexOf('tennisexplorer') >= 0) return 'tennis_explorer';
+  if (host.indexOf('sofascore') >= 0) return 'sofascore';
+  return 'unknown';
+}
+
+function buildPlayerStatsMergeDiagnostics_(sourcePayloads, mergedStatsByPlayer, canonicalPlayers) {
+  const players = dedupePlayerNames_(canonicalPlayers || []);
+  const perSourcePlayersParsed = {};
+  const perFeatureContributions = {};
+  PLAYER_STATS_CANONICAL_FEATURES.forEach(function (feature) { perFeatureContributions[feature] = {}; });
+
+  (sourcePayloads || []).forEach(function (entry) {
+    const sourceName = canonicalizeStatsProviderName_(entry && entry.source_name);
+    const statsMap = (entry && entry.stats_by_player) || {};
+    let parsedCount = 0;
+    players.forEach(function (player) {
+      const stats = statsMap[player];
+      if (stats && typeof stats === 'object') parsedCount += 1;
+    });
+    perSourcePlayersParsed[sourceName] = parsedCount;
+  });
+
+  players.forEach(function (player) {
+    const finalStats = mergedStatsByPlayer && mergedStatsByPlayer[player];
+    if (!finalStats) return;
+    PLAYER_STATS_CANONICAL_FEATURES.forEach(function (feature) {
+      const value = finalStats[feature];
+      if (value === null || value === undefined) return;
+      let contributor = 'unknown';
+      for (let i = 0; i < (sourcePayloads || []).length; i += 1) {
+        const entry = sourcePayloads[i] || {};
+        const sourceValue = entry.stats_by_player && entry.stats_by_player[player] ? entry.stats_by_player[player][feature] : null;
+        if (sourceValue !== null && sourceValue !== undefined) {
+          contributor = canonicalizeStatsProviderName_(entry.source_name);
+          break;
+        }
+      }
+      const featureMap = perFeatureContributions[feature] || {};
+      featureMap[contributor] = Number(featureMap[contributor] || 0) + 1;
+      perFeatureContributions[feature] = featureMap;
+    });
+  });
+
+  return {
+    per_source_players_parsed: perSourcePlayersParsed,
+    per_feature_non_null_contributions: perFeatureContributions,
+    final: summarizePlayerStatsCompleteness_(mergedStatsByPlayer || {}),
+  };
 }
 
 function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers, options) {
