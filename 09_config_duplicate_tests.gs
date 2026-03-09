@@ -96,3 +96,76 @@ function assertThrows_(fn, expectedSubstring) {
     throw new Error('Expected function to throw.');
   }
 }
+
+function testDedupeConfigSheet_lastWins_dedupesWatchedKeysAndLogsAudit_() {
+  const sheet = createFakeConfigSheet_([
+    ['key', 'value'],
+    ['ODDS_SPORT_KEY', 'old_wta'],
+    ['RUN_ENABLED', 'true'],
+    ['PLAYER_STATS_API_BASE_URL', 'https://old.example'],
+    ['ODDS_SPORT_KEY', 'new_wta'],
+    ['PLAYER_STATS_API_BASE_URL', 'https://new.example'],
+    ['PLAYER_STATS_API_KEY', 'key_old'],
+    ['PLAYER_STATS_API_KEY', 'key_new'],
+    ['PLAYER_STATS_SCRAPE_URLS', 'https://old.scrape'],
+    ['PLAYER_STATS_SCRAPE_URLS', 'https://new.scrape'],
+  ]);
+
+  const originalAppend = appendLogRow_;
+  const auditRows = [];
+  appendLogRow_ = function (entry) { auditRows.push(entry); };
+
+  try {
+    const summary = dedupeConfigSheet_(sheet, {
+      precedence: 'last_wins',
+      preserve_row_order: true,
+      include_missing_defaults: false,
+      log_summary: false,
+    });
+
+    const output = sheet.getDataRange().getValues();
+    const parsed = parseConfigRows_(output, { mode: 'error', context: 'testDedupeConfigSheet_lastWins' });
+
+    assertArrayEquals_([], parsed.duplicate_keys);
+    assertEquals_('new_wta', parsed.config.ODDS_SPORT_KEY);
+    assertEquals_('https://new.example', parsed.config.PLAYER_STATS_API_BASE_URL);
+    assertEquals_('key_new', parsed.config.PLAYER_STATS_API_KEY);
+    assertEquals_('https://new.scrape', parsed.config.PLAYER_STATS_SCRAPE_URLS);
+    assertEquals_(4, summary.removed_row_count);
+    assertEquals_(true, summary.verified_unique_keys);
+    assertEquals_(5, summary.watched_kept_row_by_key.ODDS_SPORT_KEY);
+    assertEquals_(6, summary.watched_kept_row_by_key.PLAYER_STATS_API_BASE_URL);
+    assertEquals_(8, summary.watched_kept_row_by_key.PLAYER_STATS_API_KEY);
+    assertEquals_(10, summary.watched_kept_row_by_key.PLAYER_STATS_SCRAPE_URLS);
+    assertEquals_(1, auditRows.length);
+    assertTrue_(String(auditRows[0].message || '').indexOf('"watched_kept_row_by_key"') >= 0, 'expected watched key audit payload');
+  } finally {
+    appendLogRow_ = originalAppend;
+  }
+}
+
+function createFakeConfigSheet_(initialValues) {
+  let values = (initialValues || []).map(function (row) { return row.slice(); });
+  let frozenRows = 0;
+  return {
+    getDataRange: function () {
+      return {
+        getValues: function () {
+          return values.map(function (row) { return row.slice(); });
+        },
+      };
+    },
+    clearContents: function () {
+      values = [];
+    },
+    getRange: function () {
+      return {
+        setValues: function (nextValues) {
+          values = nextValues.map(function (row) { return row.slice(); });
+        },
+      };
+    },
+    getFrozenRows: function () { return frozenRows; },
+    setFrozenRows: function (n) { frozenRows = n; },
+  };
+}
