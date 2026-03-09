@@ -422,14 +422,25 @@ function runEdgeBoard() {
       logDiagnosticEvent_(config, 'run_health_guard_warning', runHealthDiagnostics.warning_payload, 1);
     }
 
-    const combinedReasonCodes = mergeReasonCounts_([
+    const reasonCodeMaps = [
       oddsStage.summary.reason_codes,
       scheduleStage.summary.reason_codes,
       matchStage.summary.reason_codes,
       playerStatsStage.summary.reason_codes,
       signalStage.summary.reason_codes,
       persistStage.summary.reason_codes,
-    ]);
+    ];
+    const reasonMetadataMaps = [
+      oddsStage.summary.reason_metadata,
+      scheduleStage.summary.reason_metadata,
+      matchStage.summary.reason_metadata,
+      playerStatsStage.summary.reason_metadata,
+      signalStage.summary.reason_metadata,
+      persistStage.summary.reason_metadata,
+    ];
+
+    const combinedReasonCodes = mergeReasonCounts_(reasonCodeMaps);
+    const combinedReasonMetadata = mergeReasonMetadata_(reasonMetadataMaps);
 
     const emptyCycleState = updateBootstrapEmptyCycleState_(runId, oddsStage.rows.length, scheduleStage.events.length);
     if (emptyCycleState.reason_code) {
@@ -554,6 +565,8 @@ function runEdgeBoard() {
       sample_unmatched_cases: matchStage.unmatched.slice(0, 20),
       top_rejection_reasons: getTopReasonCodes_(combinedReasonCodes, 10),
       reason_codes: combinedReasonCodes,
+      reason_metadata: combinedReasonMetadata,
+      upstream_gate_reason: combinedReasonMetadata.upstream_gate_reason || '',
       run_health: {
         status: runHealthDiagnostics.status,
         reason_code: runHealthDiagnostics.reason_code,

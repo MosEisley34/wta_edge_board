@@ -537,7 +537,10 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   }
 
   const summaryReasonCodes = Object.assign({}, reasonCounts);
-  if (oddsEvents.length === 0) summaryReasonCodes.upstream_gate_reason = upstreamGateReason || 'unspecified';
+  const summaryReasonMetadata = {};
+  if (oddsEvents.length === 0) {
+    summaryReasonMetadata.upstream_gate_reason = normalizeUpstreamGateReason_(upstreamGateReason);
+  }
 
   const summary = buildStageSummary_(runId, 'stageGenerateSignals', start, {
     input_count: oddsEvents.length,
@@ -545,6 +548,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     provider: 'internal_signal_builder',
     api_credit_usage: 0,
     reason_codes: summaryReasonCodes,
+    reason_metadata: summaryReasonMetadata,
   });
 
   return {
