@@ -555,7 +555,35 @@ function extractLeadersJsUrl_(html, baseUrl) {
 
 function extractMatchMxRows_(payload) {
   const text = String(payload || '');
+  const currentFormatRows = extractMatchMxRowsFromArrayLiteral_(text);
+  if (currentFormatRows.length) return currentFormatRows;
+
+  return extractMatchMxRowsFromLegacyAssignments_(text);
+}
+
+function extractMatchMxRowsFromArrayLiteral_(payloadText) {
+  const text = String(payloadText || '');
+  const assignmentMatch = /\bvar\s+matchmx\s*=/.exec(text);
+  if (!assignmentMatch) return [];
+
+  const assignmentStart = assignmentMatch.index + assignmentMatch[0].length;
+  const arrayStart = text.indexOf('[', assignmentStart);
+  if (arrayStart < 0) return [];
+
+  let arrayEnd = findMatchingBracketIndex_(text, arrayStart);
+  if (arrayEnd < 0) {
+    const statementEnd = text.indexOf('];', arrayStart);
+    if (statementEnd < 0) return [];
+    arrayEnd = statementEnd;
+  }
+
+  const literalText = text.slice(arrayStart, arrayEnd + 1);
+  return parseMatchMxRowsFromArrayLiteralText_(literalText);
+}
+
+function extractMatchMxRowsFromLegacyAssignments_(payloadText) {
   const rows = [];
+  const text = String(payloadText || '');
   const rowRegex = /matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[([\s\S]*?)\]\s*;/g;
   let match;
 
@@ -568,6 +596,98 @@ function extractMatchMxRows_(payload) {
   }
 
   return rows;
+}
+
+function parseMatchMxRowsFromArrayLiteralText_(arrayLiteralText) {
+  const literal = String(arrayLiteralText || '').trim();
+  if (!literal || literal[0] !== '[') return [];
+
+  const rows = [];
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  let rowStart = -1;
+
+  for (let i = 1; i < literal.length; i += 1) {
+    const ch = literal[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = '';
+      }
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+
+    if (ch === '[') {
+      if (depth === 0) rowStart = i;
+      depth += 1;
+      continue;
+    }
+
+    if (ch === ']') {
+      if (depth <= 0) break;
+      depth -= 1;
+      if (depth === 0 && rowStart >= 0) {
+        const rowBody = literal.slice(rowStart + 1, i);
+        const tokens = parseJsArrayTokens_(rowBody);
+        if (tokens.length >= 6) {
+          const structured = buildStructuredMatchMxRow_(tokens);
+          if (structured.player_name && structured.score) rows.push(structured);
+        }
+        rowStart = -1;
+      }
+    }
+  }
+
+  return rows;
+}
+
+function findMatchingBracketIndex_(text, openingIndex) {
+  const source = String(text || '');
+  const start = Number(openingIndex || 0);
+  if (start < 0 || source[start] !== '[') return -1;
+
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = '';
+      }
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+
+    if (ch === '[') {
+      depth += 1;
+      continue;
+    }
+
+    if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
 }
 
 function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer) {
