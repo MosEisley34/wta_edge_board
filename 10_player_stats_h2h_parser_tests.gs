@@ -63,6 +63,53 @@ function testParseTaH2hPageHtml_emptyNoDataFormat_returnsEmptyTableWithoutFailur
   assertTrue_(String(parsed.diagnostics.html_sha256 || '').length === 64, 'expected html hash in diagnostics');
 }
 
+function testParseTaH2hPageHtml_currentMatrixStructure_parsesNonZeroPairs_() {
+  const fixture = [
+    '<html><body>',
+    '<table class="h2h_matrix">',
+    '<tr>',
+    '<th>Player</th>',
+    '<th><a href="/player/iga" title="Iga Swiatek">ISW</a></th>',
+    '<th><a href="/player/aryna" title="Aryna Sabalenka">ASB</a></th>',
+    '<th><a href="/player/coco" title="Coco Gauff">CGF</a></th>',
+    '<th>vs1-5</th>',
+    '<th>vs1-10</th>',
+    '<th>vs1-15</th>',
+    '</tr>',
+    '<tr>',
+    '<td><a href="/player/iga" title="Iga Swiatek">Iga Swiatek</a></td>',
+    '<td>0-0</td><td>5-8</td><td>11-3</td><td>80%</td><td>71%</td><td>66%</td>',
+    '</tr>',
+    '<tr>',
+    '<td><a href="/player/aryna" title="Aryna Sabalenka">Aryna Sabalenka</a></td>',
+    '<td>8-5</td><td>0-0</td><td>6-4</td><td>77%</td><td>69%</td><td>63%</td>',
+    '</tr>',
+    '<tr>',
+    '<td><a href="/player/coco" title="Coco Gauff">Coco Gauff</a></td>',
+    '<td>3-11</td><td>4-6</td><td>0-0</td><td>75%</td><td>68%</td><td>61%</td>',
+    '</tr>',
+    '</table>',
+    '</body></html>',
+  ].join('');
+
+  const parsed = parseTaH2hPageHtml_(fixture);
+
+  assertTrue_(parsed.ok === true, 'expected parse success for current matrix structure');
+  assertEquals_('ta_h2h_matrix_table_v1', parsed.schema_version);
+  assertEquals_(false, parsed.empty_table);
+  assertTrue_(parsed.rows.length > 0, 'expected non-zero parsed pair count');
+
+  const byPair = {};
+  for (let i = 0; i < parsed.rows.length; i += 1) {
+    const row = parsed.rows[i];
+    byPair[row.player_a + '::' + row.player_b] = row;
+  }
+  assertEquals_(5, byPair['iga swiatek::aryna sabalenka'].wins_a);
+  assertEquals_(8, byPair['iga swiatek::aryna sabalenka'].wins_b);
+  assertEquals_(11, byPair['iga swiatek::coco gauff'].wins_a);
+  assertEquals_(3, byPair['iga swiatek::coco gauff'].wins_b);
+}
+
 
 function testFetchTaH2hDatasetFromSource_emptyTableReturnsDedicatedReason_() {
   const originalSleep = sleepTennisAbstractRequestGap_;
