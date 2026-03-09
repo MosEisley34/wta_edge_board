@@ -393,7 +393,8 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
   }
 
   const jsPayload = String(jsFetch.response.getContentText() || '');
-  const structuredRows = extractMatchMxRows_(jsPayload);
+  const extractedRows = extractMatchMxRows_(jsPayload);
+  const structuredRows = extractedRows.rows || [];
   if (!structuredRows.length) {
     if (staleLeadersCompleteness.has_rows && !staleLeadersCompleteness.is_null_only) {
       return {
@@ -438,15 +439,18 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
     match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
     recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
   });
-  const parseDiagnostics = summarizeTaLeadersParseDiagnostics_(structuredRows, normalizedStatsByPlayer);
+  const parseDiagnostics = summarizeTaLeadersParseDiagnostics_(structuredRows, normalizedStatsByPlayer, extractedRows.diagnostics);
   const statsCompleteness = summarizePlayerStatsCompleteness_(normalizedStatsByPlayer);
   const coverage = evaluateTaLeadersParseCoverage_(parseDiagnostics, config);
   const hasCoverageMismatch = isTaLeadersCoverageMismatch_(parseDiagnostics);
   const coverageReasonCode = hasCoverageMismatch ? 'ta_parse_coverage_mismatch' : '';
+  const qualityGate = evaluateTaLeadersQualityGate_(parseDiagnostics, statsCompleteness, config);
+  const taHealthy = qualityGate.meets_thresholds && !hasCoverageMismatch;
   persistTaLeadersParseDiagnostics_(Object.assign({}, parseDiagnostics, {
-    reason_code: coverageReasonCode || 'ta_matchmx_ok',
+    reason_code: taHealthy ? 'ta_matchmx_ok' : (coverageReasonCode || qualityGate.reason_code),
     players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
     coverage: coverage,
+    quality_gate: qualityGate,
     source: jsUrl,
     fetched_at: new Date().toISOString(),
   }));
@@ -493,7 +497,7 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
       if (cachedCompleteness.has_stats) {
         return {
           ok: true,
-          reason_code: coverageReasonCode,
+          reason_code: coverageReasonCode || qualityGate.reason_code,
           stats_by_player: cachedHealthyStats,
           api_call_count: totalCalls,
         };
@@ -537,7 +541,7 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
   const forceReplaceNullOnlyStale = coverage.exceeds_threshold && staleLeadersCompleteness.has_rows && staleLeadersCompleteness.is_null_only;
   return {
     ok: Object.keys(statsByPlayer).length > 0,
-    reason_code: Object.keys(statsByPlayer).length > 0 ? 'ta_matchmx_ok' : 'ta_matchmx_parse_failed',
+    reason_code: Object.keys(statsByPlayer).length > 0 ? (taHealthy ? 'ta_matchmx_ok' : qualityGate.reason_code) : 'ta_matchmx_parse_failed',
     stats_by_player: statsByPlayer,
     api_call_count: totalCalls,
     selection_metadata: {
@@ -552,6 +556,7 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
       stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
       stale_null_only: staleLeadersCompleteness.is_null_only,
       cache_replacement_forced: forceReplaceNullOnlyStale,
+      quality_gate: qualityGate,
     },
   };
 }
@@ -591,6 +596,36 @@ function evaluateTaLeadersParseCoverage_(diagnostics, config) {
   };
 }
 
+
+function evaluateTaLeadersQualityGate_(diagnostics, statsCompleteness, config) {
+  const info = diagnostics || {};
+  const completeness = statsCompleteness || {};
+  const nonNullByFeature = info.non_null_by_feature || info.normalized_non_null_counts || {};
+  const validNameRatio = Number(info.valid_name_ratio || 0);
+  const invalidNameRatio = Math.max(0, 1 - validNameRatio);
+  const minValidNameRatio = Math.max(0.2, Number((config && config.PLAYER_STATS_TA_MIN_VALID_NAME_RATIO) || 0.55));
+  const minPlayersWithStats = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_PLAYERS_WITH_STATS) || 2));
+  const nonNullFeatureTotal = Number(nonNullByFeature.ranking || 0) + Number(nonNullByFeature.hold_pct || 0) + Number(nonNullByFeature.break_pct || 0);
+  const minNonNullFeatureTotal = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_NON_NULL_FEATURE_TOTAL) || 4));
+  const hasLowQualityNames = validNameRatio < minValidNameRatio || invalidNameRatio > 0.45;
+  const hasEnoughFeatures = nonNullFeatureTotal >= minNonNullFeatureTotal;
+  const hasEnoughPlayers = Number(completeness.players_with_non_null_stats || 0) >= minPlayersWithStats;
+  const meetsThresholds = !hasLowQualityNames && hasEnoughFeatures && hasEnoughPlayers;
+
+  return {
+    meets_thresholds: meetsThresholds,
+    valid_name_ratio: roundNumber_(validNameRatio, 3),
+    invalid_name_ratio: roundNumber_(invalidNameRatio, 3),
+    min_valid_name_ratio: minValidNameRatio,
+    non_null_feature_total: nonNullFeatureTotal,
+    min_non_null_feature_total: minNonNullFeatureTotal,
+    players_with_non_null_stats: Number(completeness.players_with_non_null_stats || 0),
+    min_players_with_non_null_stats: minPlayersWithStats,
+    non_null_by_feature: nonNullByFeature,
+    reason_code: meetsThresholds ? 'ta_matchmx_ok' : (hasLowQualityNames ? 'ta_matchmx_name_quality_low' : 'ta_matchmx_feature_coverage_low'),
+  };
+}
+
 function emitNoUsableStatsPayloadAlert_(config, payload) {
   const alertPayload = Object.assign({
     reason_code: 'no_usable_stats_payload',
@@ -624,25 +659,34 @@ function extractLeadersJsUrl_(html, baseUrl) {
 
 function extractMatchMxRows_(payload) {
   const text = String(payload || '');
-  const currentFormatRows = extractMatchMxRowsFromArrayLiteral_(text);
-  if (currentFormatRows.length) return currentFormatRows;
+  const currentFormat = extractMatchMxRowsFromArrayLiteral_(text);
+  if (currentFormat.rows.length) return currentFormat;
 
-  return extractMatchMxRowsFromLegacyAssignments_(text);
+  const legacyRows = extractMatchMxRowsFromLegacyAssignments_(text);
+  return {
+    rows: legacyRows,
+    diagnostics: {
+      parser_format: 'legacy_assignment',
+      selected_player_name_col: MATCHMX_ROW_IDX.PLAYER_NAME,
+      valid_name_ratio: computeValidNameRatio_(legacyRows),
+      non_null_by_feature: summarizeMatchMxNonNullByFeature_(legacyRows),
+    },
+  };
 }
 
 function extractMatchMxRowsFromArrayLiteral_(payloadText) {
   const text = String(payloadText || '');
   const assignmentMatch = /\bvar\s+matchmx\s*=/.exec(text);
-  if (!assignmentMatch) return [];
+  if (!assignmentMatch) return { rows: [], diagnostics: { parser_format: 'array_literal', reason: 'assignment_missing' } };
 
   const assignmentStart = assignmentMatch.index + assignmentMatch[0].length;
   const arrayStart = text.indexOf('[', assignmentStart);
-  if (arrayStart < 0) return [];
+  if (arrayStart < 0) return { rows: [], diagnostics: { parser_format: 'array_literal', reason: 'array_start_missing' } };
 
   let arrayEnd = findMatchingBracketIndex_(text, arrayStart);
   if (arrayEnd < 0) {
     const statementEnd = text.indexOf('];', arrayStart);
-    if (statementEnd < 0) return [];
+    if (statementEnd < 0) return { rows: [], diagnostics: { parser_format: 'array_literal', reason: 'array_end_missing' } };
     arrayEnd = statementEnd;
   }
 
@@ -669,9 +713,9 @@ function extractMatchMxRowsFromLegacyAssignments_(payloadText) {
 
 function parseMatchMxRowsFromArrayLiteralText_(arrayLiteralText) {
   const literal = String(arrayLiteralText || '').trim();
-  if (!literal || literal[0] !== '[') return [];
+  if (!literal || literal[0] !== '[') return { rows: [], diagnostics: { parser_format: 'array_literal', reason: 'invalid_literal' } };
 
-  const rows = [];
+  const tokenRows = [];
   let depth = 0;
   let quote = '';
   let escaped = false;
@@ -707,16 +751,219 @@ function parseMatchMxRowsFromArrayLiteralText_(arrayLiteralText) {
       if (depth === 0 && rowStart >= 0) {
         const rowBody = literal.slice(rowStart + 1, i);
         const tokens = parseJsArrayTokens_(rowBody);
-        if (tokens.length >= 6) {
-          const structured = buildStructuredMatchMxRow_(tokens);
-          if (structured.player_name && structured.score) rows.push(structured);
-        }
+        if (tokens.length >= 6) tokenRows.push(tokens);
         rowStart = -1;
       }
     }
   }
 
-  return rows;
+  const schema = detectMatchMxSchema_(tokenRows);
+  const rows = [];
+  for (let i = 0; i < tokenRows.length; i += 1) {
+    const structured = buildStructuredMatchMxRow_(tokenRows[i], schema.mapping);
+    if (structured.player_name && structured.score) rows.push(structured);
+  }
+
+  const diagnostics = Object.assign({}, schema.diagnostics, {
+    parser_format: 'array_literal',
+    token_row_count: tokenRows.length,
+    structured_row_count: rows.length,
+    valid_name_ratio: computeValidNameRatio_(rows),
+    non_null_by_feature: summarizeMatchMxNonNullByFeature_(rows),
+  });
+  return { rows: rows, diagnostics: diagnostics };
+}
+
+function detectMatchMxSchema_(tokenRows) {
+  const rows = Array.isArray(tokenRows) ? tokenRows : [];
+  const fallback = buildDefaultMatchMxSchema_();
+  if (!rows.length) return { mapping: fallback, diagnostics: { schema_source: 'default_empty' } };
+
+  const maxColumns = rows.reduce(function (maxSoFar, row) { return Math.max(maxSoFar, Array.isArray(row) ? row.length : 0); }, 0);
+  let bestNameCol = -1;
+  let bestNameRatio = 0;
+  for (let col = 0; col < maxColumns; col += 1) {
+    const ratio = measurePlayerNameColumnQuality_(rows, col);
+    if (ratio > bestNameRatio) {
+      bestNameRatio = ratio;
+      bestNameCol = col;
+    }
+  }
+
+  const mapping = buildDefaultMatchMxSchema_();
+  const diagnostics = {
+    schema_source: 'detected',
+    candidate_player_name_col: bestNameCol,
+    candidate_player_name_ratio: roundNumber_(bestNameRatio, 3),
+    selected_player_name_col: bestNameRatio >= 0.45 ? bestNameCol : MATCHMX_ROW_IDX.PLAYER_NAME,
+  };
+  mapping.player_name = diagnostics.selected_player_name_col;
+  mapping.opponent = findBestNameLikeColumn_(rows, maxColumns, mapping.player_name, 0.25, MATCHMX_ROW_IDX.OPPONENT);
+  mapping.score = findBestScoreColumn_(rows, maxColumns, MATCHMX_ROW_IDX.SCORE);
+  mapping.ranking = findBestNumericColumn_(rows, maxColumns, function (n) { return n >= 1 && n <= 5000; }, MATCHMX_ROW_IDX.RANKING, [mapping.player_name, mapping.opponent, mapping.score]);
+
+  const used = [mapping.player_name, mapping.opponent, mapping.score, mapping.ranking];
+  const pctMatcher = function (n) { return n >= 0 && n <= 100.5; };
+  mapping.recent_form = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.RECENT_FORM, used);
+  used.push(mapping.recent_form);
+  mapping.surface_win_rate = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.SURFACE_WIN_RATE, used);
+  used.push(mapping.surface_win_rate);
+  mapping.hold_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.HOLD_PCT, used);
+  used.push(mapping.hold_pct);
+  mapping.break_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.BREAK_PCT, used);
+  used.push(mapping.break_pct);
+
+  mapping.bp_saved_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.BP_SAVED_PCT, used);
+  used.push(mapping.bp_saved_pct);
+  mapping.bp_conv_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.BP_CONV_PCT, used);
+  used.push(mapping.bp_conv_pct);
+  mapping.first_serve_in_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.FIRST_SERVE_IN_PCT, used);
+  used.push(mapping.first_serve_in_pct);
+  mapping.first_serve_points_won_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.FIRST_SERVE_POINTS_WON_PCT, used);
+  used.push(mapping.first_serve_points_won_pct);
+  mapping.second_serve_points_won_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.SECOND_SERVE_POINTS_WON_PCT, used);
+  used.push(mapping.second_serve_points_won_pct);
+  mapping.return_points_won_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.RETURN_POINTS_WON_PCT, used);
+  used.push(mapping.return_points_won_pct);
+  mapping.dr = findBestNumericColumn_(rows, maxColumns, function (n) { return n >= 0 && n <= 5; }, MATCHMX_ROW_IDX.DOMINANCE_RATIO, used);
+  used.push(mapping.dr);
+  mapping.tpw_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT, used);
+
+  diagnostics.mapping = mapping;
+  return { mapping: mapping, diagnostics: diagnostics };
+}
+
+function buildDefaultMatchMxSchema_() {
+  return {
+    date: MATCHMX_ROW_IDX.DATE,
+    event: MATCHMX_ROW_IDX.EVENT,
+    surface: MATCHMX_ROW_IDX.SURFACE,
+    player_name: MATCHMX_ROW_IDX.PLAYER_NAME,
+    opponent: MATCHMX_ROW_IDX.OPPONENT,
+    score: MATCHMX_ROW_IDX.SCORE,
+    ranking: MATCHMX_ROW_IDX.RANKING,
+    recent_form: MATCHMX_ROW_IDX.RECENT_FORM,
+    surface_win_rate: MATCHMX_ROW_IDX.SURFACE_WIN_RATE,
+    hold_pct: MATCHMX_ROW_IDX.HOLD_PCT,
+    break_pct: MATCHMX_ROW_IDX.BREAK_PCT,
+    bp_saved_pct: MATCHMX_ROW_IDX.BP_SAVED_PCT,
+    bp_conv_pct: MATCHMX_ROW_IDX.BP_CONV_PCT,
+    first_serve_in_pct: MATCHMX_ROW_IDX.FIRST_SERVE_IN_PCT,
+    first_serve_points_won_pct: MATCHMX_ROW_IDX.FIRST_SERVE_POINTS_WON_PCT,
+    second_serve_points_won_pct: MATCHMX_ROW_IDX.SECOND_SERVE_POINTS_WON_PCT,
+    return_points_won_pct: MATCHMX_ROW_IDX.RETURN_POINTS_WON_PCT,
+    dr: MATCHMX_ROW_IDX.DOMINANCE_RATIO,
+    tpw_pct: MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT,
+  };
+}
+
+function measurePlayerNameColumnQuality_(rows, columnIndex) {
+  let total = 0;
+  let valid = 0;
+  rows.forEach(function (row) {
+    const value = String((row && row[columnIndex]) || '').trim();
+    if (!value) return;
+    total += 1;
+    if (isLikelyFullPlayerName_(value)) valid += 1;
+  });
+  return total > 0 ? valid / total : 0;
+}
+
+function isLikelyFullPlayerName_(value) {
+  const text = String(value || '').trim();
+  if (!text || text.length < 4) return false;
+  if (!/^[A-Za-z .'-]+$/.test(text)) return false;
+  const lowered = text.toLowerCase();
+  if (/^(?:i|pm|am|qf|sf|f|w|l|ret|wo)$/.test(lowered)) return false;
+  const parts = text.split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return false;
+  return parts.every(function (part) { return part.length >= 2; });
+}
+
+function findBestNameLikeColumn_(rows, maxColumns, excludeColumn, minRatio, fallback) {
+  let bestIndex = fallback;
+  let bestRatio = 0;
+  for (let col = 0; col < maxColumns; col += 1) {
+    if (col === excludeColumn) continue;
+    const ratio = measurePlayerNameColumnQuality_(rows, col);
+    if (ratio > bestRatio) {
+      bestRatio = ratio;
+      bestIndex = col;
+    }
+  }
+  return bestRatio >= minRatio ? bestIndex : fallback;
+}
+
+function findBestScoreColumn_(rows, maxColumns, fallback) {
+  const scoreRegex = /\d\s*[-:]\s*\d|\bret\b|\bwo\b/i;
+  let bestIndex = fallback;
+  let bestRatio = 0;
+  for (let col = 0; col < maxColumns; col += 1) {
+    let total = 0;
+    let valid = 0;
+    rows.forEach(function (row) {
+      const value = String((row && row[col]) || '').trim();
+      if (!value) return;
+      total += 1;
+      if (scoreRegex.test(value)) valid += 1;
+    });
+    const ratio = total > 0 ? valid / total : 0;
+    if (ratio > bestRatio) {
+      bestRatio = ratio;
+      bestIndex = col;
+    }
+  }
+  return bestRatio >= 0.2 ? bestIndex : fallback;
+}
+
+function findBestNumericColumn_(rows, maxColumns, predicate, fallback, excludedColumns) {
+  const excluded = {};
+  (excludedColumns || []).forEach(function (index) { excluded[index] = true; });
+  let bestIndex = fallback;
+  let bestScore = 0;
+  for (let col = 0; col < maxColumns; col += 1) {
+    if (excluded[col]) continue;
+    let total = 0;
+    let valid = 0;
+    rows.forEach(function (row) {
+      const raw = String((row && row[col]) || '').trim();
+      if (!raw) return;
+      const value = Number(raw);
+      if (!Number.isFinite(value)) return;
+      total += 1;
+      if (predicate(value) || predicate(value * 100)) valid += 1;
+    });
+    const score = total > 0 ? valid / total : 0;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = col;
+    }
+  }
+  return bestScore >= 0.35 ? bestIndex : fallback;
+}
+
+function computeValidNameRatio_(rows) {
+  const allRows = Array.isArray(rows) ? rows : [];
+  if (!allRows.length) return 0;
+  let valid = 0;
+  allRows.forEach(function (row) {
+    const canonical = canonicalizePlayerName_(String((row && row.player_name) || '').trim(), {});
+    if (canonical && canonical.length >= 4 && canonical.indexOf(' ') > 0) valid += 1;
+  });
+  return valid / allRows.length;
+}
+
+function summarizeMatchMxNonNullByFeature_(rows) {
+  const allRows = Array.isArray(rows) ? rows : [];
+  const features = ['ranking', 'recent_form', 'surface_win_rate', 'hold_pct', 'break_pct'];
+  const out = {};
+  features.forEach(function (feature) { out[feature] = 0; });
+  allRows.forEach(function (row) {
+    features.forEach(function (feature) {
+      if (row && row[feature] !== null && row[feature] !== undefined) out[feature] += 1;
+    });
+  });
+  return out;
 }
 
 function findMatchingBracketIndex_(text, openingIndex) {
@@ -759,7 +1006,7 @@ function findMatchingBracketIndex_(text, openingIndex) {
   return -1;
 }
 
-function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer) {
+function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer, extractionDiagnostics) {
   const parsedRows = Array.isArray(rows) ? rows : [];
   const normalizedMap = statsByPlayer && typeof statsByPlayer === 'object' ? statsByPlayer : {};
   const uniquePlayers = {};
@@ -807,7 +1054,7 @@ function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer) {
     if (stats.break_pct !== null && stats.break_pct !== undefined) breakPctNonNull += 1;
   });
 
-  return {
+  return Object.assign({}, extractionDiagnostics || {}, {
     parsed_row_count: parsedRows.length,
     parsed_player_key_count: Object.keys(parsedPlayerKeys).length,
     unique_players_parsed: Object.keys(uniquePlayers).length,
@@ -826,7 +1073,7 @@ function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer) {
       hold_pct: holdPctNonNull,
       break_pct: breakPctNonNull,
     },
-  };
+  });
 }
 
 function isTaLeadersCoverageMismatch_(diagnostics) {
@@ -869,40 +1116,47 @@ function parseJsArrayTokens_(arrayLiteralBody) {
   return tokens;
 }
 
-function buildStructuredMatchMxRow_(tokens) {
-  const score = String(tokens[MATCHMX_ROW_IDX.SCORE] || '').trim();
+function buildStructuredMatchMxRow_(tokens, schemaMapping) {
+  const mapping = schemaMapping || buildDefaultMatchMxSchema_();
+
+  function pick(index) {
+    return Number.isInteger(index) && index >= 0 && index < tokens.length ? tokens[index] : '';
+  }
+
+  const score = String(pick(mapping.score) || '').trim();
   const hasWalkoverOrRet = /\b(?:ret|wo)\b/i.test(score);
   const numericStats = [];
-  for (let i = MATCHMX_ROW_IDX.RANKING; i < tokens.length; i += 1) {
+  for (let i = 0; i < tokens.length; i += 1) {
     const value = Number(tokens[i]);
     numericStats.push(Number.isFinite(value) ? value : null);
   }
 
   function take(index) {
-    const value = Number(tokens[index]);
+    const raw = pick(index);
+    const value = Number(raw);
     return Number.isFinite(value) ? value : null;
   }
 
   return {
-    date: String(tokens[MATCHMX_ROW_IDX.DATE] || ''),
-    event: String(tokens[MATCHMX_ROW_IDX.EVENT] || ''),
-    surface: String(tokens[MATCHMX_ROW_IDX.SURFACE] || ''),
-    player_name: String(tokens[MATCHMX_ROW_IDX.PLAYER_NAME] || ''),
-    opponent: String(tokens[MATCHMX_ROW_IDX.OPPONENT] || ''),
+    date: String(pick(mapping.date) || ''),
+    event: String(pick(mapping.event) || ''),
+    surface: String(pick(mapping.surface) || ''),
+    player_name: String(pick(mapping.player_name) || ''),
+    opponent: String(pick(mapping.opponent) || ''),
     score: score,
-    ranking: take(MATCHMX_ROW_IDX.RANKING),
-    recent_form: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.RECENT_FORM),
-    surface_win_rate: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.SURFACE_WIN_RATE),
-    hold_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.HOLD_PCT),
-    break_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.BREAK_PCT),
-    bp_saved_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.BP_SAVED_PCT),
-    bp_conv_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.BP_CONV_PCT),
-    first_serve_in_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.FIRST_SERVE_IN_PCT),
-    first_serve_points_won_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.FIRST_SERVE_POINTS_WON_PCT),
-    second_serve_points_won_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.SECOND_SERVE_POINTS_WON_PCT),
-    return_points_won_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.RETURN_POINTS_WON_PCT),
-    dr: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.DOMINANCE_RATIO),
-    tpw_pct: hasWalkoverOrRet ? null : take(MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT),
+    ranking: take(mapping.ranking),
+    recent_form: hasWalkoverOrRet ? null : take(mapping.recent_form),
+    surface_win_rate: hasWalkoverOrRet ? null : take(mapping.surface_win_rate),
+    hold_pct: hasWalkoverOrRet ? null : take(mapping.hold_pct),
+    break_pct: hasWalkoverOrRet ? null : take(mapping.break_pct),
+    bp_saved_pct: hasWalkoverOrRet ? null : take(mapping.bp_saved_pct),
+    bp_conv_pct: hasWalkoverOrRet ? null : take(mapping.bp_conv_pct),
+    first_serve_in_pct: hasWalkoverOrRet ? null : take(mapping.first_serve_in_pct),
+    first_serve_points_won_pct: hasWalkoverOrRet ? null : take(mapping.first_serve_points_won_pct),
+    second_serve_points_won_pct: hasWalkoverOrRet ? null : take(mapping.second_serve_points_won_pct),
+    return_points_won_pct: hasWalkoverOrRet ? null : take(mapping.return_points_won_pct),
+    dr: hasWalkoverOrRet ? null : take(mapping.dr),
+    tpw_pct: hasWalkoverOrRet ? null : take(mapping.tpw_pct),
     numeric_stats: numericStats,
   };
 }
