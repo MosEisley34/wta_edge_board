@@ -208,6 +208,32 @@ function runEdgeBoard() {
   }
 
   try {
+    const preflight = preflightConfigUniqueness_('runEdgeBoard preflight');
+    if (!preflight.ok) {
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'config_uniqueness_preflight',
+        status: 'failed',
+        reason_code: preflight.reason_code,
+        message: JSON.stringify({
+          context: 'runEdgeBoard',
+          duplicate_keys: preflight.duplicate_keys,
+        }),
+      });
+      appendLogRow_({
+        row_type: 'summary',
+        run_id: runId,
+        stage: 'runEdgeBoard',
+        started_at: startedAt,
+        ended_at: new Date(),
+        status: 'skipped',
+        reason_code: preflight.reason_code,
+        message: preflight.message,
+      });
+      return;
+    }
+
     const config = getConfig_();
     if (!config.RUN_ENABLED) {
       appendLogRow_({
@@ -542,16 +568,6 @@ function runEdgeBoard() {
     });
   } catch (error) {
     const errorMessage = String(error && error.message ? error.message : error);
-    if (errorMessage.indexOf('dedupeConfigSheet_()') >= 0) {
-      appendLogRow_({
-        row_type: 'ops',
-        run_id: runId,
-        stage: 'config_help',
-        status: 'warning',
-        reason_code: 'config_duplicate_keys',
-        message: 'Why this fails: duplicate config keys are ambiguous. How to fix safely: run dedupeConfigSheet_() once, then re-run pipeline.',
-      });
-    }
     appendLogRow_({
       row_type: 'summary',
       run_id: runId,

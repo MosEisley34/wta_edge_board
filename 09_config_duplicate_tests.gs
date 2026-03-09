@@ -169,3 +169,54 @@ function createFakeConfigSheet_(initialValues) {
     setFrozenRows: function (n) { frozenRows = n; },
   };
 }
+
+function testPreflightConfigUniqueness_detectsDuplicates_() {
+  const originalSpreadsheetApp = SpreadsheetApp;
+  SpreadsheetApp = {
+    getActiveSpreadsheet: function () {
+      return {
+        getSheetByName: function () {
+          return createFakeConfigSheet_([
+            ['key', 'value'],
+            ['RUN_ENABLED', 'true'],
+            ['RUN_ENABLED', 'false'],
+          ]);
+        },
+      };
+    },
+  };
+
+  try {
+    const preflight = preflightConfigUniqueness_('test');
+    assertEquals_(false, preflight.ok);
+    assertArrayEquals_(['RUN_ENABLED'], preflight.duplicate_keys);
+    assertTrue_(String(preflight.user_message || '').indexOf('Repair Config') >= 0, 'expected repair action in user message');
+  } finally {
+    SpreadsheetApp = originalSpreadsheetApp;
+  }
+}
+
+function testPreflightConfigUniqueness_passesWhenUnique_() {
+  const originalSpreadsheetApp = SpreadsheetApp;
+  SpreadsheetApp = {
+    getActiveSpreadsheet: function () {
+      return {
+        getSheetByName: function () {
+          return createFakeConfigSheet_([
+            ['key', 'value'],
+            ['RUN_ENABLED', 'true'],
+            ['LOOKAHEAD_HOURS', '24'],
+          ]);
+        },
+      };
+    },
+  };
+
+  try {
+    const preflight = preflightConfigUniqueness_('test');
+    assertEquals_(true, preflight.ok);
+    assertArrayEquals_([], preflight.duplicate_keys);
+  } finally {
+    SpreadsheetApp = originalSpreadsheetApp;
+  }
+}
