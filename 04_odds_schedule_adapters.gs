@@ -1904,6 +1904,8 @@ function resolveActiveWtaSportKeys_(config, deps, opts) {
 
   const cached = getCached(cacheKey);
   const configuredSportKeys = parseConfiguredSportKeys_(config && config.ODDS_SPORT_KEY);
+  let cachedFallbackCandidate = [];
+  let unknownConfiguredFromCache = [];
   if (!options.force_discovery && cached && cached.length) {
     if (configuredSportKeys.length) {
       const configuredKnownCached = configuredSportKeys.filter(function (key) { return cached.indexOf(key) >= 0; });
@@ -1918,6 +1920,8 @@ function resolveActiveWtaSportKeys_(config, deps, opts) {
         });
         return { sport_keys: selected, source: 'cache', fallback: fallback };
       }
+      cachedFallbackCandidate = cached;
+      unknownConfiguredFromCache = unknownConfigured;
     } else {
       logResolution('selected_cached', cached, 'none', { source: 'cache' });
       return { sport_keys: cached, source: 'cache', fallback: 'none' };
@@ -1926,7 +1930,20 @@ function resolveActiveWtaSportKeys_(config, deps, opts) {
 
   const catalogResp = callOddsApi(buildOddsApiUrl_(config, '/sports', { all: 'true' }), { debug: config.VERBOSE_LOGGING });
   if (!catalogResp.ok) {
-    logResolution('catalog_fetch_failed', [], 'catalog_fetch_failed');
+    if (cachedFallbackCandidate.length) {
+      logResolution('catalog_fetch_failed_using_cached', cachedFallbackCandidate, 'catalog_fetch_failed_using_cached', {
+        source: 'cache',
+        configured_sport_keys: configuredSportKeys,
+        unknown_configured_sport_keys: unknownConfiguredFromCache,
+      });
+      return { sport_keys: cachedFallbackCandidate, source: 'cache', fallback: 'catalog_fetch_failed_using_cached' };
+    }
+
+    logResolution('catalog_fetch_failed', [], 'catalog_fetch_failed', {
+      source: 'fallback',
+      configured_sport_keys: configuredSportKeys,
+      unknown_configured_sport_keys: configuredSportKeys,
+    });
     return { sport_keys: [], source: 'fallback', fallback: 'catalog_fetch_failed' };
   }
 

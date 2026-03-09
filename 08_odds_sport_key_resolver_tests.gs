@@ -64,6 +64,57 @@ function testResolveActiveWtaSportKeys_unknownConfiguredKey_discoversActiveFallb
   assertEquals_(2, Number(calls.logs[0].extra.selected_sport_key_count || calls.logs[0].keys.length));
 }
 
+
+function testResolveActiveWtaSportKeys_catalogFetchFailed_usesCachedWhenConfiguredUnknown_() {
+  const calls = { logs: [] };
+  const config = {
+    ODDS_CACHE_TTL_SEC: 180,
+    ODDS_SPORT_KEY: 'tennis_wta_unknown',
+    ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+    ODDS_API_KEY: 'test',
+  };
+
+  const result = resolveActiveWtaSportKeys_(config, {
+    getCachedOddsSportKeys: function () { return ['tennis_wta_us_open', 'tennis_wta_wimbledon']; },
+    setCachedOddsSportKeys: function () {},
+    callOddsApi: function () { return { ok: false }; },
+    logOddsSportKeyResolution: function (mode, keys, fallback, extra) {
+      calls.logs.push({ mode: mode, keys: keys, fallback: fallback, extra: extra || {} });
+    },
+  });
+
+  assertEquals_('cache', result.source);
+  assertEquals_('catalog_fetch_failed_using_cached', result.fallback);
+  assertArrayEquals_(['tennis_wta_us_open', 'tennis_wta_wimbledon'], result.sport_keys);
+  assertEquals_('catalog_fetch_failed_using_cached', calls.logs[0].mode);
+  assertArrayEquals_(['tennis_wta_unknown'], calls.logs[0].extra.unknown_configured_sport_keys);
+}
+
+function testResolveActiveWtaSportKeys_catalogFetchFailed_withoutCache_returnsEmpty_() {
+  const calls = { logs: [] };
+  const config = {
+    ODDS_CACHE_TTL_SEC: 180,
+    ODDS_SPORT_KEY: 'tennis_wta_unknown',
+    ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+    ODDS_API_KEY: 'test',
+  };
+
+  const result = resolveActiveWtaSportKeys_(config, {
+    getCachedOddsSportKeys: function () { return []; },
+    setCachedOddsSportKeys: function () {},
+    callOddsApi: function () { return { ok: false }; },
+    logOddsSportKeyResolution: function (mode, keys, fallback, extra) {
+      calls.logs.push({ mode: mode, keys: keys, fallback: fallback, extra: extra || {} });
+    },
+  });
+
+  assertEquals_('fallback', result.source);
+  assertEquals_('catalog_fetch_failed', result.fallback);
+  assertArrayEquals_([], result.sport_keys);
+  assertEquals_('catalog_fetch_failed', calls.logs[0].mode);
+  assertArrayEquals_(['tennis_wta_unknown'], calls.logs[0].extra.unknown_configured_sport_keys);
+}
+
 function testResolveActiveWtaSportKeys_fallsBackWhenAbsent_() {
   const config = {
     ODDS_CACHE_TTL_SEC: 300,
