@@ -183,10 +183,24 @@ function buildCompetitionTierResolverConfig_(config) {
 
 function resolveCompetitionTier_(event, resolverConfig) {
   const sourceFields = buildCompetitionSourceFields_(event, resolverConfig);
+  let fallbackOther = null;
 
   for (let i = 0; i < sourceFields.length; i += 1) {
     const source = sourceFields[i];
     const canonical = detectTierByValue_(source.value, resolverConfig);
+    if (canonical === 'OTHER') {
+      if (!fallbackOther) {
+        fallbackOther = {
+          canonical_tier: canonical,
+          matched_by: source.rule,
+          matched_field: source.field,
+          matched_value: source.value,
+          raw_fields: sourceFields,
+        };
+      }
+      continue;
+    }
+
     if (canonical !== 'UNKNOWN') {
       return {
         canonical_tier: canonical,
@@ -198,12 +212,26 @@ function resolveCompetitionTier_(event, resolverConfig) {
     }
   }
 
+  if (fallbackOther) return fallbackOther;
+
   return {
     canonical_tier: 'UNKNOWN',
     matched_by: 'none',
     matched_field: '',
     matched_value: '',
     raw_fields: sourceFields,
+  };
+}
+
+function describeCompetitionDecision_(resolved, decision) {
+  const source = resolveRejectionSource_(resolved);
+  return {
+    raw_competition: source.value || '',
+    canonical_competition: normalizeCompetitionValue_(source.value || ''),
+    resolved_tier: resolved && resolved.canonical_tier ? resolved.canonical_tier : 'UNKNOWN',
+    allow_decision: decision && decision.allowed ? 'allow' : 'deny',
+    decision_reason: decision && decision.reason_code ? decision.reason_code : '',
+    source_field: source.field || '',
   };
 }
 
