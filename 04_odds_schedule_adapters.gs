@@ -371,11 +371,13 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     const resolved = resolveCompetitionTier_(event, tierResolverConfig);
     const canonical = resolved.canonical_tier;
     const decision = isAllowedTournament(canonical, config);
+    const decisionTrace = describeCompetitionDecision_(resolved, decision);
     reasonCounts[decision.reason_code] = (reasonCounts[decision.reason_code] || 0) + 1;
     canonicalExamples.push({
       raw_name: event.competition,
       canonical_tier: canonical,
       reason_code: decision.reason_code,
+      competition_decision_trace: decisionTrace,
       matched_by: resolved.matched_by,
       matched_field: resolved.matched_field,
       matched_value: resolved.matched_value || '',
@@ -425,13 +427,16 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     });
 
     if (!decision.allowed) {
-      const rejectionSource = resolveRejectionSource_(resolved);
       rejectionDiagnostics.push({
         event_id: event.event_id,
         reason_code: decision.reason_code,
         canonical_tier: canonical,
-        source_field: rejectionSource.field,
-        source_value: rejectionSource.value,
+        source_field: decisionTrace.source_field,
+        source_value: decisionTrace.raw_competition,
+        canonical_competition: decisionTrace.canonical_competition,
+        resolved_tier: decisionTrace.resolved_tier,
+        allow_decision: decisionTrace.allow_decision,
+        decision_reason: decisionTrace.decision_reason,
       });
     }
 
@@ -555,6 +560,13 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
       error: scheduleEnrichment.error || '',
     },
   }, 2);
+
+  if (rejectionDiagnostics.length) {
+    logDiagnosticEvent_(config, 'stageFetchSchedule_competition_resolution_trace', {
+      run_id: runId,
+      diagnostics: rejectionDiagnostics,
+    }, Math.min(50, rejectionDiagnostics.length));
+  }
 
   return {
     events: allowedEvents,

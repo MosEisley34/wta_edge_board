@@ -3070,6 +3070,73 @@ function testResolveCompetitionTier_mixedSourceFieldsUsesEventNameWhenCompetitio
   assertEquals_('WTA Indian Wells', resolved.matched_value);
 }
 
+function testResolveCompetitionTier_prioritizesSpecificEventOverGenericWtaSource_() {
+  const resolverConfig = buildCompetitionTierResolverConfig_({
+    ALLOW_WTA_250: true,
+    COMPETITION_SOURCE_FIELDS_JSON: '["competition","sport_title","event_name"]',
+    GRAND_SLAM_ALIASES_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON,
+    WTA_1000_ALIASES_JSON: DEFAULT_CONFIG.WTA_1000_ALIASES_JSON,
+    WTA_500_ALIASES_JSON: DEFAULT_CONFIG.WTA_500_ALIASES_JSON,
+    COMPETITION_DENY_ALIASES_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIASES_JSON,
+    GRAND_SLAM_ALIAS_MAP_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIAS_MAP_JSON,
+    WTA_500_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON,
+    WTA_1000_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON,
+    COMPETITION_DENY_ALIAS_MAP_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON,
+  });
+
+  const resolved = resolveCompetitionTier_({
+    competition: 'WTA Tour',
+    sport_title: 'WTA',
+    event_name: 'WTA Indian Wells',
+  }, resolverConfig);
+
+  assertEquals_('WTA_1000', resolved.canonical_tier);
+  assertEquals_('event_name', resolved.matched_field);
+  assertEquals_('WTA Indian Wells', resolved.matched_value);
+}
+
+function testResolveCompetitionTier_acceptsIndianWellsVariantInCompetition_() {
+  const resolverConfig = buildCompetitionTierResolverConfig_({
+    ALLOW_WTA_250: true,
+    COMPETITION_SOURCE_FIELDS_JSON: DEFAULT_CONFIG.COMPETITION_SOURCE_FIELDS_JSON,
+    GRAND_SLAM_ALIASES_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIASES_JSON,
+    WTA_1000_ALIASES_JSON: DEFAULT_CONFIG.WTA_1000_ALIASES_JSON,
+    WTA_500_ALIASES_JSON: DEFAULT_CONFIG.WTA_500_ALIASES_JSON,
+    COMPETITION_DENY_ALIASES_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIASES_JSON,
+    GRAND_SLAM_ALIAS_MAP_JSON: DEFAULT_CONFIG.GRAND_SLAM_ALIAS_MAP_JSON,
+    WTA_500_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON,
+    WTA_1000_ALIAS_MAP_JSON: DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON,
+    COMPETITION_DENY_ALIAS_MAP_JSON: DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON,
+  });
+
+  const resolved = resolveCompetitionTier_({ competition: 'BNP Paribas Open - WTA Indian Wells' }, resolverConfig);
+
+  assertEquals_('WTA_1000', resolved.canonical_tier);
+  assertEquals_('competition', resolved.matched_field);
+}
+
+function testDescribeCompetitionDecision_includesRawCanonicalTierAndReason_() {
+  const resolved = {
+    canonical_tier: 'WTA_1000',
+    matched_field: 'event_name',
+    matched_value: 'WTA Indian Wells',
+    raw_fields: [
+      { field: 'competition', value: 'WTA Tour' },
+      { field: 'event_name', value: 'WTA Indian Wells' },
+    ],
+  };
+  const decision = { allowed: true, reason_code: 'allowed_wta1000' };
+
+  const trace = describeCompetitionDecision_(resolved, decision);
+
+  assertEquals_('WTA Indian Wells', trace.raw_competition);
+  assertEquals_('wta indian wells', trace.canonical_competition);
+  assertEquals_('WTA_1000', trace.resolved_tier);
+  assertEquals_('allow', trace.allow_decision);
+  assertEquals_('allowed_wta1000', trace.decision_reason);
+  assertEquals_('event_name', trace.source_field);
+}
+
 function testResolveRejectionSource_prefersMatchedFieldThenFallback_() {
   const fromMatched = resolveRejectionSource_({
     matched_field: 'competition',
