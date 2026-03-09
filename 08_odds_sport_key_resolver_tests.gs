@@ -2331,6 +2331,49 @@ function testEnrichScheduleEventsFromTennisAbstract_nonFatalOnFailure_() {
   }
 }
 
+function testEnrichScheduleEventsFromTennisAbstract_h2hEmptyTableAddsReasonAndImpact_() {
+  const originalFetchPlayerStatsBatch = fetchPlayerStatsBatch_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetTaH2hRowForCanonicalPair = getTaH2hRowForCanonicalPair_;
+
+  fetchPlayerStatsBatch_ = function () {
+    return { stats_by_player: {}, reason_code: 'ta_leaders_ok', source: 'ta_leaders' };
+  };
+  getStateJson_ = function (key) {
+    if (key === 'PLAYER_STATS_H2H_LAST_FETCH_META') {
+      return {
+        last_failure_reason: 'h2h_source_empty_table',
+        source_type: 'fresh_h2h_empty_table',
+        row_count: 0,
+      };
+    }
+    return {};
+  };
+  getTaH2hRowForCanonicalPair_ = function () { return null; };
+
+  try {
+    const result = enrichScheduleEventsFromTennisAbstract_({}, [{
+      event_id: 'sched_h2h_empty',
+      start_time: new Date('2025-03-01T03:00:00.000Z'),
+      player_1: 'Player One',
+      player_2: 'Player Two',
+    }]);
+
+    assertEquals_('schedule_enrichment_ta_completed', result.reason_code);
+    assertEquals_('h2h_source_empty_table', result.h2h_reason_code);
+    assertEquals_(true, !!result.h2h_impact);
+    assertEquals_(true, result.h2h_impact.h2h_features_unavailable);
+    assertEquals_('h2h_features_only', result.h2h_impact.model_fallback_scope);
+    assertEquals_('fresh_h2h_empty_table', result.h2h_impact.h2h_source_type);
+    assertEquals_(0, result.h2h_impact.h2h_row_count);
+    assertEquals_(1, result.h2h_missing);
+  } finally {
+    fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
+    getStateJson_ = originalGetStateJson;
+    getTaH2hRowForCanonicalPair_ = originalGetTaH2hRowForCanonicalPair;
+  }
+}
+
 function runStageFetchScheduleScenario_(options) {
   const opts = options || {};
   const originalDateNow = Date.now;

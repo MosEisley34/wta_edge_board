@@ -62,3 +62,37 @@ function testParseTaH2hPageHtml_emptyNoDataFormat_returnsEmptyTableWithoutFailur
   assertEquals_('', parsed.diagnostics.parse_step_failed || '');
   assertTrue_(String(parsed.diagnostics.html_sha256 || '').length === 64, 'expected html hash in diagnostics');
 }
+
+
+function testFetchTaH2hDatasetFromSource_emptyTableReturnsDedicatedReason_() {
+  const originalSleep = sleepTennisAbstractRequestGap_;
+  const originalFetchWithRetry = playerStatsFetchWithRetry_;
+  const originalLogDiagnostic = logTaH2hParseDiagnostic_;
+
+  sleepTennisAbstractRequestGap_ = function () {};
+  playerStatsFetchWithRetry_ = function () {
+    return {
+      ok: true,
+      status_code: 200,
+      api_call_count: 1,
+      response: {
+        getContentText: function () {
+          return '<html><body><table><tr><td><a href="/cgi-bin/h2h.cgi?player1=A&player2=B">No matches</a></td></tr></table></body></html>';
+        },
+      },
+    };
+  };
+  logTaH2hParseDiagnostic_ = function () {};
+
+  try {
+    const fetched = fetchTaH2hDatasetFromSource_({ PLAYER_STATS_TA_H2H_URL: 'https://example.test/h2h' });
+
+    assertTrue_(fetched.ok === true, 'expected source fetch to succeed');
+    assertEquals_('h2h_source_empty_table', fetched.reason_code);
+    assertEquals_(0, (fetched.payload.rows || []).length);
+  } finally {
+    sleepTennisAbstractRequestGap_ = originalSleep;
+    playerStatsFetchWithRetry_ = originalFetchWithRetry;
+    logTaH2hParseDiagnostic_ = originalLogDiagnostic;
+  }
+}
