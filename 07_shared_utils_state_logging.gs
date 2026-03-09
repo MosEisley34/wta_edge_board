@@ -1,3 +1,7 @@
+
+const STATE_VALUE_SAFE_CHAR_THRESHOLD = 45000;
+const STATE_VALUE_GUARD_REASON = 'state_value_summarized_size_guard';
+
 const SECRET_REDACTION_MAP = {
   exact_keys: [
     'ODDS_API_KEY',
@@ -132,13 +136,59 @@ function appendLogRow_(entry) {
   ]);
 }
 
-function setStateValue_(key, value) {
+function setStateValue_(key, value, opts) {
   const sanitizedValue = sanitizeForStateStorage_(value);
+  const guarded = guardStateValueSize_(key, sanitizedValue, opts || {});
   upsertSheetRows_(SHEETS.STATE, ['key', 'value', 'updated_at'], [{
     key,
-    value: sanitizedValue,
+    value: guarded.value,
     updated_at: formatLocalIso_(new Date()),
   }]);
+}
+
+function guardStateValueSize_(key, serializedValue, opts) {
+  const text = String(serializedValue === null || serializedValue === undefined ? '' : serializedValue);
+  if (text.length <= STATE_VALUE_SAFE_CHAR_THRESHOLD) {
+    return { value: serializedValue, summarized: false };
+  }
+
+  const sourceMeta = (opts && opts.source_meta) || {};
+  const parsed = safeJsonParse_(text);
+  const summary = {
+    reason_code: STATE_VALUE_GUARD_REASON,
+    key: String(key || ''),
+    source: String(sourceMeta.source || (parsed && parsed.source) || ''),
+    source_type: String(sourceMeta.source_type || (parsed && parsed.source_type) || ''),
+    reference_key: String(sourceMeta.reference_key || (parsed && parsed.cache_key) || ''),
+    original_chars: text.length,
+    original_bytes: Utilities.newBlob(text).getBytes().length,
+    hash_code: stringHashCode_(text),
+    summarized_at: new Date().toISOString(),
+    cached_at_ms: Number(sourceMeta.cached_at_ms || (parsed && parsed.cached_at_ms) || Date.now()),
+    row_count: Number(sourceMeta.row_count || (parsed && parsed.row_count) || ((parsed && parsed.rows && parsed.rows.length) || 0)),
+    player_count: Number(sourceMeta.player_count || (parsed && parsed.player_count) || 0),
+    stats_count: Number(sourceMeta.stats_count || ((parsed && parsed.stats_by_player) ? Object.keys(parsed.stats_by_player).length : 0) || 0),
+    storage_path: String(sourceMeta.storage_path || (parsed && parsed.storage_path) || ''),
+  };
+
+  Logger.log(JSON.stringify({
+    event: 'state_value_size_guard_applied',
+    reason_code: STATE_VALUE_GUARD_REASON,
+    key: String(key || ''),
+    original_chars: text.length,
+    threshold_chars: STATE_VALUE_SAFE_CHAR_THRESHOLD,
+    hash_code: summary.hash_code,
+  }));
+
+  return { value: JSON.stringify(summary), summarized: true, reason_code: STATE_VALUE_GUARD_REASON };
+}
+
+function safeJsonParse_(text) {
+  try {
+    return JSON.parse(String(text || ''));
+  } catch (e) {
+    return null;
+  }
 }
 
 function sanitizeForStateStorage_(value) {

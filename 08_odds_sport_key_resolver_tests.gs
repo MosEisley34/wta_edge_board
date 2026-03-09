@@ -3091,3 +3091,118 @@ function testResolveRejectionSource_prefersMatchedFieldThenFallback_() {
   assertEquals_('sport_title', fromFallback.field);
   assertEquals_('WTA Tour', fromFallback.value);
 }
+
+
+
+function testSetStateValue_oversizedPlayerStatsMetaWritesSummary_() {
+  const originalUpsert = upsertSheetRows_;
+  const originalLoggerLog = Logger.log;
+  const originalUtilities = Utilities;
+  const writes = [];
+  const logs = [];
+
+  upsertSheetRows_ = function (sheetName, headers, rows) {
+    writes.push({ sheetName: sheetName, headers: headers, rows: rows });
+  };
+  Logger.log = function (message) { logs.push(String(message || '')); };
+  Utilities = {
+    formatDate: function () { return '2025-01-01T00:00:00'; },
+    newBlob: function (text) {
+      return {
+        getBytes: function () {
+          return String(text || '').split('').map(function (ch) { return ch.charCodeAt(0) & 255; });
+        },
+      };
+    },
+  };
+
+  try {
+    const oversized = JSON.stringify({
+      cache_key: 'PLAYER_STATS_PAYLOAD|bucket|123',
+      source: 'ta_leaders',
+      cached_at_ms: 1730000000000,
+      stats_by_player: {
+        'Player One': { blob: new Array(60000).join('x') },
+      },
+    });
+
+    setStateValue_('PLAYER_STATS_STALE_PAYLOAD', oversized, {
+      source_meta: {
+        source: 'ta_leaders',
+        reference_key: 'PLAYER_STATS_PAYLOAD|bucket|123',
+        storage_path: 'chunked_compressed',
+      },
+    });
+
+    const stateWrite = writes[0].rows[0];
+    const parsed = JSON.parse(stateWrite.value);
+    assertEquals_('state_value_summarized_size_guard', parsed.reason_code);
+    assertEquals_('PLAYER_STATS_STALE_PAYLOAD', parsed.key);
+    assertEquals_('PLAYER_STATS_PAYLOAD|bucket|123', parsed.reference_key);
+    assertEquals_('chunked_compressed', parsed.storage_path);
+    assertTrue_(logs.join('\n').indexOf('state_value_size_guard_applied') >= 0, 'expected explicit guard log line');
+  } finally {
+    upsertSheetRows_ = originalUpsert;
+    Logger.log = originalLoggerLog;
+    Utilities = originalUtilities;
+  }
+}
+
+function testPersistPlayerStatsMeta_oversizedMetadataSummarizesWithReference_() {
+  const originalUpsert = upsertSheetRows_;
+  const originalLoggerLog = Logger.log;
+  const originalUtilities = Utilities;
+  const writes = [];
+
+  upsertSheetRows_ = function (sheetName, headers, rows) {
+    writes.push({ sheetName: sheetName, headers: headers, rows: rows });
+  };
+  Logger.log = function () {};
+  Utilities = {
+    formatDate: function () { return '2025-01-01T00:00:00'; },
+    newBlob: function (text) {
+      return {
+        getBytes: function () {
+          return String(text || '').split('').map(function (ch) { return ch.charCodeAt(0) & 255; });
+        },
+      };
+    },
+  };
+
+  try {
+    const stats = {};
+    for (let i = 0; i < 1200; i += 1) {
+      stats['Player ' + i] = {
+        hold_pct: 0.6,
+        break_pct: 0.4,
+        notes: new Array(60).join('meta'),
+      };
+    }
+
+    persistPlayerStatsMeta_({
+      cache_key: 'PLAYER_STATS_PAYLOAD|meta|987',
+      cached_at_ms: 1730000000000,
+      as_of_time: '2025-03-01T00:00:00.000Z',
+      player_count: 1200,
+      stats_by_player: stats,
+    }, 'fresh_api', 1730000000000, 1200, new Date('2025-03-01T00:00:00.000Z'), {
+      api_call_count: 3,
+      provider_available: true,
+    });
+
+    const staleWrite = writes.filter(function (x) { return x.rows[0].key === 'PLAYER_STATS_STALE_PAYLOAD'; })[0];
+    const metaWrite = writes.filter(function (x) { return x.rows[0].key === 'PLAYER_STATS_LAST_FETCH_META'; })[0];
+    const staleParsed = JSON.parse(staleWrite.rows[0].value);
+    const metaParsed = JSON.parse(metaWrite.rows[0].value);
+
+    assertEquals_('state_value_summarized_size_guard', staleParsed.reason_code);
+    assertEquals_('PLAYER_STATS_PAYLOAD|meta|987', staleParsed.reference_key);
+    assertEquals_('cache_reference', staleParsed.storage_path);
+    assertEquals_('fresh_api', metaParsed.source);
+    assertEquals_(1200, metaParsed.player_count);
+  } finally {
+    upsertSheetRows_ = originalUpsert;
+    Logger.log = originalLoggerLog;
+    Utilities = originalUtilities;
+  }
+}
