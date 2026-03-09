@@ -356,6 +356,7 @@ function buildStageSummary_(runId, stage, startMs, opts) {
     provider: opts.provider,
     api_credit_usage: opts.api_credit_usage,
     reason_codes: opts.reason_codes || {},
+    reason_metadata: opts.reason_metadata || {},
   };
   logDiagnosticEvent_(opts.config || null, "stage_summary", summary, 1);
   return summary;
@@ -477,9 +478,43 @@ function mergeReasonCounts_(reasonMaps) {
   const merged = {};
   reasonMaps.forEach((map) => {
     Object.keys(map || {}).forEach((k) => {
-      merged[k] = (merged[k] || 0) + map[k];
+      const value = Number((map || {})[k]);
+      if (!Number.isFinite(value)) return;
+      merged[k] = Number(merged[k] || 0) + value;
     });
   });
+  return merged;
+}
+
+function normalizeUpstreamGateReason_(value) {
+  const text = String(value === null || value === undefined ? '' : value).trim();
+  return text || 'unspecified';
+}
+
+function mergeReasonMetadata_(reasonMaps) {
+  const merged = {};
+  const upstreamGateCandidates = [];
+
+  (reasonMaps || []).forEach((map) => {
+    Object.keys(map || {}).forEach((key) => {
+      const rawValue = map[key];
+      if (typeof rawValue === 'number' && Number.isFinite(rawValue)) return;
+      const textValue = String(rawValue === null || rawValue === undefined ? '' : rawValue).trim();
+      if (!textValue) return;
+
+      if (key === 'upstream_gate_reason') {
+        upstreamGateCandidates.push(normalizeUpstreamGateReason_(textValue));
+      } else {
+        merged[key] = textValue;
+      }
+    });
+  });
+
+  if (upstreamGateCandidates.length > 0) {
+    const nonDefault = upstreamGateCandidates.filter((reason) => reason !== 'unspecified');
+    merged.upstream_gate_reason = nonDefault.length > 0 ? nonDefault[0] : upstreamGateCandidates[0];
+  }
+
   return merged;
 }
 

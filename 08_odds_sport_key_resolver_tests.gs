@@ -1301,6 +1301,43 @@ function testRunEdgeBoard_marksIdleOutsideOddsWindowForScheduleOnlyRun_() {
   }
 }
 
+function testRunEdgeBoard_mergesMixedReasonValueTypesWithoutTypeCoercion_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [],
+      oddsRows: [],
+      oddsReasonCodes: { odds_refresh_skipped_outside_window: 1 },
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      scheduleReasonCodes: { schedule_seed_no_odds: 1, upstream_gate_reason: 'schedule_seed_no_odds' },
+      matchedCount: 0,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten: 0,
+      matchReasonCodes: { upstream_gate_reason: 'unspecified' },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+
+    const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+    assertEquals_(1, verbose.reason_codes.odds_refresh_skipped_outside_window || 0);
+    assertEquals_(1, verbose.reason_codes.schedule_seed_no_odds || 0);
+    assertEquals_(undefined, verbose.reason_codes.upstream_gate_reason);
+    assertEquals_('schedule_seed_no_odds', (verbose.reason_metadata || {}).upstream_gate_reason || '');
+    assertEquals_('schedule_seed_no_odds', verbose.upstream_gate_reason || '');
+  } finally {
+    harness.restore();
+  }
+}
+
+
 function testUpdateEmptyProductiveOutputState_warnsAtThreshold_() {
   const originalGetStateJson = getStateJson_;
   const originalSetStateValue = setStateValue_;
@@ -1479,7 +1516,9 @@ function createRunEdgeBoardTestHarness_(options) {
       const out = {};
       (maps || []).forEach(function (map) {
         Object.keys(map || {}).forEach(function (key) {
-          out[key] = Number(out[key] || 0) + Number(map[key] || 0);
+          const value = Number((map || {})[key]);
+          if (!Number.isFinite(value)) return;
+          out[key] = Number(out[key] || 0) + value;
         });
       });
       return out;
@@ -1909,7 +1948,7 @@ function testStageGenerateSignals_zeroInputIncludesUpstreamGateReason_() {
 
     assertEquals_(0, result.rows.length);
     assertEquals_(0, result.summary.input_count || 0);
-    assertEquals_('schedule_seed_no_odds', result.summary.reason_codes.upstream_gate_reason || '');
+    assertEquals_('schedule_seed_no_odds', (result.summary.reason_metadata || {}).upstream_gate_reason || '');
     assertEquals_('schedule_seed_no_odds', decisionState.upstream_gate_reason || '');
     assertEquals_('schedule_seed_no_odds', ((decisionState.explanatory_metadata || {}).upstream_gate_reason || ''));
     assertEquals_(true, !!(((decisionState.invariant || {}).zero_input_has_explanatory_metadata)));
