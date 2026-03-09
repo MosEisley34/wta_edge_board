@@ -69,6 +69,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
 
   const statsBatch = fetchPlayerStatsBatch_(config, playersToFetch, normalizedAsOfTime);
   const statsByPlayer = statsBatch.stats_by_player || {};
+  const statsCompleteness = summarizePlayerStatsCompleteness_(statsByPlayer);
   const providerUnavailable = statsBatch.provider_available === false;
   const providerNullFeatures = String(statsBatch.reason_code || '') === 'provider_returned_null_features';
   const providerReturnedEmpty = !providerUnavailable
@@ -136,6 +137,11 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     provider: source,
     api_credit_usage: Number(statsBatch.api_credit_usage || 0),
     reason_codes: reasonCounts,
+    reason_metadata: {
+      players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
+      players_with_null_only_stats: Number(statsCompleteness.players_with_null_only_stats || 0),
+      player_stats_data_available: !!statsCompleteness.has_stats,
+    },
   });
 
   return {
@@ -447,6 +453,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const start = Date.now();
   const nowMs = Date.now();
   const upstreamGateReason = stageMeta && stageMeta.upstream_gate_reason ? String(stageMeta.upstream_gate_reason) : '';
+  const fallbackOnlyMode = upstreamGateReason === 'stats_zero_coverage';
   const rows = [];
   const sampledDecisions = [];
   let lastH2hDecision = null;
@@ -470,6 +477,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     stale_odds_skip: 0,
     notify_http_failed: 0,
     notify_missing_config: 0,
+    fallback_only: 0,
   };
   const legacyReasonCodeMap = {
     missing_match: 'missing_schedule_match',
@@ -641,7 +649,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     let notifyOutcome = notifyDecision.outcome;
     let notifyDiagnostics = null;
 
-    if (notifyDecision.outcome === 'sent') {
+    if (notifyDecision.outcome === 'sent' && fallbackOnlyMode) {
+      notifyOutcome = 'fallback_only';
+    } else if (notifyDecision.outcome === 'sent') {
       const sendResult = sendSignalNotification_(config, runId, signalHash, {
         side: event.outcome,
         market: event.market,
@@ -714,6 +724,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       model_version: modelVersion,
       notification_metadata: notifyDiagnostics,
       stats_confidence: resolvedStatsConfidence,
+      signal_delivery_mode: fallbackOnlyMode ? 'fallback_only' : 'normal',
     }));
   });
 
@@ -855,6 +866,7 @@ function buildSignalRow_(runId, config, event, match, detail) {
     stats_confidence: Number.isFinite(Number(detail.stats_confidence)) ? Number(detail.stats_confidence) : null,
     signal_hash: detail.signal_hash,
     notification_outcome: detail.notification_outcome,
+    signal_delivery_mode: detail.signal_delivery_mode || 'normal',
     reason_code: detail.notification_outcome,
     commence_time: formatLocalIso_(event.commence_time),
     commence_time_utc: event.commence_time.toISOString(),

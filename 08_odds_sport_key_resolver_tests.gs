@@ -1600,7 +1600,10 @@ function testRunEdgeBoard_statsStageExecutesForOddsDrivenRun_() {
       playerStatsStageResult: {
         rows: [{ key: 'odds_1|player a|ts' }],
         byOddsEventId: { odds_1: { source: 'player_stats_provider_v1' } },
-        summary: { reason_codes: { stats_enriched: 2 } },
+        summary: {
+          reason_codes: { stats_enriched: 2 },
+          reason_metadata: { players_with_non_null_stats: 2 },
+        },
       },
       signalRows: [],
       sentCount: 0,
@@ -1610,6 +1613,62 @@ function testRunEdgeBoard_statsStageExecutesForOddsDrivenRun_() {
   try {
     runEdgeBoard();
     assertEquals_(1, harness.playerStatsCallCount);
+  } finally {
+    harness.restore();
+  }
+}
+
+function testRunEdgeBoard_degradesWhenMatchedButStatsCoverageIsZero_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }],
+      oddsRows: [{ key: 'odds_1|book|h2h|p1' }],
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchRows: [{ odds_event_id: 'odds_1', schedule_event_id: 'sch_1' }],
+      matchedCount: 1,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten: 1,
+      matchReasonCodes: { primary_match: 1, matched_count: 1 },
+      playerStatsStageResult: {
+        rows: [],
+        byOddsEventId: {},
+        summary: {
+          reason_codes: { provider_returned_empty: 1 },
+          reason_metadata: { players_with_non_null_stats: 0 },
+        },
+      },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    assertEquals_('stats_zero_coverage', harness.summaryReasonCode());
+
+    let summary = null;
+    let healthWarning = null;
+    for (let i = 0; i < harness.logs.length; i += 1) {
+      const row = harness.logs[i];
+      if (row.row_type === 'summary' && row.stage === 'runEdgeBoard') summary = row;
+      if (row.row_type === 'ops' && row.stage === 'run_health_guard') healthWarning = row;
+    }
+
+    assertEquals_('degraded', summary.status);
+    assertEquals_('stats_zero_coverage', summary.reason_code);
+
+    const warningPayload = JSON.parse(healthWarning.message || '{}');
+    assertEquals_('stats_zero_coverage', warningPayload.reason_code);
+    assertEquals_(1, warningPayload.matched);
+    assertEquals_(0, warningPayload.players_with_non_null_stats);
+
+    const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+    assertEquals_(1, Number((verbose.reason_codes || {}).stats_zero_coverage || 0));
   } finally {
     harness.restore();
   }
@@ -2219,6 +2278,101 @@ function testStageGenerateSignals_notifyDisabledDoesNotMarkSentHash_() {
 
     assertEquals_(true, !!notifyLog);
     assertEquals_('notify_disabled', notifyLog.reason_code);
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    appendLogRow_ = originalAppendLogRow;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testStageGenerateSignals_statsZeroCoverageMarksFallbackOnlyAndSuppressesNotify_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalAppendLogRow = appendLogRow_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const captured = {
+    state: null,
+    logs: [],
+  };
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function (state) { captured.state = JSON.parse(JSON.stringify(state || {})); };
+  appendLogRow_ = function (entry) { captured.logs.push(entry); };
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_fallback_only',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 150,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+    };
+    const match = {
+      odds_event_id: 'evt_fallback_only',
+      schedule_event_id: 'sched_1',
+      competition_tier: 'WTA_500',
+    };
+    const stats = {
+      evt_fallback_only: {
+        player_a: {
+          has_stats: true,
+          features: { ranking: 8, recent_form: 0.75, surface_win_rate: 0.65, hold_pct: 0.71, break_pct: 0.39 },
+        },
+        player_b: {
+          has_stats: true,
+          features: { ranking: 28, recent_form: 0.48, surface_win_rate: 0.51, hold_pct: 0.6, break_pct: 0.29 },
+        },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: true,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: 'https://hooks.slack.com/services/mock',
+    };
+
+    const result = stageGenerateSignals('run_fallback_only', config, [event], [match], stats, {
+      upstream_gate_reason: 'stats_zero_coverage',
+    });
+
+    assertEquals_(1, result.rows.length);
+    assertEquals_('fallback_only', result.rows[0].notification_outcome);
+    assertEquals_('fallback_only', result.rows[0].signal_delivery_mode);
+    assertEquals_(1, result.summary.reason_codes.fallback_only || 0);
+    assertEquals_(0, Object.keys((captured.state && captured.state.sent_hashes) || {}).length);
+
+    const notifyLogs = captured.logs.filter(function (entry) {
+      return entry.stage === 'signalNotifyDelivery';
+    });
+    assertEquals_(0, notifyLogs.length);
   } finally {
     Date.now = originalDateNow;
     getSignalState_ = originalGetSignalState;
@@ -5387,5 +5541,3 @@ function testBuildSignalRationaleParagraph_fallbackGenericAndLengthBounded_() {
 
   assertTrue_(longRationale.length <= 680, 'long rationale should be trimmed');
 }
-
-

@@ -347,7 +347,7 @@ function runEdgeBoard() {
       : stageFetchPlayerStats(runId, config, oddsStage.events, matchStage.rows);
     appendStageLog_(runId, playerStatsStage.summary);
 
-    const signalUpstreamGateReason = deriveSignalUpstreamGateReason_(oddsStage, matchStage);
+    const signalUpstreamGateReason = deriveSignalUpstreamGateReason_(oddsStage, matchStage, playerStatsStage);
     const signalStage = stageGenerateSignals(
       runId,
       config,
@@ -404,11 +404,24 @@ function runEdgeBoard() {
     const fetchedOddsCount = Number(oddsStage.events.length || 0);
     const matchedCount = Number(matchStage.matchedCount || 0);
     const signalsFoundCount = Number(signalStage.rows.length || 0);
+    const playersWithNonNullStats = Number(
+      playerStatsStage
+      && playerStatsStage.summary
+      && playerStatsStage.summary.reason_metadata
+      && playerStatsStage.summary.reason_metadata.players_with_non_null_stats
+      || 0
+    );
+    const statsZeroCoverage = matchedCount > 0 && playersWithNonNullStats === 0;
+    if (statsZeroCoverage) {
+      playerStatsStage.summary.reason_codes.stats_zero_coverage =
+        (playerStatsStage.summary.reason_codes.stats_zero_coverage || 0) + 1;
+    }
     const runHealthDiagnostics = evaluateRunHealthDiagnostics_({
       fetched_odds: fetchedOddsCount,
       fetched_schedule: scheduleStage.events.length,
       matched: matchedCount,
       signals_found: signalsFoundCount,
+      players_with_non_null_stats: playersWithNonNullStats,
       sample_unmatched_cases: matchStage.unmatched,
       odds_reason_codes: oddsStage.summary.reason_codes,
       schedule_reason_codes: scheduleStage.summary.reason_codes,
@@ -655,10 +668,17 @@ function derivePlayerStatsSkipReason_(oddsStage, matchStage) {
   return '';
 }
 
-function deriveSignalUpstreamGateReason_(oddsStage, matchStage) {
+function deriveSignalUpstreamGateReason_(oddsStage, matchStage, playerStatsStage) {
   const oddsCount = Number((oddsStage && oddsStage.events && oddsStage.events.length) || 0);
   const matchedCount = Number((matchStage && matchStage.matchedCount) || 0);
   const matchReasonCodes = (matchStage && matchStage.summary && matchStage.summary.reason_codes) || {};
+  const playersWithNonNullStats = Number(
+    playerStatsStage
+    && playerStatsStage.summary
+    && playerStatsStage.summary.reason_metadata
+    && playerStatsStage.summary.reason_metadata.players_with_non_null_stats
+    || 0
+  );
 
   if (oddsCount === 0 && Number(matchReasonCodes.schedule_seed_no_odds || 0) > 0) {
     return 'schedule_seed_no_odds';
@@ -666,6 +686,10 @@ function deriveSignalUpstreamGateReason_(oddsStage, matchStage) {
 
   if (oddsCount > 0 && matchedCount === 0) {
     return 'no_matched_events';
+  }
+
+  if (matchedCount > 0 && playersWithNonNullStats === 0) {
+    return 'stats_zero_coverage';
   }
 
   return '';
@@ -676,6 +700,7 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const fetchedSchedule = Number(metrics && metrics.fetched_schedule || 0);
   const matched = Number(metrics && metrics.matched || 0);
   const signalsFound = Number(metrics && metrics.signals_found || 0);
+  const playersWithNonNullStats = Number(metrics && metrics.players_with_non_null_stats || 0);
   const sampleUnmatchedCases = (metrics && metrics.sample_unmatched_cases) || [];
   const oddsReasonCodes = Object.assign({}, (metrics && metrics.odds_reason_codes) || {});
   const scheduleReasonCodes = Object.assign({}, (metrics && metrics.schedule_reason_codes) || {});
@@ -709,6 +734,31 @@ function evaluateRunHealthDiagnostics_(metrics) {
   }
 
   const degraded = fetchedOdds > 0 && matched === 0;
+  const statsZeroCoverageDegraded = matched > 0 && playersWithNonNullStats === 0;
+  if (statsZeroCoverageDegraded) {
+    const statsCoveragePayload = {
+      reason_code: 'stats_zero_coverage',
+      fetched_odds: fetchedOdds,
+      fetched_schedule: fetchedSchedule,
+      matched: matched,
+      signals_found: signalsFound,
+      players_with_non_null_stats: playersWithNonNullStats,
+      message: 'Matched events found but player stats coverage is zero; running in fallback-only mode.',
+    };
+
+    return {
+      is_degraded: true,
+      status: 'degraded',
+      reason_code: 'stats_zero_coverage',
+      degraded_reason_code: 'stats_zero_coverage',
+      summary_status: 'degraded',
+      summary_reason_code: 'stats_zero_coverage',
+      summary_message: statsCoveragePayload.message,
+      warning_payload: statsCoveragePayload,
+      should_emit_warning: true,
+    };
+  }
+
   if (!degraded) {
     return {
       is_degraded: false,
