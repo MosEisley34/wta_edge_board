@@ -513,6 +513,14 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   summary.reason_codes.schedule_enrichment_stats_rows_applied = (summary.reason_codes.schedule_enrichment_stats_rows_applied || 0) + Number(scheduleEnrichment.stats_rows_applied || 0);
   summary.reason_codes.schedule_enrichment_h2h_rows_applied = (summary.reason_codes.schedule_enrichment_h2h_rows_applied || 0) + Number(scheduleEnrichment.h2h_rows_applied || 0);
   summary.reason_codes.schedule_enrichment_h2h_missing = (summary.reason_codes.schedule_enrichment_h2h_missing || 0) + Number(scheduleEnrichment.h2h_missing || 0);
+  summary.reason_codes.schedule_enrichment_h2h_pairs_requested = (summary.reason_codes.schedule_enrichment_h2h_pairs_requested || 0) + Number(scheduleEnrichment.h2h_pairs_requested || 0);
+  summary.reason_codes.schedule_enrichment_h2h_pairs_found = (summary.reason_codes.schedule_enrichment_h2h_pairs_found || 0) + Number(scheduleEnrichment.h2h_pairs_found || 0);
+  const h2hMissingReasonCodes = scheduleEnrichment.h2h_missing_reason_codes || {};
+  Object.keys(h2hMissingReasonCodes).forEach(function (reasonCode) {
+    if (!reasonCode) return;
+    const reasonKey = 'schedule_enrichment_h2h_missing_' + reasonCode;
+    summary.reason_codes[reasonKey] = (summary.reason_codes[reasonKey] || 0) + Number(h2hMissingReasonCodes[reasonCode] || 0);
+  });
   if (!oddsEvents || !oddsEvents.length) {
     summary.reason_codes.schedule_window_fallback_no_odds = (summary.reason_codes.schedule_window_fallback_no_odds || 0) + 1;
   }
@@ -562,6 +570,9 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
       stats_rows_applied: scheduleEnrichment.stats_rows_applied,
       h2h_rows_applied: scheduleEnrichment.h2h_rows_applied,
       h2h_missing: scheduleEnrichment.h2h_missing,
+      h2h_pairs_requested: scheduleEnrichment.h2h_pairs_requested,
+      h2h_pairs_found: scheduleEnrichment.h2h_pairs_found,
+      h2h_missing_reason_codes: scheduleEnrichment.h2h_missing_reason_codes || {},
       failed: scheduleEnrichment.failed,
       error: scheduleEnrichment.error || '',
     },
@@ -601,6 +612,9 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       stats_rows_applied: 0,
       h2h_rows_applied: 0,
       h2h_missing: 0,
+      h2h_pairs_requested: 0,
+      h2h_pairs_found: 0,
+      h2h_missing_reason_codes: {},
       failed: false,
       error: '',
     };
@@ -619,6 +633,9 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
         stats_rows_applied: 0,
         h2h_rows_applied: 0,
         h2h_missing: 0,
+        h2h_pairs_requested: 0,
+        h2h_pairs_found: 0,
+        h2h_missing_reason_codes: {},
         failed: false,
         error: '',
       };
@@ -633,6 +650,9 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
     let statsRowsApplied = 0;
     let h2hRowsApplied = 0;
     let h2hMissing = 0;
+    let h2hPairsRequested = 0;
+    let h2hPairsFound = 0;
+    const h2hMissingReasonCodes = {};
     const h2hDatasetMeta = getStateJson_('PLAYER_STATS_H2H_LAST_FETCH_META') || {};
     const h2hSummaryReasonCode = resolveScheduleEnrichmentH2hReasonCode_(h2hDatasetMeta);
     const h2hImpact = buildScheduleEnrichmentH2hImpact_(h2hSummaryReasonCode, h2hDatasetMeta);
@@ -642,7 +662,8 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       const playerB = canonicalizePlayerName_(event.player_2, {});
       const statsA = playerA ? statsByPlayer[playerA] : null;
       const statsB = playerB ? statsByPlayer[playerB] : null;
-      const h2hRow = getTaH2hRowForCanonicalPair_(config, playerA, playerB);
+      const h2hCoverage = getTaH2hCoverageForCanonicalPair_(config, playerA, playerB);
+      const h2hRow = h2hCoverage && h2hCoverage.row ? h2hCoverage.row : null;
 
       const merged = Object.assign({}, event);
       const didApplyA = mergeScheduleStatsIntoEvent_(merged, 'player_1', statsA);
@@ -654,14 +675,19 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       if (didApplyA) statsRowsApplied += 1;
       if (didApplyB) statsRowsApplied += 1;
 
+      if (playerA && playerB && playerA !== playerB) h2hPairsRequested += 1;
+
       if (h2hRow) {
         merged.h2h_p1_wins = Number(h2hRow.wins_a || 0);
         merged.h2h_p2_wins = Number(h2hRow.wins_b || 0);
         merged.h2h_total_matches = Number(h2hRow.wins_a || 0) + Number(h2hRow.wins_b || 0);
         merged.h2h_source = merged.h2h_source || 'ta_h2h_matrix';
         h2hRowsApplied += 1;
+        h2hPairsFound += 1;
       } else {
         h2hMissing += 1;
+        const missingReasonCode = String((h2hCoverage && h2hCoverage.reason_code) || 'h2h_missing');
+        h2hMissingReasonCodes[missingReasonCode] = (h2hMissingReasonCodes[missingReasonCode] || 0) + 1;
       }
 
       return merged;
@@ -677,6 +703,9 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       stats_rows_applied: statsRowsApplied,
       h2h_rows_applied: h2hRowsApplied,
       h2h_missing: h2hMissing,
+      h2h_pairs_requested: h2hPairsRequested,
+      h2h_pairs_found: h2hPairsFound,
+      h2h_missing_reason_codes: h2hMissingReasonCodes,
       failed: false,
       error: '',
     };
@@ -691,6 +720,9 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       stats_rows_applied: 0,
       h2h_rows_applied: 0,
       h2h_missing: 0,
+      h2h_pairs_requested: 0,
+      h2h_pairs_found: 0,
+      h2h_missing_reason_codes: {},
       failed: true,
       error: String(error && error.message ? error.message : error),
     };

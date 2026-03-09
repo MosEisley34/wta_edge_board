@@ -2820,6 +2820,61 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hEmptyTableAddsReasonAndIm
   }
 }
 
+
+function testEnrichScheduleEventsFromTennisAbstract_h2hMixedCoverageTracksReasonsAndMetrics_() {
+  const originalFetchPlayerStatsBatch = fetchPlayerStatsBatch_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetTaH2hCoverageForCanonicalPair = getTaH2hCoverageForCanonicalPair_;
+
+  fetchPlayerStatsBatch_ = function () {
+    return { stats_by_player: {}, reason_code: 'ta_leaders_ok', source: 'ta_leaders' };
+  };
+  getStateJson_ = function () { return {}; };
+  getTaH2hCoverageForCanonicalPair_ = function (config, playerA, playerB) {
+    const key = String(playerA || '') + '::' + String(playerB || '');
+    if (key === 'iga swiatek::aryna sabalenka') {
+      return { row: { wins_a: 2, wins_b: 1 }, reason_code: '' };
+    }
+    if (key === 'iga swiatek::coco gauff') {
+      return { row: null, reason_code: 'h2h_partial_coverage' };
+    }
+    return { row: null, reason_code: 'h2h_player_not_in_matrix' };
+  };
+
+  try {
+    const result = enrichScheduleEventsFromTennisAbstract_({}, [{
+      event_id: 'sched_h2h_found',
+      start_time: new Date('2025-03-01T03:00:00.000Z'),
+      player_1: 'Iga Swiatek',
+      player_2: 'Aryna Sabalenka',
+    }, {
+      event_id: 'sched_h2h_partial',
+      start_time: new Date('2025-03-01T04:00:00.000Z'),
+      player_1: 'Iga Swiatek',
+      player_2: 'Coco Gauff',
+    }, {
+      event_id: 'sched_h2h_outside',
+      start_time: new Date('2025-03-01T05:00:00.000Z'),
+      player_1: 'Iga Swiatek',
+      player_2: 'Outside Player',
+    }]);
+
+    assertEquals_('schedule_enrichment_ta_completed', result.reason_code);
+    assertEquals_(3, result.h2h_pairs_requested);
+    assertEquals_(1, result.h2h_pairs_found);
+    assertEquals_(1, result.h2h_rows_applied);
+    assertEquals_(2, result.h2h_missing);
+    assertEquals_(1, result.h2h_missing_reason_codes.h2h_partial_coverage || 0);
+    assertEquals_(1, result.h2h_missing_reason_codes.h2h_player_not_in_matrix || 0);
+    assertEquals_(2, result.events[0].h2h_p1_wins);
+    assertEquals_(1, result.events[0].h2h_p2_wins);
+  } finally {
+    fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
+    getStateJson_ = originalGetStateJson;
+    getTaH2hCoverageForCanonicalPair_ = originalGetTaH2hCoverageForCanonicalPair;
+  }
+}
+
 function runStageFetchScheduleScenario_(options) {
   const opts = options || {};
   const originalDateNow = Date.now;

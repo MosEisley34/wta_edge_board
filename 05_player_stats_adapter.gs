@@ -984,28 +984,58 @@ function resolvePlayerStatsAggregateReasonCode_(baseReasonCode, completeness) {
 }
 
 function getTaH2hRowForCanonicalPair_(config, playerA, playerB) {
+  const coverage = getTaH2hCoverageForCanonicalPair_(config, playerA, playerB);
+  return coverage && coverage.row ? coverage.row : null;
+}
+
+function getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) {
   const canonicalA = canonicalizePlayerName_(playerA || '', {});
   const canonicalB = canonicalizePlayerName_(playerB || '', {});
-  if (!canonicalA || !canonicalB || canonicalA === canonicalB) return null;
+  if (!canonicalA || !canonicalB || canonicalA === canonicalB) {
+    return { row: null, reason_code: 'h2h_pair_invalid' };
+  }
 
   const dataset = getTaH2hDataset_(config || {});
-  if (!dataset || !dataset.by_pair) return null;
+  if (!dataset || !dataset.by_pair) return { row: null, reason_code: 'h2h_dataset_unavailable' };
 
   const directKey = buildTaH2hPairKey_(canonicalA, canonicalB);
   const direct = dataset.by_pair[directKey];
-  if (direct) return direct;
+  if (direct) return { row: direct, reason_code: '' };
 
   const reverseKey = buildTaH2hPairKey_(canonicalB, canonicalA);
   const reverse = dataset.by_pair[reverseKey];
-  if (!reverse) return null;
+  if (reverse) {
+    return {
+      row: {
+        player_a: canonicalA,
+        player_b: canonicalB,
+        wins_a: Number(reverse.wins_b || 0),
+        wins_b: Number(reverse.wins_a || 0),
+        source_updated_date: reverse.source_updated_date || dataset.source_updated_date || '',
+      },
+      reason_code: '',
+    };
+  }
 
+  const playersInMatrix = buildTaH2hPlayersInMatrixSet_(dataset);
+  const hasA = playersInMatrix[canonicalA] === true;
+  const hasB = playersInMatrix[canonicalB] === true;
   return {
-    player_a: canonicalA,
-    player_b: canonicalB,
-    wins_a: Number(reverse.wins_b || 0),
-    wins_b: Number(reverse.wins_a || 0),
-    source_updated_date: reverse.source_updated_date || dataset.source_updated_date || '',
+    row: null,
+    reason_code: hasA && hasB ? 'h2h_partial_coverage' : 'h2h_player_not_in_matrix',
   };
+}
+
+function buildTaH2hPlayersInMatrixSet_(dataset) {
+  const rows = dataset && Array.isArray(dataset.rows) ? dataset.rows : [];
+  const seen = {};
+  rows.forEach(function (row) {
+    const playerA = canonicalizePlayerName_(row && row.player_a, {});
+    const playerB = canonicalizePlayerName_(row && row.player_b, {});
+    if (playerA) seen[playerA] = true;
+    if (playerB) seen[playerB] = true;
+  });
+  return seen;
 }
 
 function getTaH2hDataset_(config) {
