@@ -3197,6 +3197,48 @@ function testStageFetchSchedule_invalidWindowMismatch_autoExpandsOnce_() {
   assertEquals_(1, result.stage.summary.reason_codes.expanded_window_fallback_used || 0);
 }
 
+
+function testStageFetchSchedule_h2hMissingSummarySeparatesExpectedVsPipelineFailures_() {
+  const result = runStageFetchScheduleScenario_({
+    fetchResponses: [{
+      events: [],
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: { x_requests_remaining: '490' },
+    }],
+    enrichmentResult: {
+      events: [],
+      reason_code: 'schedule_enrichment_ta_completed',
+      stats_reason_code: 'ta_leaders_ok',
+      h2h_reason_code: '',
+      h2h_impact: null,
+      canonical_player_count: 2,
+      stats_rows_applied: 0,
+      h2h_rows_applied: 0,
+      h2h_missing: 3,
+      h2h_pairs_requested: 3,
+      h2h_pairs_found: 0,
+      h2h_missing_reason_codes: {
+        h2h_player_not_in_matrix: 1,
+        ta_h2h_fetch_failed: 1,
+        h2h_missing: 1,
+      },
+      h2h_missing_classification: {
+        expected_missing_source_coverage: 1,
+        pipeline_failure: 1,
+        unclassified: 1,
+      },
+      failed: false,
+      error: '',
+    },
+  });
+
+  assertEquals_(1, result.stage.summary.reason_codes.schedule_enrichment_h2h_missing_expected_source_coverage || 0);
+  assertEquals_(1, result.stage.summary.reason_codes.schedule_enrichment_h2h_missing_pipeline_failure || 0);
+  assertEquals_(1, result.stage.summary.reason_codes.schedule_enrichment_h2h_missing_unclassified || 0);
+}
+
 function testBuildCanonicalSchedulePlayers_filtersPastEventsAndDedupes_() {
   const nowMs = Date.parse('2025-03-01T00:00:00.000Z');
   const players = buildCanonicalSchedulePlayers_([
@@ -3335,9 +3377,60 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hMixedCoverageTracksReason
     assertEquals_(2, result.h2h_missing);
     assertEquals_(1, result.h2h_missing_reason_codes.h2h_partial_coverage || 0);
     assertEquals_(1, result.h2h_missing_reason_codes.h2h_player_not_in_matrix || 0);
+    assertEquals_(1, result.h2h_missing_classification.expected_missing_source_coverage || 0);
+    assertEquals_(0, result.h2h_missing_classification.pipeline_failure || 0);
+    assertEquals_(1, result.h2h_missing_classification.unclassified || 0);
     assertEquals_(2, result.events[0].h2h_p1_wins);
     assertEquals_(1, result.events[0].h2h_p2_wins);
   } finally {
+    fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
+    getStateJson_ = originalGetStateJson;
+    getTaH2hCoverageForCanonicalPair_ = originalGetTaH2hCoverageForCanonicalPair;
+  }
+}
+
+
+function testEnrichScheduleEventsFromTennisAbstract_h2hPipelineFailuresClassifiedSeparately_() {
+  const originalDateNow = Date.now;
+  const originalFetchPlayerStatsBatch = fetchPlayerStatsBatch_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetTaH2hCoverageForCanonicalPair = getTaH2hCoverageForCanonicalPair_;
+
+  Date.now = function () { return Date.parse('2025-03-01T00:00:00.000Z'); };
+  fetchPlayerStatsBatch_ = function () {
+    return { stats_by_player: {}, reason_code: 'ta_leaders_ok', source: 'ta_leaders' };
+  };
+  getStateJson_ = function () { return {}; };
+  getTaH2hCoverageForCanonicalPair_ = function (config, playerA, playerB) {
+    const key = String(playerA || '') + '::' + String(playerB || '');
+    if (key === 'iga swiatek::aryna sabalenka') {
+      return { row: null, reason_code: 'ta_h2h_parse_failed' };
+    }
+    return { row: null, reason_code: 'ta_h2h_fetch_failed' };
+  };
+
+  try {
+    const result = enrichScheduleEventsFromTennisAbstract_({}, [{
+      event_id: 'sched_h2h_parse_fail',
+      start_time: new Date('2025-03-01T03:00:00.000Z'),
+      player_1: 'Iga Swiatek',
+      player_2: 'Aryna Sabalenka',
+    }, {
+      event_id: 'sched_h2h_fetch_fail',
+      start_time: new Date('2025-03-01T04:00:00.000Z'),
+      player_1: 'Iga Swiatek',
+      player_2: 'Coco Gauff',
+    }]);
+
+    assertEquals_('schedule_enrichment_ta_completed', result.reason_code);
+    assertEquals_(2, result.h2h_missing);
+    assertEquals_(1, result.h2h_missing_reason_codes.ta_h2h_parse_failed || 0);
+    assertEquals_(1, result.h2h_missing_reason_codes.ta_h2h_fetch_failed || 0);
+    assertEquals_(0, result.h2h_missing_classification.expected_missing_source_coverage || 0);
+    assertEquals_(2, result.h2h_missing_classification.pipeline_failure || 0);
+    assertEquals_(0, result.h2h_missing_classification.unclassified || 0);
+  } finally {
+    Date.now = originalDateNow;
     fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
     getStateJson_ = originalGetStateJson;
     getTaH2hCoverageForCanonicalPair_ = originalGetTaH2hCoverageForCanonicalPair;
@@ -3432,6 +3525,7 @@ function runStageFetchScheduleScenario_(options) {
     stateWrites[key] = value;
   };
   enrichScheduleEventsFromTennisAbstract_ = function (config, events) {
+    if (opts.enrichmentResult) return opts.enrichmentResult;
     return {
       events: events,
       reason_code: 'schedule_enrichment_test_passthrough',
@@ -3440,6 +3534,12 @@ function runStageFetchScheduleScenario_(options) {
       stats_rows_applied: 0,
       h2h_rows_applied: 0,
       h2h_missing: 0,
+      h2h_missing_reason_codes: {},
+      h2h_missing_classification: {
+        expected_missing_source_coverage: 0,
+        pipeline_failure: 0,
+        unclassified: 0,
+      },
       failed: false,
       error: '',
     };
@@ -3634,6 +3734,7 @@ function runStageFetchPlayerStatsScenario_(options) {
       fetchPlayers: fetchPlayers,
     };
   } finally {
+    Date.now = originalDateNow;
     fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
     buildStageSummary_ = originalBuildStageSummary;
     getStateJson_ = originalGetStateJson;

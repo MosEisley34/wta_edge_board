@@ -1371,15 +1371,29 @@ function getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) {
   const canonicalA = canonicalizePlayerName_(playerA || '', {});
   const canonicalB = canonicalizePlayerName_(playerB || '', {});
   if (!canonicalA || !canonicalB || canonicalA === canonicalB) {
-    return { row: null, reason_code: 'h2h_pair_invalid' };
+    return { row: null, reason_code: 'h2h_pair_invalid', reason_metadata: {} };
   }
 
   const dataset = getTaH2hDataset_(config || {});
-  if (!dataset || !dataset.by_pair) return { row: null, reason_code: 'h2h_dataset_unavailable' };
+  if (!dataset || !dataset.by_pair) {
+    const h2hMeta = getStateJson_('PLAYER_STATS_H2H_LAST_FETCH_META') || {};
+    const upstreamFailureReason = String(h2hMeta.last_failure_reason || '');
+    if (upstreamFailureReason === 'ta_h2h_fetch_failed' || upstreamFailureReason === 'ta_h2h_parse_failed') {
+      return {
+        row: null,
+        reason_code: upstreamFailureReason,
+        reason_metadata: {
+          category: 'pipeline_failure',
+          expected_missing: false,
+        },
+      };
+    }
+    return { row: null, reason_code: 'h2h_dataset_unavailable', reason_metadata: {} };
+  }
 
   const directKey = buildTaH2hPairKey_(canonicalA, canonicalB);
   const direct = dataset.by_pair[directKey];
-  if (direct) return { row: direct, reason_code: '' };
+  if (direct) return { row: direct, reason_code: '', reason_metadata: {} };
 
   const reverseKey = buildTaH2hPairKey_(canonicalB, canonicalA);
   const reverse = dataset.by_pair[reverseKey];
@@ -1393,6 +1407,7 @@ function getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) {
         source_updated_date: reverse.source_updated_date || dataset.source_updated_date || '',
       },
       reason_code: '',
+      reason_metadata: {},
     };
   }
 
@@ -1402,6 +1417,18 @@ function getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) {
   return {
     row: null,
     reason_code: hasA && hasB ? 'h2h_partial_coverage' : 'h2h_player_not_in_matrix',
+    reason_metadata: hasA && hasB
+      ? {
+          category: 'source_coverage',
+          coverage_scope: 'top_15_matrix',
+          expected_missing: true,
+        }
+      : {
+          category: 'source_coverage',
+          coverage_scope: 'top_15_matrix',
+          expected_missing: true,
+          limitation: 'player_not_in_top_15_matrix',
+        },
   };
 }
 
