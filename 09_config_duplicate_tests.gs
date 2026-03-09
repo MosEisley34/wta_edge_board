@@ -147,6 +147,14 @@ function testDedupeConfigSheet_lastWins_dedupesWatchedKeysAndLogsAudit_() {
 function createFakeConfigSheet_(initialValues) {
   let values = (initialValues || []).map(function (row) { return row.slice(); });
   let frozenRows = 0;
+
+  function ensureSize_(minRows, minCols) {
+    while (values.length < minRows) values.push([]);
+    for (let r = 0; r < values.length; r += 1) {
+      while ((values[r] || []).length < minCols) values[r].push('');
+    }
+  }
+
   return {
     getDataRange: function () {
       return {
@@ -158,16 +166,87 @@ function createFakeConfigSheet_(initialValues) {
     clearContents: function () {
       values = [];
     },
-    getRange: function () {
+    getLastRow: function () {
+      return values.length;
+    },
+    getRange: function (row, col, numRows, numCols) {
       return {
         setValues: function (nextValues) {
-          values = nextValues.map(function (row) { return row.slice(); });
+          if (row === 1 && col === 1 && nextValues.length === (numRows || nextValues.length)) {
+            values = nextValues.map(function (nextRow) { return nextRow.slice(); });
+            return;
+          }
+
+          const rows = numRows || nextValues.length;
+          const cols = numCols || (nextValues[0] ? nextValues[0].length : 0);
+          ensureSize_(row + rows - 1, col + cols - 1);
+          for (let r = 0; r < rows; r += 1) {
+            for (let c = 0; c < cols; c += 1) {
+              values[row - 1 + r][col - 1 + c] = nextValues[r][c];
+            }
+          }
         },
       };
     },
     getFrozenRows: function () { return frozenRows; },
     setFrozenRows: function (n) { frozenRows = n; },
   };
+}
+
+
+function testUpsertConfigDefaults_updatesExistingAndAppendsMissingWithoutDuplicates_() {
+  const sheet = createFakeConfigSheet_([
+    ['key', 'value'],
+    ['RUN_ENABLED', ''],
+    ['LOOKAHEAD_HOURS', '24'],
+  ]);
+
+  upsertConfigDefaults_(sheet, {
+    RUN_ENABLED: 'true',
+    ODDS_MARKETS: 'h2h',
+  });
+
+  const parsed = parseConfigRows_(sheet.getDataRange().getValues(), {
+    mode: 'error',
+    context: 'testUpsertConfigDefaults',
+  });
+
+  assertEquals_('true', parsed.config.RUN_ENABLED);
+  assertEquals_('24', parsed.config.LOOKAHEAD_HOURS);
+  assertEquals_('h2h', parsed.config.ODDS_MARKETS);
+  assertArrayEquals_([], parsed.duplicate_keys);
+}
+
+function testEnsureConfigDefaults_repairFlowLeavesUniqueKeysAfterRecreate_() {
+  const configSheet = createFakeConfigSheet_([
+    ['key', 'value'],
+    ['RUN_ENABLED', 'true'],
+    ['RUN_ENABLED', 'false'],
+    ['LOOKAHEAD_HOURS', ''],
+  ]);
+  const originalSpreadsheetApp = SpreadsheetApp;
+
+  SpreadsheetApp = {
+    getActiveSpreadsheet: function () {
+      return {
+        getSheetByName: function () { return configSheet; },
+      };
+    },
+  };
+
+  try {
+    ensureConfigDefaults_();
+    const parsed = parseConfigRows_(configSheet.getDataRange().getValues(), {
+      mode: 'error',
+      context: 'testEnsureConfigDefaults_repairFlow',
+    });
+
+    assertArrayEquals_([], parsed.duplicate_keys);
+    assertEquals_('false', parsed.config.RUN_ENABLED);
+    assertTrue_(parsed.config.LOOKAHEAD_HOURS !== '', 'expected missing default to be restored');
+  } finally {
+    SpreadsheetApp = originalSpreadsheetApp;
+  }
 }
 
 function testPreflightConfigUniqueness_detectsDuplicates_() {

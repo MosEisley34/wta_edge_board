@@ -20,16 +20,19 @@ function onOpen() {
 }
 
 function menuSetupVerifyTabs() {
+  warnConfigDuplicatesBeforeMenuMutation_('menuSetupVerifyTabs');
   ensureTabsAndConfig_();
   SpreadsheetApp.getUi().alert('Setup complete: WTA foundation tabs/headers verified.');
 }
 
 function menuDedupeConfigSheet() {
+  warnConfigDuplicatesBeforeMenuMutation_('menuDedupeConfigSheet');
   dedupeConfigSheetMenuAction_();
   SpreadsheetApp.getUi().alert('Config sheet deduplicated.');
 }
 
 function menuRepairConfig() {
+  warnConfigDuplicatesBeforeMenuMutation_('menuRepairConfig');
   const summary = dedupeConfigSheetMenuAction_();
   SpreadsheetApp.getUi().alert('Config repair complete: removed ' + summary.removed_row_count + ' duplicate row(s).');
 }
@@ -58,6 +61,7 @@ function menuRunPipelineNow() {
 
 
 function menuRecreateWorkbook() {
+  warnConfigDuplicatesBeforeMenuMutation_('menuRecreateWorkbook');
   const ui = SpreadsheetApp.getUi();
   const response = ui.alert(
     'Re-create / Reset Workbook',
@@ -79,6 +83,29 @@ function menuRecreateWorkbook() {
 
   recreateWorkbook_();
   ui.alert('Workbook reset complete. Tabs, defaults, and headers have been recreated.');
+}
+
+function warnConfigDuplicatesBeforeMenuMutation_(context) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const configSheet = ss.getSheetByName(SHEETS.CONFIG);
+  if (!configSheet) return { duplicate_keys: [] };
+
+  const parsed = parseConfigRows_(configSheet.getDataRange().getValues(), {
+    mode: 'warn_last_wins',
+    context: context || 'menu_config_pre_save_scan',
+    logger: function () {},
+  });
+  if (!parsed.duplicate_keys.length) return parsed;
+
+  const duplicateKeys = parsed.duplicate_keys.slice().sort();
+  const warning = '[Config] Pre-save scan detected duplicate key(s) before ' + (context || 'menu action') + ': ' + duplicateKeys.join(', ');
+  Logger.log(warning);
+  ss.toast(
+    'Warning: Config has duplicate keys (' + duplicateKeys.length + '). Consider running "Repair Config (dedupe)".',
+    'WTA Edge Board',
+    8
+  );
+  return parsed;
 }
 
 function menuInstallTriggers() {
@@ -390,12 +417,50 @@ function ensureConfigDefaults_() {
     });
   }
 
-  const existing = parsed.config;
+  const refreshed = sh.getDataRange().getValues();
+  const existing = parseConfigRows_(refreshed, {
+    mode: 'warn_last_wins',
+    context: 'ensureConfigDefaults_ refreshed',
+    logger: function () {},
+  }).config;
+  const missingDefaults = {};
   Object.keys(DEFAULT_CONFIG).forEach((key) => {
     if (existing[key] === undefined || existing[key] === '') {
-      sh.appendRow([key, DEFAULT_CONFIG[key]]);
+      missingDefaults[key] = DEFAULT_CONFIG[key];
     }
   });
+
+  upsertConfigDefaults_(sh, missingDefaults);
+}
+
+function upsertConfigDefaults_(sheet, keyValueMap) {
+  const keys = Object.keys(keyValueMap || {});
+  if (!keys.length) return;
+
+  const values = sheet.getDataRange().getValues();
+  const rowByKey = {};
+  for (let i = 1; i < values.length; i += 1) {
+    const key = String(values[i][0] || '').trim();
+    if (!key || rowByKey[key]) continue;
+    rowByKey[key] = i + 1;
+  }
+
+  const appends = [];
+  keys.forEach(function (key) {
+    const targetRow = rowByKey[key];
+    const nextValue = keyValueMap[key];
+    if (targetRow) {
+      sheet.getRange(targetRow, 2, 1, 1).setValues([[nextValue]]);
+      return;
+    }
+    appends.push([key, nextValue]);
+    rowByKey[key] = values.length + appends.length;
+  });
+
+  if (appends.length) {
+    const startRow = Math.max(2, sheet.getLastRow() + 1);
+    sheet.getRange(startRow, 1, appends.length, 2).setValues(appends);
+  }
 }
 
 function dedupeConfigSheet_(sheet, options) {
