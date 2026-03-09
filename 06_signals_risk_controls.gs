@@ -9,6 +9,9 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     skipped_no_player_keys: 0,
     provider_returned_empty: 0,
     provider_returned_null_features: 0,
+    low_confidence_stats_scored: 0,
+    full_confidence_stats_scored: 0,
+    null_features_low_confidence_scored: 0,
   };
 
   const matchByOddsEventId = {};
@@ -105,12 +108,14 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
       source,
       stats_provider_unavailable: providerUnavailable,
       stats_fallback_mode: providerNullFeatures ? 'null_features' : '',
+      stats_confidence: resolveStatsBundleConfidence_(playerAStats, playerBStats, providerUnavailable, providerNullFeatures),
       synthetic_schedule_seed: !!event.synthetic_schedule_seed,
       feature_timestamp: featureTimestamp,
       player_a: {
         canonical_name: playerA,
         features: playerAStats.features,
         has_stats: playerAStats.has_stats,
+        stats_confidence: resolvePlayerStatsConfidence_(playerAStats),
         stats_fallback_mode: playerAStats.stats_fallback_mode || '',
         provenance: playerAStats.provenance || source,
       },
@@ -118,6 +123,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
         canonical_name: playerB,
         features: playerBStats.features,
         has_stats: playerBStats.has_stats,
+        stats_confidence: resolvePlayerStatsConfidence_(playerBStats),
         stats_fallback_mode: playerBStats.stats_fallback_mode || '',
         provenance: playerBStats.provenance || source,
       },
@@ -270,6 +276,66 @@ function computePseudoPlayerStats_(canonicalPlayerName, event, match, slot) {
   };
 }
 
+
+function resolveStatsCompletenessKeys_() {
+  const coreKeys = Array.isArray(PLAYER_STATS_COMPLETENESS_KEYS) && PLAYER_STATS_COMPLETENESS_KEYS.length
+    ? PLAYER_STATS_COMPLETENESS_KEYS.slice()
+    : ['ranking', 'recent_form', 'surface_win_rate', 'hold_pct', 'break_pct'];
+  const richKeys = [
+    'recent_form_last_10',
+    'surface_hold_pct',
+    'surface_break_pct',
+    'surface_recent_form',
+    'first_serve_in_pct',
+    'first_serve_points_won_pct',
+    'second_serve_points_won_pct',
+    'return_points_won_pct',
+    'bp_saved_pct',
+    'bp_conv_pct',
+    'dr',
+    'tpw_pct',
+  ];
+  return {
+    core: coreKeys,
+    rich: richKeys,
+    all: coreKeys.concat(richKeys),
+  };
+}
+
+function resolvePlayerStatsConfidence_(playerPayload) {
+  const payload = playerPayload || {};
+  const keys = resolveStatsCompletenessKeys_().all;
+  const features = payload.features || {};
+  const total = keys.length;
+  if (!total) return 0;
+  let nonNull = 0;
+  for (let i = 0; i < keys.length; i += 1) {
+    const value = features[keys[i]];
+    if (value !== null && value !== undefined && value !== '') nonNull += 1;
+  }
+
+  let confidence = nonNull / total;
+  const fallbackMode = String(payload.stats_fallback_mode || '').trim();
+  if (!payload.has_stats) {
+    confidence *= fallbackMode === 'null_features' ? 0.2 : 0;
+  } else if (fallbackMode === 'null_features') {
+    confidence *= 0.4;
+  } else if (fallbackMode) {
+    confidence *= 0.75;
+  }
+
+  return roundNumber_(Math.max(0, Math.min(1, confidence)), 4);
+}
+
+function resolveStatsBundleConfidence_(playerAStats, playerBStats, providerUnavailable, providerNullFeatures) {
+  const playerAConfidence = resolvePlayerStatsConfidence_(playerAStats);
+  const playerBConfidence = resolvePlayerStatsConfidence_(playerBStats);
+  let confidence = (playerAConfidence + playerBConfidence) / 2;
+  if (providerUnavailable) confidence *= 0.1;
+  if (providerNullFeatures) confidence *= 0.5;
+  return roundNumber_(Math.max(0, Math.min(1, confidence)), 4);
+}
+
 function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
   if (!statsBundle) {
     reasonCodes.stats_fallback_model_used = (reasonCodes.stats_fallback_model_used || 0) + 1;
@@ -314,7 +380,7 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
   const dominanceRatioDiff = (playerAFeatures.dr || 0) - (playerBFeatures.dr || 0);
   const totalPointsWonDiff = (playerAFeatures.tpw_pct || 0) - (playerBFeatures.tpw_pct || 0);
 
-  return roundNumber_(
+  const rawBump = roundNumber_(
     (rankingDiff * 0.2)
     + (recentFormDiff * 0.17)
     + (recentFormLast10Diff * 0.03)
@@ -332,6 +398,27 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
     + (totalPointsWonDiff * 0.005),
     4
   );
+
+  const confidence = Number(statsBundle.stats_confidence);
+  const resolvedConfidence = Number.isFinite(confidence)
+    ? Math.max(0, Math.min(1, confidence))
+    : resolveStatsBundleConfidence_(
+      playerA,
+      playerB,
+      statsBundle.stats_provider_unavailable === true,
+      statsBundle.stats_fallback_mode === 'null_features'
+    );
+
+  if (resolvedConfidence < 0.999) {
+    reasonCodes.low_confidence_stats_scored = (reasonCodes.low_confidence_stats_scored || 0) + 1;
+    if (resolvedConfidence <= 0.05) {
+      reasonCodes.null_features_low_confidence_scored = (reasonCodes.null_features_low_confidence_scored || 0) + 1;
+    }
+  } else {
+    reasonCodes.full_confidence_stats_scored = (reasonCodes.full_confidence_stats_scored || 0) + 1;
+  }
+
+  return roundNumber_(rawBump * resolvedConfidence, 4);
 }
 
 
@@ -371,6 +458,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     missing_match: 0,
     missing_stats: 0,
     null_features_fallback_scored: 0,
+    low_confidence_stats_scored: 0,
+    full_confidence_stats_scored: 0,
+    null_features_low_confidence_scored: 0,
     invalid_features: 0,
     notify_disabled: 0,
     duplicate_suppressed: 0,
@@ -451,6 +541,16 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
 
     if (nullFeaturesFallback) reasonCounts.null_features_fallback_scored += 1;
 
+    const statsConfidence = Number(statsBundle && statsBundle.stats_confidence);
+    const resolvedStatsConfidence = Number.isFinite(statsConfidence)
+      ? statsConfidence
+      : resolveStatsBundleConfidence_(
+        statsBundle && statsBundle.player_a,
+        statsBundle && statsBundle.player_b,
+        !!(statsBundle && statsBundle.stats_provider_unavailable),
+        String((statsBundle && statsBundle.stats_fallback_mode) || '') === 'null_features'
+      );
+
     const modelVersion = statsBundle && statsBundle.player_a && statsBundle.player_b
       && statsBundle.player_a.has_stats && statsBundle.player_b.has_stats
       ? config.MODEL_VERSION
@@ -479,9 +579,11 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stake_units: 0,
         signal_hash: buildSignalHash_(event.event_id, event.market, event.outcome, modelVersion),
         model_version: modelVersion,
+        stats_confidence: resolvedStatsConfidence,
       }));
       captureDecision_(event, match, 'too_close_to_start_skip', {
         scored: true,
+        stats_confidence: resolvedStatsConfidence,
       });
       return;
     }
@@ -500,9 +602,11 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stake_units: 0,
         signal_hash: buildSignalHash_(event.event_id, event.market, event.outcome, modelVersion),
         model_version: modelVersion,
+        stats_confidence: resolvedStatsConfidence,
       }));
       captureDecision_(event, match, 'stale_odds_skip', {
         scored: true,
+        stats_confidence: resolvedStatsConfidence,
       });
       return;
     }
@@ -524,9 +628,11 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stake_units: edgeTierAndStake.stake_units,
         signal_hash: signalHash,
         model_version: modelVersion,
+        stats_confidence: resolvedStatsConfidence,
       }));
       captureDecision_(event, match, 'edge_below_threshold', {
         scored: true,
+        stats_confidence: resolvedStatsConfidence,
       });
       return;
     }
@@ -586,6 +692,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       edge_value: edgeValue,
       edge_tier: edgeTierAndStake.edge_tier,
       stake_units: edgeTierAndStake.stake_units,
+      stats_confidence: resolvedStatsConfidence,
     });
 
     rows.push(buildSignalRow_(runId, config, event, match, {
@@ -598,6 +705,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       signal_hash: signalHash,
       model_version: modelVersion,
       notification_metadata: notifyDiagnostics,
+      stats_confidence: resolvedStatsConfidence,
     }));
   });
 
@@ -624,6 +732,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       model_version: row.model_version,
       notification_outcome: row.notification_outcome,
       notification_metadata: row.notification_metadata || null,
+      stats_confidence: row.stats_confidence,
     })),
   }));
 
@@ -643,13 +752,20 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     upstream_gate_reason: upstreamGateReason || 'unspecified',
     has_upstream_gate_reason: !!upstreamGateReason,
   } : null;
+  const observedStatsConfidence = rows
+    .map(function (row) { return Number(row.stats_confidence); })
+    .filter(function (value) { return Number.isFinite(value); });
+
   const allDropReasons = Object.keys(reasonCounts)
     .filter(function (reasonCode) {
       return reasonCode !== 'sent'
         && reasonCode !== 'null_features_fallback_scored'
         && reasonCode !== 'stats_missing_player_a'
         && reasonCode !== 'stats_missing_player_b'
-        && reasonCode !== 'stats_fallback_model_used';
+        && reasonCode !== 'stats_fallback_model_used'
+        && reasonCode !== 'low_confidence_stats_scored'
+        && reasonCode !== 'full_confidence_stats_scored'
+        && reasonCode !== 'null_features_low_confidence_scored';
     })
     .reduce(function (sum, reasonCode) {
       return sum + Number(reasonCounts[reasonCode] || 0);
@@ -669,6 +785,14 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     explanatory_metadata: zeroInputExplanatory,
     processed_count: processedCandidateCount,
     all_drop_reasons: allDropReasons,
+    stats_confidence_summary: {
+      observed_count: observedStatsConfidence.length,
+      average: observedStatsConfidence.length
+        ? roundNumber_(observedStatsConfidence.reduce(function (sum, value) { return sum + value; }, 0) / observedStatsConfidence.length, 4)
+        : null,
+      minimum: observedStatsConfidence.length ? Math.min.apply(null, observedStatsConfidence) : null,
+      maximum: observedStatsConfidence.length ? Math.max.apply(null, observedStatsConfidence) : null,
+    },
     sent_count: Number(reasonCounts.sent || 0),
     invariant: {
       sent_plus_drop_reasons_equals_input: Number(reasonCounts.sent || 0) + allDropReasons === oddsEvents.length,
@@ -720,6 +844,7 @@ function buildSignalRow_(runId, config, event, match, detail) {
     edge_value: detail.edge_value,
     edge_tier: detail.edge_tier,
     stake_units: detail.stake_units,
+    stats_confidence: Number.isFinite(Number(detail.stats_confidence)) ? Number(detail.stats_confidence) : null,
     signal_hash: detail.signal_hash,
     notification_outcome: detail.notification_outcome,
     reason_code: detail.notification_outcome,
