@@ -1,0 +1,6 @@
+# source_key	url	expected_content_type	parser_hint
+tennisabstract_leaders	https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top	text/html	html_static
+wta_stats_zone	https://www.wtatennis.com/stats	text/html	js_bootstrap
+itf	https://api.itf-production.sports-data.stadion.io/v1/widgets/wta/rankings/singles	application/json	json_api
+tennisexplorer	https://www.tennisexplorer.com/ranking/wta-women/	text/html	html_static
+sofascore	https://api.sofascore.com/api/v1/sport/tennis/rankings/wta	application/json	json_api
