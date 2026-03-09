@@ -841,6 +841,12 @@ function getCreditAwareRuntimeConfig_(config) {
     snapshot: modeInfo.snapshot,
     odds_window_cache_ttl_min: Number(config.ODDS_WINDOW_CACHE_TTL_MIN || 5),
     odds_window_refresh_min: Number(config.ODDS_WINDOW_REFRESH_MIN || 5),
+    odds_refresh_tier_low_upper_min: Math.max(0, Number(config.ODDS_REFRESH_TIER_LOW_UPPER_MIN || 240)),
+    odds_refresh_tier_med_upper_min: Math.max(0, Number(config.ODDS_REFRESH_TIER_MED_UPPER_MIN || 180)),
+    odds_refresh_tier_high_upper_min: Math.max(0, Number(config.ODDS_REFRESH_TIER_HIGH_UPPER_MIN || 90)),
+    odds_refresh_tier_low_interval_min: Math.max(1, Number(config.ODDS_REFRESH_TIER_LOW_INTERVAL_MIN || 20)),
+    odds_refresh_tier_med_interval_min: Math.max(1, Number(config.ODDS_REFRESH_TIER_MED_INTERVAL_MIN || 10)),
+    odds_refresh_tier_high_interval_min: Math.max(1, Number(config.ODDS_REFRESH_TIER_HIGH_INTERVAL_MIN || 5)),
     match_fallback_expansion_min: Number(config.MATCH_FALLBACK_EXPANSION_MIN || 120),
     schedule_refresh_non_critical_enabled: true,
   };
@@ -848,6 +854,9 @@ function getCreditAwareRuntimeConfig_(config) {
   if (modeInfo.mode === 'soft') {
     runtime.odds_window_cache_ttl_min = Math.max(runtime.odds_window_cache_ttl_min, runtime.odds_window_cache_ttl_min * 2);
     runtime.odds_window_refresh_min = Math.max(runtime.odds_window_refresh_min, runtime.odds_window_refresh_min * 2);
+    runtime.odds_refresh_tier_low_interval_min = Math.max(runtime.odds_refresh_tier_low_interval_min, runtime.odds_refresh_tier_low_interval_min * 2);
+    runtime.odds_refresh_tier_med_interval_min = Math.max(runtime.odds_refresh_tier_med_interval_min, runtime.odds_refresh_tier_med_interval_min * 2);
+    runtime.odds_refresh_tier_high_interval_min = Math.max(runtime.odds_refresh_tier_high_interval_min, runtime.odds_refresh_tier_high_interval_min * 2);
     runtime.match_fallback_expansion_min = 0;
     runtime.schedule_refresh_non_critical_enabled = false;
   }
@@ -894,6 +903,58 @@ function buildSkippedOddsStage_(runId, reasonCode, message) {
       },
       message: message || '',
     }),
+  };
+}
+
+
+function computeOddsTierCadenceDecision_(runtimeConfig, firstEligibleStartMs, nowMs, lastObservedMarketUpdateMs) {
+  const firstStartMs = Number(firstEligibleStartMs);
+  const now = Number(nowMs);
+  const minutesUntilFirstMatch = Number.isFinite(firstStartMs) && Number.isFinite(now)
+    ? Math.max(0, (firstStartMs - now) / 60000)
+    : Number.POSITIVE_INFINITY;
+
+  const lowUpper = Math.max(0, Number(runtimeConfig.odds_refresh_tier_low_upper_min || 240));
+  const medUpper = Math.max(0, Number(runtimeConfig.odds_refresh_tier_med_upper_min || 180));
+  const highUpper = Math.max(0, Number(runtimeConfig.odds_refresh_tier_high_upper_min || 90));
+  const lowInterval = Math.max(1, Number(runtimeConfig.odds_refresh_tier_low_interval_min || 20));
+  const medInterval = Math.max(1, Number(runtimeConfig.odds_refresh_tier_med_interval_min || 10));
+  const highInterval = Math.max(1, Number(runtimeConfig.odds_refresh_tier_high_interval_min || 5));
+
+  let tier = 'outside_tier_window';
+  let cadenceMin = 0;
+
+  if (minutesUntilFirstMatch <= highUpper) {
+    tier = 'high';
+    cadenceMin = highInterval;
+  } else if (minutesUntilFirstMatch <= medUpper) {
+    tier = 'medium';
+    cadenceMin = medInterval;
+  } else if (minutesUntilFirstMatch <= lowUpper) {
+    tier = 'low';
+    cadenceMin = lowInterval;
+  }
+
+  const cadenceMs = Math.max(1, cadenceMin) * 60000;
+  const normalizedLastObservedMs = Number(lastObservedMarketUpdateMs || 0);
+  const mostRecentObservedMs = Number.isFinite(normalizedLastObservedMs) ? normalizedLastObservedMs : 0;
+  const lastAttemptMeta = getStateJson_('ODDS_WINDOW_LAST_FETCH_META') || {};
+  const lastAttemptMs = Number(lastAttemptMeta.cached_at_ms || 0);
+  const elapsedSinceAttemptMs = Number.isFinite(lastAttemptMs) && lastAttemptMs > 0 ? Math.max(0, now - lastAttemptMs) : Number.POSITIVE_INFINITY;
+  const unchangedSinceAttempt = Number.isFinite(lastAttemptMs) && lastAttemptMs > 0 && mostRecentObservedMs > 0 && mostRecentObservedMs <= lastAttemptMs;
+  const unchangedThrottleActive = cadenceMin > 0 && unchangedSinceAttempt && elapsedSinceAttemptMs < cadenceMs;
+
+  return {
+    tier,
+    cadence_min: cadenceMin,
+    cadence_ms: cadenceMs,
+    minutes_until_first_match: minutesUntilFirstMatch,
+    should_skip_for_cadence: cadenceMin > 0 && unchangedThrottleActive,
+    cadence_reason_code: unchangedThrottleActive ? 'odds_refresh_skipped_tier_cadence_no_market_update' : '',
+    unchanged_since_last_fetch: unchangedSinceAttempt,
+    latest_market_update_ms: mostRecentObservedMs || null,
+    last_fetch_cached_at_ms: Number.isFinite(lastAttemptMs) ? lastAttemptMs : null,
+    elapsed_since_last_fetch_ms: Number.isFinite(elapsedSinceAttemptMs) ? elapsedSinceAttemptMs : null,
   };
 }
 
@@ -1118,20 +1179,49 @@ function resolveOddsWindowForPipeline_(config, nowMs) {
   const refreshWindowEndMs = refreshWindow.end_ms;
   const inRefreshWindow = nowMs >= refreshWindowStartMs && nowMs <= refreshWindowEndMs;
 
+  const cachedOddsPayload = getCachedPayload_('ODDS_WINDOW_PAYLOAD') || {};
+  const staleOddsPayload = getStateJson_('ODDS_WINDOW_STALE_PAYLOAD') || {};
+  const lastObservedFromCached = (cachedOddsPayload.events || []).reduce(function (latest, event) {
+    const observedMs = event && event.odds_updated_time instanceof Date
+      ? event.odds_updated_time.getTime()
+      : Number(event && event.odds_updated_epoch_ms);
+    return Number.isFinite(observedMs) ? Math.max(latest, observedMs) : latest;
+  }, 0);
+  const lastObservedFromStale = (staleOddsPayload.events || []).reduce(function (latest, event) {
+    const observedMs = Number(event && (event.odds_updated_epoch_ms || event.provider_odds_updated_epoch_ms));
+    return Number.isFinite(observedMs) ? Math.max(latest, observedMs) : latest;
+  }, 0);
+  const latestObservedMarketUpdateMs = Math.max(lastObservedFromCached, lastObservedFromStale, 0);
+  const tierCadence = computeOddsTierCadenceDecision_(runtimeConfig, firstEligibleStartMs, nowMs, latestObservedMarketUpdateMs);
+  const shouldFetchOdds = inRefreshWindow && !tierCadence.should_skip_for_cadence;
+
   return Object.assign({}, decisionBase, {
     first_eligible_start_ms: firstEligibleStartMs,
     last_eligible_start_ms: lastEligibleStartMs,
     refresh_window_start_ms: refreshWindowStartMs,
     refresh_window_end_ms: refreshWindowEndMs,
-    selected_source: inRefreshWindow ? 'fresh_api' : '',
-    should_fetch_odds: inRefreshWindow,
+    selected_source: shouldFetchOdds ? 'fresh_api' : '',
+    should_fetch_odds: shouldFetchOdds,
     current_refresh_mode: inRefreshWindow ? 'active_window' : 'outside_active_window',
-    transitioned_from_bootstrap_to_active_window: inRefreshWindow && previousRefreshMode === 'bootstrap',
-    decision_reason_code: inRefreshWindow ? 'odds_refresh_executed_in_window' : 'odds_refresh_skipped_outside_window',
-    decision_message: inRefreshWindow
-      ? 'Current time is inside schedule-derived refresh window.'
-      : 'Current time is outside schedule-derived refresh window.',
-    odds_fetch_window: inRefreshWindow ? {
+    refresh_tier: tierCadence.tier,
+    refresh_cadence_min: tierCadence.cadence_min,
+    minutes_until_first_match: tierCadence.minutes_until_first_match,
+    latest_market_update_ms: tierCadence.latest_market_update_ms,
+    last_fetch_cached_at_ms: tierCadence.last_fetch_cached_at_ms,
+    elapsed_since_last_fetch_ms: tierCadence.elapsed_since_last_fetch_ms,
+    unchanged_since_last_fetch: tierCadence.unchanged_since_last_fetch,
+    transitioned_from_bootstrap_to_active_window: shouldFetchOdds && previousRefreshMode === 'bootstrap',
+    decision_reason_code: !inRefreshWindow
+      ? 'odds_refresh_skipped_outside_window'
+      : (tierCadence.should_skip_for_cadence
+        ? tierCadence.cadence_reason_code
+        : 'odds_refresh_executed_in_window'),
+    decision_message: !inRefreshWindow
+      ? 'Current time is outside schedule-derived refresh window.'
+      : (tierCadence.should_skip_for_cadence
+        ? 'Inside refresh window but skipping immediate refetch because markets are unchanged and cadence interval has not elapsed.'
+        : 'Current time is inside schedule-derived refresh window.'),
+    odds_fetch_window: shouldFetchOdds ? {
       startMs: Math.max(nowMs, refreshWindowStartMs),
       endMs: refreshWindowEndMs,
     } : null,
