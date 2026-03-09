@@ -3,6 +3,7 @@ function onOpen() {
     .createMenu('WTA Pipeline Ops')
     .addItem('Setup / Verify Tabs', 'menuSetupVerifyTabs')
     .addItem('Deduplicate Config Sheet', 'menuDedupeConfigSheet')
+    .addItem('Repair Config (dedupe)', 'menuRepairConfig')
     .addItem('Run Pipeline Now', 'menuRunPipelineNow')
     .addSeparator()
     .addItem('Re-create / Reset Workbook', 'menuRecreateWorkbook')
@@ -28,22 +29,33 @@ function menuDedupeConfigSheet() {
   SpreadsheetApp.getUi().alert('Config sheet deduplicated.');
 }
 
-function menuRunPipelineNow() {
-  try {
-    runEdgeBoard();
-    SpreadsheetApp.getUi().alert('Pipeline run complete. Check Run_Log and State.');
-  } catch (error) {
-    const errorMessage = String(error && error.message ? error.message : error);
-    if (errorMessage.indexOf('dedupeConfigSheet_()') >= 0) {
-      SpreadsheetApp.getUi().alert(
-        'Pipeline run failed',
-        'Why this fails: duplicate config keys are ambiguous.\nHow to fix safely: run dedupeConfigSheet_() exactly once, then run pipeline again.',
-        SpreadsheetApp.getUi().ButtonSet.OK,
-      );
-    }
-    throw error;
-  }
+function menuRepairConfig() {
+  const summary = dedupeConfigSheetMenuAction_();
+  SpreadsheetApp.getUi().alert('Config repair complete: removed ' + summary.removed_row_count + ' duplicate row(s).');
 }
+
+function menuRunPipelineNow() {
+  const preflight = preflightConfigUniqueness_('menuRunPipelineNow preflight');
+  if (!preflight.ok) {
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: buildRunId_(),
+      stage: 'config_uniqueness_preflight',
+      status: 'failed',
+      reason_code: preflight.reason_code,
+      message: JSON.stringify({
+        context: 'menuRunPipelineNow',
+        duplicate_keys: preflight.duplicate_keys,
+      }),
+    });
+    SpreadsheetApp.getUi().alert('Pipeline run blocked', preflight.user_message, SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  runEdgeBoard();
+  SpreadsheetApp.getUi().alert('Pipeline run complete. Check Run_Log and State.');
+}
+
 
 function menuRecreateWorkbook() {
   const ui = SpreadsheetApp.getUi();

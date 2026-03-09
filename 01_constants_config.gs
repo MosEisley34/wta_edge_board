@@ -198,6 +198,34 @@ function getConfig_() {
   };
 }
 
+function preflightConfigUniqueness_(context) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
+  const values = sheet.getDataRange().getValues();
+  const parsed = parseConfigRows_(values, {
+    mode: 'warn_last_wins',
+    context: context || 'preflightConfigUniqueness_',
+    logger: function () {},
+  });
+
+  if (!parsed.duplicate_keys.length) {
+    return {
+      ok: true,
+      reason_code: 'config_unique_ok',
+      message: 'Config uniqueness preflight passed.',
+      duplicate_keys: [],
+    };
+  }
+
+  return {
+    ok: false,
+    reason_code: 'config_duplicate_keys_preflight',
+    duplicate_keys: parsed.duplicate_keys.slice().sort(),
+    message: 'Config has duplicate keys. Run dedupeConfigSheet_() (or the "Repair Config (dedupe)" menu action) once, then retry.',
+    user_message: 'Config has duplicate keys, so runtime behavior is ambiguous.\n\n'
+      + 'Recommended fix: run "Repair Config (dedupe)" once, then run pipeline again.',
+  };
+}
+
 function parseConfigRows_(values, options) {
   const opts = options || {};
   const mode = String(opts.mode || 'error').toLowerCase();
