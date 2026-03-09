@@ -1574,7 +1574,7 @@ function testStageGenerateSignals_notifyDisabledDoesNotMarkSentHash_() {
   }
 }
 
-function testStageGenerateSignals_recordsMissingScheduleMatchReasonCode_() {
+function testStageGenerateSignals_recordsFullyUnmatchedCandidates_() {
   const originalDateNow = Date.now;
   const originalGetSignalState = getSignalState_;
   const originalSetSignalState = setSignalState_;
@@ -1596,45 +1596,35 @@ function testStageGenerateSignals_recordsMissingScheduleMatchReasonCode_() {
   };
 
   try {
-    const event = {
-      event_id: 'evt_missing_match',
-      market: 'h2h',
-      outcome: 'player_a',
-      bookmaker: 'book_x',
-      price: 150,
-      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
-      odds_updated_time: new Date(nowMs),
-    };
+    const events = [
+      {
+        event_id: 'evt_missing_match_1', market: 'h2h', outcome: 'player_a', bookmaker: 'book_x', price: 150,
+        commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs),
+      },
+      {
+        event_id: 'evt_missing_match_2', market: 'h2h', outcome: 'player_b', bookmaker: 'book_x', price: 120,
+        commence_time: new Date(nowMs + (6 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs),
+      },
+    ];
     const config = {
-      MODEL_VERSION: 'test_model_v1',
-      EDGE_THRESHOLD_MICRO: 0.001,
-      EDGE_THRESHOLD_SMALL: 0.03,
-      EDGE_THRESHOLD_MED: 0.05,
-      EDGE_THRESHOLD_STRONG: 0.08,
-      STAKE_UNITS_MICRO: 0.25,
-      STAKE_UNITS_SMALL: 0.5,
-      STAKE_UNITS_MED: 1,
-      STAKE_UNITS_STRONG: 1.5,
-      SIGNAL_COOLDOWN_MIN: 180,
-      MINUTES_BEFORE_START_CUTOFF: 60,
-      STALE_ODDS_WINDOW_MIN: 60,
-      NOTIFY_ENABLED: false,
-      NOTIFY_TEST_MODE: false,
-      DISCORD_WEBHOOK: '',
-      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+      MODEL_VERSION: 'test_model_v1', EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08, STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5, SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: '', SIGNAL_DECISION_SAMPLE_LIMIT: 10,
     };
 
-    const result = stageGenerateSignals('run_missing_match', config, [event], [], {});
+    const result = stageGenerateSignals('run_missing_match', config, events, [], {});
     const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
 
     assertEquals_(0, result.rows.length);
-    assertEquals_(1, result.summary.reason_codes.missing_schedule_match || 0);
-    assertEquals_(1, result.summary.input_count);
-    assertEquals_(1, decisionState.processed_count || 0);
-    assertEquals_(1, decisionState.input_count || 0);
-    assertEquals_(1, (decisionState.reason_counts && decisionState.reason_counts.missing_schedule_match) || 0);
-    assertEquals_(1, (decisionState.sampled_decisions || []).length);
-    assertEquals_('missing_schedule_match', decisionState.sampled_decisions[0].decision_reason_code);
+    assertEquals_(2, result.summary.reason_codes.missing_match || 0);
+    assertEquals_(2, decisionState.input_count || 0);
+    assertEquals_(2, (decisionState.reason_counts && decisionState.reason_counts.missing_match) || 0);
+    assertEquals_(2, decisionState.all_drop_reasons || 0);
+    assertEquals_(0, decisionState.sent_count || 0);
+    assertEquals_(true, !!(decisionState.invariant && decisionState.invariant.sent_plus_drop_reasons_equals_input));
+    assertEquals_(2, (decisionState.sampled_candidate_rows || []).length);
+    assertEquals_('missing_match', (decisionState.sampled_candidate_rows[0] || {}).decision_reason_code || '');
   } finally {
     Date.now = originalDateNow;
     getSignalState_ = originalGetSignalState;
@@ -1644,7 +1634,7 @@ function testStageGenerateSignals_recordsMissingScheduleMatchReasonCode_() {
   }
 }
 
-function testStageGenerateSignals_recordsMissingPlayerStatsReasonCode_() {
+function testStageGenerateSignals_recordsFullyMissingStatsCandidates_() {
   const originalDateNow = Date.now;
   const originalGetSignalState = getSignalState_;
   const originalSetSignalState = setSignalState_;
@@ -1666,47 +1656,103 @@ function testStageGenerateSignals_recordsMissingPlayerStatsReasonCode_() {
   };
 
   try {
-    const event = {
-      event_id: 'evt_missing_stats',
-      market: 'h2h',
-      outcome: 'player_a',
-      bookmaker: 'book_x',
-      price: 150,
-      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
-      odds_updated_time: new Date(nowMs),
-    };
-    const match = {
-      odds_event_id: 'evt_missing_stats',
-      schedule_event_id: 'sched_missing_stats',
-      competition_tier: 'WTA_500',
-    };
+    const events = [
+      {
+        event_id: 'evt_missing_stats_1', market: 'h2h', outcome: 'player_a', bookmaker: 'book_x', price: 150,
+        commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs),
+      },
+      {
+        event_id: 'evt_missing_stats_2', market: 'h2h', outcome: 'player_b', bookmaker: 'book_x', price: 170,
+        commence_time: new Date(nowMs + (7 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs),
+      },
+    ];
+    const matches = [
+      { odds_event_id: 'evt_missing_stats_1', schedule_event_id: 'sched_missing_stats_1', competition_tier: 'WTA_500' },
+      { odds_event_id: 'evt_missing_stats_2', schedule_event_id: 'sched_missing_stats_2', competition_tier: 'WTA_500' },
+    ];
     const config = {
-      MODEL_VERSION: 'test_model_v1',
-      EDGE_THRESHOLD_MICRO: 0.001,
-      EDGE_THRESHOLD_SMALL: 0.03,
-      EDGE_THRESHOLD_MED: 0.05,
-      EDGE_THRESHOLD_STRONG: 0.08,
-      STAKE_UNITS_MICRO: 0.25,
-      STAKE_UNITS_SMALL: 0.5,
-      STAKE_UNITS_MED: 1,
-      STAKE_UNITS_STRONG: 1.5,
-      SIGNAL_COOLDOWN_MIN: 180,
-      MINUTES_BEFORE_START_CUTOFF: 60,
-      STALE_ODDS_WINDOW_MIN: 60,
-      NOTIFY_ENABLED: false,
-      NOTIFY_TEST_MODE: false,
-      DISCORD_WEBHOOK: '',
-      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+      MODEL_VERSION: 'test_model_v1', EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08, STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5, SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: '', SIGNAL_DECISION_SAMPLE_LIMIT: 10,
     };
 
-    const result = stageGenerateSignals('run_missing_stats', config, [event], [match], {});
+    const result = stageGenerateSignals('run_missing_stats', config, events, matches, {});
     const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
 
     assertEquals_(0, result.rows.length);
-    assertEquals_(1, result.summary.reason_codes.missing_player_stats || 0);
-    assertEquals_(1, decisionState.processed_count || 0);
-    assertEquals_(1, (decisionState.reason_counts && decisionState.reason_counts.missing_player_stats) || 0);
-    assertEquals_('missing_player_stats', (decisionState.sampled_decisions[0] || {}).decision_reason_code || '');
+    assertEquals_(2, result.summary.reason_codes.missing_stats || 0);
+    assertEquals_(2, (decisionState.reason_counts && decisionState.reason_counts.missing_stats) || 0);
+    assertEquals_(2, decisionState.all_drop_reasons || 0);
+    assertEquals_(0, decisionState.sent_count || 0);
+    assertEquals_(true, !!(decisionState.invariant && decisionState.invariant.sent_plus_drop_reasons_equals_input));
+    assertEquals_('missing_stats', (decisionState.sampled_candidate_rows[0] || {}).decision_reason_code || '');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testStageGenerateSignals_recordsMixedUpstreamOutcomesAndDecisionSamples_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const events = [
+      { event_id: 'evt_mixed_missing_match', market: 'h2h', outcome: 'player_a', bookmaker: 'book_x', price: 150, commence_time: new Date(nowMs + (4 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs) },
+      { event_id: 'evt_mixed_missing_stats', market: 'h2h', outcome: 'player_b', bookmaker: 'book_x', price: 180, commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs) },
+      { event_id: 'evt_mixed_invalid_features', market: 'h2h', outcome: 'player_a', bookmaker: 'book_x', price: null, commence_time: new Date(nowMs + (6 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs) },
+    ];
+    const matches = [
+      { odds_event_id: 'evt_mixed_missing_stats', schedule_event_id: 'sched_mixed_missing_stats', competition_tier: 'WTA_500' },
+      { odds_event_id: 'evt_mixed_invalid_features', schedule_event_id: 'sched_mixed_invalid_features', competition_tier: 'WTA_500' },
+    ];
+    const stats = {
+      evt_mixed_invalid_features: {
+        player_a: { has_stats: true, features: { ranking: 10, recent_form: 0.6, surface_win_rate: 0.58, hold_pct: 0.64, break_pct: 0.36 } },
+        player_b: { has_stats: true, features: { ranking: 12, recent_form: 0.59, surface_win_rate: 0.57, hold_pct: 0.63, break_pct: 0.35 } },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1', EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08, STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5, SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: '', SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_mixed_diagnostics', config, events, matches, stats);
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+
+    assertEquals_(0, result.rows.length);
+    assertEquals_(1, result.summary.reason_codes.missing_match || 0);
+    assertEquals_(1, result.summary.reason_codes.missing_stats || 0);
+    assertEquals_(1, result.summary.reason_codes.invalid_features || 0);
+    assertEquals_(3, decisionState.all_drop_reasons || 0);
+    assertEquals_(3, (decisionState.sampled_candidate_rows || []).length);
+    assertEquals_('missing_match', (decisionState.sampled_candidate_rows[0] || {}).decision_reason_code || '');
+    assertEquals_('missing_stats', (decisionState.sampled_candidate_rows[1] || {}).decision_reason_code || '');
+    assertEquals_('invalid_features', (decisionState.sampled_candidate_rows[2] || {}).decision_reason_code || '');
+    assertEquals_(true, !!(decisionState.invariant && decisionState.invariant.sent_plus_drop_reasons_equals_input));
   } finally {
     Date.now = originalDateNow;
     getSignalState_ = originalGetSignalState;
