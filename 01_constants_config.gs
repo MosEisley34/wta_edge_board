@@ -205,10 +205,15 @@ function parseConfigRows_(values, options) {
   const logger = typeof opts.logger === 'function' ? opts.logger : function () {};
   const config = {};
   const duplicateRowsByKey = {};
+  const firstRowByKey = {};
 
   for (let i = 1; i < (values || []).length; i += 1) {
     const key = String(values[i][0] || '').trim();
     if (!key) continue;
+
+    if (!Object.prototype.hasOwnProperty.call(firstRowByKey, key)) {
+      firstRowByKey[key] = i + 1;
+    }
 
     if (Object.prototype.hasOwnProperty.call(config, key)) {
       if (!duplicateRowsByKey[key]) duplicateRowsByKey[key] = [];
@@ -225,7 +230,7 @@ function parseConfigRows_(values, options) {
 
   const duplicateKeys = Object.keys(duplicateRowsByKey);
   if (duplicateKeys.length && mode === 'error') {
-    throw new Error(formatDuplicateConfigKeysError_(context, duplicateRowsByKey));
+    throw new Error(formatDuplicateConfigKeysError_(context, duplicateRowsByKey, firstRowByKey));
   }
 
   return {
@@ -235,12 +240,19 @@ function parseConfigRows_(values, options) {
   };
 }
 
-function formatDuplicateConfigKeysError_(context, duplicateRowsByKey) {
+function formatDuplicateConfigKeysError_(context, duplicateRowsByKey, firstRowByKey) {
+  const duplicateKeyCount = Object.keys(duplicateRowsByKey).length;
   const details = Object.keys(duplicateRowsByKey)
     .sort()
     .map(function (key) {
-      return key + ' (duplicate rows: ' + duplicateRowsByKey[key].join(', ') + ')';
+      return key
+        + ' (first row: ' + Number((firstRowByKey || {})[key] || 0)
+        + '; duplicate rows: ' + duplicateRowsByKey[key].join(', ')
+        + ')';
     })
     .join('; ');
-  return '[Config] Duplicate keys detected while ' + context + ': ' + details + '. Run dedupeConfigSheet_() to repair the Config tab.';
+  return '[Config] Duplicate keys detected while ' + context
+    + ' (' + duplicateKeyCount + ' duplicate key(s)): ' + details + '. '
+    + 'Why this fails: duplicate keys make runtime config resolution ambiguous. '
+    + 'How to fix safely: run dedupeConfigSheet_() exactly once from the menu or Apps Script editor.';
 }

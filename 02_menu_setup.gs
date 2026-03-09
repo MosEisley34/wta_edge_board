@@ -29,8 +29,20 @@ function menuDedupeConfigSheet() {
 }
 
 function menuRunPipelineNow() {
-  runEdgeBoard();
-  SpreadsheetApp.getUi().alert('Pipeline run complete. Check Run_Log and State.');
+  try {
+    runEdgeBoard();
+    SpreadsheetApp.getUi().alert('Pipeline run complete. Check Run_Log and State.');
+  } catch (error) {
+    const errorMessage = String(error && error.message ? error.message : error);
+    if (errorMessage.indexOf('dedupeConfigSheet_()') >= 0) {
+      SpreadsheetApp.getUi().alert(
+        'Pipeline run failed',
+        'Why this fails: duplicate config keys are ambiguous.\nHow to fix safely: run dedupeConfigSheet_() exactly once, then run pipeline again.',
+        SpreadsheetApp.getUi().ButtonSet.OK,
+      );
+    }
+    throw error;
+  }
 }
 
 function menuRecreateWorkbook() {

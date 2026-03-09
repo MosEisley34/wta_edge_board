@@ -541,6 +541,17 @@ function runEdgeBoard() {
       duplicate_suppressed: signalStage.duplicateSuppressedCount,
     });
   } catch (error) {
+    const errorMessage = String(error && error.message ? error.message : error);
+    if (errorMessage.indexOf('dedupeConfigSheet_()') >= 0) {
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'config_help',
+        status: 'warning',
+        reason_code: 'config_duplicate_keys',
+        message: 'Why this fails: duplicate config keys are ambiguous. How to fix safely: run dedupeConfigSheet_() once, then re-run pipeline.',
+      });
+    }
     appendLogRow_({
       row_type: 'summary',
       run_id: runId,
@@ -549,8 +560,8 @@ function runEdgeBoard() {
       ended_at: new Date(),
       status: 'failed',
       reason_code: 'run_exception',
-      message: String(error && error.message ? error.message : error),
-      exception: String(error && error.message ? error.message : error),
+      message: errorMessage,
+      exception: errorMessage,
       stack: String(error && error.stack ? error.stack : ''),
     });
     throw error;
