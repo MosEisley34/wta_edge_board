@@ -25,6 +25,13 @@ const PLAYER_STATS_LEADERS_CACHE_KEY = 'PLAYER_STATS_TA_LEADERS_PAYLOAD';
 const PLAYER_STATS_CACHE_MAX_BYTES = 95000;
 const PLAYER_STATS_CACHE_CHUNK_BYTES = 90000;
 const PLAYER_STATS_LEADERS_CHUNK_KEY_PREFIX = PLAYER_STATS_LEADERS_CACHE_KEY + '::chunk::';
+const PLAYER_STATS_COMPLETENESS_KEYS = [
+  'ranking',
+  'recent_form',
+  'surface_win_rate',
+  'hold_pct',
+  'break_pct',
+];
 
 function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
   const players = dedupePlayerNames_(canonicalPlayers || []);
@@ -71,7 +78,9 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
   const live = fetchPlayerStatsFromProvider_(config, players, asOfDate);
   if (live.ok) {
     const liveStatsByPlayer = live.stats_by_player || {};
-    const dataAvailable = Object.keys(liveStatsByPlayer).length > 0;
+    const completeness = summarizePlayerStatsCompleteness_(liveStatsByPlayer);
+    const dataAvailable = completeness.has_stats;
+    const aggregateReasonCode = resolvePlayerStatsAggregateReasonCode_(live.reason_code, completeness);
     const cachePayload = {
       cache_key: cacheKey,
       cached_at_ms: nowMs,
@@ -85,13 +94,16 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
       scrape_call_count: Number(live.scrape_call_count || 0),
       provider_available: true,
       data_available: dataAvailable,
+      players_with_non_null_stats: completeness.players_with_non_null_stats,
+      players_with_null_only_stats: completeness.players_with_null_only_stats,
+      aggregate_reason_code: aggregateReasonCode,
       last_success_at: new Date(nowMs).toISOString(),
-      last_failure_reason: dataAvailable ? '' : String(live.reason_code || 'player_stats_data_unavailable'),
+      last_failure_reason: dataAvailable ? '' : String(aggregateReasonCode || 'player_stats_data_unavailable'),
     });
 
     return {
       stats_by_player: liveStatsByPlayer,
-      reason_code: live.reason_code || 'player_stats_api_success',
+      reason_code: aggregateReasonCode || live.reason_code || 'player_stats_api_success',
       source: 'fresh_api',
       provider_available: true,
       api_credit_usage: Number(live.api_credit_usage || 0),
@@ -887,16 +899,20 @@ function setCachedPlayerStatsPayload_(cacheKey, payload) {
 
 function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime, telemetry) {
   const metrics = telemetry || {};
+  const completeness = summarizePlayerStatsCompleteness_(payload.stats_by_player || {});
   const dataAvailable = metrics.data_available !== undefined
     ? metrics.data_available === true
-    : Object.keys(payload.stats_by_player || {}).length > 0;
+    : completeness.has_stats;
+  const aggregateReasonCode = String(metrics.aggregate_reason_code || resolvePlayerStatsAggregateReasonCode_('', completeness) || '');
   const serializable = {
     cache_key: payload.cache_key || '',
     cached_at_ms: Number(payload.cached_at_ms || nowMs),
     source: source,
     as_of_time: payload.as_of_time || asOfTime.toISOString(),
-    has_stats: Object.keys(payload.stats_by_player || {}).length > 0,
+    has_stats: completeness.has_stats,
     player_count: Number(payload.player_count || playerCount || 0),
+    players_with_non_null_stats: completeness.players_with_non_null_stats,
+    players_with_null_only_stats: completeness.players_with_null_only_stats,
     stats_by_player: payload.stats_by_player || {},
   };
 
@@ -917,13 +933,54 @@ function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime, 
     as_of_time: serializable.as_of_time,
     has_stats: serializable.has_stats,
     player_count: serializable.player_count,
+    players_with_non_null_stats: serializable.players_with_non_null_stats,
+    players_with_null_only_stats: serializable.players_with_null_only_stats,
     api_call_count: Number(metrics.api_call_count || 0),
     scrape_call_count: Number(metrics.scrape_call_count || 0),
     provider_available: metrics.provider_available !== false,
     data_available: dataAvailable,
+    aggregate_reason_code: aggregateReasonCode,
     last_success_at: String(metrics.last_success_at || ''),
-    last_failure_reason: String(metrics.last_failure_reason || ''),
+    last_failure_reason: String(metrics.last_failure_reason || (dataAvailable ? '' : aggregateReasonCode)),
   }));
+}
+
+function summarizePlayerStatsCompleteness_(statsByPlayer) {
+  const players = statsByPlayer && typeof statsByPlayer === 'object'
+    ? Object.keys(statsByPlayer)
+    : [];
+  let playersWithNonNullStats = 0;
+  let playersWithNullOnlyStats = 0;
+
+  players.forEach(function (player) {
+    const stats = statsByPlayer[player];
+    const hasNonNullStats = playerStatsHasNonNullFeatures_(stats);
+    if (hasNonNullStats) playersWithNonNullStats += 1;
+    else playersWithNullOnlyStats += 1;
+  });
+
+  return {
+    has_stats: playersWithNonNullStats > 0,
+    players_with_non_null_stats: playersWithNonNullStats,
+    players_with_null_only_stats: playersWithNullOnlyStats,
+  };
+}
+
+function playerStatsHasNonNullFeatures_(stats) {
+  if (!stats || typeof stats !== 'object') return false;
+  for (let i = 0; i < PLAYER_STATS_COMPLETENESS_KEYS.length; i += 1) {
+    const value = stats[PLAYER_STATS_COMPLETENESS_KEYS[i]];
+    if (value !== null && value !== undefined) return true;
+  }
+  return false;
+}
+
+function resolvePlayerStatsAggregateReasonCode_(baseReasonCode, completeness) {
+  const reasonCode = String(baseReasonCode || '');
+  const metrics = completeness || { has_stats: false, players_with_null_only_stats: 0 };
+  if (metrics.has_stats) return reasonCode;
+  if (Number(metrics.players_with_null_only_stats || 0) > 0) return 'provider_returned_null_features';
+  return reasonCode || 'provider_returned_empty';
 }
 
 function getTaH2hRowForCanonicalPair_(config, playerA, playerB) {
