@@ -2695,6 +2695,134 @@ function testStageGenerateSignals_thresholdRejectionIncludedInDecisionDiagnostic
 }
 
 
+
+function testStageGenerateSignals_richPlayerStatsInfluenceEdgeAndTier_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const events = [
+      {
+        event_id: 'evt_edge_baseline',
+        market: 'h2h',
+        outcome: 'player_a',
+        bookmaker: 'book_x',
+        price: 150,
+        commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+        odds_updated_time: new Date(nowMs),
+      },
+      {
+        event_id: 'evt_edge_rich',
+        market: 'h2h',
+        outcome: 'player_a',
+        bookmaker: 'book_x',
+        price: 150,
+        commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+        odds_updated_time: new Date(nowMs),
+      },
+    ];
+    const matches = [
+      { odds_event_id: 'evt_edge_baseline', schedule_event_id: 'sched_edge_baseline', competition_tier: 'WTA_500' },
+      { odds_event_id: 'evt_edge_rich', schedule_event_id: 'sched_edge_rich', competition_tier: 'WTA_500' },
+    ];
+    const baselineFeaturesA = { ranking: 10, recent_form: 0.6, surface_win_rate: 0.58, hold_pct: 0.64, break_pct: 0.36 };
+    const baselineFeaturesB = { ranking: 12, recent_form: 0.59, surface_win_rate: 0.57, hold_pct: 0.63, break_pct: 0.35 };
+    const stats = {
+      evt_edge_baseline: {
+        player_a: { has_stats: true, features: baselineFeaturesA },
+        player_b: { has_stats: true, features: baselineFeaturesB },
+      },
+      evt_edge_rich: {
+        player_a: {
+          has_stats: true,
+          features: {
+            ranking: 10,
+            recent_form: 0.6,
+            surface_win_rate: 0.58,
+            hold_pct: 0.64,
+            break_pct: 0.36,
+            first_serve_in_pct: 0.69,
+            first_serve_points_won_pct: 0.74,
+            second_serve_points_won_pct: 0.56,
+            return_points_won_pct: 0.45,
+            bp_saved_pct: 0.67,
+            bp_conv_pct: 0.46,
+            dr: 1.18,
+            tpw_pct: 0.54,
+          },
+        },
+        player_b: {
+          has_stats: true,
+          features: {
+            ranking: 12,
+            recent_form: 0.59,
+            surface_win_rate: 0.57,
+            hold_pct: 0.63,
+            break_pct: 0.35,
+            first_serve_in_pct: 0.57,
+            first_serve_points_won_pct: 0.65,
+            second_serve_points_won_pct: 0.48,
+            return_points_won_pct: 0.37,
+            bp_saved_pct: 0.56,
+            bp_conv_pct: 0.36,
+            dr: 0.95,
+            tpw_pct: 0.48,
+          },
+        },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.02,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.08,
+      EDGE_THRESHOLD_STRONG: 0.12,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: '',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_rich_stats_impact', config, events, matches, stats);
+    const baselineRow = (result.rows || []).filter(function (row) { return row.odds_event_id === 'evt_edge_baseline'; })[0] || {};
+    const richRow = (result.rows || []).filter(function (row) { return row.odds_event_id === 'evt_edge_rich'; })[0] || {};
+
+    assertEquals_(2, result.rows.length);
+    assertEquals_('MICRO', baselineRow.edge_tier || '');
+    assertEquals_('SMALL', richRow.edge_tier || '');
+    assertTrue_(Number(richRow.edge_value || 0) > Number(baselineRow.edge_value || 0), 'rich stats should increase edge value versus baseline stats');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
 function testGetConfig_allowWta250Missing_usesDefaultTrue_() {
   const originalGetActiveSpreadsheet = SpreadsheetApp.getActiveSpreadsheet;
 

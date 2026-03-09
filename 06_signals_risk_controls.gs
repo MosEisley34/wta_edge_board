@@ -289,13 +289,38 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
     return 0;
   }
 
-  const rankingDiff = (playerB.features.ranking - playerA.features.ranking) / 300;
-  const recentFormDiff = (playerA.features.recent_form || 0) - (playerB.features.recent_form || 0);
-  const surfaceDiff = (playerA.features.surface_win_rate || 0) - (playerB.features.surface_win_rate || 0);
-  const serveReturnDiff = ((playerA.features.hold_pct || 0) - (playerB.features.hold_pct || 0))
-    + ((playerA.features.break_pct || 0) - (playerB.features.break_pct || 0));
+  const playerAFeatures = playerA.features || {};
+  const playerBFeatures = playerB.features || {};
 
-  return roundNumber_((rankingDiff * 0.25) + (recentFormDiff * 0.3) + (surfaceDiff * 0.25) + (serveReturnDiff * 0.2), 4);
+  const rankingDiff = ((playerBFeatures.ranking || 0) - (playerAFeatures.ranking || 0)) / 300;
+  const recentFormDiff = (playerAFeatures.recent_form || 0) - (playerBFeatures.recent_form || 0);
+  const surfaceDiff = (playerAFeatures.surface_win_rate || 0) - (playerBFeatures.surface_win_rate || 0);
+  const serveReturnDiff = ((playerAFeatures.hold_pct || 0) - (playerBFeatures.hold_pct || 0))
+    + ((playerAFeatures.break_pct || 0) - (playerBFeatures.break_pct || 0));
+  const firstServeInDiff = (playerAFeatures.first_serve_in_pct || 0) - (playerBFeatures.first_serve_in_pct || 0);
+  const firstServePointsWonDiff = (playerAFeatures.first_serve_points_won_pct || 0) - (playerBFeatures.first_serve_points_won_pct || 0);
+  const secondServePointsWonDiff = (playerAFeatures.second_serve_points_won_pct || 0) - (playerBFeatures.second_serve_points_won_pct || 0);
+  const returnPointsWonDiff = (playerAFeatures.return_points_won_pct || 0) - (playerBFeatures.return_points_won_pct || 0);
+  const bpSavedDiff = (playerAFeatures.bp_saved_pct || 0) - (playerBFeatures.bp_saved_pct || 0);
+  const bpConvDiff = (playerAFeatures.bp_conv_pct || 0) - (playerBFeatures.bp_conv_pct || 0);
+  const dominanceRatioDiff = (playerAFeatures.dr || 0) - (playerBFeatures.dr || 0);
+  const totalPointsWonDiff = (playerAFeatures.tpw_pct || 0) - (playerBFeatures.tpw_pct || 0);
+
+  return roundNumber_(
+    (rankingDiff * 0.2)
+    + (recentFormDiff * 0.2)
+    + (surfaceDiff * 0.15)
+    + (serveReturnDiff * 0.15)
+    + (firstServeInDiff * 0.07)
+    + (firstServePointsWonDiff * 0.07)
+    + (secondServePointsWonDiff * 0.06)
+    + (returnPointsWonDiff * 0.04)
+    + (bpSavedDiff * 0.03)
+    + (bpConvDiff * 0.02)
+    + (dominanceRatioDiff * 0.005)
+    + (totalPointsWonDiff * 0.005),
+    4
+  );
 }
 
 function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsByOddsEventId, stageMeta) {
