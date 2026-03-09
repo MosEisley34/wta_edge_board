@@ -391,14 +391,16 @@ function runEdgeBoard() {
     const signalsFoundCount = Number(signalStage.rows.length || 0);
     const runHealthDiagnostics = evaluateRunHealthDiagnostics_({
       fetched_odds: fetchedOddsCount,
+      fetched_schedule: scheduleStage.events.length,
       matched: matchedCount,
       signals_found: signalsFoundCount,
       sample_unmatched_cases: matchStage.unmatched,
+      odds_reason_codes: oddsStage.summary.reason_codes,
       schedule_reason_codes: scheduleStage.summary.reason_codes,
       match_reason_codes: matchStage.summary.reason_codes,
     });
 
-    if (runHealthDiagnostics.warning_payload) {
+    if (runHealthDiagnostics.warning_payload && runHealthDiagnostics.should_emit_warning) {
       appendLogRow_({
         row_type: 'ops',
         run_id: runId,
@@ -522,8 +524,8 @@ function runEdgeBoard() {
       top_rejection_reasons: getTopReasonCodes_(combinedReasonCodes, 10),
       reason_codes: combinedReasonCodes,
       run_health: {
-        status: runHealthDiagnostics.is_degraded ? 'degraded' : 'healthy',
-        reason_code: runHealthDiagnostics.degraded_reason_code || '',
+        status: runHealthDiagnostics.status,
+        reason_code: runHealthDiagnostics.reason_code,
         diagnostics: runHealthDiagnostics.warning_payload,
       },
       productive_output_watchdog: productiveOutputState,
@@ -549,11 +551,9 @@ function runEdgeBoard() {
       stage: 'runEdgeBoard',
       started_at: startedAt,
       ended_at: new Date(),
-      status: runHealthDiagnostics.is_degraded ? 'degraded' : 'success',
-      reason_code: runHealthDiagnostics.degraded_reason_code || 'run_success',
-      message: runHealthDiagnostics.is_degraded
-        ? 'Pipeline run completed with degraded run-health guard.'
-        : 'Pipeline run completed.',
+      status: runHealthDiagnostics.summary_status,
+      reason_code: runHealthDiagnostics.summary_reason_code,
+      message: runHealthDiagnostics.summary_message,
       fetched_odds: fetchedOddsCount,
       fetched_schedule: scheduleStage.events.length,
       allowed_tournaments: scheduleStage.allowedCount,
@@ -588,18 +588,53 @@ function runEdgeBoard() {
 
 function evaluateRunHealthDiagnostics_(metrics) {
   const fetchedOdds = Number(metrics && metrics.fetched_odds || 0);
+  const fetchedSchedule = Number(metrics && metrics.fetched_schedule || 0);
   const matched = Number(metrics && metrics.matched || 0);
   const signalsFound = Number(metrics && metrics.signals_found || 0);
   const sampleUnmatchedCases = (metrics && metrics.sample_unmatched_cases) || [];
+  const oddsReasonCodes = Object.assign({}, (metrics && metrics.odds_reason_codes) || {});
   const scheduleReasonCodes = Object.assign({}, (metrics && metrics.schedule_reason_codes) || {});
   const matchReasonCodes = Object.assign({}, (metrics && metrics.match_reason_codes) || {});
+
+  const scheduleOnlyIdle = fetchedOdds === 0
+    && fetchedSchedule > 0
+    && Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0) > 0;
+
+  if (scheduleOnlyIdle) {
+    const idlePayload = {
+      reason_code: 'run_health_expected_idle_outside_odds_window',
+      fetched_odds: fetchedOdds,
+      fetched_schedule: fetchedSchedule,
+      matched: matched,
+      signals_found: signalsFound,
+      message: 'Odds refresh was intentionally skipped outside the configured odds window; zero matches/signals are expected in this schedule-only run.',
+    };
+
+    return {
+      is_degraded: false,
+      status: 'idle_outside_odds_window',
+      reason_code: 'odds_refresh_skipped_outside_window',
+      degraded_reason_code: '',
+      summary_status: 'success',
+      summary_reason_code: 'odds_refresh_skipped_outside_window',
+      summary_message: idlePayload.message,
+      warning_payload: idlePayload,
+      should_emit_warning: false,
+    };
+  }
 
   const degraded = fetchedOdds > 0 && matched === 0;
   if (!degraded) {
     return {
       is_degraded: false,
+      status: 'healthy',
+      reason_code: '',
       degraded_reason_code: '',
+      summary_status: 'success',
+      summary_reason_code: 'run_success',
+      summary_message: 'Pipeline run completed.',
       warning_payload: null,
+      should_emit_warning: false,
     };
   }
 
@@ -626,7 +661,13 @@ function evaluateRunHealthDiagnostics_(metrics) {
 
   return {
     is_degraded: true,
+    status: 'degraded',
+    reason_code: warningPayload.reason_code,
     degraded_reason_code: warningPayload.reason_code,
+    summary_status: 'degraded',
+    summary_reason_code: warningPayload.reason_code,
+    summary_message: 'Pipeline run completed with degraded run-health guard.',
     warning_payload: warningPayload,
+    should_emit_warning: true,
   };
 }

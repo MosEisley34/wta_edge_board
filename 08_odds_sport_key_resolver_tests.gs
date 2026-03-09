@@ -1250,6 +1250,57 @@ function testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_() {
   }
 }
 
+
+function testRunEdgeBoard_marksIdleOutsideOddsWindowForScheduleOnlyRun_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [],
+      oddsRows: [],
+      oddsReasonCodes: { odds_refresh_skipped_outside_window: 1 },
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchedCount: 0,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten: 0,
+      matchReasonCodes: {},
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    assertEquals_('odds_refresh_skipped_outside_window', harness.summaryReasonCode());
+
+    let summary = null;
+    let healthWarning = null;
+    for (let i = 0; i < harness.logs.length; i += 1) {
+      const row = harness.logs[i];
+      if (row.row_type === 'summary' && row.stage === 'runEdgeBoard') summary = row;
+      if (row.row_type === 'ops' && row.stage === 'run_health_guard') healthWarning = row;
+    }
+
+    assertEquals_('success', summary.status);
+    assertEquals_('odds_refresh_skipped_outside_window', summary.reason_code);
+    assertEquals_(0, summary.fetched_odds);
+    assertEquals_(1, summary.fetched_schedule);
+    assertEquals_(null, healthWarning);
+
+    const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+    assertEquals_('idle_outside_odds_window', verbose.run_health.status);
+    assertEquals_('odds_refresh_skipped_outside_window', verbose.run_health.reason_code);
+    assertEquals_('run_health_expected_idle_outside_odds_window', verbose.run_health.diagnostics.reason_code);
+    assertEquals_(0, verbose.run_health.diagnostics.matched);
+    assertEquals_(0, verbose.run_health.diagnostics.signals_found);
+  } finally {
+    harness.restore();
+  }
+}
+
 function testUpdateEmptyProductiveOutputState_warnsAtThreshold_() {
   const originalGetStateJson = getStateJson_;
   const originalSetStateValue = setStateValue_;
@@ -1386,7 +1437,7 @@ function createRunEdgeBoardTestHarness_(options) {
       return {
         events: (opts.orchestrationScenario.oddsEvents || []).slice(),
         rows: (opts.orchestrationScenario.oddsRows || []).slice(),
-        summary: { reason_codes: {} },
+        summary: { reason_codes: Object.assign({}, opts.orchestrationScenario.oddsReasonCodes || {}) },
         selected_source: 'fallback_static_window',
       };
     };
