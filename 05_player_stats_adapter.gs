@@ -323,6 +323,40 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
     return { ok: false, reason_code: 'ta_matchmx_parse_failed', stats_by_player: {}, api_call_count: totalCalls };
   }
 
+  const normalizedStatsByPlayer = normalizePlayerStatsResponse_(structuredRows, canonicalPlayers, {
+    as_of_time: asOfTime,
+    match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
+    recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
+  });
+  const parseDiagnostics = summarizeTaLeadersParseDiagnostics_(structuredRows, normalizedStatsByPlayer);
+  const hasCoverageMismatch = isTaLeadersCoverageMismatch_(parseDiagnostics);
+  const coverageReasonCode = hasCoverageMismatch ? 'ta_parse_coverage_mismatch' : '';
+  persistTaLeadersParseDiagnostics_(Object.assign({}, parseDiagnostics, {
+    reason_code: coverageReasonCode || 'ta_matchmx_ok',
+    source: jsUrl,
+    fetched_at: new Date().toISOString(),
+  }));
+
+  if (hasCoverageMismatch) {
+    const cachedHealthy = getCachedTaLeadersPayload_();
+    if (cachedHealthy && Array.isArray(cachedHealthy.rows) && cachedHealthy.rows.length) {
+      const cachedHealthyStats = normalizePlayerStatsResponse_(cachedHealthy.rows, canonicalPlayers, {
+        as_of_time: asOfTime,
+        match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
+        recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
+      });
+      const cachedCompleteness = summarizePlayerStatsCompleteness_(cachedHealthyStats);
+      if (cachedCompleteness.has_stats) {
+        return {
+          ok: true,
+          reason_code: coverageReasonCode,
+          stats_by_player: cachedHealthyStats,
+          api_call_count: totalCalls,
+        };
+      }
+    }
+  }
+
   const cachePayload = {
     source: jsUrl,
     fetched_at: new Date().toISOString(),
@@ -355,11 +389,7 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
     });
   }
 
-  const statsByPlayer = normalizePlayerStatsResponse_(structuredRows, canonicalPlayers, {
-    as_of_time: asOfTime,
-    match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
-    recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
-  });
+  const statsByPlayer = normalizedStatsByPlayer;
   return {
     ok: Object.keys(statsByPlayer).length > 0,
     reason_code: Object.keys(statsByPlayer).length > 0 ? 'ta_matchmx_ok' : 'ta_matchmx_parse_failed',
@@ -398,6 +428,59 @@ function extractMatchMxRows_(payload) {
   }
 
   return rows;
+}
+
+function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer) {
+  const parsedRows = Array.isArray(rows) ? rows : [];
+  const normalizedMap = statsByPlayer && typeof statsByPlayer === 'object' ? statsByPlayer : {};
+  const uniquePlayers = {};
+
+  parsedRows.forEach(function (row) {
+    const canonical = canonicalizePlayerName_((row && row.player_name) || '', {});
+    if (canonical) uniquePlayers[canonical] = true;
+  });
+
+  let rankingNonNull = 0;
+  let holdPctNonNull = 0;
+  let breakPctNonNull = 0;
+  Object.keys(normalizedMap).forEach(function (player) {
+    const stats = normalizedMap[player];
+    if (!stats || typeof stats !== 'object') return;
+    if (stats.ranking !== null && stats.ranking !== undefined) rankingNonNull += 1;
+    if (stats.hold_pct !== null && stats.hold_pct !== undefined) holdPctNonNull += 1;
+    if (stats.break_pct !== null && stats.break_pct !== undefined) breakPctNonNull += 1;
+  });
+
+  return {
+    parsed_row_count: parsedRows.length,
+    unique_players_parsed: Object.keys(uniquePlayers).length,
+    normalized_non_null_counts: {
+      ranking: rankingNonNull,
+      hold_pct: holdPctNonNull,
+      break_pct: breakPctNonNull,
+    },
+  };
+}
+
+function isTaLeadersCoverageMismatch_(diagnostics) {
+  const info = diagnostics || {};
+  const parsedRowCount = Number(info.parsed_row_count || 0);
+  const nonNull = info.normalized_non_null_counts || {};
+  const normalizedTotal = Number(nonNull.ranking || 0) + Number(nonNull.hold_pct || 0) + Number(nonNull.break_pct || 0);
+  return parsedRowCount > 500 && normalizedTotal <= 3;
+}
+
+function persistTaLeadersParseDiagnostics_(payload) {
+  const diagnostic = Object.assign({}, payload || {});
+  logTaLeadersCacheDiagnostic_('ta_parse_diagnostics', diagnostic);
+  try {
+    const existing = getStateJson_('PLAYER_STATS_LAST_FETCH_META') || {};
+    setStateValue_('PLAYER_STATS_LAST_FETCH_META', JSON.stringify(Object.assign({}, existing, {
+      ta_parse_diagnostic: diagnostic,
+    })));
+  } catch (e) {
+    // Non-fatal best-effort diagnostics only.
+  }
 }
 
 function parseJsArrayTokens_(arrayLiteralBody) {
