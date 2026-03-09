@@ -294,9 +294,17 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
 
   const rankingDiff = ((playerBFeatures.ranking || 0) - (playerAFeatures.ranking || 0)) / 300;
   const recentFormDiff = (playerAFeatures.recent_form || 0) - (playerBFeatures.recent_form || 0);
+  const recentFormLast10Diff = fallbackFeatureDiff_(playerAFeatures, playerBFeatures, 'recent_form_last_10', 'recent_form');
   const surfaceDiff = (playerAFeatures.surface_win_rate || 0) - (playerBFeatures.surface_win_rate || 0);
   const serveReturnDiff = ((playerAFeatures.hold_pct || 0) - (playerBFeatures.hold_pct || 0))
     + ((playerAFeatures.break_pct || 0) - (playerBFeatures.break_pct || 0));
+  const surfaceServeReturnDiff = fallbackCompositeDiff_(
+    playerAFeatures,
+    playerBFeatures,
+    ['surface_hold_pct', 'surface_break_pct'],
+    ['hold_pct', 'break_pct']
+  );
+  const surfaceRecentFormDiff = fallbackFeatureDiff_(playerAFeatures, playerBFeatures, 'surface_recent_form', 'recent_form');
   const firstServeInDiff = (playerAFeatures.first_serve_in_pct || 0) - (playerBFeatures.first_serve_in_pct || 0);
   const firstServePointsWonDiff = (playerAFeatures.first_serve_points_won_pct || 0) - (playerBFeatures.first_serve_points_won_pct || 0);
   const secondServePointsWonDiff = (playerAFeatures.second_serve_points_won_pct || 0) - (playerBFeatures.second_serve_points_won_pct || 0);
@@ -308,9 +316,12 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
 
   return roundNumber_(
     (rankingDiff * 0.2)
-    + (recentFormDiff * 0.2)
-    + (surfaceDiff * 0.15)
-    + (serveReturnDiff * 0.15)
+    + (recentFormDiff * 0.17)
+    + (recentFormLast10Diff * 0.03)
+    + (surfaceDiff * 0.14)
+    + (serveReturnDiff * 0.13)
+    + (surfaceServeReturnDiff * 0.02)
+    + (surfaceRecentFormDiff * 0.01)
     + (firstServeInDiff * 0.07)
     + (firstServePointsWonDiff * 0.07)
     + (secondServePointsWonDiff * 0.06)
@@ -321,6 +332,28 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
     + (totalPointsWonDiff * 0.005),
     4
   );
+}
+
+
+function fallbackFeatureDiff_(playerAFeatures, playerBFeatures, preferredKey, fallbackKey) {
+  const playerAValue = resolveFeatureWithFallback_(playerAFeatures, preferredKey, fallbackKey);
+  const playerBValue = resolveFeatureWithFallback_(playerBFeatures, preferredKey, fallbackKey);
+  return playerAValue - playerBValue;
+}
+
+function fallbackCompositeDiff_(playerAFeatures, playerBFeatures, preferredKeys, fallbackKeys) {
+  let diff = 0;
+  for (let i = 0; i < preferredKeys.length; i += 1) {
+    diff += fallbackFeatureDiff_(playerAFeatures, playerBFeatures, preferredKeys[i], fallbackKeys[i]);
+  }
+  return diff;
+}
+
+function resolveFeatureWithFallback_(features, preferredKey, fallbackKey) {
+  const preferred = Number(features && features[preferredKey]);
+  if (Number.isFinite(preferred)) return preferred;
+  const fallback = Number(features && features[fallbackKey]);
+  return Number.isFinite(fallback) ? fallback : 0;
 }
 
 function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsByOddsEventId, stageMeta) {

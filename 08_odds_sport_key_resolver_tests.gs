@@ -2823,6 +2823,110 @@ function testStageGenerateSignals_richPlayerStatsInfluenceEdgeAndTier_() {
   }
 }
 
+function testStageGenerateSignals_surfaceSpecificDeltasShiftEdgeDirection_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_surface_direction',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 150,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+    };
+    const match = { odds_event_id: 'evt_surface_direction', schedule_event_id: 'sched_surface_direction', competition_tier: 'WTA_500' };
+    const baselineA = { ranking: 10, recent_form: 0.6, surface_win_rate: 0.58, hold_pct: 0.64, break_pct: 0.36 };
+    const baselineB = { ranking: 12, recent_form: 0.59, surface_win_rate: 0.57, hold_pct: 0.63, break_pct: 0.35 };
+
+    const baseline = stageGenerateSignals('run_surface_baseline', {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.08,
+      EDGE_THRESHOLD_STRONG: 0.12,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: '',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    }, [event], [match], {
+      evt_surface_direction: {
+        player_a: { has_stats: true, features: baselineA },
+        player_b: { has_stats: true, features: baselineB },
+      },
+    });
+
+    const withSurfaceProfiles = stageGenerateSignals('run_surface_profiles', {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.08,
+      EDGE_THRESHOLD_STRONG: 0.12,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: '',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    }, [event], [match], {
+      evt_surface_direction: {
+        player_a: { has_stats: true, features: Object.assign({}, baselineA, {
+          recent_form_last_10: 0.72,
+          surface_hold_pct: 0.7,
+          surface_break_pct: 0.4,
+          surface_recent_form: 0.71,
+        }) },
+        player_b: { has_stats: true, features: Object.assign({}, baselineB, {
+          recent_form_last_10: 0.45,
+          surface_hold_pct: 0.56,
+          surface_break_pct: 0.25,
+          surface_recent_form: 0.43,
+        }) },
+      },
+    });
+
+    const baselineEdge = Number((baseline.rows[0] || {}).edge_value || 0);
+    const surfaceEdge = Number((withSurfaceProfiles.rows[0] || {}).edge_value || 0);
+    assertTrue_(surfaceEdge > baselineEdge, 'opposing surface profiles should increase edge toward player_a');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+
 function testGetConfig_allowWta250Missing_usesDefaultTrue_() {
   const originalGetActiveSpreadsheet = SpreadsheetApp.getActiveSpreadsheet;
 
@@ -3534,6 +3638,28 @@ function testNormalizePlayerStatsResponse_mapsCoreFields_() {
   assertEquals_(0.39, normalized['player one'].break_pct);
 }
 
+function testNormalizePlayerStatsResponse_mapsRecentAndSurfaceSpecificFields_() {
+  const normalized = normalizePlayerStatsResponse_({
+    data: [{
+      player_name: 'Player One',
+      rank: 14,
+      recent_win_rate: 62,
+      form_last_10: 70,
+      surfaceWinRate: 0.58,
+      hold_percentage: 71,
+      break_percentage: 39,
+      surface_hold_pct: 74,
+      surface_break_pct: 42,
+      surface_recent_form: 67,
+    }],
+  }, ['Player One']);
+
+  assertEquals_(0.7, normalized['player one'].recent_form_last_10);
+  assertEquals_(0.74, normalized['player one'].surface_hold_pct);
+  assertEquals_(0.42, normalized['player one'].surface_break_pct);
+  assertEquals_(0.67, normalized['player one'].surface_recent_form);
+}
+
 function testFetchPlayerStatsFromProvider_multiSourceMerge_() {
   const originalFetch = UrlFetchApp.fetch;
   const calls = [];
@@ -3914,6 +4040,41 @@ function testNormalizePlayerStatsResponse_aggregatesMatchMxMetricsWithWindowAndC
   assertEquals_(1.05, normalized['player one'].dr);
   assertEquals_(0.53, normalized['player one'].tpw_pct);
   assertEquals_(10, normalized['player one'].ranking);
+  assertEquals_(0.65, normalized['player one'].recent_form_last_10);
+  assertEquals_(0.7, normalized['player one'].surface_hold_pct);
+  assertEquals_(0.38, normalized['player one'].surface_break_pct);
+  assertEquals_(0.65, normalized['player one'].surface_recent_form);
+}
+
+function testNormalizePlayerStatsResponse_aggregatesSurfaceSpecificMetricsWithFallback_() {
+  const rows = [
+    { date: '2025-03-11', player_name: 'Player One', surface: 'Hard', recent_form: 80, hold_pct: 74, break_pct: 44, numeric_stats: [] },
+    { date: '2025-03-05', player_name: 'Player One', surface: 'Clay', recent_form: 42, hold_pct: 62, break_pct: 28, numeric_stats: [] },
+    { date: '2025-02-20', player_name: 'Player One', surface: 'Hard', recent_form: 78, hold_pct: 72, break_pct: 42, numeric_stats: [] },
+    { date: '2025-02-10', player_name: 'Player One', surface: 'Hard', recent_form: 76, hold_pct: 70, break_pct: 40, numeric_stats: [] },
+  ];
+
+  const withSurfaceSample = normalizePlayerStatsResponse_(rows, ['Player One'], {
+    as_of_time: new Date('2025-03-15T00:00:00.000Z'),
+    recent_match_count: 4,
+    surface: 'Hard',
+    surface_match_min_sample: 3,
+  });
+  assertEquals_(0.72, withSurfaceSample['player one'].hold_pct);
+  assertEquals_(0.42, withSurfaceSample['player one'].break_pct);
+  assertEquals_(0.72, withSurfaceSample['player one'].surface_hold_pct);
+  assertEquals_(0.42, withSurfaceSample['player one'].surface_break_pct);
+  assertEquals_(0.78, withSurfaceSample['player one'].surface_recent_form);
+
+  const fallbackToGlobal = normalizePlayerStatsResponse_(rows, ['Player One'], {
+    as_of_time: new Date('2025-03-15T00:00:00.000Z'),
+    recent_match_count: 4,
+    surface: 'Clay',
+    surface_match_min_sample: 3,
+  });
+  assertEquals_(0.7, fallbackToGlobal['player one'].surface_hold_pct);
+  assertEquals_(0.385, fallbackToGlobal['player one'].surface_break_pct);
+  assertEquals_(0.69, fallbackToGlobal['player one'].surface_recent_form);
 }
 
 
