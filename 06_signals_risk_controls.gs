@@ -107,6 +107,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
 
     byOddsEventId[event.event_id] = {
       source,
+      source_used: playerAStats.source_used || playerBStats.source_used || source,
       stats_provider_unavailable: providerUnavailable,
       stats_fallback_mode: providerNullFeatures ? 'null_features' : '',
       stats_confidence: resolveStatsBundleConfidence_(playerAStats, playerBStats, providerUnavailable, providerNullFeatures),
@@ -119,6 +120,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
         stats_confidence: resolvePlayerStatsConfidence_(playerAStats),
         stats_fallback_mode: playerAStats.stats_fallback_mode || '',
         provenance: playerAStats.provenance || source,
+        source_used: playerAStats.source_used || source,
       },
       player_b: {
         canonical_name: playerB,
@@ -127,6 +129,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
         stats_confidence: resolvePlayerStatsConfidence_(playerBStats),
         stats_fallback_mode: playerBStats.stats_fallback_mode || '',
         provenance: playerBStats.provenance || source,
+        source_used: playerBStats.source_used || source,
       },
     };
   });
@@ -191,6 +194,8 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
         has_stats: true,
         stats_fallback_mode: '',
         provenance: 'player_stats_provider_v1',
+        source_used: providerStats.source_used || 'player_stats_provider_v1',
+        fallback_mode: providerStats.fallback_mode || '',
         features: {
           ranking: providerStats.ranking,
           recent_form: providerStats.recent_form,
@@ -205,6 +210,8 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
       has_stats: false,
       stats_fallback_mode: 'null_features',
       provenance: 'player_stats_provider_v1',
+      source_used: providerStats.source_used || 'player_stats_provider_v1',
+      fallback_mode: providerStats.fallback_mode || 'null_features',
       features: {
         ranking: null,
         recent_form: null,
@@ -220,6 +227,7 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
     const pseudo = computePseudoPlayerStats_(canonicalPlayerName, event, match, slot);
     pseudo.stats_fallback_mode = 'provider_unavailable';
     pseudo.provenance = 'derived_player_stats_v1_fallback';
+    pseudo.source_used = 'derived_player_stats_v1_fallback';
     return pseudo;
   }
 
@@ -227,6 +235,8 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
     has_stats: false,
     stats_fallback_mode: 'missing_row',
     provenance: 'player_stats_provider_v1',
+    source_used: 'player_stats_provider_v1',
+    fallback_mode: 'missing_row',
     features: {
       ranking: null,
       recent_form: null,
@@ -246,7 +256,8 @@ function buildRawPlayerStatsRow_(eventId, canonicalPlayerName, source, featureTi
     feature_timestamp: featureTimestamp,
     feature_values: JSON.stringify(payload.features),
     has_stats: payload.has_stats,
-    stats_fallback_mode: payload.stats_fallback_mode || '',
+    stats_fallback_mode: payload.stats_fallback_mode || payload.fallback_mode || '',
+    source_used: payload.source_used || source,
     provenance: payload.provenance || source,
     updated_at: formatLocalIso_(new Date()),
   };

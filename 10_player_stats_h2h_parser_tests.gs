@@ -369,3 +369,63 @@ function testBuildPlayerStatsMergeDiagnostics_reportsCoverageAndContributions_()
   assertEquals_(1, diagnostics.per_feature_non_null_contributions.hold_pct.tennis_abstract);
   assertEquals_(1, diagnostics.final.players_with_non_null_stats);
 }
+
+function testSofascoreParticipantIndexAndFeatureExtraction_minimalCoverage_() {
+  const indexed = indexSofascoreParticipants_({
+    events: [
+      {
+        homeTeam: { id: 11, name: 'Iga Swiatek' },
+        awayTeam: { id: 22, name: 'Aryna Sabalenka' },
+      },
+    ],
+  }, {});
+
+  assertEquals_(11, indexed['iga swiatek'].id);
+  assertEquals_(22, indexed['aryna sabalenka'].id);
+
+  const ranking = extractSofascoreRanking_({ player: { ranking: 2 } });
+  assertEquals_(2, ranking);
+
+  const form = extractSofascoreFormProxy_({
+    events: [
+      { homeTeam: { id: 11 }, awayTeam: { id: 22 }, winnerCode: 1 },
+      { homeTeam: { id: 11 }, awayTeam: { id: 33 }, winnerCode: 2 },
+      { homeTeam: { id: 44 }, awayTeam: { id: 11 }, winnerCode: 2 },
+    ],
+  }, 11);
+  assertEquals_(0.667, form);
+}
+
+function testFetchPlayerStatsFromSingleSource_sofascoreRoute_usesAdapter_() {
+  const originalFetchSofascore = fetchPlayerStatsFromSofascore_;
+  fetchPlayerStatsFromSofascore_ = function () {
+    return {
+      ok: true,
+      reason_code: 'player_stats_sofascore_success',
+      stats_by_player: {
+        'Iga Swiatek': {
+          ranking: 1,
+          recent_form: 0.8,
+          surface_win_rate: null,
+          hold_pct: null,
+          break_pct: null,
+          source_used: 'sofascore_live',
+          fallback_mode: 'limited_features',
+          stats_confidence: 0.6,
+        },
+      },
+      api_call_count: 3,
+      source_name: 'sofascore',
+    };
+  };
+
+  try {
+    const result = fetchPlayerStatsFromSingleSource_({ source_name: 'sofascore', base_url: 'https://api.sofascore.com/api/v1' }, {}, ['Iga Swiatek'], new Date('2026-01-01T00:00:00Z'));
+    assertEquals_(true, result.ok);
+    assertEquals_('player_stats_sofascore_success', result.reason_code);
+    assertEquals_(1, result.stats_by_player['Iga Swiatek'].ranking);
+    assertEquals_('limited_features', result.stats_by_player['Iga Swiatek'].fallback_mode);
+  } finally {
+    fetchPlayerStatsFromSofascore_ = originalFetchSofascore;
+  }
+}

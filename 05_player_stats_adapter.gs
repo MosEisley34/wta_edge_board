@@ -217,6 +217,24 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     };
   }
 
+  const sofascoreFallback = fetchPlayerStatsFromSofascore_(config, players, asOfTime);
+  totalApiCalls += Number(sofascoreFallback.api_call_count || 0);
+  if (sofascoreFallback.ok) {
+    return {
+      ok: true,
+      reason_code: sofascoreFallback.reason_code || 'player_stats_sofascore_success',
+      detail: attempts.join(','),
+      stats_by_player: sofascoreFallback.stats_by_player || {},
+      api_credit_usage: 0,
+      api_call_count: totalApiCalls,
+      scrape_call_count: 0,
+      selection_metadata: {
+        source_count: 1,
+        merge_diagnostics: buildPlayerStatsMergeDiagnostics_([{ source_name: 'sofascore', stats_by_player: sofascoreFallback.stats_by_player || {} }], sofascoreFallback.stats_by_player || {}, players),
+      },
+    };
+  }
+
   const leadersSource = fetchPlayerStatsFromLeadersSource_(players, config, asOfTime);
   if (leadersSource.ok) {
     return {
@@ -973,6 +991,11 @@ function parsePlayerStatsSourceConfigs_(config) {
 }
 
 function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTime) {
+  const sourceName = canonicalizeStatsProviderName_(sourceConfig && sourceConfig.source_name);
+  if (sourceName === 'sofascore') {
+    return fetchPlayerStatsFromSofascore_(config, players, asOfTime);
+  }
+
   const baseUrl = sourceConfig && sourceConfig.base_url ? sourceConfig.base_url : '';
   const endpoint = String(baseUrl || '').replace(/\/$/, '') + '/players/stats/batch';
   const body = JSON.stringify({
@@ -1031,6 +1054,181 @@ function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTi
     api_call_count: 1,
     source_name: sourceConfig && sourceConfig.source_name ? sourceConfig.source_name : 'unknown',
   };
+}
+
+function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
+  const baseUrl = 'https://api.sofascore.com/api/v1';
+  const eventUrls = [
+    baseUrl + '/sport/tennis/events/live',
+    baseUrl + '/sport/tennis/events/scheduled',
+  ];
+  const asOfDate = asOfTime instanceof Date ? asOfTime : new Date(asOfTime || Date.now());
+  const dateToken = Utilities.formatDate(asOfDate, 'UTC', 'yyyy-MM-dd');
+  eventUrls.push(baseUrl + '/sport/tennis/scheduled-events/' + dateToken);
+
+  const participantIndex = {};
+  const canonicalPlayers = dedupePlayerNames_(players || []);
+  let apiCallCount = 0;
+  let sourceUsed = 'sofascore_live';
+
+  for (let i = 0; i < eventUrls.length; i += 1) {
+    const parsed = fetchSofascoreJson_(eventUrls[i], config);
+    apiCallCount += Number(parsed.api_call_count || 0);
+    if (!parsed.ok) continue;
+
+    indexSofascoreParticipants_(parsed.payload, participantIndex);
+    if (i === 0 && Object.keys(participantIndex).length > 0) sourceUsed = 'sofascore_live';
+    if (i > 0 && Object.keys(participantIndex).length > 0) sourceUsed = 'sofascore_live+scheduled';
+
+    const matchedPlayers = canonicalPlayers.filter(function (name) { return !!participantIndex[name]; });
+    if (matchedPlayers.length >= canonicalPlayers.length || matchedPlayers.length >= 4) break;
+  }
+
+  const statsByPlayer = {};
+  canonicalPlayers.forEach(function (playerName) {
+    const participant = participantIndex[playerName];
+    if (!participant || !participant.id) {
+      statsByPlayer[playerName] = {
+        ranking: null,
+        recent_form: null,
+        surface_win_rate: null,
+        hold_pct: null,
+        break_pct: null,
+        stats_confidence: 0,
+        source_used: sourceUsed,
+        fallback_mode: 'participant_unmatched',
+      };
+      return;
+    }
+
+    const detail = fetchSofascorePlayerDetail_(participant.id, config);
+    const recent = fetchSofascoreRecentForm_(participant.id, config);
+    apiCallCount += Number(detail.api_call_count || 0) + Number(recent.api_call_count || 0);
+
+    const ranking = extractSofascoreRanking_(detail.payload);
+    const recentForm = extractSofascoreFormProxy_(recent.payload, participant.id);
+    const nonNullCore = [ranking, recentForm].filter(function (v) { return v !== null && v !== undefined; }).length;
+
+    statsByPlayer[playerName] = {
+      ranking: ranking,
+      recent_form: recentForm,
+      surface_win_rate: null,
+      hold_pct: null,
+      break_pct: null,
+      stats_confidence: nonNullCore >= 2 ? 0.6 : (nonNullCore === 1 ? 0.35 : 0),
+      source_used: sourceUsed,
+      fallback_mode: nonNullCore > 0 ? 'limited_features' : 'detail_unavailable',
+    };
+  });
+
+  return {
+    ok: true,
+    reason_code: 'player_stats_sofascore_success',
+    stats_by_player: statsByPlayer,
+    api_call_count: apiCallCount,
+    source_name: 'sofascore',
+  };
+}
+
+function fetchSofascorePlayerDetail_(playerId, config) {
+  return fetchSofascoreJson_('https://api.sofascore.com/api/v1/player/' + encodeURIComponent(String(playerId || '')), config);
+}
+
+function fetchSofascoreRecentForm_(playerId, config) {
+  return fetchSofascoreJson_('https://api.sofascore.com/api/v1/player/' + encodeURIComponent(String(playerId || '')) + '/events/last/0', config);
+}
+
+function fetchSofascoreJson_(url, config) {
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': String(config.PLAYER_STATS_FETCH_USER_AGENT || 'Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'),
+  };
+  let response;
+  try {
+    response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      muteHttpExceptions: true,
+      headers: headers,
+      followRedirects: true,
+      validateHttpsCertificates: true,
+    });
+  } catch (e) {
+    return { ok: false, reason_code: 'sofascore_transport_error', payload: null, api_call_count: 1 };
+  }
+
+  const status = Number(response.getResponseCode() || 0);
+  if (status < 200 || status >= 300) {
+    return { ok: false, reason_code: 'sofascore_http_' + status, payload: null, api_call_count: 1 };
+  }
+
+  try {
+    return {
+      ok: true,
+      reason_code: 'sofascore_ok',
+      payload: JSON.parse(response.getContentText() || '{}'),
+      api_call_count: 1,
+    };
+  } catch (e) {
+    return { ok: false, reason_code: 'sofascore_parse_error', payload: null, api_call_count: 1 };
+  }
+}
+
+function indexSofascoreParticipants_(payload, index) {
+  const target = index || {};
+  const events = payload && Array.isArray(payload.events) ? payload.events : [];
+
+  events.forEach(function (event) {
+    const teams = [event && event.homeTeam, event && event.awayTeam].filter(function (team) { return !!team; });
+    teams.forEach(function (team) {
+      const canonicalName = canonicalizePlayerName_(team.name || team.shortName || '', {});
+      if (!canonicalName) return;
+      target[canonicalName] = {
+        id: team.id,
+        raw_name: team.name || team.shortName || canonicalName,
+      };
+    });
+  });
+
+  return target;
+}
+
+function extractSofascoreRanking_(payload) {
+  const player = payload && payload.player ? payload.player : (payload || {});
+  return parseIntegerMetric_(
+    player.ranking,
+    player.rank,
+    player.worldRanking,
+    player.currentRanking,
+    player.wtaRanking,
+    (player.statistics && player.statistics.ranking)
+  );
+}
+
+function extractSofascoreFormProxy_(payload, playerId) {
+  const events = payload && Array.isArray(payload.events) ? payload.events : [];
+  if (!events.length) return null;
+
+  const pid = Number(playerId || 0);
+  let wins = 0;
+  let samples = 0;
+  const maxMatches = Math.min(10, events.length);
+
+  for (let i = 0; i < maxMatches; i += 1) {
+    const event = events[i] || {};
+    const home = event.homeTeam || {};
+    const away = event.awayTeam || {};
+    const winnerCode = Number(event.winnerCode);
+    const isHome = Number(home.id || 0) === pid;
+    const isAway = Number(away.id || 0) === pid;
+    if (!isHome && !isAway) continue;
+
+    const won = (isHome && winnerCode === 1) || (isAway && winnerCode === 2);
+    wins += won ? 1 : 0;
+    samples += 1;
+  }
+
+  if (!samples) return null;
+  return roundNumber_(wins / samples, 3);
 }
 
 function fetchPlayerStatsFromScrapeSources_(config, canonicalPlayers) {
@@ -1252,6 +1450,9 @@ function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers, option
       return_points_won_pct: normalizeRateMetric_(row.return_points_won_pct, row.return_won_pct),
       dr: normalizeFloatMetric_(row.dr, row.dominance_ratio),
       tpw_pct: normalizeRateMetric_(row.tpw_pct, row.total_points_won_pct),
+      stats_confidence: normalizeFloatMetric_(row.stats_confidence),
+      source_used: String(row.source_used || ''),
+      fallback_mode: String(row.fallback_mode || ''),
     };
   });
 
