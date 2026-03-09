@@ -131,6 +131,31 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
   };
 }
 
+
+function buildSkippedPlayerStatsStage_(runId, reasonCode) {
+  const summary = buildStageSummary_(runId, 'stageFetchPlayerStats', Date.now(), {
+    input_count: 0,
+    output_count: 0,
+    provider: 'stage_skipped',
+    api_credit_usage: 0,
+    reason_codes: {
+      skipped_schedule_only_no_odds: reasonCode === 'skipped_schedule_only_no_odds' ? 1 : 0,
+    },
+  });
+
+  summary.status = 'skipped';
+  summary.reason_code = reasonCode || 'stage_skipped';
+  summary.message = reasonCode === 'skipped_schedule_only_no_odds'
+    ? 'Skipped player stats fetch because run is schedule-only with no odds candidates.'
+    : 'Skipped player stats fetch.';
+
+  return {
+    rows: [],
+    byOddsEventId: {},
+    summary: summary,
+  };
+}
+
 function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, providerUnavailable, event, match, slot, reasonCounts) {
   const providerStats = statsByPlayer[canonicalPlayerName];
 

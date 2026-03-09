@@ -339,7 +339,10 @@ function runEdgeBoard() {
     const matchStage = stageMatchEvents(runId, config, oddsStage.events, scheduleStage.events);
     appendStageLog_(runId, matchStage.summary);
 
-    const playerStatsStage = stageFetchPlayerStats(runId, config, oddsStage.events, matchStage.rows);
+    const playerStatsSkipReason = derivePlayerStatsSkipReason_(oddsStage, matchStage);
+    const playerStatsStage = playerStatsSkipReason
+      ? buildSkippedPlayerStatsStage_(runId, playerStatsSkipReason)
+      : stageFetchPlayerStats(runId, config, oddsStage.events, matchStage.rows);
     appendStageLog_(runId, playerStatsStage.summary);
 
     const signalUpstreamGateReason = deriveSignalUpstreamGateReason_(oddsStage, matchStage);
@@ -628,6 +631,18 @@ function runEdgeBoard() {
   } finally {
     lock.releaseLock();
   }
+}
+
+
+function derivePlayerStatsSkipReason_(oddsStage, matchStage) {
+  const oddsCount = Number((oddsStage && oddsStage.events && oddsStage.events.length) || 0);
+  const matchReasonCodes = (matchStage && matchStage.summary && matchStage.summary.reason_codes) || {};
+
+  if (oddsCount === 0 && Number(matchReasonCodes.schedule_seed_no_odds || 0) > 0) {
+    return 'skipped_schedule_only_no_odds';
+  }
+
+  return '';
 }
 
 function deriveSignalUpstreamGateReason_(oddsStage, matchStage) {
