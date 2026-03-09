@@ -4583,6 +4583,74 @@ function testFetchPlayerStatsFromLeadersSource_escalatesWhenFreshParseFailsAndSt
   }
 }
 
+
+function testSummarizeTaLeadersParseDiagnostics_tracksCanonicalizationSamplesAndFieldCounts_() {
+  const rows = [
+    { player_name: 'Élise Mertens', ranking: 21, hold_pct: 66, break_pct: 39 },
+    { player_name: 'Iga Świątek', ranking: 1, hold_pct: 78, break_pct: 51 },
+    { player_name: 'Iga Swiatek', ranking: 1, hold_pct: 79, break_pct: 50 },
+  ];
+  const statsByPlayer = {
+    'elise mertens': { ranking: 21, hold_pct: 0.66, break_pct: 0.39 },
+    'iga swiatek': { ranking: 1, hold_pct: 0.78, break_pct: 0.51 },
+  };
+
+  const diagnostics = summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer);
+
+  assertEquals_(3, diagnostics.parsed_player_key_count);
+  assertTrue_(diagnostics.parsed_player_key_samples_before_normalization.indexOf('Élise Mertens') >= 0);
+  assertTrue_(diagnostics.parsed_player_key_samples_after_normalization.indexOf('elise mertens') >= 0);
+  assertTrue_(diagnostics.parsed_player_key_samples_after_normalization.indexOf('iga swiatek') >= 0);
+  assertEquals_(2, diagnostics.non_null_feature_count_by_field.ranking);
+  assertEquals_(2, diagnostics.non_null_feature_count_by_field.hold_pct);
+  assertEquals_(2, diagnostics.non_null_feature_count_by_field.break_pct);
+}
+
+function testFetchPlayerStatsFromLeadersSource_failsFastWhenFreshRowsLargeButNoMatchedPlayers_() {
+  const originalFetch = UrlFetchApp.fetch;
+  const originalGetStateJson = getStateJson_;
+  const originalLogDiagnosticEvent = logDiagnosticEvent_;
+  const diagnosticEvents = [];
+
+  try {
+    getStateJson_ = function () { return null; };
+    logDiagnosticEvent_ = function (config, eventType, payload) {
+      diagnosticEvents.push({ event_type: eventType, payload: payload });
+    };
+
+    UrlFetchApp.fetch = function (url) {
+      if (url.indexOf('leaders_wta.cgi') >= 0) {
+        return {
+          getResponseCode: function () { return 200; },
+          getContentText: function () { return '<script src="/jsmatches/test_leadersource_wta.js"></script>'; },
+        };
+      }
+      const rows = [];
+      for (let i = 0; i < 520; i += 1) {
+        rows.push('matchmx[' + i + ']=["2025-03-01","Doha","Hard","Player ' + i + '","Opponent","6-4 6-4",' + (100 + i) + ',62,58,71,39];');
+      }
+      return {
+        getResponseCode: function () { return 200; },
+        getContentText: function () { return rows.join('\n'); },
+      };
+    };
+
+    const result = fetchPlayerStatsFromLeadersSource_(['Iga Swiatek', 'Elise Mertens'], {}, new Date('2025-03-01T00:00:00.000Z'));
+
+    assertEquals_(false, result.ok);
+    assertEquals_('ta_matchmx_unusable_payload', result.reason_code);
+    assertEquals_('fresh_unusable_non_null_zero', result.selection_metadata.selection_reason);
+    assertEquals_(520, result.selection_metadata.fresh_rows);
+    assertEquals_(0, result.selection_metadata.players_with_non_null_stats);
+    assertEquals_(1, diagnosticEvents.length);
+    assertEquals_('no_usable_stats_payload', diagnosticEvents[0].event_type);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+    getStateJson_ = originalGetStateJson;
+    logDiagnosticEvent_ = originalLogDiagnosticEvent;
+  }
+}
+
 function testResolveCompetitionTier_acceptsWtaIndianWellsAsWta1000_() {
   const resolverConfig = buildCompetitionTierResolverConfig_({
     ALLOW_WTA_250: true,
