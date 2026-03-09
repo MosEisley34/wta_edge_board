@@ -224,7 +224,7 @@ function testPreflightConfigUniqueness_passesWhenUnique_() {
 function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_() {
   const configSheet = createFakeConfigSheet_([
     ['key', 'value'],
-    ['RUN_ENABLED', 'false'],
+    ['RUN_ENABLED', 'true'],
     ['ODDS_SPORT_KEY', 'legacy_wta'],
     ['PLAYER_STATS_API_BASE_URL', 'https://legacy.stats.test'],
     ['PLAYER_STATS_API_KEY', 'legacy_key'],
@@ -240,11 +240,30 @@ function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_(
   const originalBuildRunId = buildRunId_;
   const originalTryLock = tryLock_;
   const originalAppendLogRow = appendLogRow_;
+  const originalResolveOddsWindowForPipeline = resolveOddsWindowForPipeline_;
+  const originalStageFetchOdds = stageFetchOdds;
+  const originalStageFetchSchedule = stageFetchSchedule;
+  const originalStageMatchEvents = stageMatchEvents;
+  const originalStageFetchPlayerStats = stageFetchPlayerStats;
+  const originalStageGenerateSignals = stageGenerateSignals;
+  const originalStagePersist = stagePersist;
+  const originalAppendStageLog = appendStageLog_;
+  const originalLogDiagnosticEvent = logDiagnosticEvent_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const originalMergeReasonCounts = mergeReasonCounts_;
+  const originalGetTopReasonCodes = getTopReasonCodes_;
+  const originalUpdateBootstrapEmptyCycleState = updateBootstrapEmptyCycleState_;
+  const originalUpdateEmptyProductiveOutputState = updateEmptyProductiveOutputState_;
   const originalGetScriptLock = LockService.getScriptLock;
   const originalGetScriptProperties = PropertiesService.getScriptProperties;
 
   const logs = [];
   let lockReleased = 0;
+  const stageCallCounts = {
+    stageFetchOdds: 0,
+    stageFetchSchedule: 0,
+  };
 
   SpreadsheetApp = {
     getActiveSpreadsheet: function () {
@@ -259,6 +278,84 @@ function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_(
   buildRunId_ = function () { return 'repair-dedupe-run'; };
   tryLock_ = function () { return true; };
   appendLogRow_ = function (entry) { logs.push(entry); };
+  resolveOddsWindowForPipeline_ = function () {
+    return {
+      should_fetch_odds: true,
+      odds_fetch_window: {},
+      selected_source: 'fallback_static_window',
+      decision_reason_code: 'odds_refresh_test',
+      decision_message: 'test',
+      bootstrap_mode: false,
+      transitioned_from_bootstrap_to_active_window: false,
+    };
+  };
+  stageFetchOdds = function () {
+    stageCallCounts.stageFetchOdds += 1;
+    return {
+      events: [{ event_id: 'evt-1' }],
+      rows: [],
+      summary: { reason_codes: {} },
+      selected_source: 'fallback_static_window',
+    };
+  };
+  stageFetchSchedule = function () {
+    stageCallCounts.stageFetchSchedule += 1;
+    return {
+      events: [{ event_id: 'sch-1' }],
+      rows: [],
+      summary: { reason_codes: {} },
+      topUnresolvedCompetitions: [],
+      allowedCount: 1,
+    };
+  };
+  stageMatchEvents = function () {
+    return {
+      rows: [],
+      summary: { reason_codes: {} },
+      matchedCount: 0,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten: 0,
+      unmatched: [],
+    };
+  };
+  stageFetchPlayerStats = function () {
+    return { rows: [], byOddsEventId: {}, summary: { reason_codes: {} } };
+  };
+  stageGenerateSignals = function () {
+    return {
+      rows: [],
+      sentCount: 0,
+      cooldownSuppressedCount: 0,
+      duplicateSuppressedCount: 0,
+      summary: { reason_codes: {} },
+    };
+  };
+  stagePersist = function () {
+    return { summary: { reason_codes: {} } };
+  };
+  appendStageLog_ = function (runId, summary) {
+    logs.push({
+      row_type: 'summary',
+      run_id: runId,
+      stage: summary.stage,
+      status: summary.status,
+      reason_code: summary.reason_code,
+    });
+  };
+  logDiagnosticEvent_ = function () {};
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return { local: '2025-03-01T00:00:00-07:00', utc: '2025-03-01T07:00:00.000Z' };
+  };
+  mergeReasonCounts_ = function () { return {}; };
+  getTopReasonCodes_ = function () { return []; };
+  updateBootstrapEmptyCycleState_ = function () {
+    return { reason_code: '', warning_needed: false };
+  };
+  updateEmptyProductiveOutputState_ = function () {
+    return { reason_code: '', warning_needed: false, consecutive_count: 0, threshold: 3 };
+  };
   LockService.getScriptLock = function () {
     return {
       releaseLock: function () { lockReleased += 1; },
@@ -300,11 +397,19 @@ function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_(
     });
     assertEquals_(0, duplicatePreflightLogs.length);
 
-    // Step 5: verify pipeline progressed past preflight.
+    // Step 5: verify pipeline progressed past preflight into normal stage execution.
+    assertEquals_(1, stageCallCounts.stageFetchOdds);
+    assertEquals_(1, stageCallCounts.stageFetchSchedule);
+
+    const preflightStageLogs = logs.filter(function (row) {
+      return row.stage === 'config_uniqueness_preflight';
+    });
+    assertEquals_(0, preflightStageLogs.length);
+
     const summary = logs.filter(function (row) {
       return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
     })[0];
-    assertEquals_('run_disabled_skip', summary.reason_code);
+    assertEquals_('run_completed', summary.reason_code);
     assertEquals_(1, lockReleased);
   } finally {
     SpreadsheetApp = originalSpreadsheetApp;
@@ -312,6 +417,21 @@ function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_(
     buildRunId_ = originalBuildRunId;
     tryLock_ = originalTryLock;
     appendLogRow_ = originalAppendLogRow;
+    resolveOddsWindowForPipeline_ = originalResolveOddsWindowForPipeline;
+    stageFetchOdds = originalStageFetchOdds;
+    stageFetchSchedule = originalStageFetchSchedule;
+    stageMatchEvents = originalStageMatchEvents;
+    stageFetchPlayerStats = originalStageFetchPlayerStats;
+    stageGenerateSignals = originalStageGenerateSignals;
+    stagePersist = originalStagePersist;
+    appendStageLog_ = originalAppendStageLog;
+    logDiagnosticEvent_ = originalLogDiagnosticEvent;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+    mergeReasonCounts_ = originalMergeReasonCounts;
+    getTopReasonCodes_ = originalGetTopReasonCodes;
+    updateBootstrapEmptyCycleState_ = originalUpdateBootstrapEmptyCycleState;
+    updateEmptyProductiveOutputState_ = originalUpdateEmptyProductiveOutputState;
     LockService.getScriptLock = originalGetScriptLock;
     PropertiesService.getScriptProperties = originalGetScriptProperties;
   }
