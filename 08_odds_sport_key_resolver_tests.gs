@@ -4102,3 +4102,311 @@ function testPersistPlayerStatsMeta_oversizedMetadataSummarizesWithReference_() 
     Utilities = originalUtilities;
   }
 }
+
+function testResolveOddsWindowForPipeline_tieredCadence_lowTierSkipsWhenMarketUnchanged_() {
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+
+  const nowMs = Date.parse('2025-03-01T00:00:00.000Z');
+  const firstStartMs = nowMs + (200 * 60000);
+
+  fetchScheduleFromOddsApi_ = function () {
+    return {
+      events: [{ start_time: new Date(firstStartMs), competition: 'WTA 500' }],
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 0,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  updateCreditStateFromHeaders_ = function () {};
+  getCachedPayload_ = function () {
+    return {
+      events: [{ odds_updated_time: new Date(nowMs - (10 * 60000)) }],
+    };
+  };
+  getStateJson_ = function (key) {
+    if (key === 'ODDS_WINDOW_STALE_PAYLOAD') return { events: [] };
+    if (key === 'ODDS_WINDOW_LAST_FETCH_META') return { cached_at_ms: nowMs - (5 * 60000) };
+    return null;
+  };
+  getCreditAwareRuntimeConfig_ = function () {
+    return {
+      mode: 'normal',
+      snapshot: {},
+      odds_refresh_tier_low_upper_min: 240,
+      odds_refresh_tier_med_upper_min: 180,
+      odds_refresh_tier_high_upper_min: 90,
+      odds_refresh_tier_low_interval_min: 20,
+      odds_refresh_tier_med_interval_min: 10,
+      odds_refresh_tier_high_interval_min: 5,
+    };
+  };
+
+  try {
+    const decision = resolveOddsWindowForPipeline_({
+      LOOKAHEAD_HOURS: 36,
+      ODDS_WINDOW_PRE_FIRST_MIN: 240,
+      ODDS_WINDOW_POST_LAST_MIN: 60,
+      ODDS_NO_GAMES_BEHAVIOR: 'SKIP',
+    }, nowMs);
+
+    assertEquals_('low', decision.refresh_tier);
+    assertEquals_(20, decision.refresh_cadence_min);
+    assertEquals_(false, decision.should_fetch_odds);
+    assertEquals_('odds_refresh_skipped_tier_cadence_no_market_update', decision.decision_reason_code);
+  } finally {
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    getCachedPayload_ = originalGetCachedPayload;
+    getStateJson_ = originalGetStateJson;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+  }
+}
+
+function testResolveOddsWindowForPipeline_tieredCadence_mediumTierBoundaryFetchesAfterCadenceElapsed_() {
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+
+  const nowMs = Date.parse('2025-03-01T00:00:00.000Z');
+  const firstStartMs = nowMs + (180 * 60000);
+
+  fetchScheduleFromOddsApi_ = function () {
+    return {
+      events: [{ start_time: new Date(firstStartMs), competition: 'WTA 500' }],
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 0,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  updateCreditStateFromHeaders_ = function () {};
+  getCachedPayload_ = function () {
+    return {
+      events: [{ odds_updated_time: new Date(nowMs - (20 * 60000)) }],
+    };
+  };
+  getStateJson_ = function (key) {
+    if (key === 'ODDS_WINDOW_STALE_PAYLOAD') return { events: [] };
+    if (key === 'ODDS_WINDOW_LAST_FETCH_META') return { cached_at_ms: nowMs - (11 * 60000) };
+    return null;
+  };
+  getCreditAwareRuntimeConfig_ = function () {
+    return {
+      mode: 'normal',
+      snapshot: {},
+      odds_refresh_tier_low_upper_min: 240,
+      odds_refresh_tier_med_upper_min: 180,
+      odds_refresh_tier_high_upper_min: 90,
+      odds_refresh_tier_low_interval_min: 20,
+      odds_refresh_tier_med_interval_min: 10,
+      odds_refresh_tier_high_interval_min: 5,
+    };
+  };
+
+  try {
+    const decision = resolveOddsWindowForPipeline_({
+      LOOKAHEAD_HOURS: 36,
+      ODDS_WINDOW_PRE_FIRST_MIN: 240,
+      ODDS_WINDOW_POST_LAST_MIN: 60,
+      ODDS_NO_GAMES_BEHAVIOR: 'SKIP',
+    }, nowMs);
+
+    assertEquals_('medium', decision.refresh_tier);
+    assertEquals_(10, decision.refresh_cadence_min);
+    assertEquals_(true, decision.should_fetch_odds);
+    assertEquals_('odds_refresh_executed_in_window', decision.decision_reason_code);
+  } finally {
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    getCachedPayload_ = originalGetCachedPayload;
+    getStateJson_ = originalGetStateJson;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+  }
+}
+
+function testResolveOddsWindowForPipeline_tieredCadence_highTierBoundaryUsesHighCadence_() {
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+
+  const nowMs = Date.parse('2025-03-01T00:00:00.000Z');
+  const firstStartMs = nowMs + (90 * 60000);
+
+  fetchScheduleFromOddsApi_ = function () {
+    return {
+      events: [{ start_time: new Date(firstStartMs), competition: 'WTA 500' }],
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 0,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  updateCreditStateFromHeaders_ = function () {};
+  getCachedPayload_ = function () {
+    return {
+      events: [{ odds_updated_time: new Date(nowMs - (30 * 60000)) }],
+    };
+  };
+  getStateJson_ = function (key) {
+    if (key === 'ODDS_WINDOW_STALE_PAYLOAD') return { events: [] };
+    if (key === 'ODDS_WINDOW_LAST_FETCH_META') return { cached_at_ms: nowMs - (6 * 60000) };
+    return null;
+  };
+  getCreditAwareRuntimeConfig_ = function () {
+    return {
+      mode: 'normal',
+      snapshot: {},
+      odds_refresh_tier_low_upper_min: 240,
+      odds_refresh_tier_med_upper_min: 180,
+      odds_refresh_tier_high_upper_min: 90,
+      odds_refresh_tier_low_interval_min: 20,
+      odds_refresh_tier_med_interval_min: 10,
+      odds_refresh_tier_high_interval_min: 5,
+    };
+  };
+
+  try {
+    const decision = resolveOddsWindowForPipeline_({
+      LOOKAHEAD_HOURS: 36,
+      ODDS_WINDOW_PRE_FIRST_MIN: 240,
+      ODDS_WINDOW_POST_LAST_MIN: 60,
+      ODDS_NO_GAMES_BEHAVIOR: 'SKIP',
+    }, nowMs);
+
+    assertEquals_('high', decision.refresh_tier);
+    assertEquals_(5, decision.refresh_cadence_min);
+    assertEquals_(true, decision.should_fetch_odds);
+  } finally {
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    getCachedPayload_ = originalGetCachedPayload;
+    getStateJson_ = originalGetStateJson;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+  }
+}
+
+function testResolveOddsWindowForPipeline_tieredCadence_fetchesWhenMarketUpdatedAfterLastFetch_() {
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+
+  const nowMs = Date.parse('2025-03-01T00:00:00.000Z');
+  const firstStartMs = nowMs + (200 * 60000);
+
+  fetchScheduleFromOddsApi_ = function () {
+    return {
+      events: [{ start_time: new Date(firstStartMs), competition: 'WTA 500' }],
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 0,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  updateCreditStateFromHeaders_ = function () {};
+  getCachedPayload_ = function () {
+    return {
+      events: [{ odds_updated_time: new Date(nowMs - (2 * 60000)) }],
+    };
+  };
+  getStateJson_ = function (key) {
+    if (key === 'ODDS_WINDOW_STALE_PAYLOAD') return { events: [] };
+    if (key === 'ODDS_WINDOW_LAST_FETCH_META') return { cached_at_ms: nowMs - (5 * 60000) };
+    return null;
+  };
+  getCreditAwareRuntimeConfig_ = function () {
+    return {
+      mode: 'normal',
+      snapshot: {},
+      odds_refresh_tier_low_upper_min: 240,
+      odds_refresh_tier_med_upper_min: 180,
+      odds_refresh_tier_high_upper_min: 90,
+      odds_refresh_tier_low_interval_min: 20,
+      odds_refresh_tier_med_interval_min: 10,
+      odds_refresh_tier_high_interval_min: 5,
+    };
+  };
+
+  try {
+    const decision = resolveOddsWindowForPipeline_({
+      LOOKAHEAD_HOURS: 36,
+      ODDS_WINDOW_PRE_FIRST_MIN: 240,
+      ODDS_WINDOW_POST_LAST_MIN: 60,
+      ODDS_NO_GAMES_BEHAVIOR: 'SKIP',
+    }, nowMs);
+
+    assertEquals_('low', decision.refresh_tier);
+    assertEquals_(true, decision.should_fetch_odds);
+    assertEquals_('odds_refresh_executed_in_window', decision.decision_reason_code);
+  } finally {
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    getCachedPayload_ = originalGetCachedPayload;
+    getStateJson_ = originalGetStateJson;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+  }
+}
+
+function testResolveOddsWindowForPipeline_tieredCadence_outsideWindowBehaviorUnchanged_() {
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+
+  const nowMs = Date.parse('2025-03-01T00:00:00.000Z');
+  const firstStartMs = nowMs + (400 * 60000);
+
+  fetchScheduleFromOddsApi_ = function () {
+    return {
+      events: [{ start_time: new Date(firstStartMs), competition: 'WTA 500' }],
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 0,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  updateCreditStateFromHeaders_ = function () {};
+  getCachedPayload_ = function () { return { events: [] }; };
+  getStateJson_ = function () { return null; };
+  getCreditAwareRuntimeConfig_ = function () {
+    return {
+      mode: 'normal',
+      snapshot: {},
+      odds_refresh_tier_low_upper_min: 240,
+      odds_refresh_tier_med_upper_min: 180,
+      odds_refresh_tier_high_upper_min: 90,
+      odds_refresh_tier_low_interval_min: 20,
+      odds_refresh_tier_med_interval_min: 10,
+      odds_refresh_tier_high_interval_min: 5,
+    };
+  };
+
+  try {
+    const decision = resolveOddsWindowForPipeline_({
+      LOOKAHEAD_HOURS: 36,
+      ODDS_WINDOW_PRE_FIRST_MIN: 60,
+      ODDS_WINDOW_POST_LAST_MIN: 30,
+      ODDS_NO_GAMES_BEHAVIOR: 'SKIP',
+    }, nowMs);
+
+    assertEquals_(false, decision.should_fetch_odds);
+    assertEquals_('odds_refresh_skipped_outside_window', decision.decision_reason_code);
+  } finally {
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    getCachedPayload_ = originalGetCachedPayload;
+    getStateJson_ = originalGetStateJson;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+  }
+}

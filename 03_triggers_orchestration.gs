@@ -1,11 +1,12 @@
 function installOrUpdateTriggers() {
   ensureTabsAndConfig_();
+  const config = getConfig_();
 
   const spec = {
     version: 1,
     functionName: 'runEdgeBoard',
     type: 'clock',
-    everyMinutes: 15,
+    everyMinutes: Math.max(1, Number(config.PIPELINE_TRIGGER_EVERY_MIN || 15)),
   };
 
   const signature = JSON.stringify(spec);
@@ -57,9 +58,10 @@ function installAndVerifyRunEdgeBoardTrigger() {
 }
 
 function diagnosticsTriggerInstallHealth() {
+  const config = getConfig_();
   const spec = {
     functionName: 'runEdgeBoard',
-    everyMinutes: 15,
+    everyMinutes: Math.max(1, Number(config.PIPELINE_TRIGGER_EVERY_MIN || 15)),
   };
   const signature = JSON.stringify({
     version: 1,
