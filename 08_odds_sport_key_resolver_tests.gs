@@ -2,7 +2,7 @@ function testResolveActiveWtaSportKeys_returnsCatalogKeysWhenPresent_() {
   const calls = { cacheSet: null, logs: [] };
   const config = {
     ODDS_CACHE_TTL_SEC: 180,
-    ODDS_SPORT_KEY: 'tennis_wta',
+    ODDS_SPORT_KEY: 'tennis_wta_us_open',
     ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
     ODDS_API_KEY: 'test',
   };
@@ -28,6 +28,40 @@ function testResolveActiveWtaSportKeys_returnsCatalogKeysWhenPresent_() {
   assertArrayEquals_(['tennis_wta_us_open', 'tennis_wta_wimbledon'], result.sport_keys);
   assertEquals_('ODDS_ACTIVE_WTA_SPORT_KEYS', calls.cacheSet.cacheKey);
   assertEquals_(180, calls.cacheSet.ttlSec);
+}
+
+function testResolveActiveWtaSportKeys_unknownConfiguredKey_discoversActiveFallback_() {
+  const calls = { logs: [] };
+  const config = {
+    ODDS_CACHE_TTL_SEC: 180,
+    ODDS_SPORT_KEY: 'tennis_wta_unknown',
+    ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+    ODDS_API_KEY: 'test',
+  };
+
+  const result = resolveActiveWtaSportKeys_(config, {
+    getCachedOddsSportKeys: function () { return []; },
+    setCachedOddsSportKeys: function () {},
+    callOddsApi: function () {
+      return {
+        ok: true,
+        payload: [
+          { key: 'tennis_wta_indian_wells', active: true },
+          { key: 'tennis_wta_wimbledon', active: true },
+        ],
+      };
+    },
+    logOddsSportKeyResolution: function (mode, keys, fallback, extra) {
+      calls.logs.push({ mode: mode, keys: keys, fallback: fallback, extra: extra || {} });
+    },
+  });
+
+  assertEquals_('catalog', result.source);
+  assertEquals_('unknown_sport_fallback_resolved', result.fallback);
+  assertArrayEquals_(['tennis_wta_indian_wells', 'tennis_wta_wimbledon'], result.sport_keys);
+  assertEquals_('selected_from_catalog', calls.logs[0].mode);
+  assertEquals_('unknown_sport_fallback_resolved', calls.logs[0].fallback);
+  assertEquals_(2, Number(calls.logs[0].extra.selected_sport_key_count || calls.logs[0].keys.length));
 }
 
 function testResolveActiveWtaSportKeys_fallsBackWhenAbsent_() {
@@ -398,6 +432,56 @@ function testFetchScheduleFromOddsApi_marksNoActiveWtaKeysReason_() {
   } finally {
     resolveActiveWtaSportKeys_ = originalResolver;
     callOddsApi_ = originalCaller;
+  }
+}
+
+function testFetchScheduleFromOddsApi_unknownConfiguredKey_usesDiscoveredFallback_() {
+  const originalResolver = resolveActiveWtaSportKeys_;
+  const originalCall = callOddsApi_;
+  const calls = [];
+
+  resolveActiveWtaSportKeys_ = function () {
+    return {
+      sport_keys: ['tennis_wta_indian_wells', 'tennis_wta_wimbledon'],
+      source: 'catalog',
+      fallback: 'unknown_sport_fallback_resolved',
+    };
+  };
+  callOddsApi_ = function (url) {
+    calls.push(String(url || ''));
+    return {
+      ok: true,
+      status_code: 200,
+      payload: [{
+        id: 'evt_sched_1',
+        commence_time: '2025-01-02T00:00:00Z',
+        home_team: 'Player A',
+        away_team: 'Player B',
+        tournament: 'Indian Wells',
+      }],
+      reason_code: 'api_success',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+
+  try {
+    const result = fetchScheduleFromOddsApi_({
+      ODDS_API_KEY: 'test',
+      ODDS_API_BASE_URL: 'https://api.the-odds-api.com/v4',
+      ODDS_SPORT_KEY: 'tennis_wta_unknown',
+    }, {
+      startIso: '2025-01-01T00:00:00.000Z',
+      endIso: '2025-01-03T00:00:00.000Z',
+    });
+
+    assertEquals_('schedule_api_success_sport_key_fallback', result.reason_code);
+    assertArrayEquals_(['tennis_wta_indian_wells', 'tennis_wta_wimbledon'], result.resolved_sport_keys);
+    assertEquals_(2, calls.length);
+  } finally {
+    resolveActiveWtaSportKeys_ = originalResolver;
+    callOddsApi_ = originalCall;
   }
 }
 

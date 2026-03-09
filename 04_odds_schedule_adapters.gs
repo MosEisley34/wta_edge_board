@@ -1750,6 +1750,11 @@ function callOddsApiWithSportKeyFallback_(config, opts) {
   };
   const selected = firstSuccess || firstFailure;
 
+  logOddsSportKeyResolution_('request_selection', sportKeys, resolvedSportKeys.fallback, {
+    source: resolvedSportKeys.source,
+    selected_sport_key_count: sportKeys.length,
+  });
+
   return {
     ok: !!firstSuccess,
     status_code: selected.status_code,
@@ -1776,9 +1781,25 @@ function resolveActiveWtaSportKeys_(config, deps, opts) {
   const logResolution = adapters.logOddsSportKeyResolution || logOddsSportKeyResolution_;
 
   const cached = getCached(cacheKey);
+  const configuredSportKeys = parseConfiguredSportKeys_(config && config.ODDS_SPORT_KEY);
   if (!options.force_discovery && cached && cached.length) {
-    logResolution('selected_cached', cached, 'none');
-    return { sport_keys: cached, source: 'cache', fallback: 'none' };
+    if (configuredSportKeys.length) {
+      const configuredKnownCached = configuredSportKeys.filter(function (key) { return cached.indexOf(key) >= 0; });
+      const unknownConfigured = configuredSportKeys.filter(function (key) { return cached.indexOf(key) < 0; });
+      if (configuredKnownCached.length) {
+        const selected = dedupeSportKeys_(configuredKnownCached.concat(cached));
+        const fallback = unknownConfigured.length ? 'unknown_sport_fallback_resolved' : 'none';
+        logResolution('selected_configured_from_cache', selected, fallback, {
+          source: 'cache',
+          configured_sport_keys: configuredSportKeys,
+          unknown_configured_sport_keys: unknownConfigured,
+        });
+        return { sport_keys: selected, source: 'cache', fallback: fallback };
+      }
+    } else {
+      logResolution('selected_cached', cached, 'none', { source: 'cache' });
+      return { sport_keys: cached, source: 'cache', fallback: 'none' };
+    }
   }
 
   const catalogResp = callOddsApi(buildOddsApiUrl_(config, '/sports', { all: 'true' }), { debug: config.VERBOSE_LOGGING });
@@ -1789,13 +1810,41 @@ function resolveActiveWtaSportKeys_(config, deps, opts) {
 
   const activeWtaKeys = selectActiveWtaSportKeys_(catalogResp.payload || []);
   if (activeWtaKeys.length) {
+    const configuredKnown = configuredSportKeys.filter(function (key) { return activeWtaKeys.indexOf(key) >= 0; });
+    const unknownConfigured = configuredSportKeys.filter(function (key) { return activeWtaKeys.indexOf(key) < 0; });
+    const selectedSportKeys = dedupeSportKeys_(configuredKnown.concat(activeWtaKeys));
+    const fallback = unknownConfigured.length ? 'unknown_sport_fallback_resolved' : 'none';
     setCached(cacheKey, activeWtaKeys, cacheTtlSec);
-    logResolution('selected_from_catalog', activeWtaKeys, 'none');
-    return { sport_keys: activeWtaKeys, source: 'catalog', fallback: 'none' };
+    logResolution('selected_from_catalog', selectedSportKeys, fallback, {
+      source: 'catalog',
+      configured_sport_keys: configuredSportKeys,
+      unknown_configured_sport_keys: unknownConfigured,
+    });
+    return { sport_keys: selectedSportKeys, source: 'catalog', fallback: fallback };
   }
 
   logResolution('none_active_fallback', [], 'none_active_wta_keys');
   return { sport_keys: [], source: 'fallback', fallback: 'none_active_wta_keys' };
+}
+
+function parseConfiguredSportKeys_(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return [];
+  return dedupeSportKeys_(raw.split(',').map(function (token) {
+    return String(token || '').trim();
+  }).filter(function (token) { return !!token; }));
+}
+
+function dedupeSportKeys_(sportKeys) {
+  const seen = {};
+  const deduped = [];
+  (sportKeys || []).forEach(function (key) {
+    const normalized = String(key || '').trim();
+    if (!normalized || seen[normalized]) return;
+    seen[normalized] = true;
+    deduped.push(normalized);
+  });
+  return deduped;
 }
 
 function selectActiveWtaSportKeys_(sportsCatalog) {
@@ -1835,12 +1884,16 @@ function ensureArrayPayload_(value) {
   return null;
 }
 
-function logOddsSportKeyResolution_(selectionMode, sportKeys, fallbackBehavior) {
+function logOddsSportKeyResolution_(selectionMode, sportKeys, fallbackBehavior, extra) {
+  const extras = extra || {};
   Logger.log(JSON.stringify(sanitizeForLog_({
     event: 'odds_sport_keys_resolved',
     mode: selectionMode,
+    source: extras.source || '',
     selected_sport_keys: sportKeys || [],
-    selected_sport_key_count: (sportKeys || []).length,
+    selected_sport_key_count: Number(extras.selected_sport_key_count || (sportKeys || []).length),
+    configured_sport_keys: extras.configured_sport_keys || [],
+    unknown_configured_sport_keys: extras.unknown_configured_sport_keys || [],
     fallback_behavior: fallbackBehavior || 'none',
   })));
 }
