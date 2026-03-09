@@ -1301,6 +1301,74 @@ function testRunEdgeBoard_marksIdleOutsideOddsWindowForScheduleOnlyRun_() {
   }
 }
 
+
+function testRunEdgeBoard_statsStageExecutesForOddsDrivenRun_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }],
+      oddsRows: [{ key: 'odds_1|book|h2h|p1' }],
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchRows: [{ odds_event_id: 'odds_1', schedule_event_id: 'sch_1' }],
+      matchedCount: 1,
+      matchReasonCodes: { primary_match: 1, matched_count: 1 },
+      playerStatsStageResult: {
+        rows: [{ key: 'odds_1|player a|ts' }],
+        byOddsEventId: { odds_1: { source: 'player_stats_provider_v1' } },
+        summary: { reason_codes: { stats_enriched: 2 } },
+      },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    assertEquals_(1, harness.playerStatsCallCount);
+  } finally {
+    harness.restore();
+  }
+}
+
+function testRunEdgeBoard_statsStageSkippedForScheduleOnlyNoOdds_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [],
+      oddsRows: [],
+      oddsReasonCodes: { odds_refresh_skipped_outside_window: 1 },
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchRows: [{ odds_event_id: 'sch_1', schedule_event_id: 'sch_1', match_type: 'schedule_seed_no_odds' }],
+      matchedCount: 0,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten: 1,
+      matchReasonCodes: { schedule_seed_no_odds: 1, diagnostic_records_written: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    assertEquals_(0, harness.playerStatsCallCount);
+
+    const statsSummary = harness.logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'stageFetchPlayerStats';
+    })[0];
+    assertEquals_('skipped_schedule_only_no_odds', statsSummary.reason_code);
+    assertEquals_('skipped', statsSummary.status);
+  } finally {
+    harness.restore();
+  }
+}
+
 function testRunEdgeBoard_mergesMixedReasonValueTypesWithoutTypeCoercion_() {
   const harness = createRunEdgeBoardTestHarness_({
     nowMs: 1000000,
@@ -1473,6 +1541,7 @@ function createRunEdgeBoardTestHarness_(options) {
   const stateWrites = {};
   let duplicatePreventedCount = 0;
   let releaseLockCalls = 0;
+  let playerStatsCallCount = 0;
 
   Date.now = function () { return Number(opts.nowMs || 0); };
 
@@ -1507,7 +1576,15 @@ function createRunEdgeBoardTestHarness_(options) {
   setStateValue_ = function (key, value) { stateWrites[key] = value; };
 
   if (opts.orchestrationScenario) {
-    appendStageLog_ = function () {};
+    appendStageLog_ = function (runId, summary) {
+      logs.push({
+        row_type: 'summary',
+        run_id: runId,
+        stage: summary.stage,
+        status: summary.status,
+        reason_code: summary.reason_code,
+      });
+    };
     logDiagnosticEvent_ = function () {};
     localAndUtcTimestamps_ = function () {
       return { local: '2025-03-01T00:00:00-07:00', utc: '2025-03-01T07:00:00.000Z' };
@@ -1564,6 +1641,10 @@ function createRunEdgeBoardTestHarness_(options) {
       };
     };
     stageFetchPlayerStats = function () {
+      playerStatsCallCount += 1;
+      if (opts.orchestrationScenario.playerStatsStageResult) {
+        return JSON.parse(JSON.stringify(opts.orchestrationScenario.playerStatsStageResult));
+      }
       return { rows: [], byOddsEventId: {}, summary: { reason_codes: {} } };
     };
     stageGenerateSignals = function () {
@@ -1637,6 +1718,7 @@ function createRunEdgeBoardTestHarness_(options) {
     },
     get duplicatePreventedCount() { return duplicatePreventedCount; },
     get releaseLockCalls() { return releaseLockCalls; },
+    get playerStatsCallCount() { return playerStatsCallCount; },
     get stateWrites() { return stateWrites; },
   };
 }
