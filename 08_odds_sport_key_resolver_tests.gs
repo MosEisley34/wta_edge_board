@@ -2927,6 +2927,115 @@ function testStageGenerateSignals_surfaceSpecificDeltasShiftEdgeDirection_() {
 }
 
 
+function testCombinePlayerStatsFeatureBump_fullFeatureBundlePreservesRawBehavior_() {
+  const reasonCodes = {};
+  const bundle = {
+    stats_confidence: 1,
+    player_a: {
+      has_stats: true,
+      features: {
+        ranking: 8,
+        recent_form: 0.66,
+        recent_form_last_10: 0.68,
+        surface_win_rate: 0.62,
+        hold_pct: 0.69,
+        break_pct: 0.38,
+        surface_hold_pct: 0.71,
+        surface_break_pct: 0.4,
+        surface_recent_form: 0.67,
+        first_serve_in_pct: 0.67,
+        first_serve_points_won_pct: 0.73,
+        second_serve_points_won_pct: 0.55,
+        return_points_won_pct: 0.44,
+        bp_saved_pct: 0.66,
+        bp_conv_pct: 0.47,
+        dr: 1.15,
+        tpw_pct: 0.53,
+      },
+    },
+    player_b: {
+      has_stats: true,
+      features: {
+        ranking: 16,
+        recent_form: 0.57,
+        recent_form_last_10: 0.55,
+        surface_win_rate: 0.54,
+        hold_pct: 0.62,
+        break_pct: 0.32,
+        surface_hold_pct: 0.63,
+        surface_break_pct: 0.31,
+        surface_recent_form: 0.52,
+        first_serve_in_pct: 0.61,
+        first_serve_points_won_pct: 0.66,
+        second_serve_points_won_pct: 0.48,
+        return_points_won_pct: 0.39,
+        bp_saved_pct: 0.58,
+        bp_conv_pct: 0.37,
+        dr: 0.97,
+        tpw_pct: 0.48,
+      },
+    },
+  };
+
+  const expectedRawBump = roundNumber_(
+    ((((bundle.player_b.features.ranking || 0) - (bundle.player_a.features.ranking || 0)) / 300) * 0.2)
+    + (((bundle.player_a.features.recent_form || 0) - (bundle.player_b.features.recent_form || 0)) * 0.17)
+    + (((bundle.player_a.features.recent_form_last_10 || 0) - (bundle.player_b.features.recent_form_last_10 || 0)) * 0.03)
+    + (((bundle.player_a.features.surface_win_rate || 0) - (bundle.player_b.features.surface_win_rate || 0)) * 0.14)
+    + ((((bundle.player_a.features.hold_pct || 0) - (bundle.player_b.features.hold_pct || 0)) + ((bundle.player_a.features.break_pct || 0) - (bundle.player_b.features.break_pct || 0))) * 0.13)
+    + ((((bundle.player_a.features.surface_hold_pct || 0) - (bundle.player_b.features.surface_hold_pct || 0)) + ((bundle.player_a.features.surface_break_pct || 0) - (bundle.player_b.features.surface_break_pct || 0))) * 0.02)
+    + (((bundle.player_a.features.surface_recent_form || 0) - (bundle.player_b.features.surface_recent_form || 0)) * 0.01)
+    + (((bundle.player_a.features.first_serve_in_pct || 0) - (bundle.player_b.features.first_serve_in_pct || 0)) * 0.07)
+    + (((bundle.player_a.features.first_serve_points_won_pct || 0) - (bundle.player_b.features.first_serve_points_won_pct || 0)) * 0.07)
+    + (((bundle.player_a.features.second_serve_points_won_pct || 0) - (bundle.player_b.features.second_serve_points_won_pct || 0)) * 0.06)
+    + (((bundle.player_a.features.return_points_won_pct || 0) - (bundle.player_b.features.return_points_won_pct || 0)) * 0.04)
+    + (((bundle.player_a.features.bp_saved_pct || 0) - (bundle.player_b.features.bp_saved_pct || 0)) * 0.03)
+    + (((bundle.player_a.features.bp_conv_pct || 0) - (bundle.player_b.features.bp_conv_pct || 0)) * 0.02)
+    + (((bundle.player_a.features.dr || 0) - (bundle.player_b.features.dr || 0)) * 0.005)
+    + (((bundle.player_a.features.tpw_pct || 0) - (bundle.player_b.features.tpw_pct || 0)) * 0.005),
+    4
+  );
+
+  const actualBump = combinePlayerStatsFeatureBump_(bundle, reasonCodes);
+
+  assertEquals_(expectedRawBump, actualBump);
+  assertEquals_(1, reasonCodes.full_confidence_stats_scored || 0);
+}
+
+function testCombinePlayerStatsFeatureBump_nullHeavyBundleDampensInsteadOfDropping_() {
+  const reasonCodes = {};
+  const bundle = {
+    player_a: {
+      has_stats: true,
+      features: {
+        ranking: 12,
+        recent_form: 0.64,
+        surface_win_rate: 0.6,
+        hold_pct: 0.67,
+        break_pct: 0.36,
+      },
+    },
+    player_b: {
+      has_stats: true,
+      features: {
+        ranking: 25,
+        recent_form: 0.55,
+        surface_win_rate: 0.52,
+        hold_pct: 0.61,
+        break_pct: 0.31,
+      },
+    },
+  };
+
+  const dampened = combinePlayerStatsFeatureBump_(bundle, reasonCodes);
+  const raw = combinePlayerStatsFeatureBump_(Object.assign({}, bundle, { stats_confidence: 1 }), {});
+
+  assertTrue_(dampened > 0, 'null-heavy bundle should still contribute non-zero bump');
+  assertTrue_(dampened < raw, 'null-heavy bundle bump should be dampened below full-confidence equivalent');
+  assertTrue_((reasonCodes.low_confidence_stats_scored || 0) >= 1, 'low-confidence path should increment reason counts');
+}
+
+
 function testGetConfig_allowWta250Missing_usesDefaultTrue_() {
   const originalGetActiveSpreadsheet = SpreadsheetApp.getActiveSpreadsheet;
 
