@@ -296,3 +296,76 @@ function testGetTaH2hCoverageForCanonicalPair_noMatchReturnsDebugSampleNearestKe
     getTaH2hDataset_ = originalGetTaH2hDataset;
   }
 }
+
+function testParsePlayerStatsSourceConfigs_supportsNamedProviders_() {
+  const configs = parsePlayerStatsSourceConfigs_({
+    PLAYER_STATS_API_BASE_URL: 'Tennis Abstract=https://ta.example/api, WTA Stats Zone=https://wta.example/api, https://api.sofascore.com/tennis',
+  });
+
+  assertEquals_(3, configs.length);
+  assertEquals_('tennis_abstract', configs[0].source_name);
+  assertEquals_('https://ta.example/api', configs[0].base_url);
+  assertEquals_('wta_stats_zone', configs[1].source_name);
+  assertEquals_('sofascore', configs[2].source_name);
+}
+
+function testMergePlayerStatsMaps_appliesFeaturePrecedenceRules_() {
+  const merged = mergePlayerStatsMaps_([
+    {
+      source_name: 'itf',
+      stats_by_player: {
+        'iga swiatek': { ranking: 3, recent_form: 0.4, hold_pct: null, break_pct: null, surface_win_rate: null },
+      },
+    },
+    {
+      source_name: 'wta_stats_zone',
+      stats_by_player: {
+        'iga swiatek': { ranking: 2, recent_form: 0.5, hold_pct: 0.6, break_pct: 0.41, surface_win_rate: 0.7 },
+      },
+    },
+    {
+      source_name: 'tennis_abstract',
+      stats_by_player: {
+        'iga swiatek': { ranking: 5, recent_form: 0.7, hold_pct: 0.8, break_pct: 0.5, surface_win_rate: 0.9 },
+      },
+    },
+    {
+      source_name: 'sofascore',
+      stats_by_player: {
+        'iga swiatek': { ranking: 7, recent_form: 0.95 },
+      },
+    },
+  ], ['Iga Swiatek']);
+
+  assertEquals_(2, merged['iga swiatek'].ranking);
+  assertEquals_(0.9, merged['iga swiatek'].surface_win_rate);
+  assertEquals_(0.8, merged['iga swiatek'].hold_pct);
+  assertEquals_(0.5, merged['iga swiatek'].break_pct);
+  assertEquals_(0.95, merged['iga swiatek'].recent_form);
+}
+
+function testBuildPlayerStatsMergeDiagnostics_reportsCoverageAndContributions_() {
+  const sourcePayloads = [
+    {
+      source_name: 'tennis_abstract',
+      stats_by_player: {
+        'iga swiatek': { hold_pct: 0.8, break_pct: 0.5 },
+      },
+    },
+    {
+      source_name: 'wta_stats_zone',
+      stats_by_player: {
+        'iga swiatek': { ranking: 1 },
+      },
+    },
+  ];
+  const merged = {
+    'iga swiatek': { ranking: 1, hold_pct: 0.8, break_pct: 0.5, recent_form: null, surface_win_rate: null },
+  };
+
+  const diagnostics = buildPlayerStatsMergeDiagnostics_(sourcePayloads, merged, ['Iga Swiatek']);
+  assertEquals_(1, diagnostics.per_source_players_parsed.tennis_abstract);
+  assertEquals_(1, diagnostics.per_feature_non_null_contributions.ranking.wta_stats_zone);
+  assertEquals_(1, diagnostics.per_feature_non_null_contributions.hold_pct.tennis_abstract);
+  assertEquals_(1, diagnostics.final.players_with_non_null_stats);
+}
