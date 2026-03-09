@@ -387,6 +387,12 @@ function ensureConfigDefaults_() {
 }
 
 function dedupeConfigSheet_(sheet, options) {
+  const auditedKeys = {
+    ODDS_SPORT_KEY: true,
+    PLAYER_STATS_API_BASE_URL: true,
+    PLAYER_STATS_API_KEY: true,
+    PLAYER_STATS_SCRAPE_URLS: true,
+  };
   const sh = sheet || SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
   const opts = options || {};
   const precedence = String(opts.precedence || 'last_wins');
@@ -409,6 +415,7 @@ function dedupeConfigSheet_(sheet, options) {
   const header = values[0];
   const body = values.slice(1);
   const rowsByKey = {};
+  const rowNumbersByKey = {};
   const firstRowIndexByKey = {};
   const lastRowIndexByKey = {};
 
@@ -416,7 +423,9 @@ function dedupeConfigSheet_(sheet, options) {
     const key = String(row[0] || '').trim();
     if (!key) return;
     if (!rowsByKey[key]) rowsByKey[key] = [];
+    if (!rowNumbersByKey[key]) rowNumbersByKey[key] = [];
     rowsByKey[key].push(row);
+    rowNumbersByKey[key].push(idx + 2);
     if (firstRowIndexByKey[key] === undefined) firstRowIndexByKey[key] = idx;
     lastRowIndexByKey[key] = idx;
   });
@@ -438,6 +447,17 @@ function dedupeConfigSheet_(sheet, options) {
     return precedence === 'first_wins' ? bucket[0] : bucket[bucket.length - 1];
   });
 
+  const removedRowsByKey = {};
+  const keptRowByKey = {};
+  duplicateKeys.forEach(function (key) {
+    const rowNumbers = rowNumbersByKey[key] || [];
+    const kept = precedence === 'first_wins' ? rowNumbers[0] : rowNumbers[rowNumbers.length - 1];
+    keptRowByKey[key] = kept;
+    removedRowsByKey[key] = rowNumbers.filter(function (rowNumber) {
+      return rowNumber !== kept;
+    });
+  });
+
   let addedDefaultCount = 0;
   if (includeMissingDefaults) {
     const existing = {};
@@ -457,13 +477,49 @@ function dedupeConfigSheet_(sheet, options) {
   sh.getRange(1, 1, output.length, header.length).setValues(output);
   if (sh.getFrozenRows() !== 1) sh.setFrozenRows(1);
 
+  const verifyParsed = parseConfigRows_(output, {
+    mode: 'error',
+    context: 'dedupeConfigSheet_ post_verify',
+  });
+  if (verifyParsed.duplicate_keys.length) {
+    throw new Error('dedupeConfigSheet_ post_verify failed: duplicate keys remain: ' + verifyParsed.duplicate_keys.join(', '));
+  }
+
+  const watchedRemovedRowsByKey = {};
+  const watchedKeptRowByKey = {};
+  Object.keys(auditedKeys).forEach(function (key) {
+    watchedRemovedRowsByKey[key] = removedRowsByKey[key] || [];
+    watchedKeptRowByKey[key] = keptRowByKey[key] || null;
+  });
+
   const summary = {
     rewritten: true,
     duplicate_keys: duplicateKeys,
     removed_row_count: body.length - keys.length,
     final_row_count: output.length,
     added_default_count: addedDefaultCount,
+    removed_rows_by_key: removedRowsByKey,
+    kept_row_by_key: keptRowByKey,
+    verified_unique_keys: true,
+    watched_removed_rows_by_key: watchedRemovedRowsByKey,
+    watched_kept_row_by_key: watchedKeptRowByKey,
   };
+
+  appendLogRow_({
+    row_type: 'ops',
+    stage: 'config_dedupe',
+    status: 'ok',
+    reason_code: 'config_dedupe_applied',
+    message: JSON.stringify({
+      precedence: precedence,
+      duplicate_keys: duplicateKeys,
+      removed_rows_by_key: removedRowsByKey,
+      kept_row_by_key: keptRowByKey,
+      watched_removed_rows_by_key: watchedRemovedRowsByKey,
+      watched_kept_row_by_key: watchedKeptRowByKey,
+      removed_row_count: summary.removed_row_count,
+    }),
+  });
 
   if (logSummary) {
     Logger.log('[Config] dedupeConfigSheet_ summary: ' + JSON.stringify(summary));
