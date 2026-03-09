@@ -102,6 +102,23 @@ Output includes:
 - grouped counts per diagnostic key,
 - top matching rows (file + row + preview) for quick local triage.
 
+
+## TA parser parity pre-deploy gate
+
+Use `scripts/check_ta_parity.py` to verify that Tennis Abstract `matchmx` parsing remains aligned with Apps Script normalization before deploys.
+
+```bash
+python3 scripts/check_ta_parity.py --input tmp/source_probes/leadersource_wta.js
+```
+
+The script prints:
+- total parsed rows,
+- unique players,
+- non-null coverage for ranking/hold/break at both row-level and normalized player-level,
+- sample normalized player records.
+
+It exits non-zero with `parser_parity_regression` when row-level (CLI) coverage is healthy while normalized (Apps Script-like) coverage is poor.
+
 ## Player feature extraction artifact
 
 Use `scripts/extract_player_features.py` to normalize probe payloads under `OUT_DIR/raw` into model-ready artifacts:
