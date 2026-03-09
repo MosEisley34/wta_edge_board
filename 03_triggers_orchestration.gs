@@ -498,12 +498,20 @@ function runEdgeBoard() {
     }
 
     if (productiveOutputState.schedule_only_notice_needed) {
+      const expectedIdleOutsideOddsWindow = runHealthDiagnostics.status === 'idle_outside_odds_window'
+        || runHealthDiagnostics.reason_code === 'odds_refresh_skipped_outside_window';
       const scheduleOnlyPayload = {
         reason_code: productiveOutputState.schedule_only_reason_code || 'schedule_only_streak_detected',
         streak_count: productiveOutputState.schedule_only_consecutive_count,
         threshold: productiveOutputState.schedule_only_threshold,
         fetched_schedule: scheduleStage.events.length,
         fetched_odds: fetchedOddsCount,
+        notice_severity: 'low',
+        expected_idle: expectedIdleOutsideOddsWindow,
+        odds_window_context: expectedIdleOutsideOddsWindow ? 'outside_window' : 'within_window_or_unknown',
+        message: expectedIdleOutsideOddsWindow
+          ? 'Schedule-only streak reached notice threshold while odds refresh is outside window; this run is expected to be idle and should not be treated as a pipeline failure.'
+          : 'Schedule-only streak reached notice threshold.',
         run_id: runId,
       };
       appendLogRow_({
