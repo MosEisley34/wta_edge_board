@@ -2424,6 +2424,74 @@ function testStageGenerateSignals_recordsFullyMissingStatsCandidates_() {
   }
 }
 
+function testStageGenerateSignals_scoresNullFeaturesFallbackAndTracksReason_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const events = [{
+      event_id: 'evt_null_features_1', market: 'h2h', outcome: 'player_a', bookmaker: 'book_x', price: 150,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs),
+    }];
+    const matches = [
+      { odds_event_id: 'evt_null_features_1', schedule_event_id: 'sched_null_features_1', competition_tier: 'WTA_500' },
+    ];
+    const stats = {
+      evt_null_features_1: {
+        stats_fallback_mode: 'null_features',
+        player_a: {
+          has_stats: false,
+          stats_fallback_mode: 'null_features',
+          features: { ranking: null, recent_form: null, surface_win_rate: null, hold_pct: null, break_pct: null },
+        },
+        player_b: {
+          has_stats: false,
+          stats_fallback_mode: 'null_features',
+          features: { ranking: null, recent_form: null, surface_win_rate: null, hold_pct: null, break_pct: null },
+        },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1', EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08, STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5, SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: '', SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_null_features_fallback', config, events, matches, stats);
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+
+    assertEquals_(1, result.rows.length);
+    assertEquals_(0, result.summary.reason_codes.missing_stats || 0);
+    assertEquals_(1, result.summary.reason_codes.null_features_fallback_scored || 0);
+    assertTrue_((decisionState.sampled_candidate_rows[0] || {}).decision_reason_code !== 'missing_stats', 'null-feature fallback should not be dropped as missing stats');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+
 function testStageGenerateSignals_recordsMixedUpstreamOutcomesAndDecisionSamples_() {
   const originalDateNow = Date.now;
   const originalGetSignalState = getSignalState_;
@@ -3277,6 +3345,29 @@ function testStageFetchPlayerStats_providerAvailableButEmptyTracksReason_() {
   assertEquals_(0, result.stage.summary.reason_codes.stats_enriched);
   assertEquals_(0, result.stage.summary.reason_codes.stats_fallback_model_used);
 }
+
+function testStageFetchPlayerStats_providerReturnedNullFeaturesMarksFallbackMetadata_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    batchResult: {
+      stats_by_player: {
+        'player one': { ranking: null, recent_form: null, surface_win_rate: null, hold_pct: null, break_pct: null },
+        'player two': { ranking: null, recent_form: null, surface_win_rate: null, hold_pct: null, break_pct: null },
+      },
+      provider_available: true,
+      api_credit_usage: 1,
+      reason_code: 'provider_returned_null_features',
+    },
+  });
+
+  const bundle = result.stage.byOddsEventId.odds_evt_1;
+  assertEquals_(1, result.stage.summary.reason_codes.provider_returned_null_features || 0);
+  assertEquals_('null_features', bundle.stats_fallback_mode || '');
+  assertEquals_('null_features', bundle.player_a.stats_fallback_mode || '');
+  assertEquals_('null_features', bundle.player_b.stats_fallback_mode || '');
+  assertEquals_('player_stats_provider_v1', bundle.player_a.provenance || '');
+  assertEquals_('player_stats_provider_v1', bundle.player_b.provenance || '');
+}
+
 
 function testStageFetchPlayerStats_successfulEnrichmentTracksReason_() {
   const result = runStageFetchPlayerStatsScenario_({

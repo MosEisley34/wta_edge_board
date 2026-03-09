@@ -8,6 +8,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     skipped_no_matched_events: 0,
     skipped_no_player_keys: 0,
     provider_returned_empty: 0,
+    provider_returned_null_features: 0,
   };
 
   const matchByOddsEventId = {};
@@ -66,10 +67,12 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
   const statsBatch = fetchPlayerStatsBatch_(config, playersToFetch, normalizedAsOfTime);
   const statsByPlayer = statsBatch.stats_by_player || {};
   const providerUnavailable = statsBatch.provider_available === false;
+  const providerNullFeatures = String(statsBatch.reason_code || '') === 'provider_returned_null_features';
   const providerReturnedEmpty = !providerUnavailable
     && playersToFetch.length > 0
     && Object.keys(statsByPlayer).length === 0;
   if (providerReturnedEmpty) reasonCounts.provider_returned_empty += 1;
+  if (providerNullFeatures) reasonCounts.provider_returned_null_features += 1;
   const source = providerUnavailable ? 'derived_player_stats_v1_fallback' : 'player_stats_provider_v1';
 
   const statsInputEvents = seedEvents.length ? seedEvents : oddsEvents;
@@ -101,17 +104,22 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     byOddsEventId[event.event_id] = {
       source,
       stats_provider_unavailable: providerUnavailable,
+      stats_fallback_mode: providerNullFeatures ? 'null_features' : '',
       synthetic_schedule_seed: !!event.synthetic_schedule_seed,
       feature_timestamp: featureTimestamp,
       player_a: {
         canonical_name: playerA,
         features: playerAStats.features,
         has_stats: playerAStats.has_stats,
+        stats_fallback_mode: playerAStats.stats_fallback_mode || '',
+        provenance: playerAStats.provenance || source,
       },
       player_b: {
         canonical_name: playerB,
         features: playerBStats.features,
         has_stats: playerBStats.has_stats,
+        stats_fallback_mode: playerBStats.stats_fallback_mode || '',
+        provenance: playerBStats.provenance || source,
       },
     };
   });
@@ -169,6 +177,8 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
     if (hasProviderStats) {
       return {
         has_stats: true,
+        stats_fallback_mode: '',
+        provenance: 'player_stats_provider_v1',
         features: {
           ranking: providerStats.ranking,
           recent_form: providerStats.recent_form,
@@ -178,15 +188,33 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
         },
       };
     }
+
+    return {
+      has_stats: false,
+      stats_fallback_mode: 'null_features',
+      provenance: 'player_stats_provider_v1',
+      features: {
+        ranking: null,
+        recent_form: null,
+        surface_win_rate: null,
+        hold_pct: null,
+        break_pct: null,
+      },
+    };
   }
 
   if (providerUnavailable) {
     reasonCounts.stats_fallback_model_used += 1;
-    return computePseudoPlayerStats_(canonicalPlayerName, event, match, slot);
+    const pseudo = computePseudoPlayerStats_(canonicalPlayerName, event, match, slot);
+    pseudo.stats_fallback_mode = 'provider_unavailable';
+    pseudo.provenance = 'derived_player_stats_v1_fallback';
+    return pseudo;
   }
 
   return {
     has_stats: false,
+    stats_fallback_mode: 'missing_row',
+    provenance: 'player_stats_provider_v1',
     features: {
       ranking: null,
       recent_form: null,
@@ -206,6 +234,8 @@ function buildRawPlayerStatsRow_(eventId, canonicalPlayerName, source, featureTi
     feature_timestamp: featureTimestamp,
     feature_values: JSON.stringify(payload.features),
     has_stats: payload.has_stats,
+    stats_fallback_mode: payload.stats_fallback_mode || '',
+    provenance: payload.provenance || source,
     updated_at: formatLocalIso_(new Date()),
   };
 }
@@ -280,6 +310,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     sent: 0,
     missing_match: 0,
     missing_stats: 0,
+    null_features_fallback_scored: 0,
     invalid_features: 0,
     notify_disabled: 0,
     duplicate_suppressed: 0,
@@ -335,15 +366,25 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     }
 
     const statsBundle = (playerStatsByOddsEventId || {})[event.event_id] || null;
-    const hasPlayerStats = !!(statsBundle
-      && statsBundle.player_a && statsBundle.player_a.has_stats
-      && statsBundle.player_b && statsBundle.player_b.has_stats);
-    if (!hasPlayerStats) {
+    const hasStatsBundleRows = !!(statsBundle && statsBundle.player_a && statsBundle.player_b);
+    const hasPlayerStats = !!(hasStatsBundleRows
+      && statsBundle.player_a.has_stats
+      && statsBundle.player_b.has_stats);
+    const nullFeaturesFallback = !!(hasStatsBundleRows
+      && statsBundle.player_a.has_stats === false
+      && statsBundle.player_b.has_stats === false
+      && (statsBundle.player_a.stats_fallback_mode === 'null_features'
+        || statsBundle.player_b.stats_fallback_mode === 'null_features'
+        || statsBundle.stats_fallback_mode === 'null_features'));
+
+    if (!hasPlayerStats && !nullFeaturesFallback) {
       captureDecision_(event, match, 'missing_stats', {
         scored: false,
       });
       return;
     }
+
+    if (nullFeaturesFallback) reasonCounts.null_features_fallback_scored += 1;
 
     const modelVersion = statsBundle && statsBundle.player_a && statsBundle.player_b
       && statsBundle.player_a.has_stats && statsBundle.player_b.has_stats
@@ -531,7 +572,11 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   } : null;
   const allDropReasons = Object.keys(reasonCounts)
     .filter(function (reasonCode) {
-      return reasonCode !== 'sent';
+      return reasonCode !== 'sent'
+        && reasonCode !== 'null_features_fallback_scored'
+        && reasonCode !== 'stats_missing_player_a'
+        && reasonCode !== 'stats_missing_player_b'
+        && reasonCode !== 'stats_fallback_model_used';
     })
     .reduce(function (sum, reasonCode) {
       return sum + Number(reasonCounts[reasonCode] || 0);
