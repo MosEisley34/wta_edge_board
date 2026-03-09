@@ -252,9 +252,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   let processedCandidateCount = 0;
   const reasonCounts = {
     sent: 0,
-    missing_schedule_match: 0,
-    missing_player_stats: 0,
-    insufficient_features: 0,
+    missing_match: 0,
+    missing_stats: 0,
+    invalid_features: 0,
     notify_disabled: 0,
     duplicate_suppressed: 0,
     cooldown_suppressed: 0,
@@ -264,6 +264,12 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     notify_http_failed: 0,
     notify_missing_config: 0,
   };
+  const legacyReasonCodeMap = {
+    missing_match: 'missing_schedule_match',
+    missing_stats: 'missing_player_stats',
+    invalid_features: 'insufficient_features',
+  };
+  const legacyReasonCounts = {};
   const signalState = getSignalState_();
   const seenHashesThisRun = {};
   const matchByOddsEventId = {};
@@ -274,6 +280,10 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   function captureDecision_(event, match, decisionReasonCode, detail) {
     processedCandidateCount += 1;
     reasonCounts[decisionReasonCode] = (reasonCounts[decisionReasonCode] || 0) + 1;
+    const legacyDecisionReasonCode = legacyReasonCodeMap[decisionReasonCode] || null;
+    if (legacyDecisionReasonCode) {
+      legacyReasonCounts[legacyDecisionReasonCode] = (legacyReasonCounts[legacyDecisionReasonCode] || 0) + 1;
+    }
 
     if (sampledDecisions.length < sampledDecisionLimit) {
       sampledDecisions.push({
@@ -292,7 +302,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   oddsEvents.forEach((event) => {
     const match = matchByOddsEventId[event.event_id];
     if (!match || !match.schedule_event_id) {
-      captureDecision_(event, match, 'missing_schedule_match', {
+      captureDecision_(event, match, 'missing_match', {
         scored: false,
       });
       return;
@@ -303,7 +313,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       && statsBundle.player_a && statsBundle.player_a.has_stats
       && statsBundle.player_b && statsBundle.player_b.has_stats);
     if (!hasPlayerStats) {
-      captureDecision_(event, match, 'missing_player_stats', {
+      captureDecision_(event, match, 'missing_stats', {
         scored: false,
       });
       return;
@@ -316,7 +326,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
 
     const impliedProbability = oddsPriceToImpliedProbability_(event.price);
     if (impliedProbability === null) {
-      captureDecision_(event, match, 'insufficient_features', {
+      captureDecision_(event, match, 'invalid_features', {
         scored: false,
         field: 'implied_probability',
       });
@@ -489,18 +499,33 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   }));
 
   const signalDecisionsGeneratedAt = localAndUtcTimestamps_(new Date());
+  const allDropReasons = Object.keys(reasonCounts)
+    .filter(function (reasonCode) {
+      return reasonCode !== 'sent';
+    })
+    .reduce(function (sum, reasonCode) {
+      return sum + Number(reasonCounts[reasonCode] || 0);
+    }, 0);
+
   setStateValue_('LAST_SIGNAL_DECISIONS', JSON.stringify({
     run_id: runId,
     generated_at: signalDecisionsGeneratedAt.local,
     generated_at_utc: signalDecisionsGeneratedAt.utc,
     reason_counts: reasonCounts,
+    reason_counts_legacy: legacyReasonCounts,
     sampled_decisions: sampledDecisions,
+    sampled_candidate_rows: sampledDecisions,
     input_count: oddsEvents.length,
     processed_count: processedCandidateCount,
+    all_drop_reasons: allDropReasons,
+    sent_count: Number(reasonCounts.sent || 0),
+    invariant: {
+      sent_plus_drop_reasons_equals_input: Number(reasonCounts.sent || 0) + allDropReasons === oddsEvents.length,
+    },
   }));
 
-  if (processedCandidateCount !== oddsEvents.length) {
-    throw new Error('stageGenerateSignals invariant violated: reason_counts do not account for all input candidates');
+  if ((Number(reasonCounts.sent || 0) + allDropReasons) !== oddsEvents.length) {
+    throw new Error('stageGenerateSignals invariant violated: sent + all_drop_reasons must equal input_count');
   }
 
   const summary = buildStageSummary_(runId, 'stageGenerateSignals', start, {
