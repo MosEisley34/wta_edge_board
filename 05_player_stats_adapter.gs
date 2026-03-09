@@ -327,7 +327,15 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
     });
   }
   try {
-    setStateValue_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD', JSON.stringify(cachePayload));
+    setStateValue_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD', JSON.stringify(cachePayload), {
+      source_meta: {
+        source: cachePayload.source || '',
+        cached_at_ms: Number(cachePayload.cached_at_ms || Date.now()),
+        row_count: (cachePayload.rows || []).length,
+        storage_path: cacheWriteResult.storage_path || '',
+        reference_key: PLAYER_STATS_LEADERS_CACHE_KEY,
+      },
+    });
   } catch (e) {
     logTaLeadersCacheDiagnostic_('state_stale_payload_write_failed_non_fatal', {
       reason_code: 'state_write_failed',
@@ -892,7 +900,16 @@ function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime, 
     stats_by_player: payload.stats_by_player || {},
   };
 
-  setStateValue_('PLAYER_STATS_STALE_PAYLOAD', JSON.stringify(serializable));
+  setStateValue_('PLAYER_STATS_STALE_PAYLOAD', JSON.stringify(serializable), {
+    source_meta: {
+      source: source,
+      cached_at_ms: serializable.cached_at_ms,
+      player_count: serializable.player_count,
+      stats_count: Object.keys(serializable.stats_by_player || {}).length,
+      reference_key: serializable.cache_key || '',
+      storage_path: 'cache_reference',
+    },
+  });
   setStateValue_('PLAYER_STATS_LAST_FETCH_META', JSON.stringify({
     cache_key: serializable.cache_key,
     cached_at_ms: serializable.cached_at_ms,
@@ -1389,7 +1406,16 @@ function persistTaH2hDatasetState_(payload, source, telemetry) {
     by_pair: byPair,
   };
 
-  setStateValue_('PLAYER_STATS_H2H_STALE_PAYLOAD', JSON.stringify(serializable));
+  setStateValue_('PLAYER_STATS_H2H_STALE_PAYLOAD', JSON.stringify(serializable), {
+    source_meta: {
+      source: serializable.source,
+      source_type: source || '',
+      cached_at_ms: serializable.cached_at_ms,
+      row_count: serializable.row_count,
+      reference_key: PLAYER_STATS_H2H_CACHE_KEY,
+      storage_path: 'cache_reference',
+    },
+  });
   const metrics = telemetry || {};
   setStateValue_('PLAYER_STATS_H2H_LAST_FETCH_META', JSON.stringify({
     source: serializable.source,
