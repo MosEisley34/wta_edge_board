@@ -506,6 +506,10 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     const statsReason = 'schedule_enrichment_stats_' + scheduleEnrichment.stats_reason_code;
     summary.reason_codes[statsReason] = (summary.reason_codes[statsReason] || 0) + 1;
   }
+  if (scheduleEnrichment.h2h_reason_code) {
+    const h2hReason = 'schedule_enrichment_h2h_' + scheduleEnrichment.h2h_reason_code;
+    summary.reason_codes[h2hReason] = (summary.reason_codes[h2hReason] || 0) + 1;
+  }
   summary.reason_codes.schedule_enrichment_stats_rows_applied = (summary.reason_codes.schedule_enrichment_stats_rows_applied || 0) + Number(scheduleEnrichment.stats_rows_applied || 0);
   summary.reason_codes.schedule_enrichment_h2h_rows_applied = (summary.reason_codes.schedule_enrichment_h2h_rows_applied || 0) + Number(scheduleEnrichment.h2h_rows_applied || 0);
   summary.reason_codes.schedule_enrichment_h2h_missing = (summary.reason_codes.schedule_enrichment_h2h_missing || 0) + Number(scheduleEnrichment.h2h_missing || 0);
@@ -552,6 +556,8 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     schedule_enrichment: {
       reason_code: scheduleEnrichment.reason_code,
       stats_reason_code: scheduleEnrichment.stats_reason_code,
+      h2h_reason_code: scheduleEnrichment.h2h_reason_code || '',
+      h2h_impact: scheduleEnrichment.h2h_impact || null,
       canonical_player_count: scheduleEnrichment.canonical_player_count,
       stats_rows_applied: scheduleEnrichment.stats_rows_applied,
       h2h_rows_applied: scheduleEnrichment.h2h_rows_applied,
@@ -589,6 +595,8 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       events: scheduleEvents,
       reason_code: 'schedule_enrichment_no_schedule_events',
       stats_reason_code: '',
+      h2h_reason_code: '',
+      h2h_impact: null,
       canonical_player_count: 0,
       stats_rows_applied: 0,
       h2h_rows_applied: 0,
@@ -605,6 +613,8 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
         events: scheduleEvents,
         reason_code: 'schedule_enrichment_no_upcoming_players',
         stats_reason_code: '',
+        h2h_reason_code: '',
+        h2h_impact: null,
         canonical_player_count: 0,
         stats_rows_applied: 0,
         h2h_rows_applied: 0,
@@ -623,6 +633,9 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
     let statsRowsApplied = 0;
     let h2hRowsApplied = 0;
     let h2hMissing = 0;
+    const h2hDatasetMeta = getStateJson_('PLAYER_STATS_H2H_LAST_FETCH_META') || {};
+    const h2hSummaryReasonCode = resolveScheduleEnrichmentH2hReasonCode_(h2hDatasetMeta);
+    const h2hImpact = buildScheduleEnrichmentH2hImpact_(h2hSummaryReasonCode, h2hDatasetMeta);
 
     const enrichedEvents = scheduleEvents.map(function (event) {
       const playerA = canonicalizePlayerName_(event.player_1, {});
@@ -658,6 +671,8 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       events: enrichedEvents,
       reason_code: 'schedule_enrichment_ta_completed',
       stats_reason_code: statsBatch.reason_code || '',
+      h2h_reason_code: h2hSummaryReasonCode,
+      h2h_impact: h2hImpact,
       canonical_player_count: canonicalPlayers.length,
       stats_rows_applied: statsRowsApplied,
       h2h_rows_applied: h2hRowsApplied,
@@ -670,6 +685,8 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       events: scheduleEvents,
       reason_code: 'schedule_enrichment_ta_failed_non_fatal',
       stats_reason_code: '',
+      h2h_reason_code: '',
+      h2h_impact: null,
       canonical_player_count: 0,
       stats_rows_applied: 0,
       h2h_rows_applied: 0,
@@ -678,6 +695,28 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       error: String(error && error.message ? error.message : error),
     };
   }
+}
+
+
+function resolveScheduleEnrichmentH2hReasonCode_(meta) {
+  const reason = String((meta && meta.last_failure_reason) || '').trim();
+  if (reason === 'h2h_source_empty_table' || reason === 'ta_h2h_empty_table') return 'h2h_source_empty_table';
+  return '';
+}
+
+function buildScheduleEnrichmentH2hImpact_(reasonCode, meta) {
+  const reason = String(reasonCode || '').trim();
+  if (!reason) return null;
+
+  const sourceType = String((meta && meta.source_type) || '');
+  const rowCount = Number((meta && meta.row_count) || 0);
+  return {
+    reason_code: reason,
+    h2h_features_unavailable: true,
+    model_fallback_scope: 'h2h_features_only',
+    h2h_source_type: sourceType,
+    h2h_row_count: Number.isFinite(rowCount) ? rowCount : 0,
+  };
 }
 
 function buildCanonicalSchedulePlayers_(events, nowMs) {

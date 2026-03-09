@@ -1024,9 +1024,11 @@ function getTaH2hDataset_(config) {
   const fresh = fetchTaH2hDatasetFromSource_(runtimeConfig);
   if (fresh.ok) {
     const payload = fresh.payload || { rows: [], by_pair: {} };
+    payload.h2h_mode_reason_code = String(fresh.reason_code || 'ta_h2h_ok');
     payload.cached_at_ms = nowMs;
     setCachedTaH2hDataset_(payload);
-    persistTaH2hDatasetState_(payload, 'fresh_h2h_page', {
+    const sourceType = payload.h2h_mode_reason_code === 'h2h_source_empty_table' ? 'fresh_h2h_empty_table' : 'fresh_h2h_page';
+    persistTaH2hDatasetState_(payload, sourceType, {
       provider_available: true,
       last_success_at: new Date(nowMs).toISOString(),
       api_call_count: Number(fresh.api_call_count || 0),
@@ -1098,7 +1100,7 @@ function fetchTaH2hDatasetFromSource_(config) {
 
   return {
     ok: true,
-    reason_code: 'ta_h2h_ok',
+    reason_code: parsed.empty_table ? 'h2h_source_empty_table' : 'ta_h2h_ok',
     payload: {
       source: url,
       source_updated_date: sourceUpdatedDate,
