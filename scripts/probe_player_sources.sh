@@ -26,6 +26,7 @@ emit_entry() {
   local url="$2"
   local expected_content_type="$3"
   local parser_hint="$4"
+  local expected_http_codes="$5"
 
   local raw_out="$RAW_DIR/$source_key.body"
   local headers_out="$LOGS_DIR/$source_key.headers"
@@ -59,35 +60,11 @@ emit_entry() {
   total_time="$(printf '%s\n' "$write_out" | awk -F= '$1=="time_total"{sub(/^time_total=/,""); print; exit}')"
   final_url="$(printf '%s\n' "$write_out" | awk -F= '$1=="final_url"{sub(/^final_url=/,""); print; exit}')"
 
-  local status="ok"
-  local pass=true
-
-  if [[ "$curl_exit_code" -ne 0 ]]; then
-    status="curl_failed"
-    pass=false
-    if [[ "$curl_exit_code" -eq 28 ]]; then
-      status="timeout"
-    fi
-  elif [[ ! -s "$raw_out" ]]; then
-    status="empty_body"
-    pass=false
-  fi
-
   local actual_content_type=""
   if [[ -f "$headers_out" ]]; then
     actual_content_type="$(awk -F': ' 'tolower($1)=="content-type" {print $2}' "$headers_out" | tail -n1 | tr -d '\r')"
   fi
   [[ -z "$actual_content_type" ]] && actual_content_type="$write_content_type"
-
-  if [[ "$pass" == true && -n "$expected_content_type" && -n "$actual_content_type" ]]; then
-    local expected_lc actual_lc
-    expected_lc="$(printf '%s' "$expected_content_type" | tr '[:upper:]' '[:lower:]')"
-    actual_lc="$(printf '%s' "$actual_content_type" | tr '[:upper:]' '[:lower:]')"
-    if [[ "$actual_lc" != *"$expected_lc"* ]]; then
-      status="content_type_mismatch"
-      pass=false
-    fi
-  fi
 
   local bytes=0
   local sha256=""
@@ -104,6 +81,7 @@ emit_entry() {
   SOURCE_KEY="$source_key" \
   URL="$url" \
   EXPECTED_CONTENT_TYPE="$expected_content_type" \
+  EXPECTED_HTTP_CODES="$expected_http_codes" \
   ACTUAL_CONTENT_TYPE="$actual_content_type" \
   PARSER_HINT="$parser_hint" \
   HTTP_CODE="$http_code" \
@@ -111,8 +89,6 @@ emit_entry() {
   FINAL_URL="$final_url" \
   CURL_EXIT_CODE="$curl_exit_code" \
   RETRY_ATTEMPTS="$retry_attempts" \
-  STATUS="$status" \
-  PASS="$pass" \
   BYTES="$bytes" \
   SHA256="$sha256" \
   RAW_PATH="$raw_out" \
@@ -168,8 +144,84 @@ content_type = os.environ.get("ACTUAL_CONTENT_TYPE", "")
 content_type_lc = content_type.lower()
 body_lc = body_text.lower()
 
+expected_content_type = os.environ.get("EXPECTED_CONTENT_TYPE", "")
+expected_content_type_lc = expected_content_type.lower()
+expected_http_codes = [x.strip() for x in os.environ.get("EXPECTED_HTTP_CODES", "").split(",") if x.strip()]
+http_code = (os.environ.get("HTTP_CODE", "") or "").strip()
+curl_exit_code = int(os.environ["CURL_EXIT_CODE"])
+
 is_json = ("json" in content_type_lc) or body_lc.lstrip().startswith("{") or body_lc.lstrip().startswith("[")
 is_html_shell = ("html" in content_type_lc) or ("<html" in body_lc) or ("<!doctype html" in body_lc)
+
+def is_empty(value):
+    if value is None:
+        return True
+    if isinstance(value, (str, bytes)):
+        return len(value.strip()) == 0
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) == 0
+    return False
+
+def detect_api_error(value):
+    if isinstance(value, dict):
+        if "error" in value and not is_empty(value.get("error")) and value.get("error") is not False:
+            return True
+
+        has_code = "code" in value
+        has_message = "message" in value
+        code_val = value.get("code")
+        message_val = value.get("message")
+        if has_code and has_message:
+            if not is_empty(message_val):
+                return True
+            if str(code_val).strip().lower() not in {"", "0", "200", "ok", "success", "none", "null"}:
+                return True
+        elif has_code and str(code_val).strip().lower() not in {"", "0", "200", "ok", "success", "none", "null"}:
+            return True
+        elif has_message and not is_empty(message_val):
+            return True
+
+        for nested in value.values():
+            if detect_api_error(nested):
+                return True
+    elif isinstance(value, list):
+        return any(detect_api_error(item) for item in value)
+    return False
+
+api_error_payload = False
+json_parse_error = ""
+json_payload = None
+if is_json:
+    try:
+        json_payload = json.loads(body_text)
+    except Exception as exc:
+        json_parse_error = str(exc)
+    else:
+        api_error_payload = detect_api_error(json_payload)
+
+transport_pass = curl_exit_code == 0 and http_code not in ("", "000")
+expected_http_ok = (http_code.startswith("2") and len(http_code) == 3 and http_code.isdigit()) if not expected_http_codes else (http_code in expected_http_codes)
+content_type_match = True
+if expected_content_type_lc and content_type_lc:
+    content_type_match = expected_content_type_lc in content_type_lc
+
+status = "ok"
+effective_pass = True
+if curl_exit_code != 0:
+    status = "timeout" if curl_exit_code == 28 else "curl_failed"
+    effective_pass = False
+elif len(body_bytes) == 0:
+    status = "empty_body"
+    effective_pass = False
+elif not expected_http_ok:
+    status = "http_status_unexpected"
+    effective_pass = False
+elif not content_type_match:
+    status = "content_type_mismatch"
+    effective_pass = False
+elif (("json" in expected_content_type_lc) or os.environ.get("PARSER_HINT", "").strip().lower() == "json_api") and api_error_payload:
+    status = "api_error_payload"
+    effective_pass = False
 
 challenge_patterns = [
     r"attention required",
@@ -204,10 +256,13 @@ obj = {
     "source_key": os.environ["SOURCE_KEY"],
     "url": os.environ["URL"],
     "expected_content_type": os.environ["EXPECTED_CONTENT_TYPE"],
+    "expected_http_codes": expected_http_codes,
     "parser_hint": os.environ["PARSER_HINT"],
-    "status": os.environ["STATUS"],
-    "pass": os.environ["PASS"].lower() == "true",
-    "http_code": os.environ["HTTP_CODE"],
+    "status": status,
+    "pass": effective_pass,
+    "effective_pass": effective_pass,
+    "transport_pass": transport_pass,
+    "http_code": http_code,
     "content_type": content_type,
     "total_time": float(os.environ["TOTAL_TIME"]) if os.environ.get("TOTAL_TIME") else None,
     "final_url": os.environ["FINAL_URL"],
@@ -234,6 +289,10 @@ obj = {
         "is_json": is_json,
         "likely_spa_bootstrap": likely_spa_bootstrap,
     },
+    "json_analysis": {
+        "api_error_payload": api_error_payload,
+        "json_parse_error": json_parse_error,
+    },
     "counters": counters,
 }
 
@@ -242,9 +301,15 @@ with open(parsed_out, "w", encoding="utf-8") as fh:
     fh.write("\n")
 PY
 
-  printf '%s\t%s\t%s\t%s\n' "$source_key" "$status" "$pass" "$http_code" >> "$SUMMARY_TSV"
+  local status pass effective_pass transport_pass
+  status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$parsed_out")"
+  pass="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["pass"]).lower())' "$parsed_out")"
+  effective_pass="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["effective_pass"]).lower())' "$parsed_out")"
+  transport_pass="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["transport_pass"]).lower())' "$parsed_out")"
 
-  echo "status=$status pass=$pass http_code=$http_code bytes=$bytes"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$source_key" "$status" "$pass" "$effective_pass" "$transport_pass" "$http_code" >> "$SUMMARY_TSV"
+
+  echo "status=$status pass=$pass effective_pass=$effective_pass transport_pass=$transport_pass http_code=$http_code bytes=$bytes"
   echo "raw=$raw_out"
   echo "headers=$headers_out"
   echo "curl_stderr=$curl_stderr"
@@ -260,18 +325,19 @@ iterate_tsv_catalog() {
     url="$(trim "${url:-}")"
     expected_content_type="$(trim "${expected_content_type:-}")"
     parser_hint="$(trim "${parser_hint:-}")"
+    extra="$(trim "${extra:-}")"
 
     if [[ -z "$url" || -z "$expected_content_type" || -z "$parser_hint" ]]; then
       echo "WARN: skipping malformed TSV row for source '$source_key'" >&2
       continue
     fi
 
-    emit_entry "$source_key" "$url" "$expected_content_type" "$parser_hint"
+    emit_entry "$source_key" "$url" "$expected_content_type" "$parser_hint" "$extra"
   done < "$CATALOG_PATH"
 }
 
 iterate_json_catalog() {
-  python3 - "$CATALOG_PATH" <<'PY' | while IFS=$'\t' read -r source_key url expected_content_type parser_hint; do
+  python3 - "$CATALOG_PATH" <<'PY' | while IFS=$'\t' read -r source_key url expected_content_type parser_hint expected_http_codes; do
 import json
 import sys
 
@@ -290,6 +356,7 @@ for entry in data:
         str(entry.get('url', '')).strip(),
         str(entry.get('expected_content_type', '')).strip(),
         str(entry.get('parser_hint', '')).strip(),
+        str(entry.get('expected_http_codes', '')).strip(),
     ]
     if values[0].startswith('#'):
         continue
@@ -300,7 +367,7 @@ PY
       continue
     }
 
-    emit_entry "$source_key" "$url" "$expected_content_type" "$parser_hint"
+    emit_entry "$source_key" "$url" "$expected_content_type" "$parser_hint" "$expected_http_codes"
   done
 }
 
@@ -337,15 +404,19 @@ with open(summary_tsv, 'r', encoding='utf-8') as fh:
         line = line.rstrip('\n')
         if not line:
             continue
-        source_key, status, passed, http_code = line.split('\t')
+        source_key, status, passed, effective_pass, transport_pass, http_code = line.split('\t')
         is_pass = passed.lower() == 'true'
+        is_effective_pass = effective_pass.lower() == 'true'
+        is_transport_pass = transport_pass.lower() == 'true'
         sources.append({
             'source_key': source_key,
             'status': status,
             'pass': is_pass,
+            'effective_pass': is_effective_pass,
+            'transport_pass': is_transport_pass,
             'http_code': http_code,
         })
-        if is_pass:
+        if is_effective_pass:
             pass_count += 1
         else:
             fail_count += 1
