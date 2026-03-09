@@ -329,6 +329,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const upstreamGateReason = stageMeta && stageMeta.upstream_gate_reason ? String(stageMeta.upstream_gate_reason) : '';
   const rows = [];
   const sampledDecisions = [];
+  let lastH2hDecision = null;
+  const h2hDecisionCounts = { h2h_applied: 0, h2h_low_sample: 0, h2h_unavailable: 0 };
   const sampledDecisionLimit = Number(config.SIGNAL_DECISION_SAMPLE_LIMIT || 50);
   let processedCandidateCount = 0;
   const reasonCounts = {
@@ -368,6 +370,10 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     }
 
     if (sampledDecisions.length < sampledDecisionLimit) {
+      const detailWithH2h = Object.assign({}, detail || {});
+      if (lastH2hDecision) {
+        detailWithH2h.h2h_decision = lastH2hDecision;
+      }
       sampledDecisions.push({
         odds_event_id: event && event.event_id ? event.event_id : '',
         schedule_event_id: (match && match.schedule_event_id) || '',
@@ -376,7 +382,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         side: event && event.outcome ? event.outcome : '',
         bookmaker: event && event.bookmaker ? event.bookmaker : '',
         price: event && event.price,
-        detail: detail || {},
+        detail: detailWithH2h,
       });
     }
   }
@@ -391,6 +397,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     }
 
     const statsBundle = (playerStatsByOddsEventId || {})[event.event_id] || null;
+    const enrichedStatsBundle = attachH2hStatsContext_(statsBundle, event);
     const hasStatsBundleRows = !!(statsBundle && statsBundle.player_a && statsBundle.player_b);
     const hasPlayerStats = !!(hasStatsBundleRows
       && statsBundle.player_a.has_stats
@@ -427,9 +434,12 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
 
     const startCutoffMs = config.MINUTES_BEFORE_START_CUTOFF * 60000;
     if (event.commence_time.getTime() <= nowMs + startCutoffMs) {
+      const modelProbabilityTooClose = estimateFairProbability_(impliedProbability, match.competition_tier, enrichedStatsBundle, reasonCounts, config);
+      lastH2hDecision = resolveH2hProbabilityBump_(enrichedStatsBundle, config || {});
+      recordH2hDecisionCount_(h2hDecisionCounts, lastH2hDecision);
       rows.push(buildSignalRow_(runId, config, event, match, {
         notification_outcome: 'too_close_to_start_skip',
-        model_probability: estimateFairProbability_(impliedProbability, match.competition_tier, statsBundle, reasonCounts),
+        model_probability: modelProbabilityTooClose,
         market_implied_probability: impliedProbability,
         edge_value: 0,
         edge_tier: 'NONE',
@@ -445,9 +455,12 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
 
     const staleThresholdMs = config.STALE_ODDS_WINDOW_MIN * 60000;
     if (nowMs - event.odds_updated_time.getTime() > staleThresholdMs) {
+      const modelProbabilityStale = estimateFairProbability_(impliedProbability, match.competition_tier, enrichedStatsBundle, reasonCounts, config);
+      lastH2hDecision = resolveH2hProbabilityBump_(enrichedStatsBundle, config || {});
+      recordH2hDecisionCount_(h2hDecisionCounts, lastH2hDecision);
       rows.push(buildSignalRow_(runId, config, event, match, {
         notification_outcome: 'stale_odds_skip',
-        model_probability: estimateFairProbability_(impliedProbability, match.competition_tier, statsBundle, reasonCounts),
+        model_probability: modelProbabilityStale,
         market_implied_probability: impliedProbability,
         edge_value: 0,
         edge_tier: 'NONE',
@@ -461,7 +474,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       return;
     }
 
-    const modelProbability = estimateFairProbability_(impliedProbability, match.competition_tier, statsBundle, reasonCounts);
+    const modelProbability = estimateFairProbability_(impliedProbability, match.competition_tier, enrichedStatsBundle, reasonCounts, config);
+    lastH2hDecision = resolveH2hProbabilityBump_(enrichedStatsBundle, config || {});
+    recordH2hDecisionCount_(h2hDecisionCounts, lastH2hDecision);
     const edgeValue = roundNumber_(modelProbability - impliedProbability, 4);
     const edgeTierAndStake = classifyEdgeAndStake_(edgeValue, config);
     const signalHash = buildSignalHash_(event.event_id, event.market, event.outcome, modelVersion);
@@ -612,6 +627,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     generated_at: signalDecisionsGeneratedAt.local,
     generated_at_utc: signalDecisionsGeneratedAt.utc,
     reason_counts: reasonCounts,
+    h2h_decision_counts: h2hDecisionCounts,
     reason_counts_legacy: legacyReasonCounts,
     sampled_decisions: sampledDecisions,
     sampled_candidate_rows: sampledDecisions,
@@ -809,6 +825,102 @@ function buildSignalHash_(eventId, market, side, modelVersion) {
   return [eventId || '', market || '', side || '', modelVersion || ''].join('|');
 }
 
+
+
+function recordH2hDecisionCount_(counts, decision) {
+  const status = decision && decision.status ? String(decision.status) : 'h2h_unavailable';
+  if (status === 'h2h_applied' || status === 'h2h_low_sample' || status === 'h2h_unavailable') {
+    counts[status] = (counts[status] || 0) + 1;
+    return;
+  }
+  counts.h2h_unavailable = (counts.h2h_unavailable || 0) + 1;
+}
+
+function attachH2hStatsContext_(statsBundle, event) {
+  const base = statsBundle && typeof statsBundle === 'object' ? statsBundle : {};
+  return Object.assign({}, base, {
+    h2h: {
+      p1_wins: pickNumericEventValue_(event, ['h2h_p1_wins']),
+      p2_wins: pickNumericEventValue_(event, ['h2h_p2_wins']),
+      total_matches: pickNumericEventValue_(event, ['h2h_total_matches']),
+      source: String(((event || {}).h2h_source || (base.h2h || {}).source || '')).trim(),
+      mode_reason_code: String((base.h2h_mode_reason_code || '')).trim(),
+    },
+  });
+}
+
+function pickNumericEventValue_(event, keys) {
+  const source = event || {};
+  const keyList = keys || [];
+  for (let i = 0; i < keyList.length; i += 1) {
+    const value = source[keyList[i]];
+    if (value === '' || value === null || value === undefined) continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function resolveH2hProbabilityBump_(playerStatsBundle, config) {
+  const details = {
+    applied: false,
+    status: 'h2h_unavailable',
+    reason_code: 'h2h_missing',
+    bump: 0,
+    sample_size: 0,
+    source: '',
+  };
+
+  if (!config || config.H2H_BUMP_ENABLED === false) {
+    details.status = 'h2h_disabled';
+    details.reason_code = 'h2h_bump_disabled';
+    return details;
+  }
+
+  const h2h = playerStatsBundle && playerStatsBundle.h2h ? playerStatsBundle.h2h : null;
+  if (!h2h) {
+    return details;
+  }
+
+  const modeReasonCode = String(h2h.mode_reason_code || '').trim();
+  if (modeReasonCode === 'h2h_source_empty_table' || modeReasonCode === 'ta_h2h_empty_table') {
+    details.status = 'h2h_unavailable';
+    details.reason_code = 'h2h_source_empty_table';
+    return details;
+  }
+
+  const p1Wins = Number(h2h.p1_wins);
+  const p2Wins = Number(h2h.p2_wins);
+  let totalMatches = Number(h2h.total_matches);
+  if (!Number.isFinite(totalMatches) && Number.isFinite(p1Wins) && Number.isFinite(p2Wins)) {
+    totalMatches = p1Wins + p2Wins;
+  }
+
+  if (!Number.isFinite(p1Wins) || !Number.isFinite(p2Wins) || !Number.isFinite(totalMatches) || totalMatches <= 0) {
+    details.reason_code = 'h2h_missing';
+    return details;
+  }
+
+  const minMatches = Math.max(1, Number(config.H2H_MIN_MATCHES || 0));
+  details.sample_size = totalMatches;
+  details.source = String(h2h.source || '');
+  if (totalMatches < minMatches) {
+    details.status = 'h2h_low_sample';
+    details.reason_code = 'h2h_low_sample';
+    return details;
+  }
+
+  const rawDelta = (p1Wins - p2Wins) / totalMatches;
+  const maxAbs = Math.max(0, Number(config.H2H_MAX_ABS_BUMP || 0));
+  const bounded = Math.max(-maxAbs, Math.min(maxAbs, rawDelta));
+
+  details.applied = true;
+  details.status = 'h2h_applied';
+  details.reason_code = 'h2h_applied';
+  details.bump = roundNumber_(bounded, 4);
+  return details;
+}
+
 function oddsPriceToImpliedProbability_(price) {
   const p = Number(price);
   if (!Number.isFinite(p) || p === 0) return null;
@@ -816,7 +928,7 @@ function oddsPriceToImpliedProbability_(price) {
   return roundNumber_(Math.abs(p) / (Math.abs(p) + 100), 4);
 }
 
-function estimateFairProbability_(marketProbability, competitionTier, playerStatsBundle, reasonCodes) {
+function estimateFairProbability_(marketProbability, competitionTier, playerStatsBundle, reasonCodes, config) {
   const tierBump = {
     GRAND_SLAM: 0.012,
     WTA_1000: 0.01,
@@ -825,7 +937,12 @@ function estimateFairProbability_(marketProbability, competitionTier, playerStat
   };
   const underdogBump = marketProbability < 0.5 ? 0.01 : -0.005;
   const statsBump = combinePlayerStatsFeatureBump_(playerStatsBundle, reasonCodes || {});
-  const fair = marketProbability + underdogBump + (tierBump[competitionTier] || 0.005) + statsBump;
+  const h2hDecision = resolveH2hProbabilityBump_(playerStatsBundle, config || {});
+  const fair = marketProbability
+    + underdogBump
+    + (tierBump[competitionTier] || 0.005)
+    + statsBump
+    + h2hDecision.bump;
   return roundNumber_(Math.max(0.02, Math.min(0.98, fair)), 4);
 }
 
