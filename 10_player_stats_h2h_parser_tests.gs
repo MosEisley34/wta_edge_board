@@ -96,3 +96,49 @@ function testFetchTaH2hDatasetFromSource_emptyTableReturnsDedicatedReason_() {
     logTaH2hParseDiagnostic_ = originalLogDiagnostic;
   }
 }
+
+function testGetTaH2hCoverageForCanonicalPair_partialCoverageReason_() {
+  const originalGetTaH2hDataset = getTaH2hDataset_;
+  getTaH2hDataset_ = function () {
+    return {
+      rows: [
+        { player_a: 'Iga Swiatek', player_b: 'Aryna Sabalenka', wins_a: 2, wins_b: 1 },
+        { player_a: 'Aryna Sabalenka', player_b: 'Coco Gauff', wins_a: 3, wins_b: 2 },
+      ],
+      by_pair: {
+        'iga swiatek::aryna sabalenka': { player_a: 'Iga Swiatek', player_b: 'Aryna Sabalenka', wins_a: 2, wins_b: 1 },
+        'aryna sabalenka::coco gauff': { player_a: 'Aryna Sabalenka', player_b: 'Coco Gauff', wins_a: 3, wins_b: 2 },
+      },
+    };
+  };
+
+  try {
+    const coverage = getTaH2hCoverageForCanonicalPair_({}, 'Iga Swiatek', 'Coco Gauff');
+    assertEquals_(null, coverage.row);
+    assertEquals_('h2h_partial_coverage', coverage.reason_code);
+  } finally {
+    getTaH2hDataset_ = originalGetTaH2hDataset;
+  }
+}
+
+function testGetTaH2hCoverageForCanonicalPair_playerNotInMatrixReason_() {
+  const originalGetTaH2hDataset = getTaH2hDataset_;
+  getTaH2hDataset_ = function () {
+    return {
+      rows: [
+        { player_a: 'Iga Swiatek', player_b: 'Aryna Sabalenka', wins_a: 2, wins_b: 1 },
+      ],
+      by_pair: {
+        'iga swiatek::aryna sabalenka': { player_a: 'Iga Swiatek', player_b: 'Aryna Sabalenka', wins_a: 2, wins_b: 1 },
+      },
+    };
+  };
+
+  try {
+    const coverage = getTaH2hCoverageForCanonicalPair_({}, 'Iga Swiatek', 'Outside Player');
+    assertEquals_(null, coverage.row);
+    assertEquals_('h2h_player_not_in_matrix', coverage.reason_code);
+  } finally {
+    getTaH2hDataset_ = originalGetTaH2hDataset;
+  }
+}
