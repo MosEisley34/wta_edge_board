@@ -718,25 +718,21 @@ function sendSignalNotification_(config, runId, signalHash, payload) {
 }
 
 function formatSignalNotificationMessage_(runId, signalHash, payload) {
+  const commenceLocal = toIso_(payload.commence_time);
+  const commenceUtc = payload.commence_time ? new Date(payload.commence_time).toISOString() : '';
   return [
-    'WTA Edge Signal',
-    'run_id=' + runId,
-    'signal_hash=' + signalHash,
-    'event_id=' + payload.odds_event_id,
-    'market=' + payload.market,
-    'side=' + payload.side,
-    'bookmaker=' + payload.bookmaker,
-    'tier=' + payload.competition_tier,
-    'edge=' + payload.edge_value,
-    'edge_tier=' + payload.edge_tier,
-    'stake_units=' + payload.stake_units,
-    'model_prob=' + payload.model_probability,
-    'market_prob=' + payload.market_implied_probability,
-    'commence=' + toIso_(payload.commence_time),
-    'commence_utc=' + (payload.commence_time ? new Date(payload.commence_time).toISOString() : ''),
-    'timezone=' + TIMESTAMP_TIMEZONE.ID,
-  ].join(' | ');
+    '🎾 **WTA Edge Signal**',
+    '📌 **' + payload.side + '** (' + payload.market + ') @ **' + payload.bookmaker + '**',
+    '📊 Edge: **' + payload.edge_value + '** (' + payload.edge_tier + ') | Stake: **' + payload.stake_units + 'u**',
+    '🤖 Model: **' + payload.model_probability + '** vs Market: **' + payload.market_implied_probability + '**',
+    '🏟️ Tier: **' + payload.competition_tier + '**',
+    '🕒 Start: **' + commenceLocal + '** (' + TIMESTAMP_TIMEZONE.ID + ')',
+    '🌐 UTC: **' + commenceUtc + '**',
+    '🆔 Run: `' + runId + '` | Event: `' + payload.odds_event_id + '`',
+    '🧬 Signal: `' + signalHash + '`',
+  ].join('\n');
 }
+
 
 function postDiscordWebhook_(webhookUrl, payload, testMode) {
   if (testMode) {
