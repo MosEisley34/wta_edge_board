@@ -922,9 +922,13 @@ function mergePlayerStatsMaps_(maps, canonicalPlayers) {
     merged[player] = {
       ranking: ranking,
       recent_form: recentForm,
+      recent_form_last_10: firstDefinedMetric_(maps, player, 'recent_form_last_10'),
       surface_win_rate: surfaceWinRate,
       hold_pct: holdPct,
       break_pct: breakPct,
+      surface_hold_pct: firstDefinedMetric_(maps, player, 'surface_hold_pct'),
+      surface_break_pct: firstDefinedMetric_(maps, player, 'surface_break_pct'),
+      surface_recent_form: firstDefinedMetric_(maps, player, 'surface_recent_form'),
       bp_saved_pct: bpSavedPct,
       bp_conv_pct: bpConvPct,
       first_serve_in_pct: firstServeInPct,
@@ -952,9 +956,13 @@ function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers, option
     normalized[canonicalName] = {
       ranking: parseIntegerMetric_(row.ranking, row.rank, row.world_ranking),
       recent_form: normalizeRateMetric_(row.recent_form, row.form, row.recent_win_rate),
+      recent_form_last_10: normalizeRateMetric_(row.recent_form_last_10, row.form_last_10, row.recent_10_form),
       surface_win_rate: normalizeRateMetric_(row.surface_win_rate, row.surfaceWinRate, row.surface_rate),
       hold_pct: normalizeRateMetric_(row.hold_pct, row.hold_percentage, row.serve_hold_pct),
       break_pct: normalizeRateMetric_(row.break_pct, row.break_percentage, row.return_break_pct),
+      surface_hold_pct: normalizeRateMetric_(row.surface_hold_pct),
+      surface_break_pct: normalizeRateMetric_(row.surface_break_pct),
+      surface_recent_form: normalizeRateMetric_(row.surface_recent_form),
       bp_saved_pct: normalizeRateMetric_(row.bp_saved_pct, row.break_points_saved_pct),
       bp_conv_pct: normalizeRateMetric_(row.bp_conv_pct, row.break_points_converted_pct),
       first_serve_in_pct: normalizeRateMetric_(row.first_serve_in_pct, row.first_serve_pct),
@@ -985,6 +993,7 @@ function aggregateMatchMxRowsToStatsByPlayer_(rows, canonicalPlayers, options) {
   const asOfDate = options.as_of_time instanceof Date ? options.as_of_time : new Date(options.as_of_time || Date.now());
   const weeks = Math.max(0, Number(options.match_window_weeks || 52));
   const recentMatchCount = Math.max(0, Number(options.recent_match_count || 0));
+  const surfaceMinSample = Math.max(1, Number(options.surface_match_min_sample || 3));
   const windowStartMs = asOfDate.getTime() - (weeks * 7 * 24 * 60 * 60 * 1000);
 
   rows.forEach(function (row) {
@@ -1004,13 +1013,30 @@ function aggregateMatchMxRowsToStatsByPlayer_(rows, canonicalPlayers, options) {
       .slice()
       .sort(function (a, b) { return parseDateMs_(b.date) - parseDateMs_(a.date); });
     const scopedRows = recentMatchCount > 0 ? playerRows.slice(0, recentMatchCount) : playerRows;
+    const recentFormLast10 = normalizeRateMetric_(averageMetric_(playerRows.slice(0, 10), 'recent_form'));
+    const targetSurface = String((options && options.surface) || (scopedRows[0] && scopedRows[0].surface) || '').trim().toLowerCase();
+    const surfaceRows = targetSurface
+      ? scopedRows.filter(function (row) { return String((row && row.surface) || '').trim().toLowerCase() === targetSurface; })
+      : [];
+    const useSurfaceRows = surfaceRows.length >= surfaceMinSample;
+
+    const holdPct = normalizeRateMetric_(averageMetric_(scopedRows, 'hold_pct'));
+    const breakPct = normalizeRateMetric_(averageMetric_(scopedRows, 'break_pct'));
+    const recentForm = normalizeRateMetric_(averageMetric_(scopedRows, 'recent_form'));
+    const surfaceHoldPct = useSurfaceRows ? normalizeRateMetric_(averageMetric_(surfaceRows, 'hold_pct')) : holdPct;
+    const surfaceBreakPct = useSurfaceRows ? normalizeRateMetric_(averageMetric_(surfaceRows, 'break_pct')) : breakPct;
+    const surfaceRecentForm = useSurfaceRows ? normalizeRateMetric_(averageMetric_(surfaceRows, 'recent_form')) : recentForm;
 
     stats[player] = {
       ranking: parseIntegerMetric_(scopedRows[0] && scopedRows[0].ranking),
-      recent_form: normalizeRateMetric_(averageMetric_(scopedRows, 'recent_form')),
+      recent_form: recentForm,
+      recent_form_last_10: recentFormLast10,
       surface_win_rate: normalizeRateMetric_(averageMetric_(scopedRows, 'surface_win_rate')),
-      hold_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'hold_pct')),
-      break_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'break_pct')),
+      hold_pct: holdPct,
+      break_pct: breakPct,
+      surface_hold_pct: surfaceHoldPct,
+      surface_break_pct: surfaceBreakPct,
+      surface_recent_form: surfaceRecentForm,
       bp_saved_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'bp_saved_pct')),
       bp_conv_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'bp_conv_pct')),
       first_serve_in_pct: normalizeRateMetric_(averageMetric_(scopedRows, 'first_serve_in_pct')),
@@ -1029,6 +1055,15 @@ function aggregateMatchMxRowsToStatsByPlayer_(rows, canonicalPlayers, options) {
     map[canonical] = stats[canonical] || null;
   });
   return map;
+}
+
+function firstDefinedMetric_(maps, player, key) {
+  for (let i = 0; i < (maps || []).length; i += 1) {
+    const stats = maps[i] && maps[i][player];
+    if (!stats) continue;
+    if (stats[key] !== null && stats[key] !== undefined) return stats[key];
+  }
+  return null;
 }
 
 function parseDateMs_(value) {
