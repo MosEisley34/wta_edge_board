@@ -101,3 +101,12 @@ scripts/scan_runtime_diagnostics.sh ./exports/run_logs ./exports/state_dump.json
 Output includes:
 - grouped counts per diagnostic key,
 - top matching rows (file + row + preview) for quick local triage.
+
+## Player feature extraction artifact
+
+Use `scripts/extract_player_features.py` to normalize probe payloads under `OUT_DIR/raw` into model-ready artifacts:
+
+- `OUT_DIR/normalized/player_features.jsonl`
+- `OUT_DIR/normalized/player_features.csv`
+
+The extractor always emits fixed schema fields plus `reason_code` and `reason_code_detail` so Apps Script can preserve diagnostics even when stats are null/missing.
