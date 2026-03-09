@@ -192,6 +192,146 @@ function testFetchOddsWindowFromOddsApi_invalidWindow_recoversWithFallbackWindow
   }
 }
 
+function testFetchOddsWindowFromOddsApi_usesOutcomeMarketBookmakerLastUpdateWithoutEventTimestamp_() {
+  const originalCaller = callOddsApiWithSportKeyFallback_;
+
+  callOddsApiWithSportKeyFallback_ = function () {
+    return {
+      ok: true,
+      status_code: 200,
+      payload: [{
+        id: 'evt_timestamp_fallback',
+        commence_time: '2025-01-01T03:00:00.000Z',
+        bookmakers: [{
+          key: 'book_a',
+          last_update: '2025-01-01T00:06:00.000Z',
+          markets: [{
+            key: 'h2h',
+            last_update: '2025-01-01T00:05:00.000Z',
+            outcomes: [
+              { name: 'Player A', price: 2.1, last_update: '2025-01-01T00:04:00.000Z' },
+              { name: 'Player B', price: 1.8 },
+            ],
+          }],
+        }],
+      }],
+      reason_code: 'api_success',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: {},
+      selected_sport_keys: ['tennis_wta_us_open'],
+      selected_sport_key_count: 1,
+      selected_sport_key_source: 'catalog',
+      selected_sport_key_fallback: 'none',
+      window_request_start_ms: 0,
+      window_request_end_ms: 0,
+    };
+  };
+
+  try {
+    const result = fetchOddsWindowFromOddsApi_({
+      ODDS_API_KEY: 'test',
+      ODDS_REGIONS: 'us',
+      ODDS_MARKETS: 'h2h',
+      ODDS_ODDS_FORMAT: 'decimal',
+      ODDS_BOOTSTRAP_LOOKAHEAD_HOURS: 1,
+    }, Date.parse('2025-01-01T00:00:00.000Z'), Date.parse('2025-01-01T06:00:00.000Z'));
+
+    assertEquals_(2, result.events.length);
+    assertEquals_('2025-01-01T00:04:00.000Z', result.events[0].provider_odds_updated_time.toISOString());
+    assertEquals_('2025-01-01T00:04:00.000Z', result.events[0].odds_updated_time.toISOString());
+    assertEquals_('2025-01-01T00:05:00.000Z', result.events[1].provider_odds_updated_time.toISOString());
+    assertEquals_('2025-01-01T00:05:00.000Z', result.events[1].odds_updated_time.toISOString());
+  } finally {
+    callOddsApiWithSportKeyFallback_ = originalCaller;
+  }
+}
+
+function testStageFetchOdds_persistsProviderAndOddsUpdatedTimeWhenEventTimestampMissing_() {
+  const originalFetchOdds = fetchOddsWindowFromOddsApi_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+  const originalSetCachedPayload = setCachedPayload_;
+  const originalSetStateValue = setStateValue_;
+  const originalGetStateJson = getStateJson_;
+  const originalUpdateCreditState = updateCreditStateFromHeaders_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const originalLogDiagnosticEvent = logDiagnosticEvent_;
+
+  const writes = {};
+
+  fetchOddsWindowFromOddsApi_ = function () {
+    const providerTime = new Date('2025-01-01T00:05:00.000Z');
+    const ingestionTime = new Date('2025-01-01T00:07:00.000Z');
+    return {
+      events: [{
+        event_id: 'evt_stage_fetch_odds',
+        bookmaker: 'book_a',
+        bookmaker_keys_considered: ['book_a'],
+        market: 'h2h',
+        outcome: 'Player A',
+        price: 2.1,
+        provider_odds_updated_time: providerTime,
+        ingestion_timestamp: ingestionTime,
+        odds_updated_time: providerTime,
+        commence_time: new Date('2025-01-01T03:00:00.000Z'),
+        competition: 'WTA Test',
+        tournament: 'WTA Test',
+        event_name: 'A vs B',
+        sport_title: 'Tennis',
+        home_team: 'Player A',
+        away_team: 'Player B',
+        player_1: 'Player A',
+        player_2: 'Player B',
+      }],
+      reason_code: 'odds_api_success',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: {},
+      selected_source: 'fresh_api',
+      window_meta: {
+        cached_at_ms: Date.parse('2025-01-01T00:08:00.000Z'),
+      },
+    };
+  };
+  getCachedPayload_ = function () { return null; };
+  getCreditAwareRuntimeConfig_ = function () { return { odds_window_cache_ttl_min: 10, odds_window_refresh_min: 1, mode: 'normal' }; };
+  setCachedPayload_ = function () {};
+  setStateValue_ = function (key, value) { writes[key] = value; };
+  getStateJson_ = function () { return null; };
+  updateCreditStateFromHeaders_ = function () { return { header_present: false }; };
+  localAndUtcTimestamps_ = function () { return { local: '2025-01-01T00:00:00-07:00', utc: '2025-01-01T07:00:00.000Z' }; };
+  logDiagnosticEvent_ = function () {};
+
+  try {
+    const result = stageFetchOdds('run_odds_persist_time', {
+      LOOKAHEAD_HOURS: 6,
+      ODDS_WINDOW_FORCE_REFRESH: true,
+    }, {
+      startMs: Date.parse('2025-01-01T00:00:00.000Z'),
+      endMs: Date.parse('2025-01-01T06:00:00.000Z'),
+    });
+
+    assertEquals_(1, result.rows.length);
+    assertEquals_('2025-01-01T00:05:00.000Z', result.rows[0].provider_odds_updated_time);
+    assertEquals_('2025-01-01T00:05:00.000Z', result.rows[0].odds_updated_time);
+
+    const stalePayload = JSON.parse(writes.ODDS_WINDOW_STALE_PAYLOAD || '{}');
+    assertEquals_('2025-01-01T00:05:00.000Z', stalePayload.events[0].provider_odds_updated_time || '');
+    assertEquals_('2025-01-01T00:05:00.000Z', stalePayload.events[0].odds_updated_time || '');
+  } finally {
+    fetchOddsWindowFromOddsApi_ = originalFetchOdds;
+    getCachedPayload_ = originalGetCachedPayload;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+    setCachedPayload_ = originalSetCachedPayload;
+    setStateValue_ = originalSetStateValue;
+    getStateJson_ = originalGetStateJson;
+    updateCreditStateFromHeaders_ = originalUpdateCreditState;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+    logDiagnosticEvent_ = originalLogDiagnosticEvent;
+  }
+}
+
 function testFetchOddsWindowFromOddsApi_invalidWindow_retryFailure_() {
   const originalCaller = callOddsApiWithSportKeyFallback_;
   const originalNow = Date.now;
@@ -2026,6 +2166,86 @@ function testStageGenerateSignals_notifyDisabledDoesNotMarkSentHash_() {
     getSignalState_ = originalGetSignalState;
     setSignalState_ = originalSetSignalState;
     appendLogRow_ = originalAppendLogRow;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testStageGenerateSignals_staleGuardUsesProviderDerivedOddsUpdatedTime_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:10:00.000Z');
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:10:00-07:00',
+      utc: '2026-01-01T07:10:00.000Z',
+    };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_provider_time_stale_guard',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 150,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date('2026-01-01T00:05:30.000Z'),
+      provider_odds_updated_time: new Date('2026-01-01T00:05:30.000Z'),
+    };
+    const match = {
+      odds_event_id: 'evt_provider_time_stale_guard',
+      schedule_event_id: 'sched_provider_time_stale_guard',
+      competition_tier: 'WTA_500',
+    };
+    const stats = {
+      evt_provider_time_stale_guard: {
+        player_a: {
+          has_stats: true,
+          features: { ranking: 10, recent_form: 0.6, surface_win_rate: 0.58, hold_pct: 0.64, break_pct: 0.36 },
+        },
+        player_b: {
+          has_stats: true,
+          features: { ranking: 12, recent_form: 0.59, surface_win_rate: 0.57, hold_pct: 0.63, break_pct: 0.35 },
+        },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 10,
+      NOTIFY_ENABLED: false,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: '',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_provider_time_stale_guard', config, [event], [match], stats);
+
+    assertEquals_(1, result.rows.length);
+    assertTrue_(result.rows[0].notification_outcome !== 'stale_odds_skip');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
     setStateValue_ = originalSetStateValue;
     localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
   }
