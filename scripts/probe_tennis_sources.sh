@@ -10,6 +10,9 @@ LOGS_DIR="$OUT_DIR/logs"
 META_DIR="$OUT_DIR/meta"
 mkdir -p "$RAW_DIR" "$LOGS_DIR" "$META_DIR"
 
+SUMMARY_TSV="$META_DIR/.summary.tsv"
+: > "$SUMMARY_TSV"
+
 trim() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -25,29 +28,68 @@ emit_entry() {
 
   local raw_out="$RAW_DIR/$source_key.body"
   local headers_out="$LOGS_DIR/$source_key.headers"
-  local curl_log="$LOGS_DIR/$source_key.curl.log"
-  local meta_out="$META_DIR/$source_key.meta"
+  local curl_stderr="$LOGS_DIR/$source_key.curl.stderr"
+  local meta_out="$META_DIR/$source_key.json"
 
   echo "==> $source_key"
-  local http_code
-  http_code="$(
+
+  local write_out=""
+  local curl_exit_code=0
+  set +e
+  write_out="$(
     curl -sS -L --max-time 30 \
+      --retry 2 --retry-delay 1 --retry-all-errors \
       -H "User-Agent: $UA" \
       -D "$headers_out" \
       -o "$raw_out" \
-      -w '%{http_code}' \
+      -w 'http_code=%{http_code}\ncontent_type=%{content_type}\ntime_total=%{time_total}\nfinal_url=%{url_effective}\n' \
       "$url" \
-      >"$curl_log" 2>&1
-  )" || true
+      2>"$curl_stderr"
+  )"
+  curl_exit_code=$?
+  set -e
+
+  local http_code=""
+  local write_content_type=""
+  local total_time=""
+  local final_url=""
+  http_code="$(printf '%s\n' "$write_out" | awk -F= '$1=="http_code"{sub(/^http_code=/,""); print; exit}')"
+  write_content_type="$(printf '%s\n' "$write_out" | awk -F= '$1=="content_type"{sub(/^content_type=/,""); print; exit}')"
+  total_time="$(printf '%s\n' "$write_out" | awk -F= '$1=="time_total"{sub(/^time_total=/,""); print; exit}')"
+  final_url="$(printf '%s\n' "$write_out" | awk -F= '$1=="final_url"{sub(/^final_url=/,""); print; exit}')"
 
   local status="ok"
-  if [[ ! -s "$raw_out" ]]; then
-    status="fetch_failed"
+  local pass=true
+  local timeout=false
+  local timeout_outcome="no_timeout"
+
+  if [[ "$curl_exit_code" -ne 0 ]]; then
+    status="curl_failed"
+    pass=false
+    if [[ "$curl_exit_code" -eq 28 ]]; then
+      timeout=true
+      timeout_outcome="request_timed_out"
+      status="timeout"
+    fi
+  elif [[ ! -s "$raw_out" ]]; then
+    status="empty_body"
+    pass=false
   fi
 
   local actual_content_type=""
   if [[ -f "$headers_out" ]]; then
     actual_content_type="$(awk -F': ' 'tolower($1)=="content-type" {print $2}' "$headers_out" | tail -n1 | tr -d '\r')"
+  fi
+  [[ -z "$actual_content_type" ]] && actual_content_type="$write_content_type"
+
+  if [[ "$pass" == true && -n "$expected_content_type" && -n "$actual_content_type" ]]; then
+    local expected_lc actual_lc
+    expected_lc="$(printf '%s' "$expected_content_type" | tr '[:upper:]' '[:lower:]')"
+    actual_lc="$(printf '%s' "$actual_content_type" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$actual_lc" != *"$expected_lc"* ]]; then
+      status="content_type_mismatch"
+      pass=false
+    fi
   fi
 
   local bytes=0
@@ -57,24 +99,69 @@ emit_entry() {
     sha256="$(sha256sum "$raw_out" | awk '{print $1}')"
   fi
 
-  cat > "$meta_out" <<META
-source_key=$source_key
-url=$url
-expected_content_type=$expected_content_type
-actual_content_type=$actual_content_type
-parser_hint=$parser_hint
-http_code=$http_code
-status=$status
-bytes=$bytes
-sha256=$sha256
-raw_path=$raw_out
-headers_path=$headers_out
-curl_log_path=$curl_log
-META
+  local retry_attempts=0
+  if [[ -f "$curl_stderr" ]]; then
+    retry_attempts="$(awk 'BEGIN{c=0} /[Rr]etry/{c++} END{print c}' "$curl_stderr")"
+  fi
 
-  echo "status=$status http_code=$http_code bytes=$bytes"
+  SOURCE_KEY="$source_key" \
+  URL="$url" \
+  EXPECTED_CONTENT_TYPE="$expected_content_type" \
+  ACTUAL_CONTENT_TYPE="$actual_content_type" \
+  PARSER_HINT="$parser_hint" \
+  HTTP_CODE="$http_code" \
+  TOTAL_TIME="$total_time" \
+  FINAL_URL="$final_url" \
+  CURL_EXIT_CODE="$curl_exit_code" \
+  RETRY_ATTEMPTS="$retry_attempts" \
+  TIMEOUT="$timeout" \
+  TIMEOUT_OUTCOME="$timeout_outcome" \
+  STATUS="$status" \
+  PASS="$pass" \
+  BYTES="$bytes" \
+  SHA256="$sha256" \
+  RAW_PATH="$raw_out" \
+  HEADERS_PATH="$headers_out" \
+  CURL_STDERR_PATH="$curl_stderr" \
+  python3 - "$meta_out" <<'PY'
+import json
+import os
+import sys
+
+meta_out = sys.argv[1]
+obj = {
+    "source_key": os.environ["SOURCE_KEY"],
+    "url": os.environ["URL"],
+    "expected_content_type": os.environ["EXPECTED_CONTENT_TYPE"],
+    "actual_content_type": os.environ["ACTUAL_CONTENT_TYPE"],
+    "parser_hint": os.environ["PARSER_HINT"],
+    "http_code": os.environ["HTTP_CODE"],
+    "content_type": os.environ["ACTUAL_CONTENT_TYPE"],
+    "total_time": float(os.environ["TOTAL_TIME"]) if os.environ["TOTAL_TIME"] else None,
+    "final_url": os.environ["FINAL_URL"],
+    "curl_exit_code": int(os.environ["CURL_EXIT_CODE"]),
+    "retry_attempts": int(os.environ["RETRY_ATTEMPTS"]),
+    "timeout": os.environ["TIMEOUT"].lower() == "true",
+    "timeout_outcome": os.environ["TIMEOUT_OUTCOME"],
+    "status": os.environ["STATUS"],
+    "pass": os.environ["PASS"].lower() == "true",
+    "bytes": int(os.environ["BYTES"]),
+    "sha256": os.environ["SHA256"],
+    "raw_path": os.environ["RAW_PATH"],
+    "headers_path": os.environ["HEADERS_PATH"],
+    "curl_stderr_path": os.environ["CURL_STDERR_PATH"],
+}
+with open(meta_out, "w", encoding="utf-8") as fh:
+    json.dump(obj, fh, indent=2)
+    fh.write("\n")
+PY
+
+  printf '%s\t%s\t%s\t%s\n' "$source_key" "$status" "$pass" "$http_code" >> "$SUMMARY_TSV"
+
+  echo "status=$status pass=$pass http_code=$http_code bytes=$bytes"
   echo "raw=$raw_out"
   echo "headers=$headers_out"
+  echo "curl_stderr=$curl_stderr"
   echo "meta=$meta_out"
   echo
 }
@@ -144,5 +231,48 @@ case "$CATALOG_PATH" in
     exit 1
     ;;
 esac
+
+python3 - "$SUMMARY_TSV" "$META_DIR/summary.json" <<'PY'
+import json
+import sys
+
+summary_tsv = sys.argv[1]
+summary_out = sys.argv[2]
+
+sources = []
+pass_count = 0
+fail_count = 0
+
+with open(summary_tsv, 'r', encoding='utf-8') as fh:
+    for line in fh:
+        line = line.rstrip('\n')
+        if not line:
+            continue
+        source_key, status, passed, http_code = line.split('\t')
+        is_pass = passed.lower() == 'true'
+        sources.append({
+            'source_key': source_key,
+            'status': status,
+            'pass': is_pass,
+            'http_code': http_code,
+        })
+        if is_pass:
+            pass_count += 1
+        else:
+            fail_count += 1
+
+summary = {
+    'total_sources': len(sources),
+    'pass_count': pass_count,
+    'fail_count': fail_count,
+    'sources': sources,
+}
+
+with open(summary_out, 'w', encoding='utf-8') as fh:
+    json.dump(summary, fh, indent=2)
+    fh.write('\n')
+PY
+
+rm -f "$SUMMARY_TSV"
 
 echo "done"
