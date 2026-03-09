@@ -457,6 +457,7 @@ function runEdgeBoard() {
 
     const productiveOutputState = updateEmptyProductiveOutputState_(runId, {
       fetched_odds: fetchedOddsCount,
+      fetched_schedule: scheduleStage.events.length,
       signals_found: signalsFoundCount,
     }, config);
     if (productiveOutputState.reason_code) {
@@ -480,6 +481,26 @@ function runEdgeBoard() {
         message: JSON.stringify(productiveWarningPayload),
       });
       logDiagnosticEvent_(config, 'productive_output_watchdog_warning', productiveWarningPayload, 1);
+    }
+
+    if (productiveOutputState.schedule_only_notice_needed) {
+      const scheduleOnlyPayload = {
+        reason_code: productiveOutputState.schedule_only_reason_code || 'schedule_only_streak_detected',
+        streak_count: productiveOutputState.schedule_only_consecutive_count,
+        threshold: productiveOutputState.schedule_only_threshold,
+        fetched_schedule: scheduleStage.events.length,
+        fetched_odds: fetchedOddsCount,
+        run_id: runId,
+      };
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'schedule_only_watchdog',
+        status: 'notice',
+        reason_code: scheduleOnlyPayload.reason_code,
+        message: JSON.stringify(scheduleOnlyPayload),
+      });
+      logDiagnosticEvent_(config, 'schedule_only_watchdog_notice', scheduleOnlyPayload, 1);
     }
 
     const runStartedAt = localAndUtcTimestamps_(startedAt);

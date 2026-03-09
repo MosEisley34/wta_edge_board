@@ -1324,18 +1324,24 @@ function testUpdateEmptyProductiveOutputState_warnsAtThreshold_() {
   try {
     const result = updateEmptyProductiveOutputState_('run_test', {
       fetched_odds: 4,
+      fetched_schedule: 0,
       signals_found: 0,
     }, {
       EMPTY_PRODUCTIVE_OUTPUT_THRESHOLD: 3,
+      SCHEDULE_ONLY_STREAK_NOTICE_THRESHOLD: 3,
     });
 
     assertEquals_(3, result.consecutive_count);
     assertEquals_(true, result.warning_needed);
     assertEquals_('productive_output_empty_streak_detected', result.reason_code);
+    assertEquals_(0, result.schedule_only_consecutive_count);
+    assertEquals_(false, result.schedule_only_notice_needed);
 
     const stored = JSON.parse(writes.EMPTY_PRODUCTIVE_OUTPUT_STATE || '{}');
     assertEquals_(3, stored.consecutive_count);
+    assertEquals_(0, stored.schedule_only_consecutive_count);
     assertEquals_(4, stored.fetched_odds);
+    assertEquals_(0, stored.fetched_schedule);
     assertEquals_(0, stored.signals_found);
   } finally {
     getStateJson_ = originalGetStateJson;
@@ -1344,6 +1350,59 @@ function testUpdateEmptyProductiveOutputState_warnsAtThreshold_() {
   }
 }
 
+
+
+function testUpdateEmptyProductiveOutputState_scheduleOnlyNoticesAtThreshold_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const writes = {};
+
+  getStateJson_ = function () {
+    return {
+      consecutive_count: 5,
+      schedule_only_consecutive_count: 2,
+    };
+  };
+  setStateValue_ = function (key, value) {
+    writes[key] = value;
+  };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2025-03-01T00:00:00-07:00',
+      utc: '2025-03-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const result = updateEmptyProductiveOutputState_('run_test', {
+      fetched_odds: 0,
+      fetched_schedule: 7,
+      signals_found: 0,
+    }, {
+      EMPTY_PRODUCTIVE_OUTPUT_THRESHOLD: 3,
+      SCHEDULE_ONLY_STREAK_NOTICE_THRESHOLD: 3,
+    });
+
+    assertEquals_(0, result.consecutive_count);
+    assertEquals_(false, result.warning_needed);
+    assertEquals_('', result.reason_code);
+    assertEquals_(3, result.schedule_only_consecutive_count);
+    assertEquals_(true, result.schedule_only_notice_needed);
+    assertEquals_('schedule_only_streak_detected', result.schedule_only_reason_code);
+
+    const stored = JSON.parse(writes.EMPTY_PRODUCTIVE_OUTPUT_STATE || '{}');
+    assertEquals_(0, stored.consecutive_count);
+    assertEquals_(3, stored.schedule_only_consecutive_count);
+    assertEquals_(0, stored.fetched_odds);
+    assertEquals_(7, stored.fetched_schedule);
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
 
 function createRunEdgeBoardTestHarness_(options) {
   const opts = options || {};
