@@ -1509,6 +1509,145 @@ function testUpdateEmptyProductiveOutputState_scheduleOnlyNoticesAtThreshold_() 
   }
 }
 
+
+
+function testUpdateEmptyProductiveOutputState_scheduleOnlyNoticeBelowThresholdMinusOne_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  getStateJson_ = function () {
+    return {
+      consecutive_count: 5,
+      schedule_only_consecutive_count: 1,
+    };
+  };
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2025-03-01T00:00:00-07:00',
+      utc: '2025-03-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const result = updateEmptyProductiveOutputState_('run_test', {
+      fetched_odds: 0,
+      fetched_schedule: 7,
+      signals_found: 0,
+    }, {
+      EMPTY_PRODUCTIVE_OUTPUT_THRESHOLD: 3,
+      SCHEDULE_ONLY_STREAK_NOTICE_THRESHOLD: 3,
+    });
+
+    assertEquals_(2, result.schedule_only_consecutive_count);
+    assertEquals_(false, result.schedule_only_notice_needed);
+    assertEquals_('', result.schedule_only_reason_code);
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testUpdateEmptyProductiveOutputState_scheduleOnlyNoticeAboveThresholdPlusOne_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  getStateJson_ = function () {
+    return {
+      consecutive_count: 5,
+      schedule_only_consecutive_count: 3,
+    };
+  };
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2025-03-01T00:00:00-07:00',
+      utc: '2025-03-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const result = updateEmptyProductiveOutputState_('run_test', {
+      fetched_odds: 0,
+      fetched_schedule: 7,
+      signals_found: 0,
+    }, {
+      EMPTY_PRODUCTIVE_OUTPUT_THRESHOLD: 3,
+      SCHEDULE_ONLY_STREAK_NOTICE_THRESHOLD: 3,
+    });
+
+    assertEquals_(4, result.schedule_only_consecutive_count);
+    assertEquals_(true, result.schedule_only_notice_needed);
+    assertEquals_('schedule_only_streak_detected', result.schedule_only_reason_code);
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testRunEdgeBoard_scheduleOnlyWatchdogNoticeIsLowSeverityExpectedIdleAndNoFailureEscalation_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [],
+      oddsRows: [],
+      oddsReasonCodes: { odds_refresh_skipped_outside_window: 1 },
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchedCount: 0,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten: 0,
+      matchReasonCodes: {},
+      signalRows: [],
+      sentCount: 0,
+      productiveOutputState: {
+        reason_code: '',
+        warning_needed: false,
+        consecutive_count: 0,
+        threshold: 3,
+        schedule_only_consecutive_count: 3,
+        schedule_only_threshold: 3,
+        schedule_only_notice_needed: true,
+        schedule_only_reason_code: 'schedule_only_streak_detected',
+      },
+    },
+  });
+
+  try {
+    runEdgeBoard();
+
+    const summary = harness.logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
+    })[0];
+    const scheduleOnlyNotice = harness.logs.filter(function (row) {
+      return row.row_type === 'ops' && row.stage === 'schedule_only_watchdog';
+    })[0];
+    const healthWarning = harness.logs.filter(function (row) {
+      return row.row_type === 'ops' && row.stage === 'run_health_guard';
+    })[0] || null;
+
+    assertEquals_('success', summary.status);
+    assertEquals_('odds_refresh_skipped_outside_window', summary.reason_code);
+    assertEquals_('notice', scheduleOnlyNotice.status);
+    assertEquals_(null, healthWarning);
+
+    const noticePayload = JSON.parse(scheduleOnlyNotice.message || '{}');
+    assertEquals_('low', noticePayload.notice_severity);
+    assertEquals_(true, noticePayload.expected_idle);
+    assertEquals_('outside_window', noticePayload.odds_window_context);
+    assertTrue_(String(noticePayload.message || '').indexOf('should not be treated as a pipeline failure') >= 0);
+  } finally {
+    harness.restore();
+  }
+}
+
 function createRunEdgeBoardTestHarness_(options) {
   const opts = options || {};
   const originalDateNow = Date.now;
@@ -1605,6 +1744,9 @@ function createRunEdgeBoardTestHarness_(options) {
       return { reason_code: '', warning_needed: false };
     };
     updateEmptyProductiveOutputState_ = function () {
+      if (opts.orchestrationScenario && opts.orchestrationScenario.productiveOutputState) {
+        return JSON.parse(JSON.stringify(opts.orchestrationScenario.productiveOutputState));
+      }
       return { reason_code: '', warning_needed: false, consecutive_count: 0, threshold: 3 };
     };
 
