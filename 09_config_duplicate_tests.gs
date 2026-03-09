@@ -220,3 +220,99 @@ function testPreflightConfigUniqueness_passesWhenUnique_() {
     SpreadsheetApp = originalSpreadsheetApp;
   }
 }
+
+function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_() {
+  const configSheet = createFakeConfigSheet_([
+    ['key', 'value'],
+    ['RUN_ENABLED', 'false'],
+    ['ODDS_SPORT_KEY', 'legacy_wta'],
+    ['PLAYER_STATS_API_BASE_URL', 'https://legacy.stats.test'],
+    ['PLAYER_STATS_API_KEY', 'legacy_key'],
+    ['PLAYER_STATS_SCRAPE_URLS', 'https://legacy.scrape.test'],
+    ['ODDS_SPORT_KEY', 'tennis_wta'],
+    ['PLAYER_STATS_API_BASE_URL', 'https://stats.test/api'],
+    ['PLAYER_STATS_API_KEY', 'fresh_key'],
+    ['PLAYER_STATS_SCRAPE_URLS', 'https://scrape-a.test,https://scrape-b.test'],
+  ]);
+
+  const originalSpreadsheetApp = SpreadsheetApp;
+  const originalEnsureTabsAndConfig = ensureTabsAndConfig_;
+  const originalBuildRunId = buildRunId_;
+  const originalTryLock = tryLock_;
+  const originalAppendLogRow = appendLogRow_;
+  const originalGetScriptLock = LockService.getScriptLock;
+  const originalGetScriptProperties = PropertiesService.getScriptProperties;
+
+  const logs = [];
+  let lockReleased = 0;
+
+  SpreadsheetApp = {
+    getActiveSpreadsheet: function () {
+      return {
+        getSheetByName: function (name) {
+          return name === 'Config' ? configSheet : null;
+        },
+      };
+    },
+  };
+  ensureTabsAndConfig_ = function () {};
+  buildRunId_ = function () { return 'repair-dedupe-run'; };
+  tryLock_ = function () { return true; };
+  appendLogRow_ = function (entry) { logs.push(entry); };
+  LockService.getScriptLock = function () {
+    return {
+      releaseLock: function () { lockReleased += 1; },
+    };
+  };
+  PropertiesService.getScriptProperties = function () {
+    return {
+      getProperty: function () { return '0'; },
+      setProperty: function () {},
+    };
+  };
+
+  try {
+    // Step 1: run repair once.
+    dedupeConfigSheet_(configSheet, {
+      precedence: 'last_wins',
+      preserve_row_order: true,
+      include_missing_defaults: false,
+      log_summary: false,
+    });
+
+    // Step 2: confirm watched keys are unique and keep last values.
+    const parsed = parseConfigRows_(configSheet.getDataRange().getValues(), {
+      mode: 'error',
+      context: 'post_repair_verify',
+    });
+    assertArrayEquals_([], parsed.duplicate_keys);
+    assertEquals_('tennis_wta', parsed.config.ODDS_SPORT_KEY);
+    assertEquals_('https://stats.test/api', parsed.config.PLAYER_STATS_API_BASE_URL);
+    assertEquals_('fresh_key', parsed.config.PLAYER_STATS_API_KEY);
+    assertEquals_('https://scrape-a.test,https://scrape-b.test', parsed.config.PLAYER_STATS_SCRAPE_URLS);
+
+    // Step 3: trigger runEdgeBoard again.
+    runEdgeBoard();
+
+    // Step 4: verify no duplicate-key preflight skip is logged.
+    const duplicatePreflightLogs = logs.filter(function (row) {
+      return row.reason_code === 'config_duplicate_keys_preflight';
+    });
+    assertEquals_(0, duplicatePreflightLogs.length);
+
+    // Step 5: verify pipeline progressed past preflight.
+    const summary = logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
+    })[0];
+    assertEquals_('run_disabled_skip', summary.reason_code);
+    assertEquals_(1, lockReleased);
+  } finally {
+    SpreadsheetApp = originalSpreadsheetApp;
+    ensureTabsAndConfig_ = originalEnsureTabsAndConfig;
+    buildRunId_ = originalBuildRunId;
+    tryLock_ = originalTryLock;
+    appendLogRow_ = originalAppendLogRow;
+    LockService.getScriptLock = originalGetScriptLock;
+    PropertiesService.getScriptProperties = originalGetScriptProperties;
+  }
+}
