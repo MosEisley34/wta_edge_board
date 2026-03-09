@@ -97,6 +97,7 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
       players_with_non_null_stats: completeness.players_with_non_null_stats,
       players_with_null_only_stats: completeness.players_with_null_only_stats,
       aggregate_reason_code: aggregateReasonCode,
+      selection_metadata: live.selection_metadata || null,
       last_success_at: new Date(nowMs).toISOString(),
       last_failure_reason: dataAvailable ? '' : String(aggregateReasonCode || 'player_stats_data_unavailable'),
     });
@@ -108,6 +109,7 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
       provider_available: true,
       api_credit_usage: Number(live.api_credit_usage || 0),
       api_call_count: Number(live.api_call_count || 0),
+      selection_metadata: live.selection_metadata || null,
     };
   }
 
@@ -117,6 +119,7 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
       api_call_count: Number(live.api_call_count || 0),
       scrape_call_count: Number(live.scrape_call_count || 0),
       provider_available: true,
+      selection_metadata: live.selection_metadata || null,
       last_success_at: String(stalePayload.last_success_at || ''),
       last_failure_reason: String(live.reason_code || ''),
     });
@@ -127,6 +130,7 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
       provider_available: true,
       api_credit_usage: Number(live.api_credit_usage || 0),
       api_call_count: Number(live.api_call_count || 0),
+      selection_metadata: live.selection_metadata || null,
     };
   }
 
@@ -140,6 +144,7 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
     api_call_count: Number(live.api_call_count || 0),
     scrape_call_count: Number(live.scrape_call_count || 0),
     provider_available: false,
+    selection_metadata: live.selection_metadata || null,
     last_failure_reason: String(live.reason_code || 'player_stats_provider_unavailable'),
   });
 
@@ -150,6 +155,7 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
     provider_available: false,
     api_credit_usage: Number(live.api_credit_usage || 0),
     api_call_count: Number(live.api_call_count || 0),
+    selection_metadata: live.selection_metadata || null,
   };
 }
 
@@ -202,6 +208,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       api_credit_usage: 0,
       api_call_count: totalApiCalls + Number(leadersSource.api_call_count || 0),
       scrape_call_count: 0,
+      selection_metadata: leadersSource.selection_metadata || null,
     };
   }
 
@@ -225,6 +232,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     api_credit_usage: 0,
     api_call_count: totalApiCalls + Number(leadersSource.api_call_count || 0) + Number(scraped.api_call_count || 0),
     scrape_call_count: Number(scraped.api_call_count || 0),
+    selection_metadata: leadersSource.selection_metadata || null,
   };
 }
 
@@ -232,6 +240,8 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
   const ttlMs = Math.max(1, Number(config.PLAYER_STATS_CACHE_TTL_MIN || 10)) * 60000;
   const forceRefresh = !!config.PLAYER_STATS_FORCE_REFRESH;
   const nowMs = Date.now();
+  const staleLeadersPayload = getStateJson_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD');
+  const staleLeadersCompleteness = summarizeTaLeadersPayloadCompleteness_(staleLeadersPayload, canonicalPlayers, asOfTime, config);
 
   if (!forceRefresh) {
     const cached = getCachedTaLeadersPayload_();
@@ -264,20 +274,34 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
   }, config);
 
   if (!pageFetch.ok) {
-    const stale = getStateJson_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD');
-    if (stale && Array.isArray(stale.rows) && stale.rows.length) {
+    if (staleLeadersCompleteness.has_rows && !staleLeadersCompleteness.is_null_only) {
       return {
         ok: true,
         reason_code: 'ta_matchmx_stale_fallback',
-        stats_by_player: normalizePlayerStatsResponse_(stale.rows, canonicalPlayers, {
-          as_of_time: asOfTime,
-          match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
-          recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
-        }),
+        stats_by_player: staleLeadersCompleteness.stats_by_player,
         api_call_count: Number(pageFetch.api_call_count || 0),
+        selection_metadata: {
+          source_selected: 'stale_payload',
+          selection_reason: 'fresh_fetch_failed',
+          stale_rows: staleLeadersCompleteness.row_count,
+          stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+          stale_null_only: staleLeadersCompleteness.is_null_only,
+        },
       };
     }
-    return { ok: false, reason_code: pageFetch.reason_code || 'ta_leaders_page_fetch_failed', stats_by_player: {}, api_call_count: Number(pageFetch.api_call_count || 0) };
+    return {
+      ok: false,
+      reason_code: pageFetch.reason_code || 'ta_leaders_page_fetch_failed',
+      stats_by_player: {},
+      api_call_count: Number(pageFetch.api_call_count || 0),
+      selection_metadata: {
+        source_selected: 'none',
+        selection_reason: 'fresh_fetch_failed_no_usable_stale',
+        stale_rows: staleLeadersCompleteness.row_count,
+        stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+        stale_null_only: staleLeadersCompleteness.is_null_only,
+      },
+    };
   }
 
   const pageText = String(pageFetch.response.getContentText() || '');
@@ -301,25 +325,74 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
 
   const totalCalls = Number(pageFetch.api_call_count || 0) + Number(jsFetch.api_call_count || 0);
   if (!jsFetch.ok) {
-    const stale = getStateJson_('PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD');
-    if (stale && Array.isArray(stale.rows) && stale.rows.length) {
+    if (staleLeadersCompleteness.has_rows && !staleLeadersCompleteness.is_null_only) {
       return {
         ok: true,
         reason_code: 'ta_matchmx_stale_fallback',
-        stats_by_player: normalizePlayerStatsResponse_(stale.rows, canonicalPlayers, {
-          as_of_time: asOfTime,
-          match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
-          recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
-        }),
+        stats_by_player: staleLeadersCompleteness.stats_by_player,
         api_call_count: totalCalls,
+        selection_metadata: {
+          source_selected: 'stale_payload',
+          selection_reason: 'fresh_js_fetch_failed',
+          stale_rows: staleLeadersCompleteness.row_count,
+          stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+          stale_null_only: staleLeadersCompleteness.is_null_only,
+        },
       };
     }
-    return { ok: false, reason_code: jsFetch.reason_code || 'ta_leaders_js_fetch_failed', stats_by_player: {}, api_call_count: totalCalls };
+    return {
+      ok: false,
+      reason_code: jsFetch.reason_code || 'ta_leaders_js_fetch_failed',
+      stats_by_player: {},
+      api_call_count: totalCalls,
+      selection_metadata: {
+        source_selected: 'none',
+        selection_reason: 'fresh_js_fetch_failed_no_usable_stale',
+        stale_rows: staleLeadersCompleteness.row_count,
+        stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+        stale_null_only: staleLeadersCompleteness.is_null_only,
+      },
+    };
   }
 
   const jsPayload = String(jsFetch.response.getContentText() || '');
   const structuredRows = extractMatchMxRows_(jsPayload);
   if (!structuredRows.length) {
+    if (staleLeadersCompleteness.has_rows && !staleLeadersCompleteness.is_null_only) {
+      return {
+        ok: true,
+        reason_code: 'ta_matchmx_stale_fallback',
+        stats_by_player: staleLeadersCompleteness.stats_by_player,
+        api_call_count: totalCalls,
+        selection_metadata: {
+          source_selected: 'stale_payload',
+          selection_reason: 'fresh_parse_failed',
+          stale_rows: staleLeadersCompleteness.row_count,
+          stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+          stale_null_only: staleLeadersCompleteness.is_null_only,
+        },
+      };
+    }
+    if (staleLeadersCompleteness.has_rows && staleLeadersCompleteness.is_null_only) {
+      emitNoUsableStatsPayloadAlert_(config, {
+        fresh_reason_code: 'ta_matchmx_parse_failed',
+        stale_rows: staleLeadersCompleteness.row_count,
+        stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+      });
+      return {
+        ok: false,
+        reason_code: 'no_usable_stats_payload',
+        stats_by_player: {},
+        api_call_count: totalCalls,
+        selection_metadata: {
+          source_selected: 'none',
+          selection_reason: 'fresh_parse_failed_stale_null_only',
+          stale_rows: staleLeadersCompleteness.row_count,
+          stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+          stale_null_only: true,
+        },
+      };
+    }
     return { ok: false, reason_code: 'ta_matchmx_parse_failed', stats_by_player: {}, api_call_count: totalCalls };
   }
 
@@ -329,15 +402,17 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
     recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
   });
   const parseDiagnostics = summarizeTaLeadersParseDiagnostics_(structuredRows, normalizedStatsByPlayer);
+  const coverage = evaluateTaLeadersParseCoverage_(parseDiagnostics, config);
   const hasCoverageMismatch = isTaLeadersCoverageMismatch_(parseDiagnostics);
   const coverageReasonCode = hasCoverageMismatch ? 'ta_parse_coverage_mismatch' : '';
   persistTaLeadersParseDiagnostics_(Object.assign({}, parseDiagnostics, {
     reason_code: coverageReasonCode || 'ta_matchmx_ok',
+    coverage: coverage,
     source: jsUrl,
     fetched_at: new Date().toISOString(),
   }));
 
-  if (hasCoverageMismatch) {
+  if (!coverage.exceeds_threshold && hasCoverageMismatch) {
     const cachedHealthy = getCachedTaLeadersPayload_();
     if (cachedHealthy && Array.isArray(cachedHealthy.rows) && cachedHealthy.rows.length) {
       const cachedHealthyStats = normalizePlayerStatsResponse_(cachedHealthy.rows, canonicalPlayers, {
@@ -390,12 +465,77 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
   }
 
   const statsByPlayer = normalizedStatsByPlayer;
+  const forceReplaceNullOnlyStale = coverage.exceeds_threshold && staleLeadersCompleteness.has_rows && staleLeadersCompleteness.is_null_only;
   return {
     ok: Object.keys(statsByPlayer).length > 0,
     reason_code: Object.keys(statsByPlayer).length > 0 ? 'ta_matchmx_ok' : 'ta_matchmx_parse_failed',
     stats_by_player: statsByPlayer,
     api_call_count: totalCalls,
+    selection_metadata: {
+      source_selected: 'fresh_payload',
+      selection_reason: forceReplaceNullOnlyStale ? 'fresh_healthy_overrode_null_only_stale' : (coverage.exceeds_threshold ? 'fresh_healthy_coverage' : 'fresh_default'),
+      fresh_rows: Number(parseDiagnostics.parsed_row_count || 0),
+      fresh_non_null_feature_total: Number(coverage.non_null_feature_total || 0),
+      fresh_coverage_threshold_rows: Number(coverage.row_threshold || 0),
+      fresh_coverage_threshold_non_null_features: Number(coverage.non_null_threshold || 0),
+      fresh_coverage_exceeds_threshold: coverage.exceeds_threshold,
+      stale_rows: staleLeadersCompleteness.row_count,
+      stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+      stale_null_only: staleLeadersCompleteness.is_null_only,
+      cache_replacement_forced: forceReplaceNullOnlyStale,
+    },
   };
+}
+
+function summarizeTaLeadersPayloadCompleteness_(payload, canonicalPlayers, asOfTime, config) {
+  const rows = payload && Array.isArray(payload.rows) ? payload.rows : [];
+  if (!rows.length) return { has_rows: false, row_count: 0, non_null_feature_total: 0, is_null_only: false, stats_by_player: {} };
+  const statsByPlayer = normalizePlayerStatsResponse_(rows, canonicalPlayers, {
+    as_of_time: asOfTime,
+    match_window_weeks: Number(config.PLAYER_STATS_MATCH_WINDOW_WEEKS || 52),
+    recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
+  });
+  const diagnostics = summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer);
+  const nonNullCounts = diagnostics.normalized_non_null_counts || {};
+  const nonNullFeatureTotal = Number(nonNullCounts.ranking || 0) + Number(nonNullCounts.hold_pct || 0) + Number(nonNullCounts.break_pct || 0);
+  return {
+    has_rows: true,
+    row_count: rows.length,
+    non_null_feature_total: nonNullFeatureTotal,
+    is_null_only: nonNullFeatureTotal <= 0,
+    stats_by_player: statsByPlayer,
+  };
+}
+
+function evaluateTaLeadersParseCoverage_(diagnostics, config) {
+  const info = diagnostics || {};
+  const nonNull = info.normalized_non_null_counts || {};
+  const nonNullFeatureTotal = Number(nonNull.ranking || 0) + Number(nonNull.hold_pct || 0) + Number(nonNull.break_pct || 0);
+  const rowThreshold = Math.max(1, Number((config && config.PLAYER_STATS_TA_PARSE_COVERAGE_MIN_ROWS) || 500));
+  const nonNullThreshold = Math.max(1, Number((config && config.PLAYER_STATS_TA_PARSE_COVERAGE_MIN_NON_NULL_FEATURES) || 4));
+  return {
+    parsed_row_count: Number(info.parsed_row_count || 0),
+    non_null_feature_total: nonNullFeatureTotal,
+    row_threshold: rowThreshold,
+    non_null_threshold: nonNullThreshold,
+    exceeds_threshold: Number(info.parsed_row_count || 0) >= rowThreshold && nonNullFeatureTotal >= nonNullThreshold,
+  };
+}
+
+function emitNoUsableStatsPayloadAlert_(config, payload) {
+  const alertPayload = Object.assign({
+    reason_code: 'no_usable_stats_payload',
+    source: 'ta_leaders',
+    detected_at: new Date().toISOString(),
+  }, payload || {});
+  logTaLeadersCacheDiagnostic_('no_usable_stats_payload', alertPayload);
+  if (typeof logDiagnosticEvent_ === 'function') {
+    try {
+      logDiagnosticEvent_(config || {}, 'no_usable_stats_payload', alertPayload, 1);
+    } catch (e) {
+      // Non-fatal alert path.
+    }
+  }
 }
 
 function extractLeadersJsUrl_(html, baseUrl) {
@@ -1023,6 +1163,7 @@ function persistPlayerStatsMeta_(payload, source, nowMs, playerCount, asOfTime, 
     provider_available: metrics.provider_available !== false,
     data_available: dataAvailable,
     aggregate_reason_code: aggregateReasonCode,
+    selection_metadata: metrics.selection_metadata || null,
     last_success_at: String(metrics.last_success_at || ''),
     last_failure_reason: String(metrics.last_failure_reason || (dataAvailable ? '' : aggregateReasonCode)),
   }));

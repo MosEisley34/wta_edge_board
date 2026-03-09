@@ -3978,13 +3978,15 @@ function testSetCachedTaLeadersPayload_overLimitStorageFailureIsNonFatal_() {
 
 function testFetchPlayerStatsFromLeadersSource_reasonCodes_() {
   const originalFetch = UrlFetchApp.fetch;
+  const originalGetStateJson = getStateJson_;
 
   try {
+    getStateJson_ = function () { return null; };
     UrlFetchApp.fetch = function () {
       throw new Error('network error');
     };
 
-    const fetchFailed = fetchPlayerStatsFromLeadersSource_(['Player One']);
+    const fetchFailed = fetchPlayerStatsFromLeadersSource_(['Player One'], {}, new Date('2025-03-01T00:00:00.000Z'));
     assertEquals_(false, fetchFailed.ok);
     assertEquals_('ta_leaders_page_fetch_failed', fetchFailed.reason_code);
 
@@ -4001,7 +4003,7 @@ function testFetchPlayerStatsFromLeadersSource_reasonCodes_() {
       };
     };
 
-    const missingJs = fetchPlayerStatsFromLeadersSource_(['Player One']);
+    const missingJs = fetchPlayerStatsFromLeadersSource_(['Player One'], {}, new Date('2025-03-01T00:00:00.000Z'));
     assertEquals_(false, missingJs.ok);
     assertEquals_('ta_leaders_js_url_missing', missingJs.reason_code);
 
@@ -4018,12 +4020,58 @@ function testFetchPlayerStatsFromLeadersSource_reasonCodes_() {
       };
     };
 
-    const ok = fetchPlayerStatsFromLeadersSource_(['Player One']);
+    const ok = fetchPlayerStatsFromLeadersSource_(['Player One'], {}, new Date('2025-03-01T00:00:00.000Z'));
     assertEquals_(true, ok.ok);
     assertEquals_('ta_matchmx_ok', ok.reason_code);
     assertEquals_(14, ok.stats_by_player['player one'].ranking);
   } finally {
     UrlFetchApp.fetch = originalFetch;
+    getStateJson_ = originalGetStateJson;
+  }
+}
+
+function testFetchPlayerStatsFromLeadersSource_escalatesWhenFreshParseFailsAndStaleNullOnly_() {
+  const originalFetch = UrlFetchApp.fetch;
+  const originalGetStateJson = getStateJson_;
+  const originalLogDiagnosticEvent = logDiagnosticEvent_;
+  const diagnosticEvents = [];
+
+  try {
+    getStateJson_ = function (key) {
+      if (key === 'PLAYER_STATS_TA_LEADERS_STALE_PAYLOAD') {
+        return {
+          rows: [{ player_name: 'Player One', score: '6-4 6-4', ranking: null, hold_pct: null, break_pct: null }],
+        };
+      }
+      return null;
+    };
+    logDiagnosticEvent_ = function (config, eventType, payload) {
+      diagnosticEvents.push({ event_type: eventType, payload: payload });
+    };
+    UrlFetchApp.fetch = function (url) {
+      if (url.indexOf('leaders_wta.cgi') >= 0) {
+        return {
+          getResponseCode: function () { return 200; },
+          getContentText: function () { return '<script src="/jsmatches/test_leadersource_wta.js"></script>'; },
+        };
+      }
+      return {
+        getResponseCode: function () { return 200; },
+        getContentText: function () { return 'var x = 1;'; },
+      };
+    };
+
+    const result = fetchPlayerStatsFromLeadersSource_(['Player One'], {}, new Date('2025-03-01T00:00:00.000Z'));
+
+    assertEquals_(false, result.ok);
+    assertEquals_('no_usable_stats_payload', result.reason_code);
+    assertEquals_('fresh_parse_failed_stale_null_only', result.selection_metadata.selection_reason);
+    assertEquals_(1, diagnosticEvents.length);
+    assertEquals_('no_usable_stats_payload', diagnosticEvents[0].event_type);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+    getStateJson_ = originalGetStateJson;
+    logDiagnosticEvent_ = originalLogDiagnosticEvent;
   }
 }
 
