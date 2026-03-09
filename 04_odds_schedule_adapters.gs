@@ -2522,8 +2522,10 @@ function parseHeaderNumber_(value) {
 
 function normalizeCreditHeaders_(headers) {
   const normalized = buildLowercaseHeaderMap_(headers || {});
-  const hasUsedHeader = Object.prototype.hasOwnProperty.call(normalized, 'x-requests-used')
-    || Object.prototype.hasOwnProperty.call(normalized, 'requests_used');
+  const hasUsedHeader = (
+    Object.prototype.hasOwnProperty.call(normalized, 'x-requests-used')
+    || Object.prototype.hasOwnProperty.call(normalized, 'requests_used')
+  );
   const hasRemainingHeader = Object.prototype.hasOwnProperty.call(normalized, 'x-requests-remaining')
     || Object.prototype.hasOwnProperty.call(normalized, 'requests_remaining');
   const hasLastHeader = Object.prototype.hasOwnProperty.call(normalized, 'x-requests-last')
