@@ -1161,9 +1161,11 @@ function parseTaH2hPageHtml_(html) {
   if (matrixHtml) {
     schemaVersion = 'ta_h2h_matrix_table_v1';
     rows = extractTaH2hMatrixRows_(matrixHtml);
+    if (!rows.length) rows = extractTaH2hStructuredMatrixRows_(matrixHtml);
     diagnostics.table_detected = true;
   } else {
     rows = extractTaH2hMatrixRows_(text);
+    if (!rows.length) rows = extractTaH2hStructuredMatrixRows_(text);
     diagnostics.table_detected = false;
   }
 
@@ -1178,8 +1180,8 @@ function parseTaH2hPageHtml_(html) {
     };
   }
 
-  const hasAnyAnchor = /<a\b/i.test(matrixHtml || text);
-  if (hasAnyAnchor) {
+  const hasAnyAnchorOrTable = /<a\b|<table\b/i.test(matrixHtml || text);
+  if (hasAnyAnchorOrTable) {
     return {
       ok: true,
       rows: [],
@@ -1248,6 +1250,88 @@ function extractTaH2hMatrixRows_(html) {
   }
 
   return rows;
+}
+
+function extractTaH2hStructuredMatrixRows_(html) {
+  const text = String(html || '');
+  const trRegex = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+  const rows = [];
+  const seen = {};
+  const tableRows = [];
+  let trMatch;
+
+  while ((trMatch = trRegex.exec(text)) !== null) {
+    tableRows.push(String(trMatch[1] || ''));
+  }
+  if (!tableRows.length) return rows;
+
+  const headerCells = extractTaH2hCells_(tableRows[0]);
+  const headerByIndex = {};
+  for (let i = 1; i < headerCells.length; i += 1) {
+    const parsedHeaderName = extractTaH2hNameFromCell_(headerCells[i]);
+    const plainHeader = stripHtmlTags_(headerCells[i]).replace(/\s+/g, ' ').trim();
+    if (!parsedHeaderName) continue;
+    if (/^vs\s*1\s*-\s*(5|10|15)$/i.test(plainHeader)) continue;
+    headerByIndex[i] = parsedHeaderName;
+  }
+
+  for (let rowIndex = 1; rowIndex < tableRows.length; rowIndex += 1) {
+    const cells = extractTaH2hCells_(tableRows[rowIndex]);
+    if (!cells.length) continue;
+
+    const rowPlayer = extractTaH2hNameFromCell_(cells[0]);
+    if (!rowPlayer) continue;
+
+    for (let colIndex = 1; colIndex < cells.length; colIndex += 1) {
+      const colPlayer = headerByIndex[colIndex] || '';
+      if (!colPlayer) continue;
+      if (rowPlayer === colPlayer) continue;
+
+      const score = extractH2hWinsFromText_(stripHtmlTags_(cells[colIndex]));
+      if (!score) continue;
+
+      const ordered = [rowPlayer, colPlayer].sort();
+      const dedupeKey = ordered[0] + '||' + ordered[1];
+      if (seen[dedupeKey]) continue;
+      seen[dedupeKey] = true;
+
+      rows.push({
+        player_a: rowPlayer,
+        player_b: colPlayer,
+        wins_a: score.wins_a,
+        wins_b: score.wins_b,
+        source_updated_date: '',
+      });
+    }
+  }
+
+  return rows;
+}
+
+function extractTaH2hCells_(rowHtml) {
+  const cellRegex = /<(th|td)\b[^>]*>[\s\S]*?<\/\1>/gi;
+  const cells = [];
+  let match;
+  while ((match = cellRegex.exec(String(rowHtml || ''))) !== null) {
+    cells.push(String(match[0] || ''));
+  }
+  return cells;
+}
+
+function extractTaH2hNameFromCell_(cellHtml) {
+  const text = String(cellHtml || '');
+  const anchorMatch = text.match(/<a\b[^>]*>([\s\S]*?)<\/a>/i);
+  const anchorTagMatch = text.match(/<a\b([^>]*)>/i);
+  const attrs = anchorTagMatch ? String(anchorTagMatch[1] || '') : '';
+  const titleMatch = attrs.match(/\btitle=["']([^"']+)["']/i);
+  const rawName = (titleMatch && titleMatch[1]) || (anchorMatch && stripHtmlTags_(anchorMatch[1])) || stripHtmlTags_(text);
+  return normalizeTaH2hMatrixName_(rawName);
+}
+
+function normalizeTaH2hMatrixName_(rawName) {
+  const clean = stripHtmlTags_(String(rawName || '')).replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  return canonicalizePlayerName_(clean, {});
 }
 
 function buildTaH2hHtmlDiagnostics_(html) {
