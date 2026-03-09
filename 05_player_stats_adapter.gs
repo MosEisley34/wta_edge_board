@@ -402,15 +402,47 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
     recent_match_count: Number(config.PLAYER_STATS_RECENT_MATCH_COUNT || 0),
   });
   const parseDiagnostics = summarizeTaLeadersParseDiagnostics_(structuredRows, normalizedStatsByPlayer);
+  const statsCompleteness = summarizePlayerStatsCompleteness_(normalizedStatsByPlayer);
   const coverage = evaluateTaLeadersParseCoverage_(parseDiagnostics, config);
   const hasCoverageMismatch = isTaLeadersCoverageMismatch_(parseDiagnostics);
   const coverageReasonCode = hasCoverageMismatch ? 'ta_parse_coverage_mismatch' : '';
   persistTaLeadersParseDiagnostics_(Object.assign({}, parseDiagnostics, {
     reason_code: coverageReasonCode || 'ta_matchmx_ok',
+    players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
     coverage: coverage,
     source: jsUrl,
     fetched_at: new Date().toISOString(),
   }));
+
+  const unusableRowsThreshold = Math.max(1, Number(config.PLAYER_STATS_TA_UNUSABLE_MIN_ROWS || 500));
+  if (Number(parseDiagnostics.parsed_row_count || 0) >= unusableRowsThreshold && Number(statsCompleteness.players_with_non_null_stats || 0) === 0) {
+    emitNoUsableStatsPayloadAlert_(config, {
+      fresh_reason_code: 'ta_matchmx_unusable_payload',
+      fresh_rows: Number(parseDiagnostics.parsed_row_count || 0),
+      parsed_player_key_count: Number(parseDiagnostics.parsed_player_key_count || 0),
+      fresh_non_null_feature_total: Number(coverage.non_null_feature_total || 0),
+      players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
+      stale_rows: staleLeadersCompleteness.row_count,
+      stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+    });
+    return {
+      ok: false,
+      reason_code: 'ta_matchmx_unusable_payload',
+      stats_by_player: {},
+      api_call_count: totalCalls,
+      selection_metadata: {
+        source_selected: 'none',
+        selection_reason: 'fresh_unusable_non_null_zero',
+        fresh_rows: Number(parseDiagnostics.parsed_row_count || 0),
+        parsed_player_key_count: Number(parseDiagnostics.parsed_player_key_count || 0),
+        fresh_non_null_feature_total: Number(coverage.non_null_feature_total || 0),
+        players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
+        stale_rows: staleLeadersCompleteness.row_count,
+        stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
+        stale_null_only: staleLeadersCompleteness.is_null_only,
+      },
+    };
+  }
 
   if (!coverage.exceeds_threshold && hasCoverageMismatch) {
     const cachedHealthy = getCachedTaLeadersPayload_();
@@ -694,10 +726,37 @@ function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer) {
   const parsedRows = Array.isArray(rows) ? rows : [];
   const normalizedMap = statsByPlayer && typeof statsByPlayer === 'object' ? statsByPlayer : {};
   const uniquePlayers = {};
+  const parsedPlayerKeys = {};
+  const sampleBefore = [];
+  const sampleAfter = [];
+  const sampleLimit = 8;
 
   parsedRows.forEach(function (row) {
-    const canonical = canonicalizePlayerName_((row && row.player_name) || '', {});
+    const rawPlayerName = String((row && row.player_name) || '').trim();
+    if (rawPlayerName) {
+      parsedPlayerKeys[rawPlayerName.toLowerCase()] = true;
+      if (sampleBefore.length < sampleLimit) sampleBefore.push(rawPlayerName);
+    }
+    const canonical = canonicalizePlayerName_(rawPlayerName, {});
     if (canonical) uniquePlayers[canonical] = true;
+    if (canonical && sampleAfter.length < sampleLimit) sampleAfter.push(canonical);
+  });
+
+  const requestedSamplesBefore = Object.keys(normalizedMap).slice(0, sampleLimit);
+  const requestedSamplesAfter = requestedSamplesBefore.map(function (name) {
+    return canonicalizePlayerName_(name, {});
+  });
+  const parsedCanonicalSet = uniquePlayers;
+  const requestedCanonicalSet = {};
+  requestedSamplesAfter.forEach(function (name) {
+    if (name) requestedCanonicalSet[name] = true;
+  });
+
+  const overlapCanonicalSamples = [];
+  Object.keys(parsedCanonicalSet).forEach(function (name) {
+    if (requestedCanonicalSet[name] && overlapCanonicalSamples.length < sampleLimit) {
+      overlapCanonicalSamples.push(name);
+    }
   });
 
   let rankingNonNull = 0;
@@ -713,7 +772,18 @@ function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer) {
 
   return {
     parsed_row_count: parsedRows.length,
+    parsed_player_key_count: Object.keys(parsedPlayerKeys).length,
     unique_players_parsed: Object.keys(uniquePlayers).length,
+    parsed_player_key_samples_before_normalization: sampleBefore,
+    parsed_player_key_samples_after_normalization: sampleAfter,
+    requested_player_key_samples_before_normalization: requestedSamplesBefore,
+    requested_player_key_samples_after_normalization: requestedSamplesAfter,
+    canonical_player_key_overlap_samples: overlapCanonicalSamples,
+    non_null_feature_count_by_field: {
+      ranking: rankingNonNull,
+      hold_pct: holdPctNonNull,
+      break_pct: breakPctNonNull,
+    },
     normalized_non_null_counts: {
       ranking: rankingNonNull,
       hold_pct: holdPctNonNull,
