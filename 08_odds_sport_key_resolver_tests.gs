@@ -2593,7 +2593,64 @@ function testFetchPlayerStatsBatch_providerAvailableButDataUnavailableMeta_() {
     assertEquals_(true, result.provider_available);
     assertEquals_(true, meta.provider_available);
     assertEquals_(false, meta.data_available);
-    assertEquals_('player_stats_api_success_empty', meta.last_failure_reason);
+    assertEquals_('provider_returned_empty', meta.last_failure_reason);
+    assertEquals_('provider_returned_empty', meta.aggregate_reason_code);
+    assertEquals_(0, meta.players_with_non_null_stats);
+    assertEquals_(0, meta.players_with_null_only_stats);
+  } finally {
+    fetchPlayerStatsFromProvider_ = originalFetchPlayerStatsFromProvider;
+    getCachedPlayerStatsPayload_ = originalGetCachedPlayerStatsPayload;
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+  }
+}
+
+
+function testFetchPlayerStatsBatch_providerReturnedNullOnlyFeaturesMeta_() {
+  const originalFetchPlayerStatsFromProvider = fetchPlayerStatsFromProvider_;
+  const originalGetCachedPlayerStatsPayload = getCachedPlayerStatsPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const writes = {};
+
+  fetchPlayerStatsFromProvider_ = function () {
+    return {
+      ok: true,
+      reason_code: 'player_stats_api_success',
+      stats_by_player: {
+        'player one': {
+          ranking: null,
+          recent_form: null,
+          surface_win_rate: null,
+          hold_pct: null,
+          break_pct: null,
+        },
+      },
+      api_credit_usage: 0,
+      api_call_count: 1,
+      scrape_call_count: 0,
+    };
+  };
+  getCachedPlayerStatsPayload_ = function () { return null; };
+  getStateJson_ = function () { return null; };
+  setStateValue_ = function (key, value) { writes[key] = value; };
+
+  try {
+    const result = fetchPlayerStatsBatch_({
+      PLAYER_STATS_CACHE_TTL_MIN: 10,
+      PLAYER_STATS_REFRESH_MIN: 5,
+      PLAYER_STATS_FORCE_REFRESH: false,
+    }, ['Player One'], new Date('2025-03-01T00:00:00.000Z'));
+
+    const meta = JSON.parse(writes.PLAYER_STATS_LAST_FETCH_META || '{}');
+    assertEquals_(true, result.provider_available);
+    assertEquals_('provider_returned_null_features', result.reason_code);
+    assertEquals_(false, meta.has_stats);
+    assertEquals_(false, meta.data_available);
+    assertEquals_(0, meta.players_with_non_null_stats);
+    assertEquals_(1, meta.players_with_null_only_stats);
+    assertEquals_('provider_returned_null_features', meta.aggregate_reason_code);
+    assertEquals_('provider_returned_null_features', meta.last_failure_reason);
   } finally {
     fetchPlayerStatsFromProvider_ = originalFetchPlayerStatsFromProvider;
     getCachedPlayerStatsPayload_ = originalGetCachedPlayerStatsPayload;
@@ -3318,6 +3375,9 @@ function testPersistPlayerStatsMeta_oversizedMetadataSummarizesWithReference_() 
     assertEquals_('cache_reference', staleParsed.storage_path);
     assertEquals_('fresh_api', metaParsed.source);
     assertEquals_(1200, metaParsed.player_count);
+    assertEquals_(1200, metaParsed.players_with_non_null_stats);
+    assertEquals_(0, metaParsed.players_with_null_only_stats);
+    assertEquals_(true, metaParsed.has_stats);
   } finally {
     upsertSheetRows_ = originalUpsert;
     Logger.log = originalLoggerLog;
