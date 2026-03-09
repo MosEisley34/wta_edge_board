@@ -278,17 +278,23 @@ function updateEmptyProductiveOutputState_(runId, metrics, config) {
   const previous = getStateJson_('EMPTY_PRODUCTIVE_OUTPUT_STATE') || {};
   const runtimeConfig = config || getConfig_();
   const threshold = Math.max(1, Number(runtimeConfig.EMPTY_PRODUCTIVE_OUTPUT_THRESHOLD || 3));
+  const scheduleOnlyThreshold = Math.max(1, Number(runtimeConfig.SCHEDULE_ONLY_STREAK_NOTICE_THRESHOLD || 3));
   const fetchedOdds = Number(metrics && metrics.fetched_odds || 0);
+  const fetchedSchedule = Number(metrics && metrics.fetched_schedule || 0);
   const signalsFound = Number(metrics && metrics.signals_found || 0);
   const isEmptyProductiveRun = fetchedOdds > 0 && signalsFound === 0;
+  const isScheduleOnlyRun = fetchedSchedule > 0 && fetchedOdds === 0;
   const now = new Date();
   const timestamps = localAndUtcTimestamps_(now);
 
   const next = {
     run_id: runId,
     consecutive_count: isEmptyProductiveRun ? (Number(previous.consecutive_count || 0) + 1) : 0,
+    schedule_only_consecutive_count: isScheduleOnlyRun ? (Number(previous.schedule_only_consecutive_count || 0) + 1) : 0,
     threshold: threshold,
+    schedule_only_threshold: scheduleOnlyThreshold,
     fetched_odds: fetchedOdds,
+    fetched_schedule: fetchedSchedule,
     signals_found: signalsFound,
     updated_at: timestamps.local,
     updated_at_utc: timestamps.utc,
@@ -303,7 +309,14 @@ function updateEmptyProductiveOutputState_(runId, metrics, config) {
     reason_code: (isEmptyProductiveRun && next.consecutive_count >= threshold)
       ? 'productive_output_empty_streak_detected'
       : '',
+    schedule_only_consecutive_count: next.schedule_only_consecutive_count,
+    schedule_only_threshold: scheduleOnlyThreshold,
+    schedule_only_notice_needed: isScheduleOnlyRun && next.schedule_only_consecutive_count >= scheduleOnlyThreshold,
+    schedule_only_reason_code: (isScheduleOnlyRun && next.schedule_only_consecutive_count >= scheduleOnlyThreshold)
+      ? 'schedule_only_streak_detected'
+      : '',
     fetched_odds: fetchedOdds,
+    fetched_schedule: fetchedSchedule,
     signals_found: signalsFound,
   };
 }
