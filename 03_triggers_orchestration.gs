@@ -342,7 +342,17 @@ function runEdgeBoard() {
     const playerStatsStage = stageFetchPlayerStats(runId, config, oddsStage.events, matchStage.rows);
     appendStageLog_(runId, playerStatsStage.summary);
 
-    const signalStage = stageGenerateSignals(runId, config, oddsStage.events, matchStage.rows, playerStatsStage.byOddsEventId);
+    const signalUpstreamGateReason = deriveSignalUpstreamGateReason_(oddsStage, matchStage);
+    const signalStage = stageGenerateSignals(
+      runId,
+      config,
+      oddsStage.events,
+      matchStage.rows,
+      playerStatsStage.byOddsEventId,
+      {
+        upstream_gate_reason: signalUpstreamGateReason,
+      }
+    );
     appendStageLog_(runId, signalStage.summary);
 
     const persistStage = stagePersist(runId, {
@@ -584,6 +594,22 @@ function runEdgeBoard() {
   } finally {
     lock.releaseLock();
   }
+}
+
+function deriveSignalUpstreamGateReason_(oddsStage, matchStage) {
+  const oddsCount = Number((oddsStage && oddsStage.events && oddsStage.events.length) || 0);
+  const matchedCount = Number((matchStage && matchStage.matchedCount) || 0);
+  const matchReasonCodes = (matchStage && matchStage.summary && matchStage.summary.reason_codes) || {};
+
+  if (oddsCount === 0 && Number(matchReasonCodes.schedule_seed_no_odds || 0) > 0) {
+    return 'schedule_seed_no_odds';
+  }
+
+  if (oddsCount > 0 && matchedCount === 0) {
+    return 'no_matched_events';
+  }
+
+  return '';
 }
 
 function evaluateRunHealthDiagnostics_(metrics) {

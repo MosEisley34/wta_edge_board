@@ -243,9 +243,10 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
   return roundNumber_((rankingDiff * 0.25) + (recentFormDiff * 0.3) + (surfaceDiff * 0.25) + (serveReturnDiff * 0.2), 4);
 }
 
-function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsByOddsEventId) {
+function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsByOddsEventId, stageMeta) {
   const start = Date.now();
   const nowMs = Date.now();
+  const upstreamGateReason = stageMeta && stageMeta.upstream_gate_reason ? String(stageMeta.upstream_gate_reason) : '';
   const rows = [];
   const sampledDecisions = [];
   const sampledDecisionLimit = Number(config.SIGNAL_DECISION_SAMPLE_LIMIT || 50);
@@ -499,6 +500,10 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   }));
 
   const signalDecisionsGeneratedAt = localAndUtcTimestamps_(new Date());
+  const zeroInputExplanatory = oddsEvents.length === 0 ? {
+    upstream_gate_reason: upstreamGateReason || 'unspecified',
+    has_upstream_gate_reason: !!upstreamGateReason,
+  } : null;
   const allDropReasons = Object.keys(reasonCounts)
     .filter(function (reasonCode) {
       return reasonCode !== 'sent';
@@ -516,11 +521,14 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     sampled_decisions: sampledDecisions,
     sampled_candidate_rows: sampledDecisions,
     input_count: oddsEvents.length,
+    upstream_gate_reason: upstreamGateReason,
+    explanatory_metadata: zeroInputExplanatory,
     processed_count: processedCandidateCount,
     all_drop_reasons: allDropReasons,
     sent_count: Number(reasonCounts.sent || 0),
     invariant: {
       sent_plus_drop_reasons_equals_input: Number(reasonCounts.sent || 0) + allDropReasons === oddsEvents.length,
+      zero_input_has_explanatory_metadata: oddsEvents.length > 0 || !!zeroInputExplanatory,
     },
   }));
 
@@ -528,12 +536,15 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     throw new Error('stageGenerateSignals invariant violated: sent + all_drop_reasons must equal input_count');
   }
 
+  const summaryReasonCodes = Object.assign({}, reasonCounts);
+  if (oddsEvents.length === 0) summaryReasonCodes.upstream_gate_reason = upstreamGateReason || 'unspecified';
+
   const summary = buildStageSummary_(runId, 'stageGenerateSignals', start, {
     input_count: oddsEvents.length,
     output_count: rows.length,
     provider: 'internal_signal_builder',
     api_credit_usage: 0,
-    reason_codes: reasonCounts,
+    reason_codes: summaryReasonCodes,
   });
 
   return {

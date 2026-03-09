@@ -1813,6 +1813,55 @@ function testStageGenerateSignals_recordsMixedUpstreamOutcomesAndDecisionSamples
   }
 }
 
+
+function testStageGenerateSignals_zeroInputIncludesUpstreamGateReason_() {
+  const originalSetSignalState = setSignalState_;
+  const originalGetSignalState = getSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const stateWrites = {};
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const config = {
+      MODEL_VERSION: 'test_model_v1', EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08, STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5, SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: '', SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+    const upstreamGateReason = deriveSignalUpstreamGateReason_(
+      { events: [], summary: { reason_codes: { odds_refresh_skipped_outside_window: 1 } } },
+      { matchedCount: 0, summary: { reason_codes: { schedule_seed_no_odds: 1 } } }
+    );
+
+    const result = stageGenerateSignals('run_zero_input', config, [], [], {}, {
+      upstream_gate_reason: upstreamGateReason,
+    });
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+
+    assertEquals_(0, result.rows.length);
+    assertEquals_(0, result.summary.input_count || 0);
+    assertEquals_('schedule_seed_no_odds', result.summary.reason_codes.upstream_gate_reason || '');
+    assertEquals_('schedule_seed_no_odds', decisionState.upstream_gate_reason || '');
+    assertEquals_('schedule_seed_no_odds', ((decisionState.explanatory_metadata || {}).upstream_gate_reason || ''));
+    assertEquals_(true, !!(((decisionState.invariant || {}).zero_input_has_explanatory_metadata)));
+  } finally {
+    setSignalState_ = originalSetSignalState;
+    getSignalState_ = originalGetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
 function testStageGenerateSignals_thresholdRejectionIncludedInDecisionDiagnostics_() {
   const originalDateNow = Date.now;
   const originalGetSignalState = getSignalState_;
