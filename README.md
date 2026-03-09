@@ -73,3 +73,31 @@ All logs continue to pass through secret redaction before being persisted.
 - `diagnostic_records_written`: optional diagnostic records written to `MATCH_MAP` that should not be interpreted as successful matches.
 
 `matched` and `unmatched` summary fields are derived from these explicit counters rather than total `MATCH_MAP` upsert rows, so a run can clearly show patterns like **`0 matched / N rejected`** while still persisting rejection rows for troubleshooting.
+
+## Runtime diagnostics (local)
+
+Use `scripts/scan_runtime_diagnostics.sh` to scan **only explicit runtime artifacts** (exported Run_Log/State CSV or JSON) for common diagnostic keys:
+
+- `provider_returned_null_features`
+- `ta_h2h_empty_table`
+- `missing_stats`
+- `schedule_enrichment_h2h_missing`
+
+The script intentionally fails fast when no supported artifacts are found in the paths you provide, so it does not fall back to scanning repo source files.
+
+### Usage
+
+```bash
+scripts/scan_runtime_diagnostics.sh <file-or-directory> [more paths...]
+```
+
+Examples:
+
+```bash
+scripts/scan_runtime_diagnostics.sh ./exports/Run_Log.csv
+scripts/scan_runtime_diagnostics.sh ./exports/run_logs ./exports/state_dump.json
+```
+
+Output includes:
+- grouped counts per diagnostic key,
+- top matching rows (file + row + preview) for quick local triage.
