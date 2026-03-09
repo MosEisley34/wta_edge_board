@@ -1078,10 +1078,18 @@ function fetchTaH2hDatasetFromSource_(config) {
 
   const status = Number(fetchResult.status_code || 0);
   const html = String(fetchResult.response.getContentText() || '');
-  const rows = extractTaH2hMatrixRows_(html);
-  if (!rows.length) return { ok: false, reason_code: 'ta_h2h_parse_failed', api_call_count: Number(fetchResult.api_call_count || 0) };
+  const parsed = parseTaH2hPageHtml_(html);
+  if (!parsed.ok) {
+    logTaH2hParseDiagnostic_('ta_h2h_parse_failed', parsed.diagnostics || {});
+    return { ok: false, reason_code: 'ta_h2h_parse_failed', api_call_count: Number(fetchResult.api_call_count || 0) };
+  }
 
-  const sourceUpdatedDate = extractTaH2hSourceUpdatedDate_(html);
+  if (parsed.empty_table) {
+    logTaH2hParseDiagnostic_('ta_h2h_empty_table', parsed.diagnostics || {});
+  }
+
+  const rows = parsed.rows || [];
+  const sourceUpdatedDate = parsed.source_updated_date || '';
   const byPair = {};
   rows.forEach(function (row) {
     row.source_updated_date = sourceUpdatedDate;
@@ -1095,11 +1103,83 @@ function fetchTaH2hDatasetFromSource_(config) {
       source: url,
       source_updated_date: sourceUpdatedDate,
       fetched_at: new Date().toISOString(),
+      schema_version: parsed.schema_version || '',
       rows: rows,
       by_pair: byPair,
     },
     api_call_count: Number(fetchResult.api_call_count || 0),
   };
+}
+
+function parseTaH2hPageHtml_(html) {
+  const text = String(html || '');
+  const diagnostics = buildTaH2hHtmlDiagnostics_(text);
+  diagnostics.parse_step_failed = '';
+
+  if (!text.trim()) {
+    diagnostics.parse_step_failed = 'html_empty';
+    return { ok: false, rows: [], source_updated_date: '', schema_version: 'unknown', empty_table: false, diagnostics: diagnostics };
+  }
+
+  const sourceUpdatedDate = extractTaH2hSourceUpdatedDate_(text);
+  const matrixHtml = extractTaH2hMatrixTableHtml_(text);
+  let schemaVersion = 'anchor_fallback_v1';
+  let rows = [];
+
+  if (matrixHtml) {
+    schemaVersion = 'ta_h2h_matrix_table_v1';
+    rows = extractTaH2hMatrixRows_(matrixHtml);
+    diagnostics.table_detected = true;
+  } else {
+    rows = extractTaH2hMatrixRows_(text);
+    diagnostics.table_detected = false;
+  }
+
+  if (rows.length) {
+    return {
+      ok: true,
+      rows: rows,
+      source_updated_date: sourceUpdatedDate,
+      schema_version: schemaVersion,
+      empty_table: false,
+      diagnostics: diagnostics,
+    };
+  }
+
+  const hasAnyAnchor = /<a\b/i.test(matrixHtml || text);
+  if (hasAnyAnchor) {
+    return {
+      ok: true,
+      rows: [],
+      source_updated_date: sourceUpdatedDate,
+      schema_version: schemaVersion,
+      empty_table: true,
+      diagnostics: diagnostics,
+    };
+  }
+
+  diagnostics.parse_step_failed = matrixHtml ? 'row_extraction_no_scores' : 'schema_detection_no_table_or_links';
+  return {
+    ok: false,
+    rows: [],
+    source_updated_date: sourceUpdatedDate,
+    schema_version: schemaVersion,
+    empty_table: false,
+    diagnostics: diagnostics,
+  };
+}
+
+function extractTaH2hMatrixTableHtml_(html) {
+  const text = String(html || '');
+  const tableRegex = /<table\b[^>]*>[\s\S]*?<\/table>/gi;
+  let match;
+  while ((match = tableRegex.exec(text)) !== null) {
+    const tableHtml = String(match[0] || '');
+    const hasPlayerParams = /player1=|player2=|playera=|playerb=/i.test(tableHtml);
+    const hasScorePattern = /\d+\s*[-–:]\s*\d+/i.test(stripHtmlTags_(tableHtml));
+    if (hasPlayerParams || hasScorePattern) return tableHtml;
+  }
+  return '';
 }
 
 function extractTaH2hMatrixRows_(html) {
@@ -1136,6 +1216,32 @@ function extractTaH2hMatrixRows_(html) {
   }
 
   return rows;
+}
+
+function buildTaH2hHtmlDiagnostics_(html) {
+  const text = String(html || '');
+  return {
+    html_signature: [
+      '<table=' + (/<table\b/i.test(text) ? '1' : '0'),
+      '<a=' + (/<a\b/i.test(text) ? '1' : '0'),
+      'player_params=' + (/player1=|player2=|playera=|playerb=|p1=|p2=/i.test(text) ? '1' : '0'),
+      'score_pattern=' + (/\d+\s*[-–:]\s*\d+/i.test(stripHtmlTags_(text)) ? '1' : '0'),
+    ].join(';'),
+    html_sha256: computeSha256Hex_(text),
+    html_length: text.length,
+    table_detected: false,
+  };
+}
+
+function computeSha256Hex_(text) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(text || ''));
+  const hex = [];
+  for (let i = 0; i < bytes.length; i += 1) {
+    const value = bytes[i] < 0 ? bytes[i] + 256 : bytes[i];
+    const part = value.toString(16);
+    hex.push(part.length === 1 ? '0' + part : part);
+  }
+  return hex.join('');
 }
 
 function extractTaH2hSourceUpdatedDate_(html) {
@@ -1420,6 +1526,20 @@ function logTaLeadersCacheDiagnostic_(eventName, payload) {
   Logger.log(JSON.stringify(entry));
   try {
     setStateValue_('PLAYER_STATS_TA_LEADERS_CACHE_DIAGNOSTIC', JSON.stringify(entry));
+  } catch (e) {
+    // Non-fatal best-effort diagnostics only.
+  }
+}
+
+function logTaH2hParseDiagnostic_(eventName, payload) {
+  const entry = {
+    event: eventName,
+    payload: payload || {},
+    logged_at: new Date().toISOString(),
+  };
+  Logger.log(JSON.stringify(entry));
+  try {
+    setStateValue_('PLAYER_STATS_TA_H2H_PARSE_DIAGNOSTIC', JSON.stringify(entry));
   } catch (e) {
     // Non-fatal best-effort diagnostics only.
   }
