@@ -654,6 +654,14 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         market_implied_probability: impliedProbability,
         commence_time: event.commence_time,
         odds_event_id: event.event_id,
+        rationale_context: {
+          edge_value: edgeValue,
+          model_probability: modelProbability,
+          market_implied_probability: impliedProbability,
+          stats_bundle: enrichedStatsBundle,
+          stats_confidence: resolvedStatsConfidence,
+          h2h_decision: lastH2hDecision,
+        },
       });
       notifyOutcome = sendResult.outcome;
       const notifyLoggedAt = localAndUtcTimestamps_(new Date());
@@ -919,6 +927,7 @@ function sendSignalNotification_(config, runId, signalHash, payload) {
 function formatSignalNotificationMessage_(runId, signalHash, payload) {
   const commenceLocal = toIso_(payload.commence_time);
   const commenceUtc = payload.commence_time ? new Date(payload.commence_time).toISOString() : '';
+  const rationaleParagraph = buildSignalRationaleParagraph_(payload.rationale_context || payload);
   return [
     '🎾 **WTA Edge Signal**',
     '📌 **' + payload.side + '** (' + payload.market + ') @ **' + payload.bookmaker + '**',
@@ -929,7 +938,128 @@ function formatSignalNotificationMessage_(runId, signalHash, payload) {
     '🌐 UTC: **' + commenceUtc + '**',
     '🆔 Run: `' + runId + '` | Event: `' + payload.odds_event_id + '`',
     '🧬 Signal: `' + signalHash + '`',
+    '',
+    '**Why this edge**',
+    rationaleParagraph,
   ].join('\n');
+}
+
+function buildSignalRationaleParagraph_(context) {
+  const base = context || {};
+  const edgeValue = toFiniteNumberOrNull_(base.edge_value);
+  const modelProbability = toFiniteNumberOrNull_(base.model_probability);
+  const marketProbability = toFiniteNumberOrNull_(base.market_implied_probability);
+  const statsConfidence = toFiniteNumberOrNull_(base.stats_confidence);
+  const statsBundle = base.stats_bundle || {};
+  const h2hDecision = base.h2h_decision || {};
+
+  const hasModelAndMarket = Number.isFinite(modelProbability) && Number.isFinite(marketProbability);
+  const edgePoints = Number.isFinite(edgeValue)
+    ? roundNumber_(edgeValue * 100, 2)
+    : (hasModelAndMarket ? roundNumber_((modelProbability - marketProbability) * 100, 2) : null);
+
+  const sentences = [];
+  if (hasModelAndMarket && Number.isFinite(edgePoints)) {
+    sentences.push(
+      'Model win probability is ' + roundNumber_(modelProbability * 100, 1) + '% versus market ' + roundNumber_(marketProbability * 100, 1)
+      + '%, creating a ' + (edgePoints >= 0 ? '+' : '') + edgePoints + 'pp gap.'
+    );
+  } else {
+    sentences.push('Model signals an edge over current market pricing after baseline tier and underdog adjustments.');
+  }
+
+  const contributorNotes = resolveTopPositiveFeatureContributors_(statsBundle, 2);
+  if (contributorNotes.length) {
+    sentences.push('Top stat drivers were ' + contributorNotes.join(' and ') + '.');
+  } else {
+    sentences.push('Player feature coverage is limited, so this leans more on market baseline inputs than granular stat edges.');
+  }
+
+  if (h2hDecision && h2hDecision.applied && Number(h2hDecision.bump) !== 0) {
+    const h2hBumpPoints = roundNumber_(Number(h2hDecision.bump) * 100, 2);
+    const sampleSize = Number(h2hDecision.sample_size || 0);
+    sentences.push('Head-to-head added ' + (h2hBumpPoints >= 0 ? '+' : '') + h2hBumpPoints + 'pp from a ' + sampleSize + '-match sample.');
+  }
+
+  const qualifier = resolveStatsConfidenceQualifier_(statsConfidence);
+  if (qualifier.label) {
+    sentences.push('Stats confidence is ' + qualifier.label + ' (' + qualifier.value + '), so weighting is ' + qualifier.weighting + '.');
+  } else {
+    sentences.push('Stats confidence is unavailable, so this explanation defaults to conservative weighting language.');
+  }
+
+  const bounded = sentences.join(' ');
+  return truncateForLog_(bounded, 680);
+}
+
+
+function toFiniteNumberOrNull_(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveStatsConfidenceQualifier_(confidence) {
+  if (!Number.isFinite(confidence)) {
+    return { label: '', value: '', weighting: '' };
+  }
+  const bounded = Math.max(0, Math.min(1, confidence));
+  if (bounded >= 0.8) {
+    return { label: 'high', value: roundNumber_(bounded, 2), weighting: 'fully engaged' };
+  }
+  if (bounded >= 0.45) {
+    return { label: 'moderate', value: roundNumber_(bounded, 2), weighting: 'partially scaled' };
+  }
+  return { label: 'limited', value: roundNumber_(bounded, 2), weighting: 'heavily scaled down' };
+}
+
+function resolveTopPositiveFeatureContributors_(statsBundle, maxContributors) {
+  if (!statsBundle || !statsBundle.player_a || !statsBundle.player_b) return [];
+  const playerA = statsBundle.player_a;
+  const playerB = statsBundle.player_b;
+  if (!playerA.has_stats || !playerB.has_stats) return [];
+
+  const playerAFeatures = playerA.features || {};
+  const playerBFeatures = playerB.features || {};
+  const confidence = Number.isFinite(Number(statsBundle.stats_confidence))
+    ? Math.max(0, Math.min(1, Number(statsBundle.stats_confidence)))
+    : 1;
+
+  const contributors = [
+    {
+      label: 'stronger ranking profile',
+      contribution: (((playerBFeatures.ranking || 0) - (playerAFeatures.ranking || 0)) / 300) * 0.2 * confidence,
+    },
+    {
+      label: 'better recent form',
+      contribution: ((playerAFeatures.recent_form || 0) - (playerBFeatures.recent_form || 0)) * 0.17 * confidence,
+    },
+    {
+      label: 'surface win-rate edge',
+      contribution: ((playerAFeatures.surface_win_rate || 0) - (playerBFeatures.surface_win_rate || 0)) * 0.14 * confidence,
+    },
+    {
+      label: 'serve/return pressure edge',
+      contribution: ((((playerAFeatures.hold_pct || 0) - (playerBFeatures.hold_pct || 0))
+        + ((playerAFeatures.break_pct || 0) - (playerBFeatures.break_pct || 0))) * 0.13) * confidence,
+    },
+    {
+      label: 'first-serve quality edge',
+      contribution: ((playerAFeatures.first_serve_points_won_pct || 0) - (playerBFeatures.first_serve_points_won_pct || 0)) * 0.07 * confidence,
+    },
+    {
+      label: 'second-serve resilience edge',
+      contribution: ((playerAFeatures.second_serve_points_won_pct || 0) - (playerBFeatures.second_serve_points_won_pct || 0)) * 0.06 * confidence,
+    },
+  ];
+
+  return contributors
+    .filter(function (item) { return item.contribution > 0.0001; })
+    .sort(function (left, right) { return right.contribution - left.contribution; })
+    .slice(0, Math.max(1, Number(maxContributors || 2)))
+    .map(function (item) {
+      return item.label + ' (+' + roundNumber_(item.contribution * 100, 2) + 'pp)';
+    });
 }
 
 

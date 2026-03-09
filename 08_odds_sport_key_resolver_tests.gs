@@ -546,6 +546,13 @@ function assertTrue_(condition, message) {
   }
 }
 
+
+function assertContains_(haystack, needle) {
+  if (String(haystack || '').indexOf(String(needle || '')) < 0) {
+    throw new Error('Assertion failed. Expected text to include "' + needle + '" but was: ' + haystack);
+  }
+}
+
 function assertDoesNotContain_(haystack, needle) {
   if (String(haystack || '').indexOf(String(needle || '')) >= 0) {
     throw new Error('Assertion failed. Expected text to exclude "' + needle + '" but was: ' + haystack);
@@ -2235,6 +2242,7 @@ function testStageGenerateSignals_staleGuardUsesProviderDerivedOddsUpdatedTime_(
   getSignalState_ = function () { return { sent_hashes: {} }; };
   setSignalState_ = function () {};
   setStateValue_ = function () {};
+  appendLogRow_ = function () {};
   localAndUtcTimestamps_ = function () {
     return {
       local: '2026-01-01T00:10:00-07:00',
@@ -2709,6 +2717,7 @@ function testStageGenerateSignals_richPlayerStatsInfluenceEdgeAndTier_() {
   getSignalState_ = function () { return { sent_hashes: {} }; };
   setSignalState_ = function () {};
   setStateValue_ = function () {};
+  appendLogRow_ = function () {};
   localAndUtcTimestamps_ = function () {
     return {
       local: '2026-01-01T00:00:00-07:00',
@@ -5053,3 +5062,161 @@ function testResolveOddsWindowForPipeline_tieredCadence_outsideWindowBehaviorUnc
     getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
   }
 }
+function testStageGenerateSignals_sentNotificationIncludesRationale_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const originalPostDiscordWebhook = postDiscordWebhook_;
+  const originalAppendLogRow = appendLogRow_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const captured = { payload: null };
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+  postDiscordWebhook_ = function (url, payload) {
+    captured.payload = payload;
+    return { outcome: 'sent', transport: 'discord_webhook', http_status: 204, response_body_preview: '', test_mode: false };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_rationale_signal',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 150,
+      h2h_p1_wins: 8,
+      h2h_p2_wins: 2,
+      h2h_total_matches: 10,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+    };
+    const match = {
+      odds_event_id: 'evt_rationale_signal',
+      schedule_event_id: 'sched_rationale_signal',
+      competition_tier: 'WTA_500',
+    };
+    const stats = {
+      evt_rationale_signal: {
+        stats_confidence: 0.86,
+        player_a: {
+          has_stats: true,
+          features: { ranking: 10, recent_form: 0.72, surface_win_rate: 0.66, hold_pct: 0.69, break_pct: 0.42 },
+        },
+        player_b: {
+          has_stats: true,
+          features: { ranking: 35, recent_form: 0.49, surface_win_rate: 0.51, hold_pct: 0.61, break_pct: 0.29 },
+        },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: true,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: 'https://discord.example/webhook',
+      H2H_BUMP_ENABLED: true,
+      H2H_MIN_MATCHES: 3,
+      H2H_MAX_ABS_BUMP: 0.05,
+    };
+
+    const result = stageGenerateSignals('run_rationale_signal', config, [event], [match], stats);
+
+    assertEquals_(1, result.rows.length);
+    assertEquals_('sent', result.rows[0].notification_outcome);
+    assertTrue_(!!captured.payload);
+    assertContains_(captured.payload.content, '**Why this edge**');
+    assertContains_(captured.payload.content, 'Model win probability');
+    assertContains_(captured.payload.content, 'Top stat drivers');
+    assertContains_(captured.payload.content, 'Head-to-head added');
+    assertContains_(captured.payload.content, 'Stats confidence is');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+    postDiscordWebhook_ = originalPostDiscordWebhook;
+    appendLogRow_ = originalAppendLogRow;
+  }
+}
+
+function testBuildSignalRationaleParagraph_fallbackGenericAndLengthBounded_() {
+  const generic = buildSignalRationaleParagraph_({
+    edge_value: null,
+    model_probability: null,
+    market_implied_probability: null,
+    stats_confidence: null,
+    stats_bundle: {
+      player_a: { has_stats: false, features: {} },
+      player_b: { has_stats: false, features: {} },
+      stats_confidence: 0,
+    },
+    h2h_decision: { applied: false, bump: 0 },
+  });
+
+  assertContains_(generic, 'Model signals an edge over current market pricing');
+  assertContains_(generic, 'Player feature coverage is limited');
+  assertContains_(generic, 'Stats confidence is unavailable');
+  assertTrue_(generic.length <= 680, 'generic rationale should be bounded');
+
+  const longRationale = buildSignalRationaleParagraph_({
+    edge_value: 0.1234,
+    model_probability: 0.7321,
+    market_implied_probability: 0.5333,
+    stats_confidence: 0.91,
+    stats_bundle: {
+      stats_confidence: 0.91,
+      player_a: {
+        has_stats: true,
+        features: {
+          ranking: 2,
+          recent_form: 0.9,
+          surface_win_rate: 0.88,
+          hold_pct: 0.82,
+          break_pct: 0.52,
+          first_serve_points_won_pct: 0.8,
+          second_serve_points_won_pct: 0.66,
+        },
+      },
+      player_b: {
+        has_stats: true,
+        features: {
+          ranking: 70,
+          recent_form: 0.4,
+          surface_win_rate: 0.45,
+          hold_pct: 0.55,
+          break_pct: 0.21,
+          first_serve_points_won_pct: 0.58,
+          second_serve_points_won_pct: 0.41,
+        },
+      },
+    },
+    h2h_decision: { applied: true, bump: 0.05, sample_size: 22 },
+  });
+
+  assertTrue_(longRationale.length <= 680, 'long rationale should be trimmed');
+}
+
+
