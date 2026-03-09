@@ -625,6 +625,7 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
         pipeline_failure: 0,
         unclassified: 0,
       },
+      h2h_lookup_debug_samples: [],
       failed: false,
       error: '',
     };
@@ -651,6 +652,7 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
           pipeline_failure: 0,
           unclassified: 0,
         },
+        h2h_lookup_debug_samples: [],
         failed: false,
         error: '',
       };
@@ -673,6 +675,7 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       pipeline_failure: 0,
       unclassified: 0,
     };
+    const h2hLookupDebugSamples = [];
     const h2hDatasetMeta = getStateJson_('PLAYER_STATS_H2H_LAST_FETCH_META') || {};
     const h2hSummaryReasonCode = resolveScheduleEnrichmentH2hReasonCode_(h2hDatasetMeta);
     const h2hImpact = buildScheduleEnrichmentH2hImpact_(h2hSummaryReasonCode, h2hDatasetMeta);
@@ -715,6 +718,17 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
         } else {
           h2hMissingClassification.unclassified += 1;
         }
+
+        const debugSample = h2hCoverage && h2hCoverage.reason_metadata && h2hCoverage.reason_metadata.debug_sample;
+        if (debugSample && h2hLookupDebugSamples.length < 3) {
+          h2hLookupDebugSamples.push({
+            event_id: merged.event_id || '',
+            players: [playerA, playerB],
+            reason_code: missingReasonCode,
+            requested_pair_keys: debugSample.requested_pair_keys || [],
+            nearest_available_keys: debugSample.nearest_available_keys || [],
+          });
+        }
       }
 
       return merged;
@@ -734,6 +748,7 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       h2h_pairs_found: h2hPairsFound,
       h2h_missing_reason_codes: h2hMissingReasonCodes,
       h2h_missing_classification: h2hMissingClassification,
+      h2h_lookup_debug_samples: h2hLookupDebugSamples,
       failed: false,
       error: '',
     };
@@ -756,6 +771,7 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
         pipeline_failure: 0,
         unclassified: 0,
       },
+      h2h_lookup_debug_samples: [],
       failed: true,
       error: String(error && error.message ? error.message : error),
     };

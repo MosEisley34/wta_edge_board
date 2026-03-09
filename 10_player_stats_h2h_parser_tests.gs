@@ -216,3 +216,83 @@ function testGetTaH2hCoverageForCanonicalPair_datasetUnavailableReturnsUpstreamF
     getStateJson_ = originalGetStateJson;
   }
 }
+
+function testParseTaH2hPageHtml_matrixRows_useCanonicalSchemaTypes_() {
+  const fixture = [
+    '<html><body>',
+    '<table class="h2h">',
+    '<tr><td><a href="/cgi-bin/h2h.cgi?player1=Iga+Swiatek&player2=Aryna+Sabalenka">2-1</a></td></tr>',
+    '</table>',
+    '</body></html>',
+  ].join('');
+
+  const parsed = parseTaH2hPageHtml_(fixture);
+  assertTrue_(parsed.ok === true, 'expected parse success');
+  assertEquals_(1, parsed.rows.length);
+
+  const row = parsed.rows[0] || {};
+  assertEquals_('iga swiatek', row.player_a);
+  assertEquals_('aryna sabalenka', row.player_b);
+  assertEquals_('number', typeof row.wins_a);
+  assertEquals_('number', typeof row.wins_b);
+  assertEquals_('', row.source_updated_date);
+}
+
+function testFetchTaH2hDatasetFromSource_normalizesRowsAndPairKeysForJoinLookup_() {
+  const originalSleep = sleepTennisAbstractRequestGap_;
+  const originalFetchWithRetry = playerStatsFetchWithRetry_;
+
+  sleepTennisAbstractRequestGap_ = function () {};
+  playerStatsFetchWithRetry_ = function () {
+    return {
+      ok: true,
+      status_code: 200,
+      api_call_count: 1,
+      response: {
+        getContentText: function () {
+          return '<html><body><table><tr><td><a href="/cgi-bin/h2h.cgi?player1=IGA+Swiatek&player2=Aryna+Sabalenka">2-1</a></td></tr></table></body></html>';
+        },
+      },
+    };
+  };
+
+  try {
+    const fetched = fetchTaH2hDatasetFromSource_({ PLAYER_STATS_TA_H2H_URL: 'https://example.test/h2h' });
+
+    assertTrue_(fetched.ok === true, 'expected source fetch to succeed');
+    assertEquals_(1, (fetched.payload.rows || []).length);
+    assertEquals_('iga swiatek', fetched.payload.rows[0].player_a);
+    assertEquals_('aryna sabalenka', fetched.payload.rows[0].player_b);
+    assertTrue_(!!fetched.payload.by_pair['iga swiatek||aryna sabalenka'], 'expected canonical pair lookup key');
+  } finally {
+    sleepTennisAbstractRequestGap_ = originalSleep;
+    playerStatsFetchWithRetry_ = originalFetchWithRetry;
+  }
+}
+
+function testGetTaH2hCoverageForCanonicalPair_noMatchReturnsDebugSampleNearestKeys_() {
+  const originalGetTaH2hDataset = getTaH2hDataset_;
+  getTaH2hDataset_ = function () {
+    return {
+      rows: [
+        { player_a: 'iga swiatek', player_b: 'aryna sabalenka', wins_a: 2, wins_b: 1 },
+        { player_a: 'coco gauff', player_b: 'aryna sabalenka', wins_a: 3, wins_b: 2 },
+      ],
+      by_pair: {
+        'iga swiatek||aryna sabalenka': { player_a: 'iga swiatek', player_b: 'aryna sabalenka', wins_a: 2, wins_b: 1 },
+        'coco gauff||aryna sabalenka': { player_a: 'coco gauff', player_b: 'aryna sabalenka', wins_a: 3, wins_b: 2 },
+      },
+    };
+  };
+
+  try {
+    const coverage = getTaH2hCoverageForCanonicalPair_({}, 'Iga Swiatek', 'Outside Player');
+    assertEquals_(null, coverage.row);
+    assertEquals_('h2h_player_not_in_matrix', coverage.reason_code);
+    assertEquals_('iga swiatek||outside player', coverage.reason_metadata.debug_sample.requested_pair_keys[0]);
+    assertEquals_('outside player||iga swiatek', coverage.reason_metadata.debug_sample.requested_pair_keys[1]);
+    assertTrue_((coverage.reason_metadata.debug_sample.nearest_available_keys || []).length > 0, 'expected nearest key samples');
+  } finally {
+    getTaH2hDataset_ = originalGetTaH2hDataset;
+  }
+}
