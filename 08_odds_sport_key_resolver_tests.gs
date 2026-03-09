@@ -3501,9 +3501,27 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hMixedCoverageTracksReason
       return { row: { wins_a: 2, wins_b: 1 }, reason_code: '' };
     }
     if (key === 'iga swiatek::coco gauff') {
-      return { row: null, reason_code: 'h2h_partial_coverage' };
+      return {
+        row: null,
+        reason_code: 'h2h_partial_coverage',
+        reason_metadata: {
+          debug_sample: {
+            requested_pair_keys: ['iga swiatek||coco gauff', 'coco gauff||iga swiatek'],
+            nearest_available_keys: ['iga swiatek||aryna sabalenka'],
+          },
+        },
+      };
     }
-    return { row: null, reason_code: 'h2h_player_not_in_matrix' };
+    return {
+      row: null,
+      reason_code: 'h2h_player_not_in_matrix',
+      reason_metadata: {
+        debug_sample: {
+          requested_pair_keys: ['iga swiatek||outside player', 'outside player||iga swiatek'],
+          nearest_available_keys: ['iga swiatek||aryna sabalenka', 'coco gauff||aryna sabalenka'],
+        },
+      },
+    };
   };
 
   try {
@@ -3536,6 +3554,12 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hMixedCoverageTracksReason
     assertEquals_(1, result.h2h_missing_classification.unclassified || 0);
     assertEquals_(2, result.events[0].h2h_p1_wins);
     assertEquals_(1, result.events[0].h2h_p2_wins);
+    assertEquals_(2, (result.h2h_lookup_debug_samples || []).length);
+    assertEquals_('h2h_partial_coverage', result.h2h_lookup_debug_samples[0].reason_code);
+    assertEquals_('iga swiatek||coco gauff', result.h2h_lookup_debug_samples[0].requested_pair_keys[0]);
+    assertEquals_('h2h_player_not_in_matrix', result.h2h_lookup_debug_samples[1].reason_code);
+    assertEquals_('iga swiatek||outside player', result.h2h_lookup_debug_samples[1].requested_pair_keys[0]);
+
   } finally {
     fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
     getStateJson_ = originalGetStateJson;

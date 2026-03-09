@@ -1484,6 +1484,7 @@ function getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) {
   const playersInMatrix = buildTaH2hPlayersInMatrixSet_(dataset);
   const hasA = playersInMatrix[canonicalA] === true;
   const hasB = playersInMatrix[canonicalB] === true;
+  const debugSample = buildTaH2hLookupDebugSample_(dataset, canonicalA, canonicalB);
   return {
     row: null,
     reason_code: hasA && hasB ? 'h2h_partial_coverage' : 'h2h_player_not_in_matrix',
@@ -1492,12 +1493,14 @@ function getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) {
           category: 'source_coverage',
           coverage_scope: 'top_15_matrix',
           expected_missing: true,
+          debug_sample: debugSample,
         }
       : {
           category: 'source_coverage',
           coverage_scope: 'top_15_matrix',
           expected_missing: true,
           limitation: 'player_not_in_top_15_matrix',
+          debug_sample: debugSample,
         },
   };
 }
@@ -1596,7 +1599,7 @@ function fetchTaH2hDatasetFromSource_(config) {
     logTaH2hParseDiagnostic_('ta_h2h_empty_table', parsed.diagnostics || {});
   }
 
-  const rows = parsed.rows || [];
+  const rows = normalizeTaH2hRowsForDataset_(parsed.rows || []);
   const sourceUpdatedDate = parsed.source_updated_date || '';
   const byPair = {};
   rows.forEach(function (row) {
@@ -1726,6 +1729,36 @@ function extractTaH2hMatrixRows_(html) {
   }
 
   return rows;
+}
+
+function normalizeTaH2hRowsForDataset_(rows) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const normalizedRows = [];
+  const seen = {};
+
+  for (let i = 0; i < sourceRows.length; i += 1) {
+    const row = sourceRows[i] || {};
+    const playerA = canonicalizePlayerName_(row.player_a, {});
+    const playerB = canonicalizePlayerName_(row.player_b, {});
+    const winsA = Number(row.wins_a);
+    const winsB = Number(row.wins_b);
+    if (!playerA || !playerB || playerA === playerB) continue;
+    if (!Number.isFinite(winsA) || !Number.isFinite(winsB) || winsA < 0 || winsB < 0) continue;
+
+    const pairKey = buildTaH2hPairKey_(playerA, playerB);
+    if (seen[pairKey]) continue;
+    seen[pairKey] = true;
+
+    normalizedRows.push({
+      player_a: playerA,
+      player_b: playerB,
+      wins_a: winsA,
+      wins_b: winsB,
+      source_updated_date: '',
+    });
+  }
+
+  return normalizedRows;
 }
 
 function extractTaH2hStructuredMatrixRows_(html) {
@@ -1891,6 +1924,41 @@ function decodeURIComponentSafe_(value) {
 
 function buildTaH2hPairKey_(playerA, playerB) {
   return [String(playerA || ''), String(playerB || '')].join('||');
+}
+
+function buildTaH2hLookupDebugSample_(dataset, canonicalA, canonicalB) {
+  const requestedDirectKey = buildTaH2hPairKey_(canonicalA, canonicalB);
+  const requestedReverseKey = buildTaH2hPairKey_(canonicalB, canonicalA);
+  const byPair = dataset && dataset.by_pair ? dataset.by_pair : {};
+  const keys = Object.keys(byPair);
+  if (!keys.length) {
+    return {
+      requested_pair_keys: [requestedDirectKey, requestedReverseKey],
+      nearest_available_keys: [],
+    };
+  }
+
+  const requestedPlayers = [canonicalA, canonicalB];
+  const scored = keys.map(function (key) {
+    const parts = String(key || '').split('||');
+    const keyPlayers = [String(parts[0] || ''), String(parts[1] || '')];
+    let overlap = 0;
+    requestedPlayers.forEach(function (player) {
+      if (keyPlayers.indexOf(player) >= 0) overlap += 1;
+    });
+    const score = overlap * 10 - Math.abs(key.length - requestedDirectKey.length) / 100;
+    return { key: key, score: score };
+  });
+
+  scored.sort(function (a, b) {
+    if (b.score !== a.score) return b.score - a.score;
+    return String(a.key || '').localeCompare(String(b.key || ''));
+  });
+
+  return {
+    requested_pair_keys: [requestedDirectKey, requestedReverseKey],
+    nearest_available_keys: scored.slice(0, 5).map(function (entry) { return entry.key; }),
+  };
 }
 
 function getCachedTaLeadersPayload_() {
