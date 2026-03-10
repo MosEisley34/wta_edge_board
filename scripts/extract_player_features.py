@@ -14,10 +14,10 @@ import json
 import os
 import re
 import sys
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 SCHEMA_COLUMNS = [
     "player_canonical_name",
@@ -34,6 +34,70 @@ SCHEMA_COLUMNS = [
     "reason_code",
     "reason_code_detail",
 ]
+
+
+CATALOG_PATH = Path(__file__).resolve().parents[1] / "config" / "probe_sources.tsv"
+
+
+def _load_selected_sources(catalog_path: Path) -> set[str]:
+    if not catalog_path.exists():
+        return set()
+
+    selected: set[str] = set()
+    for line in catalog_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        row = line.strip()
+        if not row or row.startswith("#"):
+            continue
+        source_key = row.split("\t", 1)[0].strip()
+        if source_key:
+            selected.add(source_key)
+    return selected
+
+
+def _is_html_payload(path: Path, text: str) -> bool:
+    suffix = path.suffix.lower()
+    if suffix in {".html", ".htm"}:
+        return True
+    if suffix == ".body":
+        marker = text[:4096].lower()
+        if "<html" in marker or "<!doctype html" in marker or "<head" in marker or "<body" in marker:
+            return True
+    return False
+
+
+def _detect_payload_mode(source: str, path: Path, text: str) -> str:
+    if "matchmx" in text:
+        return "matchmx"
+
+    json_sources = {
+        "itf",
+        "sofascore_events_live",
+        "sofascore_scheduled_events",
+        "sofascore_player_detail",
+        "sofascore_player_recent",
+        "sofascore_player_stats_overall",
+        "sofascore_player_stats_last52",
+    }
+    if source in json_sources:
+        return "json"
+
+    if source in {"tennisabstract_leaders", "tennisabstract_leadersource_wta"}:
+        return "matchmx"
+
+    if _is_html_payload(path, text):
+        return "html"
+
+    stripped = text.lstrip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        return "json"
+
+    if path.suffix.lower() == ".csv":
+        return "csv"
+
+    if source in {"tennisexplorer", "ta_h2h"}:
+        return "html"
+
+    return "unknown"
 
 
 @dataclass
@@ -227,21 +291,27 @@ def _parse_csv_rows(source: str, text: str, as_of: str) -> list[PlayerFeature]:
     return rows
 
 
-def _extract_from_file(path: Path) -> list[PlayerFeature]:
+def _extract_from_file(path: Path, selected_sources: set[str]) -> list[PlayerFeature]:
     source = path.stem.split(".")[0]
     as_of = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
-    text = path.read_text(encoding="utf-8", errors="ignore")
 
-    if "matchmx" in text:
+    if selected_sources and source not in selected_sources:
+        return []
+
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    payload_mode = _detect_payload_mode(source, path, text)
+
+    if payload_mode == "matchmx":
         rows = _parse_matchmx_rows(source, text, as_of)
         if rows:
             return rows
 
-    json_rows = _parse_json_rows(source, text, as_of)
-    if json_rows:
-        return json_rows
+    if payload_mode == "json":
+        json_rows = _parse_json_rows(source, text, as_of)
+        if json_rows:
+            return json_rows
 
-    if "," in text and "\n" in text:
+    if payload_mode == "csv":
         csv_rows = _parse_csv_rows(source, text, as_of)
         if csv_rows:
             return csv_rows
@@ -320,6 +390,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Output directory containing raw/ payloads (default: $OUT_DIR or ./tmp/source_probes)",
     )
+    parser.add_argument(
+        "--source-catalog",
+        default=str(CATALOG_PATH),
+        help="Path to source catalog used to determine selected providers",
+    )
     return parser.parse_args()
 
 
@@ -342,9 +417,11 @@ def main() -> int:
         print(f"ERROR: no payload files found in {raw_dir}", file=sys.stderr)
         return 1
 
+    selected_sources = _load_selected_sources(Path(args.source_catalog))
+
     extracted: list[PlayerFeature] = []
     for path in payload_files:
-        extracted.extend(_extract_from_file(path))
+        extracted.extend(_extract_from_file(path, selected_sources))
 
     normalized = _dedupe_rows(extracted)
     jsonl_path = normalized_dir / "player_features.jsonl"
