@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+from fnmatch import fnmatch
 
 from matchmx_parser import (
     MATCHMX_ROW_IDX,
@@ -59,6 +60,15 @@ def _load_selected_sources(catalog_path: Path) -> set[str]:
         if source_key:
             selected.add(source_key)
     return selected
+
+def _parse_allowlist(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _is_allowed_source(source: str, allowlist: list[str]) -> bool:
+    if not allowlist:
+        return True
+    return any(fnmatch(source, pattern) for pattern in allowlist)
 
 
 def _is_html_payload(path: Path, text: str) -> bool:
@@ -409,6 +419,11 @@ def parse_args() -> argparse.Namespace:
         default=str(CATALOG_PATH),
         help="Path to source catalog used to determine selected providers",
     )
+    parser.add_argument(
+        "--provider-allowlist",
+        default=os.environ.get("PROVIDER_ALLOWLIST", "tennisabstract_*,sofascore_*"),
+        help="Comma-separated wildcard patterns for providers to include during extraction",
+    )
     return parser.parse_args()
 
 
@@ -432,9 +447,14 @@ def main() -> int:
         return 1
 
     selected_sources = _load_selected_sources(Path(args.source_catalog))
+    provider_allowlist = _parse_allowlist(args.provider_allowlist)
 
     extracted: list[PlayerFeature] = []
     for path in payload_files:
+        source = path.stem.split(".")[0]
+        if not _is_allowed_source(source, provider_allowlist):
+            print(f"INFO: skipping provider '{source}' (not in provider allowlist: {args.provider_allowlist})")
+            continue
         extracted.extend(_extract_from_file(path, selected_sources))
 
     normalized = _dedupe_rows(extracted)

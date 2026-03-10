@@ -5,6 +5,7 @@ UA='Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'
 OUT_DIR="${1:-./tmp/source_probe}"
 CATALOG_PATH="${2:-./config/probe_sources.tsv}"
 SCHEDULED_PLAYERS_PATH="${3:-}"
+PROVIDER_ALLOWLIST="${PROVIDER_ALLOWLIST:-tennisabstract_*,sofascore_*}"
 
 RAW_DIR="$OUT_DIR/raw"
 LOGS_DIR="$OUT_DIR/logs"
@@ -19,6 +20,22 @@ trim() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "$value"
+}
+
+is_provider_allowed() {
+  local source_key="$1"
+  local allowlist_raw="$PROVIDER_ALLOWLIST"
+  local pattern=""
+
+  IFS=',' read -r -a patterns <<< "$allowlist_raw"
+  for pattern in "${patterns[@]}"; do
+    pattern="$(trim "$pattern")"
+    [[ -z "$pattern" ]] && continue
+    if [[ "$source_key" == $pattern ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 emit_entry() {
@@ -432,6 +449,11 @@ iterate_tsv_catalog() {
       continue
     fi
 
+    if ! is_provider_allowed "$source_key"; then
+      echo "INFO: skipping provider '$source_key' (not in PROVIDER_ALLOWLIST=$PROVIDER_ALLOWLIST)" >&2
+      continue
+    fi
+
     emit_entry "$source_key" "$url" "$expected_content_type" "$parser_hint" "$extra"
   done < "$CATALOG_PATH"
 }
@@ -471,6 +493,11 @@ PY
       echo "WARN: skipping malformed JSON entry for source '$source_key'" >&2
       continue
     }
+
+    if ! is_provider_allowed "$source_key"; then
+      echo "INFO: skipping provider '$source_key' (not in PROVIDER_ALLOWLIST=$PROVIDER_ALLOWLIST)" >&2
+      continue
+    fi
 
     emit_entry "$source_key" "$url" "$expected_content_type" "$parser_hint" "$expected_http_codes"
   done

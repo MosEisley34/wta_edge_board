@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+from fnmatch import fnmatch
 
 
 @dataclass(frozen=True)
@@ -341,7 +342,17 @@ def _missing_payload_result(source: str) -> ValidationResult:
     )
 
 
-def run_validations(out_dir: Path, mandatory_sources: set[str]) -> tuple[list[ValidationResult], bool]:
+def _parse_allowlist(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _is_allowed_source(source: str, allowlist: list[str]) -> bool:
+    if not allowlist:
+        return True
+    return any(fnmatch(source, pattern) for pattern in allowlist)
+
+
+def run_validations(out_dir: Path, mandatory_sources: set[str], provider_allowlist: list[str]) -> tuple[list[ValidationResult], bool, list[str]]:
     raw_dir = out_dir / "raw"
     validators: dict[str, Callable[[str, str, Path | None], ValidationResult]] = {
         "tennisabstract_leaders": validate_ta_leaders,
@@ -401,9 +412,14 @@ def run_validations(out_dir: Path, mandatory_sources: set[str]) -> tuple[list[Va
     }
 
     results: list[ValidationResult] = []
+    skipped_sources: list[str] = []
     all_mandatory_ready = True
 
     for source, validator in validators.items():
+        if not _is_allowed_source(source, provider_allowlist):
+            print(f"INFO: skipping provider '{source}' (not in provider allowlist: {','.join(provider_allowlist)})")
+            skipped_sources.append(source)
+            continue
         payload_path = _find_payload(raw_dir, source)
         if payload_path is None:
             result = _missing_payload_result(source)
@@ -415,7 +431,7 @@ def run_validations(out_dir: Path, mandatory_sources: set[str]) -> tuple[list[Va
         if source in mandatory_sources and not result.ready_for_extraction:
             all_mandatory_ready = False
 
-    return results, all_mandatory_ready
+    return results, all_mandatory_ready, skipped_sources
 
 
 def parse_args() -> argparse.Namespace:
@@ -433,7 +449,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mandatory-sources",
         default="tennisabstract_leaders,tennisabstract_leadersource_wta,ta_h2h,itf,tennisexplorer,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
-        help="Comma-separated source keys that must be extraction-ready for zero exit",
+        help="Comma-separated source keys that must be extraction-ready for zero exit (before allowlist filtering)",
+    )
+    parser.add_argument(
+        "--provider-allowlist",
+        default=os.environ.get("PROVIDER_ALLOWLIST", "tennisabstract_*,sofascore_*"),
+        help="Comma-separated wildcard patterns for providers to validate",
     )
     return parser.parse_args()
 
@@ -444,14 +465,24 @@ def main() -> int:
     if not args.out_dir and "OUT_DIR" in os.environ:
         out_dir = Path(os.environ["OUT_DIR"])
 
-    mandatory_sources = {item.strip() for item in args.mandatory_sources.split(",") if item.strip()}
-    results, all_mandatory_ready = run_validations(out_dir, mandatory_sources)
+    provider_allowlist = _parse_allowlist(args.provider_allowlist)
+    mandatory_sources_all = {item.strip() for item in args.mandatory_sources.split(",") if item.strip()}
+    mandatory_sources = {source for source in mandatory_sources_all if _is_allowed_source(source, provider_allowlist)}
+
+    excluded_mandatory = sorted(mandatory_sources_all - mandatory_sources)
+    for source in excluded_mandatory:
+        print(f"INFO: skipping mandatory provider '{source}' (not in provider allowlist: {args.provider_allowlist})")
+
+    results, all_mandatory_ready, skipped_sources = run_validations(out_dir, mandatory_sources, provider_allowlist)
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "out_dir": str(out_dir),
         "raw_dir": str(out_dir / "raw"),
+        "provider_allowlist": provider_allowlist,
         "mandatory_sources": sorted(mandatory_sources),
+        "mandatory_sources_excluded_by_allowlist": excluded_mandatory,
+        "skipped_sources": skipped_sources,
         "all_mandatory_ready": all_mandatory_ready,
         "results": [r.__dict__ for r in results],
     }
