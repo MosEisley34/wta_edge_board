@@ -372,6 +372,49 @@ function testBuildPlayerStatsMergeDiagnostics_reportsCoverageAndContributions_()
   assertEquals_(1, diagnostics.final.players_with_non_null_stats);
 }
 
+
+function testBuildPlayerStatsMergeDiagnostics_reportsEndpointLevelContributions_() {
+  const sourcePayloads = [
+    {
+      source_name: 'sofascore',
+      stats_by_player: {
+        'iga swiatek': { ranking: 1, recent_form: 0.7, hold_pct: 0.65 },
+      },
+      endpoint_feature_sources_by_player: {
+        'iga swiatek': {
+          ranking: 'https://api.sofascore.com/api/v1/player/11',
+          recent_form: 'https://api.sofascore.com/api/v1/player/11/events/last/0',
+          hold_pct: 'https://api.sofascore.com/api/v1/player/11/statistics/overall',
+        },
+      },
+    },
+  ];
+  const merged = {
+    'iga swiatek': { ranking: 1, recent_form: 0.7, hold_pct: 0.65, break_pct: null, surface_win_rate: null },
+  };
+
+  const diagnostics = buildPlayerStatsMergeDiagnostics_(sourcePayloads, merged, ['Iga Swiatek']);
+  assertEquals_(1, diagnostics.per_feature_endpoint_contributions.ranking.sofascore['https://api.sofascore.com/api/v1/player/11']);
+  assertEquals_(1, diagnostics.per_feature_endpoint_contributions.recent_form.sofascore['https://api.sofascore.com/api/v1/player/11/events/last/0']);
+}
+
+function testSofascoreEndpointContractValidation_rejects404AndMissingKeys_() {
+  assertTrue_(isSofascore404ErrorPayload_({ code: 404, message: 'Not Found' }) === true, '404 JSON error payload should fail');
+
+  const missingKeys = validateSofascoreEndpointContract_({ events: [] }, {
+    required_top_level_keys: ['player'],
+    expected_payload_shape: { player: 'object' },
+  });
+  assertTrue_(missingKeys.ok === false, 'missing keys should fail contract');
+
+  const shapeInvalid = validateSofascoreEndpointContract_({ player: [] }, {
+    required_top_level_keys: ['player'],
+    expected_payload_shape: { player: 'object' },
+  });
+  assertTrue_(shapeInvalid.ok === false, 'shape mismatch should fail contract');
+}
+
+
 function testSofascoreParticipantIndexAndFeatureExtraction_minimalCoverage_() {
   const indexed = indexSofascoreParticipants_({
     events: [

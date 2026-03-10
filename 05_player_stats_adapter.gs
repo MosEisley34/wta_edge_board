@@ -200,6 +200,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       sourcePayloads.push({
         source_name: sourceConfig.source_name,
         stats_by_player: result.stats_by_player,
+        endpoint_feature_sources_by_player: result.endpoint_feature_sources_by_player || {},
       });
     }
   });
@@ -239,7 +240,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       scrape_call_count: 0,
       selection_metadata: {
         source_count: 1,
-        merge_diagnostics: buildPlayerStatsMergeDiagnostics_([{ source_name: 'sofascore', stats_by_player: sofascoreFallback.stats_by_player || {} }], sofascoreFallback.stats_by_player || {}, players, [{
+        merge_diagnostics: buildPlayerStatsMergeDiagnostics_([{ source_name: 'sofascore', stats_by_player: sofascoreFallback.stats_by_player || {}, endpoint_feature_sources_by_player: sofascoreFallback.endpoint_feature_sources_by_player || {} }], sofascoreFallback.stats_by_player || {}, players, [{
           source_name: 'sofascore',
           attempted_endpoints: sofascoreFallback.attempted_endpoints || [],
           missing_fields: sofascoreFallback.missing_fields || [],
@@ -1625,13 +1626,17 @@ function extractItfRankingRows_(payload) {
 
 function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
   const baseUrl = 'https://api.sofascore.com/api/v1';
-  const eventUrls = [
-    baseUrl + '/sport/tennis/events/live',
-    baseUrl + '/sport/tennis/events/scheduled',
+  const eventEndpoints = [
+    { name: 'events_live', url: baseUrl + '/sport/tennis/events/live', contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } } },
+    { name: 'events_scheduled', url: baseUrl + '/sport/tennis/events/scheduled', contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } } },
   ];
   const asOfDate = asOfTime instanceof Date ? asOfTime : new Date(asOfTime || Date.now());
   const dateToken = Utilities.formatDate(asOfDate, 'UTC', 'yyyy-MM-dd');
-  eventUrls.push(baseUrl + '/sport/tennis/scheduled-events/' + dateToken);
+  eventEndpoints.push({
+    name: 'scheduled_events_by_date',
+    url: baseUrl + '/sport/tennis/scheduled-events/' + dateToken,
+    contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } },
+  });
 
   const participantIndex = {};
   const canonicalPlayers = dedupePlayerNames_(players || []);
@@ -1639,9 +1644,10 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
   let sourceUsed = 'sofascore_live';
   const attemptedEndpoints = [];
 
-  for (let i = 0; i < eventUrls.length; i += 1) {
-    const parsed = fetchSofascoreJson_(eventUrls[i], config);
-    attemptedEndpoints.push(eventUrls[i]);
+  for (let i = 0; i < eventEndpoints.length; i += 1) {
+    const endpoint = eventEndpoints[i];
+    const parsed = fetchSofascoreJson_(endpoint.url, config, endpoint.contract);
+    attemptedEndpoints.push(endpoint.url);
     apiCallCount += Number(parsed.api_call_count || 0);
     if (!parsed.ok) continue;
 
@@ -1654,6 +1660,7 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
   }
 
   const statsByPlayer = {};
+  const endpointFeatureSourcesByPlayer = {};
   canonicalPlayers.forEach(function (playerName) {
     const participant = participantIndex[playerName];
     if (!participant || !participant.id) {
@@ -1676,8 +1683,10 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
 
     const ranking = extractSofascoreRanking_(enrichment.detail_payload);
     const recentForm = extractSofascoreFormProxy_(enrichment.recent_payload, participant.id);
-    const holdPct = extractSofascoreHoldPct_(enrichment);
-    const breakPct = extractSofascoreBreakPct_(enrichment);
+    const holdMetric = extractSofascoreMetricWithEndpoint_(enrichment.payloads_with_endpoints, ['holdPct', 'holdPercentage', 'serviceGamesWonPct', 'service_game_win_pct']);
+    const breakMetric = extractSofascoreMetricWithEndpoint_(enrichment.payloads_with_endpoints, ['breakPct', 'breakPercentage', 'returnGamesWonPct', 'break_points_converted_pct']);
+    const holdPct = holdMetric.value;
+    const breakPct = breakMetric.value;
     const rankingOnly = ranking !== null && holdPct === null && breakPct === null;
     const nonNullCore = [ranking, recentForm, holdPct, breakPct].filter(function (v) { return v !== null && v !== undefined; }).length;
 
@@ -1693,6 +1702,13 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
       fallback_mode: rankingOnly ? 'ranking_only' : (nonNullCore > 0 ? 'limited_features' : 'detail_unavailable'),
       has_stats: nonNullCore > 0 || rankingOnly,
     };
+
+    endpointFeatureSourcesByPlayer[playerName] = {
+      ranking: ranking !== null && ranking !== undefined ? enrichment.detail_endpoint : null,
+      recent_form: recentForm !== null && recentForm !== undefined ? enrichment.recent_endpoint : null,
+      hold_pct: holdPct !== null && holdPct !== undefined ? holdMetric.endpoint : null,
+      break_pct: breakPct !== null && breakPct !== undefined ? breakMetric.endpoint : null,
+    };
   });
 
   const missingCore = summarizeMissingCoreFields_(statsByPlayer, canonicalPlayers);
@@ -1701,6 +1717,7 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
     ok: true,
     reason_code: 'player_stats_sofascore_success',
     stats_by_player: statsByPlayer,
+    endpoint_feature_sources_by_player: endpointFeatureSourcesByPlayer,
     api_call_count: apiCallCount,
     source_name: 'sofascore',
     attempted_endpoints: dedupeStringList_(attemptedEndpoints),
@@ -1712,23 +1729,30 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
 function fetchSofascorePlayerEnrichment_(playerId, config) {
   const pid = encodeURIComponent(String(playerId || ''));
   const endpoints = [
-    'https://api.sofascore.com/api/v1/player/' + pid,
-    'https://api.sofascore.com/api/v1/player/' + pid + '/events/last/0',
-    'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/overall',
-    'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/last/52',
+    { name: 'player_detail', url: 'https://api.sofascore.com/api/v1/player/' + pid, contract: { required_top_level_keys: ['player'], expected_payload_shape: { player: 'object' } } },
+    { name: 'player_recent_events', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/events/last/0', contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } } },
+    { name: 'player_stats_overall', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/overall', contract: { required_top_level_keys: ['statistics'], expected_payload_shape: { statistics: 'object_or_array' } } },
+    { name: 'player_stats_last_52', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/last/52', contract: { required_top_level_keys: ['statistics'], expected_payload_shape: { statistics: 'object_or_array' } } },
   ];
 
-  const detail = fetchSofascoreJson_(endpoints[0], config);
-  const recent = fetchSofascoreJson_(endpoints[1], config);
-  const statsOverall = fetchSofascoreJson_(endpoints[2], config);
-  const statsLast52 = fetchSofascoreJson_(endpoints[3], config);
+  const detail = fetchSofascoreJson_(endpoints[0].url, config, endpoints[0].contract);
+  const recent = fetchSofascoreJson_(endpoints[1].url, config, endpoints[1].contract);
+  const statsOverall = fetchSofascoreJson_(endpoints[2].url, config, endpoints[2].contract);
+  const statsLast52 = fetchSofascoreJson_(endpoints[3].url, config, endpoints[3].contract);
 
   return {
     detail_payload: detail.payload,
     recent_payload: recent.payload,
     stats_payloads: [statsOverall.payload, statsLast52.payload],
+    payloads_with_endpoints: [
+      { endpoint: endpoints[0].url, payload: detail.payload },
+      { endpoint: endpoints[2].url, payload: statsOverall.payload },
+      { endpoint: endpoints[3].url, payload: statsLast52.payload },
+    ],
+    detail_endpoint: endpoints[0].url,
+    recent_endpoint: endpoints[1].url,
     api_call_count: Number(detail.api_call_count || 0) + Number(recent.api_call_count || 0) + Number(statsOverall.api_call_count || 0) + Number(statsLast52.api_call_count || 0),
-    attempted_endpoints: endpoints,
+    attempted_endpoints: endpoints.map(function (entry) { return entry.url; }),
   };
 }
 
@@ -1741,23 +1765,113 @@ function fetchSofascoreRecentForm_(playerId, config) {
 }
 
 function extractSofascoreHoldPct_(enrichment) {
-  const payloads = [enrichment && enrichment.detail_payload].concat((enrichment && enrichment.stats_payloads) || []);
-  return extractSofascoreMetric_(payloads, ['holdPct', 'holdPercentage', 'serviceGamesWonPct', 'service_game_win_pct']);
+  return extractSofascoreMetricWithEndpoint_((enrichment && enrichment.payloads_with_endpoints) || [], ['holdPct', 'holdPercentage', 'serviceGamesWonPct', 'service_game_win_pct']).value;
 }
 
 function extractSofascoreBreakPct_(enrichment) {
-  const payloads = [enrichment && enrichment.detail_payload].concat((enrichment && enrichment.stats_payloads) || []);
-  return extractSofascoreMetric_(payloads, ['breakPct', 'breakPercentage', 'returnGamesWonPct', 'break_points_converted_pct']);
+  return extractSofascoreMetricWithEndpoint_((enrichment && enrichment.payloads_with_endpoints) || [], ['breakPct', 'breakPercentage', 'returnGamesWonPct', 'break_points_converted_pct']).value;
 }
 
-function extractSofascoreMetric_(payloads, keys) {
-  for (let i = 0; i < (payloads || []).length; i += 1) {
-    const value = deepFindMetricValue_(payloads[i], keys || []);
+function extractSofascoreMetricWithEndpoint_(payloadsWithEndpoints, keys) {
+  for (let i = 0; i < (payloadsWithEndpoints || []).length; i += 1) {
+    const entry = payloadsWithEndpoints[i] || {};
+    const value = deepFindMetricValue_(entry.payload, keys || []);
     const normalized = normalizeRateMetric_(value);
-    if (normalized !== null && normalized !== undefined) return normalized;
+    if (normalized !== null && normalized !== undefined) return { value: normalized, endpoint: entry.endpoint || null };
   }
-  return null;
+  return { value: null, endpoint: null };
 }
+
+function fetchSofascoreJson_(url, config, contract) {
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': String(config.PLAYER_STATS_FETCH_USER_AGENT || 'Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'),
+  };
+  let response;
+  try {
+    response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      muteHttpExceptions: true,
+      headers: headers,
+      followRedirects: true,
+      validateHttpsCertificates: true,
+    });
+  } catch (e) {
+    return { ok: false, reason_code: 'sofascore_transport_error', payload: null, api_call_count: 1 };
+  }
+
+  const status = Number(response.getResponseCode() || 0);
+  if (status < 200 || status >= 300) {
+    return { ok: false, reason_code: 'sofascore_http_' + status, payload: null, api_call_count: 1 };
+  }
+
+  let payload = null;
+  try {
+    payload = JSON.parse(response.getContentText() || '{}');
+  } catch (e) {
+    return { ok: false, reason_code: 'sofascore_parse_error', payload: null, api_call_count: 1 };
+  }
+
+  if (isSofascore404ErrorPayload_(payload)) {
+    return { ok: false, reason_code: 'sofascore_contract_404_error_payload', payload: null, api_call_count: 1 };
+  }
+
+  const contractResult = validateSofascoreEndpointContract_(payload, contract);
+  if (!contractResult.ok) {
+    return { ok: false, reason_code: contractResult.reason_code, payload: null, api_call_count: 1, missing_keys: contractResult.missing_keys || [] };
+  }
+
+  return {
+    ok: true,
+    reason_code: 'sofascore_ok',
+    payload: payload,
+    api_call_count: 1,
+  };
+}
+
+function isSofascore404ErrorPayload_(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const stack = [payload];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    const code = Number(node.code || node.status || node.statusCode || node.httpStatus || 0);
+    const message = String(node.message || node.error || node.description || '').toLowerCase();
+    if (code === 404 && (message.indexOf('not found') >= 0 || message.length > 0)) return true;
+    const keys = Object.keys(node);
+    for (let i = 0; i < keys.length; i += 1) stack.push(node[keys[i]]);
+  }
+  return false;
+}
+
+function validateSofascoreEndpointContract_(payload, contract) {
+  const currentContract = contract || {};
+  const requiredKeys = currentContract.required_top_level_keys || [];
+  const missingKeys = [];
+  for (let i = 0; i < requiredKeys.length; i += 1) {
+    const key = requiredKeys[i];
+    if (!payload || typeof payload !== 'object' || !Object.prototype.hasOwnProperty.call(payload, key)) missingKeys.push(key);
+  }
+  if (missingKeys.length) {
+    return { ok: false, reason_code: 'sofascore_contract_missing_keys', missing_keys: missingKeys };
+  }
+
+  const expectedShape = currentContract.expected_payload_shape || {};
+  const shapeKeys = Object.keys(expectedShape);
+  for (let i = 0; i < shapeKeys.length; i += 1) {
+    const key = shapeKeys[i];
+    const typeExpectation = String(expectedShape[key] || '');
+    const value = payload ? payload[key] : undefined;
+    const isArray = Array.isArray(value);
+    const isObject = !!value && typeof value === 'object' && !isArray;
+    if (typeExpectation === 'array' && !isArray) return { ok: false, reason_code: 'sofascore_contract_shape_invalid', missing_keys: [] };
+    if (typeExpectation === 'object' && !isObject) return { ok: false, reason_code: 'sofascore_contract_shape_invalid', missing_keys: [] };
+    if (typeExpectation === 'object_or_array' && !isObject && !isArray) return { ok: false, reason_code: 'sofascore_contract_shape_invalid', missing_keys: [] };
+  }
+
+  return { ok: true, reason_code: 'sofascore_contract_ok', missing_keys: [] };
+}
+
 
 function deepFindMetricValue_(node, keys) {
   const targetKeys = (keys || []).map(function (k) { return String(k || '').toLowerCase(); });
@@ -1792,41 +1906,6 @@ function dedupeStringList_(list) {
     out.push(token);
   });
   return out;
-}
-
-function fetchSofascoreJson_(url, config) {
-  const headers = {
-    Accept: 'application/json',
-    'User-Agent': String(config.PLAYER_STATS_FETCH_USER_AGENT || 'Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'),
-  };
-  let response;
-  try {
-    response = UrlFetchApp.fetch(url, {
-      method: 'get',
-      muteHttpExceptions: true,
-      headers: headers,
-      followRedirects: true,
-      validateHttpsCertificates: true,
-    });
-  } catch (e) {
-    return { ok: false, reason_code: 'sofascore_transport_error', payload: null, api_call_count: 1 };
-  }
-
-  const status = Number(response.getResponseCode() || 0);
-  if (status < 200 || status >= 300) {
-    return { ok: false, reason_code: 'sofascore_http_' + status, payload: null, api_call_count: 1 };
-  }
-
-  try {
-    return {
-      ok: true,
-      reason_code: 'sofascore_ok',
-      payload: JSON.parse(response.getContentText() || '{}'),
-      api_call_count: 1,
-    };
-  } catch (e) {
-    return { ok: false, reason_code: 'sofascore_parse_error', payload: null, api_call_count: 1 };
-  }
 }
 
 function indexSofascoreParticipants_(payload, index) {
@@ -2047,7 +2126,11 @@ function buildPlayerStatsMergeDiagnostics_(sourcePayloads, mergedStatsByPlayer, 
   const players = dedupePlayerNames_(canonicalPlayers || []);
   const perSourcePlayersParsed = {};
   const perFeatureContributions = {};
-  PLAYER_STATS_CANONICAL_FEATURES.forEach(function (feature) { perFeatureContributions[feature] = {}; });
+  const perFeatureEndpointContributions = {};
+  PLAYER_STATS_CANONICAL_FEATURES.forEach(function (feature) {
+    perFeatureContributions[feature] = {};
+    perFeatureEndpointContributions[feature] = {};
+  });
 
   (sourcePayloads || []).forEach(function (entry) {
     const sourceName = canonicalizeStatsProviderName_(entry && entry.source_name);
@@ -2078,6 +2161,23 @@ function buildPlayerStatsMergeDiagnostics_(sourcePayloads, mergedStatsByPlayer, 
       const featureMap = perFeatureContributions[feature] || {};
       featureMap[contributor] = Number(featureMap[contributor] || 0) + 1;
       perFeatureContributions[feature] = featureMap;
+
+      const endpointMapBySource = perFeatureEndpointContributions[feature] || {};
+      const endpointSourceMap = endpointMapBySource[contributor] || {};
+      let endpointContributor = 'unknown_endpoint';
+      for (let j = 0; j < (sourcePayloads || []).length; j += 1) {
+        const candidate = sourcePayloads[j] || {};
+        if (canonicalizeStatsProviderName_(candidate.source_name) !== contributor) continue;
+        const endpointByPlayer = candidate.endpoint_feature_sources_by_player || {};
+        const endpointRow = endpointByPlayer[player] || {};
+        if (endpointRow[feature]) {
+          endpointContributor = String(endpointRow[feature]);
+          break;
+        }
+      }
+      endpointSourceMap[endpointContributor] = Number(endpointSourceMap[endpointContributor] || 0) + 1;
+      endpointMapBySource[contributor] = endpointSourceMap;
+      perFeatureEndpointContributions[feature] = endpointMapBySource;
     });
   });
 
@@ -2085,6 +2185,7 @@ function buildPlayerStatsMergeDiagnostics_(sourcePayloads, mergedStatsByPlayer, 
   const diagnostics = {
     per_source_players_parsed: perSourcePlayersParsed,
     per_feature_non_null_contributions: perFeatureContributions,
+    per_feature_endpoint_contributions: perFeatureEndpointContributions,
     final: finalSummary,
   };
 
