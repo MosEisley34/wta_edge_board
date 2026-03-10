@@ -42,6 +42,12 @@ def _load_json(path: Path) -> object | None:
         return None
 
 
+def _load_json_if_exists(path: Path) -> object | None:
+    if not path.exists():
+        return None
+    return _load_json(path)
+
+
 def _find_payload(raw_dir: Path, source: str) -> Path | None:
     preferred = raw_dir / f"{source}.body"
     if preferred.exists():
@@ -445,6 +451,59 @@ def run_validations(out_dir: Path, mandatory_sources: set[str], provider_allowli
     return results, all_mandatory_ready, skipped_sources
 
 
+
+def _has_valid_tennis_player_prerequisite(out_dir: Path) -> tuple[bool, str]:
+    payload_path = _find_payload(out_dir / "raw", "sofascore_player_detail")
+    payload = _load_json(payload_path) if payload_path else None
+    if not isinstance(payload, dict):
+        return False, "player_detail_payload_unavailable"
+
+    player = payload.get("player")
+    if not isinstance(player, dict):
+        return False, "player_detail_missing_player_object"
+
+    sport = player.get("sport")
+    sport_slug = ""
+    if isinstance(sport, dict):
+        sport_slug = str(sport.get("slug", "")).strip().lower()
+    if sport_slug != "tennis":
+        return False, "player_detail_not_tennis"
+
+    player_id = player.get("id")
+    if not (isinstance(player_id, int) and player_id > 0) and not (isinstance(player_id, str) and player_id.isdigit()):
+        return False, "player_detail_invalid_player_id"
+
+    return True, "valid_tennis_player_id_detected"
+
+
+def _has_endpoint_support_prerequisite(out_dir: Path, source: str) -> tuple[bool, str]:
+    parsed_path = out_dir / "parsed" / f"{source}.json"
+    parsed = _load_json_if_exists(parsed_path)
+    if not isinstance(parsed, dict):
+        return False, "endpoint_probe_metadata_missing"
+
+    if not parsed.get("transport_pass", False):
+        return False, "endpoint_transport_not_ready"
+
+    http_code = str(parsed.get("http_code", "")).strip()
+    if not (len(http_code) == 3 and http_code.isdigit() and http_code.startswith("2")):
+        return False, f"endpoint_http_not_2xx:{http_code or 'unknown'}"
+
+    return True, "endpoint_support_detected"
+
+
+def _classify_volatile_source_prerequisite(out_dir: Path, source: str) -> tuple[bool, str]:
+    has_player_id, player_reason = _has_valid_tennis_player_prerequisite(out_dir)
+    if not has_player_id:
+        return False, player_reason
+
+    has_endpoint_support, endpoint_reason = _has_endpoint_support_prerequisite(out_dir, source)
+    if not has_endpoint_support:
+        return False, endpoint_reason
+
+    return True, "valid_tennis_player_id_and_endpoint_support"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate source payloads for extraction readiness")
     parser.add_argument(
@@ -461,9 +520,17 @@ def parse_args() -> argparse.Namespace:
         "--mandatory-sources",
         default=os.environ.get(
             "MANDATORY_SOURCES",
-            "tennisabstract_leaders,tennisabstract_leadersource_wta,ta_h2h,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
+            "tennisabstract_leaders,tennisabstract_leadersource_wta,ta_h2h,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent",
         ),
         help="Comma-separated source keys that must be extraction-ready for zero exit (before allowlist filtering)",
+    )
+    parser.add_argument(
+        "--conditional-mandatory-sources",
+        default=os.environ.get(
+            "CONDITIONAL_MANDATORY_SOURCES",
+            "sofascore_player_stats_overall,sofascore_player_stats_last52",
+        ),
+        help="Comma-separated source keys that become mandatory only when prerequisites are met",
     )
     parser.add_argument(
         "--provider-allowlist",
@@ -481,13 +548,59 @@ def main() -> int:
 
     provider_allowlist = _parse_allowlist(args.provider_allowlist)
     mandatory_sources_all = {item.strip() for item in args.mandatory_sources.split(",") if item.strip()}
+    conditional_mandatory_sources_all = {
+        item.strip() for item in args.conditional_mandatory_sources.split(",") if item.strip()
+    }
     mandatory_sources = {source for source in mandatory_sources_all if _is_allowed_source(source, provider_allowlist)}
+    conditional_mandatory_sources = {
+        source for source in conditional_mandatory_sources_all if _is_allowed_source(source, provider_allowlist)
+    }
 
     excluded_mandatory = sorted(mandatory_sources_all - mandatory_sources)
+    excluded_conditional_mandatory = sorted(conditional_mandatory_sources_all - conditional_mandatory_sources)
     for source in excluded_mandatory:
         print(f"INFO: skipping mandatory provider '{source}' (not in provider allowlist: {args.provider_allowlist})")
+    for source in excluded_conditional_mandatory:
+        print(
+            f"INFO: skipping conditional mandatory provider '{source}' "
+            f"(not in provider allowlist: {args.provider_allowlist})"
+        )
 
-    results, all_mandatory_ready, skipped_sources = run_validations(out_dir, mandatory_sources, provider_allowlist)
+    prerequisite_skips: dict[str, str] = {}
+    promoted_conditional_sources: set[str] = set()
+    for source in sorted(conditional_mandatory_sources):
+        prereq_ok, prereq_reason = _classify_volatile_source_prerequisite(out_dir, source)
+        if prereq_ok:
+            promoted_conditional_sources.add(source)
+        else:
+            prerequisite_skips[source] = prereq_reason
+            print(f"INFO: skipping '{source}' due to unmet prerequisites ({prereq_reason})")
+
+    effective_mandatory_sources = set(mandatory_sources) | promoted_conditional_sources
+
+    results, all_mandatory_ready, skipped_sources = run_validations(
+        out_dir,
+        effective_mandatory_sources,
+        provider_allowlist,
+    )
+    result_by_source = {r.source: r for r in results}
+
+    mandatory_failures = [
+        {"source": source, "reason": result_by_source[source].reason_code}
+        for source in sorted(effective_mandatory_sources)
+        if source in result_by_source and not result_by_source[source].ready_for_extraction
+    ]
+    optional_failures = [
+        {"source": result.source, "reason": result.reason_code}
+        for result in sorted(results, key=lambda item: item.source)
+        if result.source not in effective_mandatory_sources
+        and result.source not in prerequisite_skips
+        and not result.ready_for_extraction
+    ]
+    skipped_by_prerequisite = [
+        {"source": source, "reason": reason}
+        for source, reason in sorted(prerequisite_skips.items())
+    ]
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -495,8 +608,14 @@ def main() -> int:
         "raw_dir": str(out_dir / "raw"),
         "provider_allowlist": provider_allowlist,
         "mandatory_sources": sorted(mandatory_sources),
+        "conditional_mandatory_sources": sorted(conditional_mandatory_sources),
+        "conditional_mandatory_promoted": sorted(promoted_conditional_sources),
         "mandatory_sources_excluded_by_allowlist": excluded_mandatory,
+        "conditional_mandatory_excluded_by_allowlist": excluded_conditional_mandatory,
         "skipped_sources": skipped_sources,
+        "mandatory_failures": mandatory_failures,
+        "optional_failures": optional_failures,
+        "skipped_by_prerequisite": skipped_by_prerequisite,
         "all_mandatory_ready": all_mandatory_ready,
         "results": [r.__dict__ for r in results],
     }
