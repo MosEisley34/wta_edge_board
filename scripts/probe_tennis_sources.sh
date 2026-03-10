@@ -4,7 +4,7 @@ set -euo pipefail
 UA='Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'
 OUT_DIR="${1:-./tmp/source_probes}"
 CATALOG_PATH="${2:-./config/probe_sources.tsv}"
-PROVIDER_ALLOWLIST="${PROVIDER_ALLOWLIST:-tennisabstract_*,sofascore_*}"
+PROVIDER_ALLOWLIST="${PROVIDER_ALLOWLIST:-tennisabstract_*,ta_*,mcp_report_*,sofascore_*}"
 SOFASCORE_PROBE_TENNIS_PLAYER_ID="${SOFASCORE_PROBE_TENNIS_PLAYER_ID:-}"
 DEFAULT_EXCLUDED_PROVIDERS="${DEFAULT_EXCLUDED_PROVIDERS:-wta_stats_zone,tennisexplorer,itf}"
 INCLUDE_DEFAULT_EXCLUDED_PROVIDERS="${INCLUDE_DEFAULT_EXCLUDED_PROVIDERS:-false}"

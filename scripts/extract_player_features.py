@@ -1004,7 +1004,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--provider-allowlist",
-        default=os.environ.get("PROVIDER_ALLOWLIST", "tennisabstract_*,sofascore_*"),
+        default=os.environ.get("PROVIDER_ALLOWLIST", "tennisabstract_*,ta_*,mcp_report_*,sofascore_*"),
         help="Comma-separated wildcard patterns for providers to include during extraction",
     )
     return parser.parse_args()
