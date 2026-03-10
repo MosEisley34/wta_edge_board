@@ -630,22 +630,6 @@ def _is_sofascore_wta_event(event: dict[str, object]) -> bool:
     return any(_contains_any_token(segment, ("wta",)) for segment in searchable_segments)
 
 
-def _looks_like_singles_player_name(name: str) -> bool:
-    normalized = name.casefold().strip()
-    if not normalized:
-        return False
-    blocked_tokens = (
-        " / ",
-        "/",
-        " & ",
-        " and ",
-        " doubles",
-        " team",
-        "-team",
-    )
-    return not any(token in normalized for token in blocked_tokens)
-
-
 def _split_sofascore_team_name(value: str) -> list[str]:
     text = value.strip()
     if not text:
@@ -658,28 +642,47 @@ def _split_sofascore_team_name(value: str) -> list[str]:
 
 def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[str], bool]:
     candidates: list[str] = []
-    has_participant_fields = False
+    has_supported_name_paths = False
 
     def _collect_name_fields(node: dict[str, object]) -> None:
-        nonlocal has_participant_fields
+        nonlocal has_supported_name_paths
         if any(key in node for key in ("name", "shortName", "slug")):
-            has_participant_fields = True
+            has_supported_name_paths = True
         name = normalize_name(_pick(node, "name", "shortName", "slug"))
         if not name:
             return
         candidates.extend(_split_sofascore_team_name(name))
 
     def _collect_entity(value: object) -> None:
+        nonlocal has_supported_name_paths
         if isinstance(value, dict):
             _collect_name_fields(value)
-        elif isinstance(value, list):
+            for nested_key in (
+                "player",
+                "players",
+                "participants",
+                "participant",
+                "members",
+                "athletes",
+                "team",
+                "homeTeam",
+                "awayTeam",
+            ):
+                if nested_key in value:
+                    has_supported_name_paths = True
+                _collect_entity(value.get(nested_key))
+            return
+        if isinstance(value, list):
             if value:
-                has_nonlocal_participant[0] = True
+                has_supported_name_paths = True
             for item in value:
                 if isinstance(item, dict):
+                    if "player" in item:
+                        has_supported_name_paths = True
                     _collect_name_fields(item)
+                    _collect_entity(item.get("player"))
+                    _collect_entity(item.get("team"))
 
-    has_nonlocal_participant = [False]
     _collect_name_fields(team)
     _collect_entity(team.get("player"))
     for key in (
@@ -692,6 +695,8 @@ def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[
         "homeTeam",
         "awayTeam",
     ):
+        if key in team:
+            has_supported_name_paths = True
         _collect_entity(team.get(key))
 
     normalized_unique: list[str] = []
@@ -700,12 +705,14 @@ def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[
         normalized = normalize_name(candidate)
         if not normalized or normalized in seen:
             continue
-        if _looks_like_singles_player_name(normalized):
-            seen.add(normalized)
-            normalized_unique.append(normalized)
+        seen.add(normalized)
+        normalized_unique.append(normalized)
 
-    has_participant_fields = has_participant_fields or has_nonlocal_participant[0]
-    return normalized_unique, has_participant_fields
+    non_generic = [name for name in normalized_unique if not name.casefold().endswith(" team")]
+    if non_generic:
+        normalized_unique = non_generic
+
+    return normalized_unique, has_supported_name_paths
 
 
 def _normalize_sofascore_team_player_name(team: dict[str, object]) -> str | None:
