@@ -89,22 +89,20 @@ sys.exit(0 if slug == 'tennis' else 1)
 PYT
 }
 
-sample_sofascore_tennis_player_id_from_schedule() {
-  local date_token
-  date_token="$(date -u +%F)"
-  local scheduled_url="https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/$date_token"
-  local scheduled_payload_path
-  scheduled_payload_path="$(mktemp "$LOGS_DIR/sofascore_scheduled_events.XXXXXX.json")"
-  if ! curl -sS -L --max-time 20 --retry 1 --retry-delay 1 -H "User-Agent: $UA" -o "$scheduled_payload_path" "$scheduled_url" 2>/dev/null; then
-    rm -f "$scheduled_payload_path"
+sample_sofascore_tennis_player_id_from_events() {
+  local endpoint="$1"
+  local payload_path
+  payload_path="$(mktemp "$LOGS_DIR/sofascore_events.XXXXXX.json")"
+  if ! curl -sS -L --max-time 20 --retry 1 --retry-delay 1 -H "User-Agent: $UA" -o "$payload_path" "$endpoint" 2>/dev/null; then
+    rm -f "$payload_path"
     return 1
   fi
-  [[ ! -s "$scheduled_payload_path" ]] && {
-    rm -f "$scheduled_payload_path"
+  [[ ! -s "$payload_path" ]] && {
+    rm -f "$payload_path"
     return 1
   }
 
-  python3 - "$scheduled_payload_path" <<'PYT'
+  python3 - "$payload_path" <<'PYT'
 import json, sys
 path = sys.argv[1]
 try:
@@ -130,8 +128,30 @@ for event in payload.get('events', []) or []:
 sys.exit(1)
 PYT
   local resolver_exit_code=$?
-  rm -f "$scheduled_payload_path"
+  rm -f "$payload_path"
   return "$resolver_exit_code"
+}
+
+
+sample_sofascore_tennis_player_id_from_live_or_schedule() {
+  local live_url="https://api.sofascore.com/api/v1/sport/tennis/events/live"
+  local sampled_id=""
+  sampled_id="$(sample_sofascore_tennis_player_id_from_events "$live_url" || true)"
+  if [[ -n "$sampled_id" ]]; then
+    printf '%s' "$sampled_id"
+    return 0
+  fi
+
+  local date_token
+  date_token="$(date -u +%F)"
+  local scheduled_url="https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/$date_token"
+  sampled_id="$(sample_sofascore_tennis_player_id_from_events "$scheduled_url" || true)"
+  if [[ -n "$sampled_id" ]]; then
+    printf '%s' "$sampled_id"
+    return 0
+  fi
+
+  return 1
 }
 
 resolve_sofascore_probe_tennis_player_id() {
@@ -143,28 +163,37 @@ resolve_sofascore_probe_tennis_player_id() {
   local configured_id="$SOFASCORE_PROBE_TENNIS_PLAYER_ID"
 
   local sampled_id=""
-  sampled_id="$(sample_sofascore_tennis_player_id_from_schedule || true)"
+  sampled_id="$(sample_sofascore_tennis_player_id_from_live_or_schedule || true)"
   if [[ -n "$sampled_id" ]] && validate_sofascore_tennis_player_id "$sampled_id"; then
     RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$sampled_id"
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="resolver_selected_tennis_player_id"
     printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
     return 0
   fi
 
   if [[ -n "$configured_id" ]] && validate_sofascore_tennis_player_id "$configured_id"; then
     RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="configured_tennis_player_id"
     printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
     return 0
   fi
 
   if [[ -n "$configured_id" ]]; then
-    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
-    echo "WARN: using unverified SOFASCORE_PROBE_TENNIS_PLAYER_ID=$configured_id after sampling failure" >&2
-    printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
-    return 0
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="player_detail_domain_mismatch"
+  else
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="resolver_no_tennis_player_id_from_live_or_scheduled_events"
   fi
 
-  echo "ERROR: unable to resolve a tennis player id from Sofascore scheduled events; set SOFASCORE_PROBE_TENNIS_PLAYER_ID to continue" >&2
+  echo "WARN: unable to resolve a verified tennis player id from Sofascore live/scheduled events" >&2
   return 1
+}
+
+source_requires_sofascore_tennis_domain() {
+  local source_key="$1"
+  case "$source_key" in
+    sofascore_player_recent|sofascore_player_stats_overall|sofascore_player_stats_last52) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 record_allowlist_skip() {
   local source_key="$1"
@@ -586,7 +615,15 @@ iterate_tsv_catalog() {
 
     if [[ "$url" == *"{tennis_player_id}"* ]]; then
       local tennis_player_id
-      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id)"
+      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id || true)"
+      if [[ -z "$tennis_player_id" ]]; then
+        if source_requires_sofascore_tennis_domain "$source_key"; then
+          echo "INFO: skipping '$source_key' due to unmet tennis domain prerequisite (${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON:-player_detail_domain_mismatch})" >&2
+        else
+          echo "INFO: skipping '$source_key' because no resolver-selected tennis player id is available (${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON:-resolver_no_tennis_player_id_from_live_or_scheduled_events})" >&2
+        fi
+        continue
+      fi
       url="${url//\{tennis_player_id\}/$tennis_player_id}"
     fi
 
@@ -636,7 +673,15 @@ PY
     fi
 
     if [[ "$url" == *"{tennis_player_id}"* ]]; then
-      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id)"
+      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id || true)"
+      if [[ -z "$tennis_player_id" ]]; then
+        if source_requires_sofascore_tennis_domain "$source_key"; then
+          echo "INFO: skipping '$source_key' due to unmet tennis domain prerequisite (${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON:-player_detail_domain_mismatch})" >&2
+        else
+          echo "INFO: skipping '$source_key' because no resolver-selected tennis player id is available (${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON:-resolver_no_tennis_player_id_from_live_or_scheduled_events})" >&2
+        fi
+        continue
+      fi
       url="${url//\{tennis_player_id\}/$tennis_player_id}"
     fi
 
