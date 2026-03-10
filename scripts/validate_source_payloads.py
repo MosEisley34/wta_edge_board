@@ -189,7 +189,27 @@ def _json_is_404_error_payload(data: object) -> bool:
     return False
 
 
-def validate_json_source(payload: str, source: str, payload_path: Path | None, marker_paths: list[tuple[str, ...]]) -> ValidationResult:
+def _json_has_api_error(data: object) -> bool:
+    if not isinstance(data, dict):
+        return False
+
+    error_value = data.get("error")
+    if not isinstance(error_value, dict):
+        return False
+
+    error_code = error_value.get("code")
+    error_message = error_value.get("message")
+    return error_code is not None and error_message is not None
+
+
+def validate_json_source(
+    payload: str,
+    source: str,
+    payload_path: Path | None,
+    marker_paths: list[tuple[str, ...]],
+    required_paths: list[tuple[str, ...]],
+    allow_structural_marker_fallback: bool = False,
+) -> ValidationResult:
     data = _load_json(payload_path) if payload_path else None
     if data is None:
         bootstrap_hits = re.findall(r"__NEXT_DATA__|window\.__INITIAL_STATE__|bootstrap", payload, flags=re.IGNORECASE)
@@ -221,6 +241,27 @@ def validate_json_source(payload: str, source: str, payload_path: Path | None, m
             payload_path=str(payload_path) if payload_path else None,
         )
 
+    if _json_has_api_error(data):
+        return ValidationResult(
+            source=source,
+            ready_for_extraction=False,
+            reason_code="json_api_error_payload",
+            evidence_samples=["error.code", "error.message"],
+            evidence_counts={"api_error_payload": 1},
+            payload_path=str(payload_path) if payload_path else None,
+        )
+
+    missing_required_paths = [".".join(path) for path in required_paths if not _json_path_exists(data, path)]
+    if missing_required_paths:
+        return ValidationResult(
+            source=source,
+            ready_for_extraction=False,
+            reason_code="json_contract_required_paths_missing",
+            evidence_samples=missing_required_paths[:4],
+            evidence_counts={"missing_required_path_count": len(missing_required_paths)},
+            payload_path=str(payload_path) if payload_path else None,
+        )
+
     if isinstance(data, list):
         return ValidationResult(
             source=source,
@@ -232,7 +273,7 @@ def validate_json_source(payload: str, source: str, payload_path: Path | None, m
         )
 
     path_hits = [".".join(path) for path in marker_paths if _json_path_exists(data, path)]
-    if path_hits:
+    if allow_structural_marker_fallback and path_hits:
         return ValidationResult(
             source=source,
             ready_for_extraction=True,
@@ -246,7 +287,7 @@ def validate_json_source(payload: str, source: str, payload_path: Path | None, m
     if key_count > 0:
         return ValidationResult(
             source=source,
-            ready_for_extraction=True,
+            ready_for_extraction=False,
             reason_code="json_nonempty_object_fallback",
             evidence_samples=["top_level=dict"],
             evidence_counts={"top_level_key_count": key_count},
@@ -314,26 +355,55 @@ def run_validations(out_dir: Path, mandatory_sources: set[str]) -> tuple[list[Va
         "ta_h2h": validate_ta_h2h,
         "wta_stats_zone": validate_wta_stats_zone,
         "itf": lambda payload, source, payload_path: validate_json_source(
-            payload, source, payload_path, marker_paths=[("data",), ("rankings",), ("results",), ("players",)]
+            payload,
+            source,
+            payload_path,
+            marker_paths=[("data",), ("rankings",), ("results",), ("players",)],
+            required_paths=[("data", "rankings")],
+            allow_structural_marker_fallback=True,
         ),
         "tennisexplorer": validate_tennisexplorer,
         "sofascore_events_live": lambda payload, source, payload_path: validate_json_source(
-            payload, source, payload_path, marker_paths=[("events",)]
+            payload,
+            source,
+            payload_path,
+            marker_paths=[("events",)],
+            required_paths=[("events",)],
         ),
         "sofascore_scheduled_events": lambda payload, source, payload_path: validate_json_source(
-            payload, source, payload_path, marker_paths=[("events",)]
+            payload,
+            source,
+            payload_path,
+            marker_paths=[("events",)],
+            required_paths=[("events",)],
         ),
         "sofascore_player_detail": lambda payload, source, payload_path: validate_json_source(
-            payload, source, payload_path, marker_paths=[("player",)]
+            payload,
+            source,
+            payload_path,
+            marker_paths=[("player",)],
+            required_paths=[("player",)],
         ),
         "sofascore_player_recent": lambda payload, source, payload_path: validate_json_source(
-            payload, source, payload_path, marker_paths=[("events",)]
+            payload,
+            source,
+            payload_path,
+            marker_paths=[("events",)],
+            required_paths=[("events",)],
         ),
         "sofascore_player_stats_overall": lambda payload, source, payload_path: validate_json_source(
-            payload, source, payload_path, marker_paths=[("statistics",)]
+            payload,
+            source,
+            payload_path,
+            marker_paths=[("statistics",)],
+            required_paths=[("statistics",)],
         ),
         "sofascore_player_stats_last52": lambda payload, source, payload_path: validate_json_source(
-            payload, source, payload_path, marker_paths=[("statistics",)]
+            payload,
+            source,
+            payload_path,
+            marker_paths=[("statistics",)],
+            required_paths=[("statistics",)],
         ),
     }
 
