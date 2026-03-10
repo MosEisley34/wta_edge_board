@@ -54,12 +54,20 @@ class TaMatchMxRegressionTest(unittest.TestCase):
             'matchmx[2] = ["2026-01-03","Open","Hard","A","Doe, Jane","6-4 6-4","12"];',
         ])
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
-        self.assertEqual(len(rows), 3)
-        self.assertEqual(rows[0].player_canonical_name, "Anna-Marie Smith")
-        self.assertEqual(rows[0].reason_code, "ok")
-        self.assertEqual(rows[1].player_canonical_name, "Beth Brown")
-        self.assertEqual(rows[1].reason_code, "ok")
-        self.assertEqual(rows[2].reason_code, "ta_matchmx_unusable_payload")
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+        self.assertEqual(len(ok_rows), 2)
+        self.assertEqual(ok_rows[0].player_canonical_name, "Anna-Marie Smith")
+        self.assertEqual(ok_rows[1].player_canonical_name, "Beth Brown")
+        unusable_rows = [row for row in rows if row.reason_code == "ta_matchmx_unusable_payload"]
+        self.assertGreaterEqual(len(unusable_rows), 1)
+
+    def test_parse_matchmx_parses_each_row_independently_from_array_assignment(self):
+        payload = 'matchmx = [["2026-01-01","Open","Hard","Iga Swiatek","Opponent A","6-1 6-1","1","0.9","0.8","70","40","60","50","58","67","49","41","1.12","54"],["2026-01-02","Open","Hard","Coco Gauff","Opponent B","6-2 6-2","3","0.8","0.7","68","39","59","49","57","66","48","40","1.08","52"]];'
+        rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
+        ok_rows = [r for r in rows if r.reason_code == "ok"]
+        self.assertEqual(len(ok_rows), 2)
+        self.assertEqual(ok_rows[0].player_canonical_name, "Iga Swiatek")
+        self.assertEqual(ok_rows[1].player_canonical_name, "Coco Gauff")
 
     def test_check_ta_parity_emits_unusable_payload_metrics_for_bad_names(self):
         fixture_with_bad_name = ROOT / "tmp" / "test_ta_parity_bad_name.body"

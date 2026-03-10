@@ -33,14 +33,26 @@ def _canonicalize_name(name: str) -> str:
 def _extract_rows(payload: str) -> tuple[list[dict[str, object]], dict[str, object]]:
     rows: list[dict[str, object]] = []
     metrics: dict[str, object] = {"ta_matchmx_unusable_payload": 0, "first_invalid_rows": []}
-    for parsed in iter_matchmx_rows(payload):
+    for logical_row_number, parsed in enumerate(iter_matchmx_rows(payload), start=1):
         tokens = parsed.tokens
 
         def note_invalid(reason: str) -> None:
             metrics["ta_matchmx_unusable_payload"] = int(metrics["ta_matchmx_unusable_payload"]) + 1
             samples = metrics["first_invalid_rows"]
             if isinstance(samples, list) and len(samples) < 5:
-                samples.append({"reason": reason, "token_count": len(tokens), "token_sample": tokens[:8]})
+                samples.append(
+                    {
+                        "reason": reason,
+                        "row_number": logical_row_number,
+                        "row_index": parsed.row_index,
+                        "token_count": len(tokens),
+                        "token_sample": tokens[:8],
+                    }
+                )
+
+        if parsed.reason_code:
+            note_invalid(parsed.reason_code)
+            continue
 
         parsed_row, reason = parse_matchmx_player_row(tokens)
         if reason:
