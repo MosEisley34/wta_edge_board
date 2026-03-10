@@ -47,12 +47,12 @@ class SofascoreJsonShapeTests(unittest.TestCase):
         self.assertEqual(2, len(rows))
         self.assertEqual(["Iga Swiatek", "Aryna Sabalenka"], [row.player_canonical_name for row in rows])
 
-    def test_events_payload_skips_doubles_pairs_and_ambiguous_players(self):
+    def test_events_payload_supports_doubles_pairs_and_player_lists(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "sofascore_events_live.json"
             path.write_text(
                 '{"events": ['
-                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, "homeTeam": {"name": "Iga Swiatek / Aryna Sabalenka"}, "awayTeam": {"name": "Coco Gauff"}},'
+                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, "homeTeam": {"name": "Iga Swiatek / Aryna Sabalenka"}, "awayTeam": {"name": "Coco Gauff & Jessica Pegula"}},'
                 '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, "homeTeam": {"players": [{"name": "Ons Jabeur"}, {"name": "Marketa Vondrousova"}]}, "awayTeam": {"players": [{"name": "Elena Rybakina"}]}}'
                 ']}' ,
                 encoding="utf-8",
@@ -60,8 +60,19 @@ class SofascoreJsonShapeTests(unittest.TestCase):
 
             rows = _extract_from_file(path, selected_sources=set())
 
-        self.assertEqual(2, len(rows))
-        self.assertEqual(["Coco Gauff", "Elena Rybakina"], [row.player_canonical_name for row in rows])
+        self.assertEqual(7, len(rows))
+        self.assertEqual(
+            [
+                "Iga Swiatek",
+                "Aryna Sabalenka",
+                "Coco Gauff",
+                "Jessica Pegula",
+                "Ons Jabeur",
+                "Marketa Vondrousova",
+                "Elena Rybakina",
+            ],
+            [row.player_canonical_name for row in rows],
+        )
 
     def test_events_payload_prefers_single_player_identity_from_team_object(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -76,6 +87,21 @@ class SofascoreJsonShapeTests(unittest.TestCase):
             rows = _extract_from_file(path, selected_sources=set())
 
         self.assertEqual(["Mirra Andreeva", "Jessica Pegula"], [row.player_canonical_name for row in rows])
+
+
+    def test_scheduled_events_payload_supports_nested_team_and_player_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "sofascore_scheduled_events.json"
+            path.write_text(
+                '{"events": ['
+                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, "homeTeam": {"team": {"players": [{"player": {"name": "Belinda Bencic"}}, {"player": {"name": "Lulu Sun"}}]}}, "awayTeam": {"participants": [{"name": "Donna Vekic"}, {"name": "Petra Martic"}]}}'
+                ']}' ,
+                encoding="utf-8",
+            )
+
+            rows = _extract_from_file(path, selected_sources=set())
+
+        self.assertEqual(["Belinda Bencic", "Lulu Sun", "Donna Vekic", "Petra Martic"], [row.player_canonical_name for row in rows])
 
     def test_statistics_payload_emits_diagnostic_record_without_parse_error(self):
         path = ROOT / "scripts" / "fixtures" / "sofascore_player_stats_overall.json"
