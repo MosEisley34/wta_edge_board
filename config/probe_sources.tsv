@@ -17,7 +17,7 @@ ta_leaders_51_100_serve	https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?p
 ta_leaders_51_100_return	https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=51-100&view=return	text/html	html_table
 ta_leaders_51_100_breaks	https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=51-100&view=breaks	text/html	html_table
 ta_leaders_51_100_more	https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=51-100&view=more	text/html	html_table
-ta_winners_errors	https://www.tennisabstract.com/cgi-bin/reports_wta.cgi?report=winners-errors	text/html	html_table
+ta_winners_errors	https://www.tennisabstract.com/reports/winners_errors_leaders_women_last52.html	text/html	html_table
 mcp_report_serve	https://www.tennisabstract.com/cgi-bin/mcp_leaders_wta.cgi?tab=serve	text/html	html_table
 mcp_report_return	https://www.tennisabstract.com/cgi-bin/mcp_leaders_wta.cgi?tab=return	text/html	html_table
 mcp_report_rally	https://www.tennisabstract.com/cgi-bin/mcp_leaders_wta.cgi?tab=rally	text/html	html_table

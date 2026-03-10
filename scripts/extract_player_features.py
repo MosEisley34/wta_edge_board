@@ -131,8 +131,8 @@ TA_SOURCE_MATRIX: dict[str, ParserContract] = {
         stat_column_map={"ranking": ("Rank", "Rk")},
     ),
     "ta_winners_errors": ParserContract(
-        endpoint="https://www.tennisabstract.com/cgi-bin/reports_wta.cgi?report=winners-errors",
-        table_markers=("reports_wta", "winners", "errors"),
+        endpoint="https://www.tennisabstract.com/reports/winners_errors_leaders_women_last52.html",
+        table_markers=("winners_errors_leaders_women_last52", "winners", "errors"),
         expected_headers=("Player", "Winners", "Unforced Errors"),
         player_column_aliases=("Player",),
         stat_column_map={"recent_form": ("W/UE", "Winners/UE")},
