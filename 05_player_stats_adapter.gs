@@ -209,6 +209,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     const merged = mergePlayerStatsMaps_(sourcePayloads, players);
     const mergeDiagnostics = buildPlayerStatsMergeDiagnostics_(sourcePayloads, merged, players, sourceAttemptDiagnostics);
     const mergedHasData = Number((mergeDiagnostics.final || {}).players_with_non_null_stats || 0) > 0;
+    const finalSelection = mergeDiagnostics.final || {};
     return {
       ok: true,
       reason_code: mergedHasData
@@ -221,6 +222,8 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       scrape_call_count: 0,
       selection_metadata: {
         source_count: sourcePayloads.length,
+        placeholder_feature_count: Number(finalSelection.placeholder_feature_count || 0),
+        trusted_feature_count: Number(finalSelection.trusted_feature_count || 0),
         merge_diagnostics: mergeDiagnostics,
         source_attempts: sourceAttemptDiagnostics,
       },
@@ -2053,38 +2056,163 @@ function mergePlayerStatsMaps_(sourcePayloads, canonicalPlayers) {
   });
 
   players.forEach(function (player) {
+    const featureSelection = {};
+    PLAYER_STATS_CANONICAL_FEATURES.forEach(function (feature) {
+      const preferredSources = resolvePreferredSourcesForFeature_(feature);
+      featureSelection[feature] = selectMetricWithProvenanceBySourcePriority_(sourceMaps, player, feature, preferredSources);
+    });
+
     const mergedRow = {
-      ranking: selectMetricBySourcePriority_(sourceMaps, player, 'ranking', ['wta_stats_zone', 'itf', 'tennis_abstract', 'tennis_explorer', 'sofascore']),
-      recent_form: selectMetricBySourcePriority_(sourceMaps, player, 'recent_form', ['sofascore', 'tennis_explorer', 'wta_stats_zone', 'tennis_abstract', 'itf']),
-      recent_form_last_10: selectMetricBySourcePriority_(sourceMaps, player, 'recent_form_last_10', ['sofascore', 'tennis_explorer', 'wta_stats_zone', 'tennis_abstract', 'itf']),
-      surface_win_rate: selectMetricBySourcePriority_(sourceMaps, player, 'surface_win_rate', ['tennis_abstract', 'wta_stats_zone', 'tennis_explorer', 'sofascore', 'itf']),
-      hold_pct: selectMetricBySourcePriority_(sourceMaps, player, 'hold_pct', ['tennis_abstract', 'wta_stats_zone', 'tennis_explorer', 'sofascore', 'itf']),
-      break_pct: selectMetricBySourcePriority_(sourceMaps, player, 'break_pct', ['tennis_abstract', 'wta_stats_zone', 'tennis_explorer', 'sofascore', 'itf']),
-      surface_hold_pct: selectMetricBySourcePriority_(sourceMaps, player, 'surface_hold_pct', ['tennis_abstract']),
-      surface_break_pct: selectMetricBySourcePriority_(sourceMaps, player, 'surface_break_pct', ['tennis_abstract']),
-      surface_recent_form: selectMetricBySourcePriority_(sourceMaps, player, 'surface_recent_form', ['tennis_abstract', 'sofascore', 'tennis_explorer', 'wta_stats_zone', 'itf']),
-      bp_saved_pct: selectMetricBySourcePriority_(sourceMaps, player, 'bp_saved_pct', ['tennis_abstract']),
-      bp_conv_pct: selectMetricBySourcePriority_(sourceMaps, player, 'bp_conv_pct', ['tennis_abstract']),
-      first_serve_in_pct: selectMetricBySourcePriority_(sourceMaps, player, 'first_serve_in_pct', ['tennis_abstract']),
-      first_serve_points_won_pct: selectMetricBySourcePriority_(sourceMaps, player, 'first_serve_points_won_pct', ['tennis_abstract']),
-      second_serve_points_won_pct: selectMetricBySourcePriority_(sourceMaps, player, 'second_serve_points_won_pct', ['tennis_abstract']),
-      return_points_won_pct: selectMetricBySourcePriority_(sourceMaps, player, 'return_points_won_pct', ['tennis_abstract']),
-      dr: selectMetricBySourcePriority_(sourceMaps, player, 'dr', ['tennis_abstract']),
-      tpw_pct: selectMetricBySourcePriority_(sourceMaps, player, 'tpw_pct', ['tennis_abstract']),
+      ranking: featureSelection.ranking.value,
+      recent_form: featureSelection.recent_form.value,
+      recent_form_last_10: featureSelection.recent_form_last_10.value,
+      surface_win_rate: featureSelection.surface_win_rate.value,
+      hold_pct: featureSelection.hold_pct.value,
+      break_pct: featureSelection.break_pct.value,
+      surface_hold_pct: featureSelection.surface_hold_pct.value,
+      surface_break_pct: featureSelection.surface_break_pct.value,
+      surface_recent_form: featureSelection.surface_recent_form.value,
+      bp_saved_pct: featureSelection.bp_saved_pct.value,
+      bp_conv_pct: featureSelection.bp_conv_pct.value,
+      first_serve_in_pct: featureSelection.first_serve_in_pct.value,
+      first_serve_points_won_pct: featureSelection.first_serve_points_won_pct.value,
+      second_serve_points_won_pct: featureSelection.second_serve_points_won_pct.value,
+      return_points_won_pct: featureSelection.return_points_won_pct.value,
+      dr: featureSelection.dr.value,
+      tpw_pct: featureSelection.tpw_pct.value,
     };
+
+    const valueOrigin = {};
+    let placeholderFeatureCount = 0;
+    let trustedFeatureCount = 0;
+    PLAYER_STATS_CANONICAL_FEATURES.forEach(function (feature) {
+      const selected = featureSelection[feature] || {};
+      valueOrigin[feature] = selected.value_origin || 'defaulted';
+      placeholderFeatureCount += selected.is_placeholder ? 1 : 0;
+      trustedFeatureCount += selected.is_trusted ? 1 : 0;
+    });
+
+    mergedRow.value_origin = valueOrigin;
+    mergedRow.placeholder_feature_count = placeholderFeatureCount;
+    mergedRow.trusted_feature_count = trustedFeatureCount;
+
     const rankingOnlyFallback = mergedRow.ranking !== null && mergedRow.ranking !== undefined
       && (mergedRow.hold_pct === null || mergedRow.hold_pct === undefined)
       && (mergedRow.break_pct === null || mergedRow.break_pct === undefined);
     const nonNullCore = [mergedRow.ranking, mergedRow.recent_form, mergedRow.hold_pct, mergedRow.break_pct]
       .filter(function (value) { return value !== null && value !== undefined; }).length;
+    const trustedCore = ['ranking', 'recent_form', 'hold_pct', 'break_pct']
+      .filter(function (feature) { return !!(featureSelection[feature] && featureSelection[feature].is_trusted); }).length;
+    const placeholderOnlyBundle = nonNullCore > 0 && trustedFeatureCount === 0;
     mergedRow.has_stats = nonNullCore > 0 || rankingOnlyFallback;
-    mergedRow.stats_confidence = rankingOnlyFallback ? 0.24 : (nonNullCore >= 4 ? 0.78 : (nonNullCore >= 2 ? 0.56 : (nonNullCore === 1 ? 0.32 : 0)));
-    mergedRow.stats_confidence_band = rankingOnlyFallback ? 'low_ranking_only' : (nonNullCore >= 4 ? 'high' : (nonNullCore >= 2 ? 'medium' : (nonNullCore === 1 ? 'low' : 'none')));
+    if (rankingOnlyFallback) {
+      mergedRow.stats_confidence = 0.2;
+      mergedRow.stats_confidence_band = 'low_ranking_only';
+    } else if (placeholderOnlyBundle) {
+      mergedRow.stats_confidence = 0.08;
+      mergedRow.stats_confidence_band = 'low_placeholder_only';
+    } else if (nonNullCore >= 4 && trustedCore >= 3) {
+      mergedRow.stats_confidence = 0.78;
+      mergedRow.stats_confidence_band = 'high';
+    } else if (nonNullCore >= 2 && trustedCore >= 1) {
+      mergedRow.stats_confidence = 0.56;
+      mergedRow.stats_confidence_band = 'medium';
+    } else if (nonNullCore >= 1) {
+      mergedRow.stats_confidence = 0.32;
+      mergedRow.stats_confidence_band = 'low';
+    } else {
+      mergedRow.stats_confidence = 0;
+      mergedRow.stats_confidence_band = 'none';
+    }
     mergedRow.fallback_mode = rankingOnlyFallback ? 'ranking_only' : '';
     merged[player] = mergedRow;
   });
 
   return merged;
+}
+
+function resolvePreferredSourcesForFeature_(feature) {
+  switch (feature) {
+    case 'ranking': return ['wta_stats_zone', 'itf', 'tennis_abstract', 'tennis_explorer', 'sofascore'];
+    case 'recent_form':
+    case 'recent_form_last_10': return ['sofascore', 'tennis_explorer', 'wta_stats_zone', 'tennis_abstract', 'itf'];
+    case 'surface_win_rate':
+    case 'hold_pct':
+    case 'break_pct': return ['tennis_abstract', 'wta_stats_zone', 'tennis_explorer', 'sofascore', 'itf'];
+    case 'surface_hold_pct':
+    case 'surface_break_pct':
+    case 'bp_saved_pct':
+    case 'bp_conv_pct':
+    case 'first_serve_in_pct':
+    case 'first_serve_points_won_pct':
+    case 'second_serve_points_won_pct':
+    case 'return_points_won_pct':
+    case 'dr':
+    case 'tpw_pct': return ['tennis_abstract'];
+    case 'surface_recent_form': return ['tennis_abstract', 'sofascore', 'tennis_explorer', 'wta_stats_zone', 'itf'];
+    default: return [];
+  }
+}
+
+function selectMetricWithProvenanceBySourcePriority_(sourceMaps, player, key, preferredSources) {
+  const preference = {};
+  (preferredSources || []).forEach(function (name, idx) {
+    preference[canonicalizeStatsProviderName_(name)] = idx;
+  });
+  const ordered = (sourceMaps || []).slice().sort(function (a, b) {
+    const rankA = Object.prototype.hasOwnProperty.call(preference, a.source_name) ? preference[a.source_name] : 1000;
+    const rankB = Object.prototype.hasOwnProperty.call(preference, b.source_name) ? preference[b.source_name] : 1000;
+    if (rankA !== rankB) return rankA - rankB;
+    return 0;
+  });
+
+  const candidates = [];
+  ordered.forEach(function (entry) {
+    const row = entry && entry.stats_map ? entry.stats_map[player] : null;
+    if (!row || typeof row !== 'object') return;
+    const value = row[key];
+    if (value === null || value === undefined) return;
+    candidates.push(buildMetricCandidateWithProvenance_(row, key, value));
+  });
+  if (!candidates.length) {
+    return { value: null, value_origin: 'defaulted', is_placeholder: false, is_trusted: false };
+  }
+
+  for (let i = 0; i < candidates.length; i += 1) if (candidates[i].is_trusted) return candidates[i];
+  for (let j = 0; j < candidates.length; j += 1) if (!candidates[j].is_placeholder) return candidates[j];
+  return candidates[0];
+}
+
+function buildMetricCandidateWithProvenance_(statsRow, feature, value) {
+  const explicitOrigin = extractFeatureValueOrigin_(statsRow, feature);
+  const isZeroValue = Number(value) === 0;
+  const hasExplicitZeroConfirmation = explicitOrigin && explicitOrigin !== 'defaulted';
+  const isPlaceholder = isZeroValue && !hasExplicitZeroConfirmation;
+  const valueOrigin = explicitOrigin || (isPlaceholder ? 'defaulted' : 'scraped');
+  const isTrusted = !isPlaceholder && (valueOrigin === 'scraped' || valueOrigin === 'inferred');
+  return {
+    value: value,
+    value_origin: valueOrigin,
+    is_placeholder: isPlaceholder,
+    is_trusted: isTrusted,
+  };
+}
+
+function extractFeatureValueOrigin_(statsRow, feature) {
+  if (!statsRow || typeof statsRow !== 'object') return '';
+  const map = statsRow.value_origin;
+  if (map && typeof map === 'object' && typeof map[feature] === 'string') {
+    return normalizeValueOrigin_(map[feature]);
+  }
+  const perFeature = statsRow[feature + '_value_origin'];
+  if (typeof perFeature === 'string') return normalizeValueOrigin_(perFeature);
+  return '';
+}
+
+function normalizeValueOrigin_(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (value === 'scraped' || value === 'inferred' || value === 'defaulted' || value === 'imputed') return value;
+  return '';
 }
 
 function selectMetricBySourcePriority_(sourceMaps, player, key, preferredSources) {
@@ -2248,6 +2376,9 @@ function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers, option
       stats_confidence: normalizeFloatMetric_(row.stats_confidence),
       source_used: String(row.source_used || ''),
       fallback_mode: String(row.fallback_mode || ''),
+      value_origin: row.value_origin && typeof row.value_origin === 'object' ? row.value_origin : null,
+      placeholder_feature_count: Number(row.placeholder_feature_count || 0),
+      trusted_feature_count: Number(row.trusted_feature_count || 0),
     };
   });
 
@@ -2487,18 +2618,49 @@ function summarizePlayerStatsCompleteness_(statsByPlayer) {
     : [];
   let playersWithNonNullStats = 0;
   let playersWithNullOnlyStats = 0;
+  let placeholderFeatureCount = 0;
+  let trustedFeatureCount = 0;
 
   players.forEach(function (player) {
     const stats = statsByPlayer[player];
     const hasNonNullStats = playerStatsHasNonNullFeatures_(stats);
     if (hasNonNullStats) playersWithNonNullStats += 1;
     else playersWithNullOnlyStats += 1;
+    const quality = summarizeFeatureQualityCounts_(stats);
+    placeholderFeatureCount += Number(quality.placeholder_feature_count || 0);
+    trustedFeatureCount += Number(quality.trusted_feature_count || 0);
   });
 
   return {
     has_stats: playersWithNonNullStats > 0,
     players_with_non_null_stats: playersWithNonNullStats,
     players_with_null_only_stats: playersWithNullOnlyStats,
+    placeholder_feature_count: placeholderFeatureCount,
+    trusted_feature_count: trustedFeatureCount,
+  };
+}
+
+function summarizeFeatureQualityCounts_(stats) {
+  if (!stats || typeof stats !== 'object') return { placeholder_feature_count: 0, trusted_feature_count: 0 };
+  if (Number.isFinite(Number(stats.placeholder_feature_count)) || Number.isFinite(Number(stats.trusted_feature_count))) {
+    return {
+      placeholder_feature_count: Number(stats.placeholder_feature_count || 0),
+      trusted_feature_count: Number(stats.trusted_feature_count || 0),
+    };
+  }
+
+  let placeholderFeatureCount = 0;
+  let trustedFeatureCount = 0;
+  PLAYER_STATS_CANONICAL_FEATURES.forEach(function (feature) {
+    const value = stats[feature];
+    if (value === null || value === undefined) return;
+    const candidate = buildMetricCandidateWithProvenance_(stats, feature, value);
+    placeholderFeatureCount += candidate.is_placeholder ? 1 : 0;
+    trustedFeatureCount += candidate.is_trusted ? 1 : 0;
+  });
+  return {
+    placeholder_feature_count: placeholderFeatureCount,
+    trusted_feature_count: trustedFeatureCount,
   };
 }
 

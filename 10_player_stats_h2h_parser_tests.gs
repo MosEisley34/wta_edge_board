@@ -344,6 +344,53 @@ function testMergePlayerStatsMaps_appliesFeaturePrecedenceRules_() {
   assertEquals_(0.8, merged['iga swiatek'].hold_pct);
   assertEquals_(0.5, merged['iga swiatek'].break_pct);
   assertEquals_(0.95, merged['iga swiatek'].recent_form);
+  assertEquals_('scraped', merged['iga swiatek'].value_origin.hold_pct);
+  assertEquals_(0, merged['iga swiatek'].placeholder_feature_count);
+  assertTrue_(merged['iga swiatek'].trusted_feature_count >= 4);
+}
+
+function testMergePlayerStatsMaps_flagsPlaceholderZerosAsLowTrustAndPenalizesConfidence_() {
+  const merged = mergePlayerStatsMaps_([
+    {
+      source_name: 'wta_stats_zone',
+      stats_by_player: {
+        'iga swiatek': { ranking: 0, recent_form: 0, hold_pct: 0, break_pct: 0 },
+      },
+    },
+  ], ['Iga Swiatek']);
+
+  assertEquals_(0, merged['iga swiatek'].ranking);
+  assertEquals_('defaulted', merged['iga swiatek'].value_origin.ranking);
+  assertEquals_(4, merged['iga swiatek'].placeholder_feature_count);
+  assertEquals_(0, merged['iga swiatek'].trusted_feature_count);
+  assertEquals_(0.08, merged['iga swiatek'].stats_confidence);
+  assertEquals_('low_placeholder_only', merged['iga swiatek'].stats_confidence_band);
+}
+
+function testMergePlayerStatsMaps_treatsExplicitZeroOriginAsTrusted_() {
+  const merged = mergePlayerStatsMaps_([
+    {
+      source_name: 'tennis_abstract',
+      stats_by_player: {
+        'iga swiatek': {
+          ranking: 0,
+          recent_form: 0,
+          hold_pct: 0,
+          break_pct: 0,
+          value_origin: {
+            ranking: 'scraped',
+            recent_form: 'scraped',
+            hold_pct: 'scraped',
+            break_pct: 'scraped',
+          },
+        },
+      },
+    },
+  ], ['Iga Swiatek']);
+
+  assertEquals_(0, merged['iga swiatek'].placeholder_feature_count);
+  assertEquals_(4, merged['iga swiatek'].trusted_feature_count);
+  assertEquals_('high', merged['iga swiatek'].stats_confidence_band);
 }
 
 function testBuildPlayerStatsMergeDiagnostics_reportsCoverageAndContributions_() {
@@ -370,6 +417,8 @@ function testBuildPlayerStatsMergeDiagnostics_reportsCoverageAndContributions_()
   assertEquals_(1, diagnostics.per_feature_non_null_contributions.ranking.wta_stats_zone);
   assertEquals_(1, diagnostics.per_feature_non_null_contributions.hold_pct.tennis_abstract);
   assertEquals_(1, diagnostics.final.players_with_non_null_stats);
+  assertEquals_(0, diagnostics.final.placeholder_feature_count);
+  assertEquals_(3, diagnostics.final.trusted_feature_count);
 }
 
 
