@@ -1490,16 +1490,43 @@ function fetchPlayerStatsFromItfRankings_(sourceConfig, config, players) {
   const responseHeaders = response.getHeaders ? response.getHeaders() : {};
   const contentType = String(responseHeaders['Content-Type'] || responseHeaders['content-type'] || '');
   const body = String(response.getContentText() || '');
+  const isJsonContentType = contentType.toLowerCase().indexOf('application/json') >= 0;
+
+  if (status === 404) {
+    return {
+      ok: false,
+      reason_code: 'itf_contract_http_404',
+      api_call_count: 1,
+      contract_check_passed: false,
+      missing_keys: ['http_2xx', 'data.rankings'],
+    };
+  }
+
+  if (!isJsonContentType) {
+    return {
+      ok: false,
+      reason_code: 'itf_contract_non_json',
+      api_call_count: 1,
+      contract_check_passed: false,
+      missing_keys: ['content-type:application/json', 'data.rankings'],
+    };
+  }
+
   let payload = null;
   try {
     payload = JSON.parse(body || '{}');
   } catch (e) {
-    payload = null;
+    return {
+      ok: false,
+      reason_code: 'itf_contract_non_json',
+      api_call_count: 1,
+      contract_check_passed: false,
+      missing_keys: ['json_parse_error', 'data.rankings'],
+    };
   }
 
   const missingKeys = [];
   if (!(status >= 200 && status < 300)) missingKeys.push('http_2xx');
-  if (contentType.toLowerCase().indexOf('application/json') < 0) missingKeys.push('content-type:application/json');
   if (!jsonPathExists_(payload, ['data', 'rankings'])) missingKeys.push('data.rankings');
 
   if (missingKeys.length) {

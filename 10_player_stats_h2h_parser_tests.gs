@@ -537,9 +537,31 @@ function testFetchPlayerStatsFromItfRankings_contractFailureUsesReasonCode_() {
   try {
     const result = fetchPlayerStatsFromSingleSource_({ source_name: 'itf', base_url: 'https://itf.example/rankings' }, {}, ['Iga Swiatek'], new Date('2026-01-01T00:00:00Z'));
     assertEquals_(false, result.ok);
-    assertEquals_('itf_endpoint_invalid', result.reason_code);
+    assertEquals_('itf_contract_non_json', result.reason_code);
     assertEquals_(false, result.contract_check_passed);
     assertTrue_((result.missing_keys || []).indexOf('content-type:application/json') >= 0, 'expected missing content type contract key');
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
+
+function testFetchPlayerStatsFromItfRankings_404FailureUsesReasonCode_() {
+  const originalFetch = UrlFetchApp.fetch;
+  UrlFetchApp.fetch = function () {
+    return {
+      getResponseCode: function () { return 404; },
+      getHeaders: function () { return { 'Content-Type': 'application/json; charset=utf-8' }; },
+      getContentText: function () { return JSON.stringify({ error: 'not found', code: 404 }); },
+    };
+  };
+
+  try {
+    const result = fetchPlayerStatsFromSingleSource_({ source_name: 'itf', base_url: 'https://itf.example/rankings' }, {}, ['Iga Swiatek'], new Date('2026-01-01T00:00:00Z'));
+    assertEquals_(false, result.ok);
+    assertEquals_('itf_contract_http_404', result.reason_code);
+    assertEquals_(false, result.contract_check_passed);
+    assertTrue_((result.missing_keys || []).indexOf('http_2xx') >= 0, 'expected missing http status contract key');
   } finally {
     UrlFetchApp.fetch = originalFetch;
   }

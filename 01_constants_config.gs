@@ -77,7 +77,7 @@ const DEFAULT_CONFIG = {
   NOTIFY_ENABLED: 'true',
   NOTIFY_TEST_MODE: 'false',
   PLAYER_STATS_API_BASE_URL: '',
-  PLAYER_STATS_ITF_ENDPOINT: 'https://api.itf-production.sports-data.stadion.io/v1/widgets/wta/rankings/singles?locale=en',
+  PLAYER_STATS_ITF_ENDPOINT: 'https://www.itftennis.com/-/media/project/itf/shared/data/rankings/wta/singles.json',
   PLAYER_STATS_API_KEY: '',
   PLAYER_STATS_SCRAPE_URLS: '',
   PLAYER_STATS_PROVIDER_MODE: 'tennisabstract_leaders',
