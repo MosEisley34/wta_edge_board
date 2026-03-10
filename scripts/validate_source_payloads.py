@@ -467,7 +467,8 @@ def _has_valid_tennis_player_prerequisite(out_dir: Path) -> tuple[bool, str]:
     if isinstance(sport, dict):
         sport_slug = str(sport.get("slug", "")).strip().lower()
     if sport_slug != "tennis":
-        return False, "player_detail_not_tennis"
+        explicit_slug = sport_slug or "unknown"
+        return False, f"player_detail_domain_mismatch:{explicit_slug}"
 
     player_id = player.get("id")
     if not (isinstance(player_id, int) and player_id > 0) and not (isinstance(player_id, str) and player_id.isdigit()):
@@ -568,15 +569,22 @@ def main() -> int:
 
     prerequisite_skips: dict[str, str] = {}
     promoted_conditional_sources: set[str] = set()
-    for source in sorted(conditional_mandatory_sources):
+    volatile_player_sources = {
+        source
+        for source in (set(conditional_mandatory_sources) | {"sofascore_player_recent"})
+        if _is_allowed_source(source, provider_allowlist)
+    }
+
+    for source in sorted(volatile_player_sources):
         prereq_ok, prereq_reason = _classify_volatile_source_prerequisite(out_dir, source)
         if prereq_ok:
-            promoted_conditional_sources.add(source)
+            if source in conditional_mandatory_sources:
+                promoted_conditional_sources.add(source)
         else:
             prerequisite_skips[source] = prereq_reason
             print(f"INFO: skipping '{source}' due to unmet prerequisites ({prereq_reason})")
 
-    effective_mandatory_sources = set(mandatory_sources) | promoted_conditional_sources
+    effective_mandatory_sources = (set(mandatory_sources) | promoted_conditional_sources) - set(prerequisite_skips)
 
     results, all_mandatory_ready, skipped_sources = run_validations(
         out_dir,
