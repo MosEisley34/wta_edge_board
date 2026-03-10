@@ -369,6 +369,26 @@ def _is_allowed_source(source: str, allowlist: list[str]) -> bool:
     return any(fnmatch(source, pattern) for pattern in allowlist)
 
 
+def _load_active_probe_sources(out_dir: Path) -> set[str]:
+    summary_path = out_dir / "summary.json"
+    summary = _load_json_if_exists(summary_path)
+    if not isinstance(summary, dict):
+        return set()
+
+    sources = summary.get("sources")
+    if not isinstance(sources, list):
+        return set()
+
+    active_sources: set[str] = set()
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        source_key = str(item.get("source_key", "")).strip()
+        if source_key:
+            active_sources.add(source_key)
+    return active_sources
+
+
 def run_validations(out_dir: Path, mandatory_sources: set[str], provider_allowlist: list[str]) -> tuple[list[ValidationResult], bool, list[str]]:
     raw_dir = out_dir / "raw"
     validators: dict[str, Callable[[str, str, Path | None], ValidationResult]] = {
@@ -521,7 +541,7 @@ def parse_args() -> argparse.Namespace:
         "--mandatory-sources",
         default=os.environ.get(
             "MANDATORY_SOURCES",
-            "tennisabstract_leaders,tennisabstract_leadersource_wta,ta_h2h,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent",
+            "tennisabstract_leaders,tennisabstract_leadersource_wta,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent",
         ),
         help="Comma-separated source keys that must be extraction-ready for zero exit (before allowlist filtering)",
     )
@@ -529,7 +549,7 @@ def parse_args() -> argparse.Namespace:
         "--conditional-mandatory-sources",
         default=os.environ.get(
             "CONDITIONAL_MANDATORY_SOURCES",
-            "sofascore_player_stats_overall,sofascore_player_stats_last52",
+            "ta_h2h,sofascore_player_stats_overall,sofascore_player_stats_last52",
         ),
         help="Comma-separated source keys that become mandatory only when prerequisites are met",
     )
@@ -548,14 +568,31 @@ def main() -> int:
         out_dir = Path(os.environ["OUT_DIR"])
 
     provider_allowlist = _parse_allowlist(args.provider_allowlist)
+    summary_payload = _load_json_if_exists(out_dir / "summary.json")
+    summary_partial_run = bool(summary_payload.get("partial_run")) if isinstance(summary_payload, dict) else False
+    summary_partial_run_reasons = (
+        [str(reason) for reason in summary_payload.get("partial_run_reasons", []) if str(reason).strip()]
+        if isinstance(summary_payload, dict)
+        else []
+    )
+    active_probe_sources = _load_active_probe_sources(out_dir)
     mandatory_sources_all = {item.strip() for item in args.mandatory_sources.split(",") if item.strip()}
     conditional_mandatory_sources_all = {
         item.strip() for item in args.conditional_mandatory_sources.split(",") if item.strip()
     }
-    mandatory_sources = {source for source in mandatory_sources_all if _is_allowed_source(source, provider_allowlist)}
+    mandatory_sources = {
+        source
+        for source in mandatory_sources_all
+        if _is_allowed_source(source, provider_allowlist)
+        and (not active_probe_sources or source in active_probe_sources)
+    }
     conditional_mandatory_sources = {
         source for source in conditional_mandatory_sources_all if _is_allowed_source(source, provider_allowlist)
     }
+    if active_probe_sources:
+        conditional_mandatory_sources = {
+            source for source in conditional_mandatory_sources if source in active_probe_sources
+        }
 
     excluded_mandatory = sorted(mandatory_sources_all - mandatory_sources)
     excluded_conditional_mandatory = sorted(conditional_mandatory_sources_all - conditional_mandatory_sources)
@@ -625,6 +662,8 @@ def main() -> int:
         "optional_failures": optional_failures,
         "skipped_by_prerequisite": skipped_by_prerequisite,
         "all_mandatory_ready": all_mandatory_ready,
+        "partial_run": summary_partial_run,
+        "partial_run_reasons": sorted(set(summary_partial_run_reasons)),
         "results": [r.__dict__ for r in results],
     }
 

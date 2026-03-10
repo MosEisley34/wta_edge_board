@@ -727,28 +727,34 @@ summary_out = sys.argv[4]
 sources = []
 pass_count = 0
 fail_count = 0
+partial_run = False
+partial_run_reasons = []
 
-with open(summary_tsv, 'r', encoding='utf-8') as fh:
-    for line in fh:
-        line = line.rstrip('\n')
-        if not line:
-            continue
-        source_key, status, passed, effective_pass, transport_pass, http_code = line.split('\t')
-        is_pass = passed.lower() == 'true'
-        is_effective_pass = effective_pass.lower() == 'true'
-        is_transport_pass = transport_pass.lower() == 'true'
-        sources.append({
-            'source_key': source_key,
-            'status': status,
-            'pass': is_pass,
-            'effective_pass': is_effective_pass,
-            'transport_pass': is_transport_pass,
-            'http_code': http_code,
-        })
-        if is_effective_pass:
-            pass_count += 1
-        else:
-            fail_count += 1
+if not os.path.exists(summary_tsv):
+    partial_run = True
+    partial_run_reasons.append('summary_tsv_missing')
+else:
+    with open(summary_tsv, 'r', encoding='utf-8') as fh:
+        for line in fh:
+            line = line.rstrip('\n')
+            if not line:
+                continue
+            source_key, status, passed, effective_pass, transport_pass, http_code = line.split('\t')
+            is_pass = passed.lower() == 'true'
+            is_effective_pass = effective_pass.lower() == 'true'
+            is_transport_pass = transport_pass.lower() == 'true'
+            sources.append({
+                'source_key': source_key,
+                'status': status,
+                'pass': is_pass,
+                'effective_pass': is_effective_pass,
+                'transport_pass': is_transport_pass,
+                'http_code': http_code,
+            })
+            if is_effective_pass:
+                pass_count += 1
+            else:
+                fail_count += 1
 
 parsed_entries = []
 skipped_by_allowlist = []
@@ -779,8 +785,13 @@ regex_totals = {
     'api_url_hints': 0,
 }
 for path in sorted(glob.glob(os.path.join(parsed_dir, '*.json'))):
-    with open(path, 'r', encoding='utf-8') as fh:
-        obj = json.load(fh)
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            obj = json.load(fh)
+    except Exception:
+        partial_run = True
+        partial_run_reasons.append(f'parsed_json_unreadable:{os.path.basename(path)}')
+        continue
     parsed_entries.append(obj)
     fp = obj.get('fingerprint', {})
     for key in fingerprint_totals:
@@ -796,6 +807,8 @@ summary = {
     'fail_count': fail_count,
     'skipped_by_allowlist_count': len(skipped_by_allowlist),
     'skipped_by_allowlist': skipped_by_allowlist,
+    'partial_run': partial_run,
+    'partial_run_reasons': sorted(set(partial_run_reasons)),
     'sources': sources,
     'fingerprint_totals': fingerprint_totals,
     'regex_totals': regex_totals,
