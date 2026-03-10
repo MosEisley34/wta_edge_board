@@ -266,6 +266,17 @@ def validate_json_source(
             payload_path=str(payload_path) if payload_path else None,
         )
 
+    required_path_hits = [".".join(path) for path in required_paths if _json_path_exists(data, path)]
+    if required_path_hits:
+        return ValidationResult(
+            source=source,
+            ready_for_extraction=True,
+            reason_code="json_required_paths_detected",
+            evidence_samples=required_path_hits[:4],
+            evidence_counts={"required_path_count": len(required_path_hits)},
+            payload_path=str(payload_path) if payload_path else None,
+        )
+
     path_hits = [".".join(path) for path in marker_paths if _json_path_exists(data, path)]
     if allow_structural_marker_fallback and path_hits:
         return ValidationResult(
