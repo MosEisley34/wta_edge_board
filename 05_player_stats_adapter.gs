@@ -183,11 +183,19 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
   const attempts = [];
   let totalApiCalls = 0;
   const sourcePayloads = [];
+  const sourceAttemptDiagnostics = [];
 
   sourceConfigs.forEach(function (sourceConfig) {
     const result = fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTime);
     attempts.push(result.reason_code || 'player_stats_unknown_source_result');
     totalApiCalls += Number(result.api_call_count || 0);
+    sourceAttemptDiagnostics.push({
+      source_name: sourceConfig.source_name,
+      reason_code: result.reason_code || '',
+      attempted_endpoints: result.attempted_endpoints || [],
+      missing_fields: result.missing_fields || [],
+      contract_check_passed: result.contract_check_passed !== false,
+    });
     if (result.ok && result.stats_by_player) {
       sourcePayloads.push({
         source_name: sourceConfig.source_name,
@@ -198,7 +206,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
 
   if (sourcePayloads.length) {
     const merged = mergePlayerStatsMaps_(sourcePayloads, players);
-    const mergeDiagnostics = buildPlayerStatsMergeDiagnostics_(sourcePayloads, merged, players);
+    const mergeDiagnostics = buildPlayerStatsMergeDiagnostics_(sourcePayloads, merged, players, sourceAttemptDiagnostics);
     const mergedHasData = Number((mergeDiagnostics.final || {}).players_with_non_null_stats || 0) > 0;
     return {
       ok: true,
@@ -213,6 +221,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       selection_metadata: {
         source_count: sourcePayloads.length,
         merge_diagnostics: mergeDiagnostics,
+        source_attempts: sourceAttemptDiagnostics,
       },
     };
   }
@@ -230,7 +239,11 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       scrape_call_count: 0,
       selection_metadata: {
         source_count: 1,
-        merge_diagnostics: buildPlayerStatsMergeDiagnostics_([{ source_name: 'sofascore', stats_by_player: sofascoreFallback.stats_by_player || {} }], sofascoreFallback.stats_by_player || {}, players),
+        merge_diagnostics: buildPlayerStatsMergeDiagnostics_([{ source_name: 'sofascore', stats_by_player: sofascoreFallback.stats_by_player || {} }], sofascoreFallback.stats_by_player || {}, players, [{
+          source_name: 'sofascore',
+          attempted_endpoints: sofascoreFallback.attempted_endpoints || [],
+          missing_fields: sofascoreFallback.missing_fields || [],
+        }]),
       },
     };
   }
@@ -1250,14 +1263,29 @@ function parsePlayerStatsSourceConfigs_(config) {
 
 function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTime) {
   const sourceName = canonicalizeStatsProviderName_(sourceConfig && sourceConfig.source_name);
+  const baseUrl = sourceConfig && sourceConfig.base_url ? sourceConfig.base_url : '';
   if (sourceName === 'sofascore') {
     return fetchPlayerStatsFromSofascore_(config, players, asOfTime);
   }
   if (sourceName === 'itf') {
     return fetchPlayerStatsFromItfRankings_(sourceConfig, config, players);
   }
+  if (sourceName === 'tennis_abstract') {
+    const taResult = fetchPlayerStatsFromLeadersSource_(players, config, asOfTime);
+    const parserReady = taLeadersParserReadyForMerge_(taResult);
+    return {
+      ok: taResult.ok && parserReady,
+      reason_code: taResult.reason_code || (parserReady ? 'ta_matchmx_ok' : 'ta_matchmx_parse_failed'),
+      stats_by_player: taResult.stats_by_player || {},
+      api_call_count: Number(taResult.api_call_count || 0),
+      source_name: 'tennis_abstract',
+      attempted_endpoints: [String(config.PLAYER_STATS_TA_LEADERS_URL || 'https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top')],
+      missing_fields: parserReady ? [] : ['ranking', 'hold_pct', 'break_pct'],
+      contract_check_passed: parserReady,
+      selection_metadata: taResult.selection_metadata || null,
+    };
+  }
 
-  const baseUrl = sourceConfig && sourceConfig.base_url ? sourceConfig.base_url : '';
   const endpoint = String(baseUrl || '').replace(/\/$/, '') + '/players/stats/batch';
   const body = JSON.stringify({
     players: players,
@@ -1285,6 +1313,9 @@ function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTi
       ok: false,
       reason_code: 'player_stats_transport_error',
       api_call_count: 1,
+      attempted_endpoints: [endpoint],
+      missing_fields: ['ranking', 'recent_form', 'hold_pct', 'break_pct'],
+      contract_check_passed: false,
     };
   }
 
@@ -1294,6 +1325,9 @@ function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTi
       ok: false,
       reason_code: 'player_stats_http_' + status,
       api_call_count: 1,
+      attempted_endpoints: [endpoint],
+      missing_fields: ['ranking', 'recent_form', 'hold_pct', 'break_pct'],
+      contract_check_passed: false,
     };
   }
 
@@ -1305,16 +1339,33 @@ function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTi
       ok: false,
       reason_code: 'player_stats_parse_error',
       api_call_count: 1,
+      attempted_endpoints: [endpoint],
+      missing_fields: ['ranking', 'recent_form', 'hold_pct', 'break_pct'],
+      contract_check_passed: false,
     };
   }
+
+  const adapted = adaptGenericProviderStats_(normalizePlayerStatsResponse_(parsed, players), players, sourceName || 'unknown');
+  const missingCore = summarizeMissingCoreFields_(adapted, players);
 
   return {
     ok: true,
     reason_code: 'player_stats_api_success',
-    stats_by_player: normalizePlayerStatsResponse_(parsed, players),
+    stats_by_player: adapted,
     api_call_count: 1,
     source_name: sourceConfig && sourceConfig.source_name ? sourceConfig.source_name : 'unknown',
+    attempted_endpoints: [endpoint],
+    missing_fields: missingCore,
+    contract_check_passed: missingCore.length < PLAYER_STATS_COMPLETENESS_KEYS.length,
   };
+}
+
+function taLeadersParserReadyForMerge_(result) {
+  if (!result || !result.ok) return false;
+  const reasonCode = String(result.reason_code || '');
+  if (reasonCode === 'ta_matchmx_ok' || reasonCode === 'ta_matchmx_cache_hit') return true;
+  const qualityGate = result.selection_metadata && result.selection_metadata.quality_gate;
+  return !!(qualityGate && qualityGate.meets_thresholds === true);
 }
 
 function fetchPlayerStatsFromItfRankings_(sourceConfig, config, players) {
@@ -1368,23 +1419,36 @@ function fetchPlayerStatsFromItfRankings_(sourceConfig, config, players) {
     const ranking = toNullableNumber_(row.ranking);
     const rank = ranking !== null ? ranking : toNullableNumber_(row.rank);
     const position = rank !== null ? rank : toNullableNumber_(row.position);
-    if (position !== null) rankByPlayer[canonical] = position;
+    rankByPlayer[canonical] = {
+      ranking: position,
+      recent_form: normalizeRateMetric_(row.recent_form, row.form, row.win_rate, row.winPercentage),
+      hold_pct: normalizeRateMetric_(row.hold_pct, row.holdPercentage, row.service_games_won_pct),
+      break_pct: normalizeRateMetric_(row.break_pct, row.breakPercentage, row.return_games_won_pct),
+    };
   });
 
   const statsByPlayer = {};
   dedupePlayerNames_(players || []).forEach(function (playerName) {
     const canonical = canonicalizePlayerName_(playerName);
+    const sourceRow = Object.prototype.hasOwnProperty.call(rankByPlayer, canonical) ? rankByPlayer[canonical] : null;
+    const ranking = sourceRow ? sourceRow.ranking : null;
+    const recentForm = sourceRow ? sourceRow.recent_form : null;
+    const holdPct = sourceRow ? sourceRow.hold_pct : null;
+    const breakPct = sourceRow ? sourceRow.break_pct : null;
+    const rankingOnly = ranking !== null && holdPct === null && breakPct === null;
     statsByPlayer[canonical] = {
-      ranking: Object.prototype.hasOwnProperty.call(rankByPlayer, canonical) ? rankByPlayer[canonical] : null,
-      recent_form: null,
+      ranking: ranking,
+      recent_form: recentForm,
       recent_form_last_10: null,
       surface_win_rate: null,
-      hold_pct: null,
-      break_pct: null,
+      hold_pct: holdPct,
+      break_pct: breakPct,
       surface_recent_form: null,
-      stats_confidence: Object.prototype.hasOwnProperty.call(rankByPlayer, canonical) ? 0.4 : 0,
+      stats_confidence: rankingOnly ? 0.25 : (ranking !== null ? 0.45 : 0),
+      stats_confidence_band: rankingOnly ? 'low_ranking_only' : (ranking !== null ? 'medium_partial' : 'none'),
       source_used: 'itf_rankings',
-      fallback_mode: 'ranking_only',
+      fallback_mode: rankingOnly ? 'ranking_only' : 'partial_core',
+      has_stats: ranking !== null,
     };
   });
 
@@ -1408,6 +1472,45 @@ function jsonPathExists_(obj, path) {
     node = node[key];
   }
   return true;
+}
+
+function adaptGenericProviderStats_(statsByPlayer, players, sourceName) {
+  const map = statsByPlayer || {};
+  const canonicalPlayers = dedupePlayerNames_(players || []);
+  const out = {};
+  canonicalPlayers.forEach(function (playerName) {
+    const row = map[playerName] || {};
+    const ranking = row.ranking !== null && row.ranking !== undefined ? row.ranking : parseIntegerMetric_(row.rank, row.world_ranking);
+    const recentForm = row.recent_form !== null && row.recent_form !== undefined ? row.recent_form : normalizeRateMetric_(row.recent_form_last_10, row.surface_recent_form);
+    const holdPct = row.hold_pct !== null && row.hold_pct !== undefined ? row.hold_pct : normalizeRateMetric_(row.surface_hold_pct);
+    const breakPct = row.break_pct !== null && row.break_pct !== undefined ? row.break_pct : normalizeRateMetric_(row.surface_break_pct);
+    const nonNullCore = [ranking, recentForm, holdPct, breakPct].filter(function (v) { return v !== null && v !== undefined; }).length;
+    out[playerName] = Object.assign({}, row, {
+      ranking: ranking,
+      recent_form: recentForm,
+      hold_pct: holdPct,
+      break_pct: breakPct,
+      stats_confidence: row.stats_confidence !== null && row.stats_confidence !== undefined
+        ? row.stats_confidence
+        : (nonNullCore >= 4 ? 0.75 : (nonNullCore >= 2 ? 0.5 : (nonNullCore === 1 ? 0.3 : 0))),
+      source_used: String(row.source_used || sourceName || ''),
+      fallback_mode: String(row.fallback_mode || (nonNullCore < 4 ? 'limited_features' : 'full')),
+    });
+  });
+  return out;
+}
+
+function summarizeMissingCoreFields_(statsByPlayer, players) {
+  const missing = {};
+  PLAYER_STATS_COMPLETENESS_KEYS.forEach(function (k) { missing[k] = 0; });
+  const canonicalPlayers = dedupePlayerNames_(players || []);
+  canonicalPlayers.forEach(function (playerName) {
+    const row = statsByPlayer && statsByPlayer[playerName] ? statsByPlayer[playerName] : {};
+    PLAYER_STATS_COMPLETENESS_KEYS.forEach(function (k) {
+      if (row[k] === null || row[k] === undefined) missing[k] += 1;
+    });
+  });
+  return Object.keys(missing).filter(function (k) { return Number(missing[k] || 0) > 0; });
 }
 
 function extractItfRankingRows_(payload) {
@@ -1435,9 +1538,11 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
   const canonicalPlayers = dedupePlayerNames_(players || []);
   let apiCallCount = 0;
   let sourceUsed = 'sofascore_live';
+  const attemptedEndpoints = [];
 
   for (let i = 0; i < eventUrls.length; i += 1) {
     const parsed = fetchSofascoreJson_(eventUrls[i], config);
+    attemptedEndpoints.push(eventUrls[i]);
     apiCallCount += Number(parsed.api_call_count || 0);
     if (!parsed.ok) continue;
 
@@ -1466,25 +1571,32 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
       return;
     }
 
-    const detail = fetchSofascorePlayerDetail_(participant.id, config);
-    const recent = fetchSofascoreRecentForm_(participant.id, config);
-    apiCallCount += Number(detail.api_call_count || 0) + Number(recent.api_call_count || 0);
+    const enrichment = fetchSofascorePlayerEnrichment_(participant.id, config);
+    apiCallCount += Number(enrichment.api_call_count || 0);
+    attemptedEndpoints.push.apply(attemptedEndpoints, enrichment.attempted_endpoints || []);
 
-    const ranking = extractSofascoreRanking_(detail.payload);
-    const recentForm = extractSofascoreFormProxy_(recent.payload, participant.id);
-    const nonNullCore = [ranking, recentForm].filter(function (v) { return v !== null && v !== undefined; }).length;
+    const ranking = extractSofascoreRanking_(enrichment.detail_payload);
+    const recentForm = extractSofascoreFormProxy_(enrichment.recent_payload, participant.id);
+    const holdPct = extractSofascoreHoldPct_(enrichment);
+    const breakPct = extractSofascoreBreakPct_(enrichment);
+    const rankingOnly = ranking !== null && holdPct === null && breakPct === null;
+    const nonNullCore = [ranking, recentForm, holdPct, breakPct].filter(function (v) { return v !== null && v !== undefined; }).length;
 
     statsByPlayer[playerName] = {
       ranking: ranking,
       recent_form: recentForm,
       surface_win_rate: null,
-      hold_pct: null,
-      break_pct: null,
-      stats_confidence: nonNullCore >= 2 ? 0.6 : (nonNullCore === 1 ? 0.35 : 0),
+      hold_pct: holdPct,
+      break_pct: breakPct,
+      stats_confidence: nonNullCore >= 4 ? 0.72 : (nonNullCore >= 2 ? 0.52 : (rankingOnly ? 0.26 : (nonNullCore === 1 ? 0.3 : 0))),
+      stats_confidence_band: nonNullCore >= 4 ? 'medium' : (rankingOnly ? 'low_ranking_only' : (nonNullCore >= 2 ? 'medium_partial' : 'low')),
       source_used: sourceUsed,
-      fallback_mode: nonNullCore > 0 ? 'limited_features' : 'detail_unavailable',
+      fallback_mode: rankingOnly ? 'ranking_only' : (nonNullCore > 0 ? 'limited_features' : 'detail_unavailable'),
+      has_stats: nonNullCore > 0 || rankingOnly,
     };
   });
+
+  const missingCore = summarizeMissingCoreFields_(statsByPlayer, canonicalPlayers);
 
   return {
     ok: true,
@@ -1492,6 +1604,32 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
     stats_by_player: statsByPlayer,
     api_call_count: apiCallCount,
     source_name: 'sofascore',
+    attempted_endpoints: dedupeStringList_(attemptedEndpoints),
+    missing_fields: missingCore,
+    contract_check_passed: missingCore.length < PLAYER_STATS_COMPLETENESS_KEYS.length,
+  };
+}
+
+function fetchSofascorePlayerEnrichment_(playerId, config) {
+  const pid = encodeURIComponent(String(playerId || ''));
+  const endpoints = [
+    'https://api.sofascore.com/api/v1/player/' + pid,
+    'https://api.sofascore.com/api/v1/player/' + pid + '/events/last/0',
+    'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/overall',
+    'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/last/52',
+  ];
+
+  const detail = fetchSofascoreJson_(endpoints[0], config);
+  const recent = fetchSofascoreJson_(endpoints[1], config);
+  const statsOverall = fetchSofascoreJson_(endpoints[2], config);
+  const statsLast52 = fetchSofascoreJson_(endpoints[3], config);
+
+  return {
+    detail_payload: detail.payload,
+    recent_payload: recent.payload,
+    stats_payloads: [statsOverall.payload, statsLast52.payload],
+    api_call_count: Number(detail.api_call_count || 0) + Number(recent.api_call_count || 0) + Number(statsOverall.api_call_count || 0) + Number(statsLast52.api_call_count || 0),
+    attempted_endpoints: endpoints,
   };
 }
 
@@ -1501,6 +1639,60 @@ function fetchSofascorePlayerDetail_(playerId, config) {
 
 function fetchSofascoreRecentForm_(playerId, config) {
   return fetchSofascoreJson_('https://api.sofascore.com/api/v1/player/' + encodeURIComponent(String(playerId || '')) + '/events/last/0', config);
+}
+
+function extractSofascoreHoldPct_(enrichment) {
+  const payloads = [enrichment && enrichment.detail_payload].concat((enrichment && enrichment.stats_payloads) || []);
+  return extractSofascoreMetric_(payloads, ['holdPct', 'holdPercentage', 'serviceGamesWonPct', 'service_game_win_pct']);
+}
+
+function extractSofascoreBreakPct_(enrichment) {
+  const payloads = [enrichment && enrichment.detail_payload].concat((enrichment && enrichment.stats_payloads) || []);
+  return extractSofascoreMetric_(payloads, ['breakPct', 'breakPercentage', 'returnGamesWonPct', 'break_points_converted_pct']);
+}
+
+function extractSofascoreMetric_(payloads, keys) {
+  for (let i = 0; i < (payloads || []).length; i += 1) {
+    const value = deepFindMetricValue_(payloads[i], keys || []);
+    const normalized = normalizeRateMetric_(value);
+    if (normalized !== null && normalized !== undefined) return normalized;
+  }
+  return null;
+}
+
+function deepFindMetricValue_(node, keys) {
+  const targetKeys = (keys || []).map(function (k) { return String(k || '').toLowerCase(); });
+  const stack = [node];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== 'object') continue;
+    if (Array.isArray(cur)) {
+      for (let i = 0; i < cur.length; i += 1) stack.push(cur[i]);
+      continue;
+    }
+    const entries = Object.keys(cur);
+    for (let i = 0; i < entries.length; i += 1) {
+      const key = entries[i];
+      const lower = key.toLowerCase();
+      const value = cur[key];
+      if (targetKeys.indexOf(lower) >= 0) return value;
+      if (targetKeys.indexOf(lower.replace(/[^a-z0-9]/g, '')) >= 0) return value;
+      stack.push(value);
+    }
+  }
+  return null;
+}
+
+function dedupeStringList_(list) {
+  const out = [];
+  const seen = {};
+  (list || []).forEach(function (item) {
+    const token = String(item || '').trim();
+    if (!token || seen[token]) return;
+    seen[token] = true;
+    out.push(token);
+  });
+  return out;
 }
 
 function fetchSofascoreJson_(url, config) {
@@ -1683,7 +1875,7 @@ function mergePlayerStatsMaps_(sourcePayloads, canonicalPlayers) {
   });
 
   players.forEach(function (player) {
-    merged[player] = {
+    const mergedRow = {
       ranking: selectMetricBySourcePriority_(sourceMaps, player, 'ranking', ['wta_stats_zone', 'itf', 'tennis_abstract', 'tennis_explorer', 'sofascore']),
       recent_form: selectMetricBySourcePriority_(sourceMaps, player, 'recent_form', ['sofascore', 'tennis_explorer', 'wta_stats_zone', 'tennis_abstract', 'itf']),
       recent_form_last_10: selectMetricBySourcePriority_(sourceMaps, player, 'recent_form_last_10', ['sofascore', 'tennis_explorer', 'wta_stats_zone', 'tennis_abstract', 'itf']),
@@ -1702,6 +1894,16 @@ function mergePlayerStatsMaps_(sourcePayloads, canonicalPlayers) {
       dr: selectMetricBySourcePriority_(sourceMaps, player, 'dr', ['tennis_abstract']),
       tpw_pct: selectMetricBySourcePriority_(sourceMaps, player, 'tpw_pct', ['tennis_abstract']),
     };
+    const rankingOnlyFallback = mergedRow.ranking !== null && mergedRow.ranking !== undefined
+      && (mergedRow.hold_pct === null || mergedRow.hold_pct === undefined)
+      && (mergedRow.break_pct === null || mergedRow.break_pct === undefined);
+    const nonNullCore = [mergedRow.ranking, mergedRow.recent_form, mergedRow.hold_pct, mergedRow.break_pct]
+      .filter(function (value) { return value !== null && value !== undefined; }).length;
+    mergedRow.has_stats = nonNullCore > 0 || rankingOnlyFallback;
+    mergedRow.stats_confidence = rankingOnlyFallback ? 0.24 : (nonNullCore >= 4 ? 0.78 : (nonNullCore >= 2 ? 0.56 : (nonNullCore === 1 ? 0.32 : 0)));
+    mergedRow.stats_confidence_band = rankingOnlyFallback ? 'low_ranking_only' : (nonNullCore >= 4 ? 'high' : (nonNullCore >= 2 ? 'medium' : (nonNullCore === 1 ? 'low' : 'none')));
+    mergedRow.fallback_mode = rankingOnlyFallback ? 'ranking_only' : '';
+    merged[player] = mergedRow;
   });
 
   return merged;
@@ -1742,7 +1944,7 @@ function inferStatsProviderNameFromUrl_(url) {
   return 'unknown';
 }
 
-function buildPlayerStatsMergeDiagnostics_(sourcePayloads, mergedStatsByPlayer, canonicalPlayers) {
+function buildPlayerStatsMergeDiagnostics_(sourcePayloads, mergedStatsByPlayer, canonicalPlayers, sourceAttemptDiagnostics) {
   const players = dedupePlayerNames_(canonicalPlayers || []);
   const perSourcePlayersParsed = {};
   const perFeatureContributions = {};
@@ -1780,11 +1982,39 @@ function buildPlayerStatsMergeDiagnostics_(sourcePayloads, mergedStatsByPlayer, 
     });
   });
 
-  return {
+  const finalSummary = summarizePlayerStatsCompleteness_(mergedStatsByPlayer || {});
+  const diagnostics = {
     per_source_players_parsed: perSourcePlayersParsed,
     per_feature_non_null_contributions: perFeatureContributions,
-    final: summarizePlayerStatsCompleteness_(mergedStatsByPlayer || {}),
+    final: finalSummary,
   };
+
+  if (Number(finalSummary.players_with_non_null_stats || 0) === 0) {
+    diagnostics.zero_coverage_guardrail = {
+      attempted_endpoints_by_source: buildAttemptedEndpointsBySource_(sourceAttemptDiagnostics || []),
+      missing_fields_by_source: buildMissingFieldsBySource_(sourceAttemptDiagnostics || []),
+    };
+  }
+
+  return diagnostics;
+}
+
+function buildAttemptedEndpointsBySource_(sourceAttemptDiagnostics) {
+  const out = {};
+  (sourceAttemptDiagnostics || []).forEach(function (entry) {
+    const sourceName = canonicalizeStatsProviderName_(entry && entry.source_name);
+    out[sourceName] = dedupeStringList_(entry && entry.attempted_endpoints ? entry.attempted_endpoints : []);
+  });
+  return out;
+}
+
+function buildMissingFieldsBySource_(sourceAttemptDiagnostics) {
+  const out = {};
+  (sourceAttemptDiagnostics || []).forEach(function (entry) {
+    const sourceName = canonicalizeStatsProviderName_(entry && entry.source_name);
+    out[sourceName] = dedupeStringList_(entry && entry.missing_fields ? entry.missing_fields : []);
+  });
+  return out;
 }
 
 function normalizePlayerStatsResponse_(providerPayload, canonicalPlayers, options) {
