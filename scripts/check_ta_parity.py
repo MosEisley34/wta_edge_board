@@ -153,7 +153,7 @@ def _normalize_records(rows: list[dict[str, object]]) -> dict[str, dict[str, obj
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check TA parser parity from leadersource_wta.js payload.")
-    parser.add_argument("--input", default="tmp/source_probes/leadersource_wta.js", help="Path to leadersource_wta.js payload")
+    parser.add_argument("--input", default="tmp/source_probes/raw/tennisabstract_leadersource_wta.body", help="Path to leadersource_wta.js payload")
     parser.add_argument("--sample-size", type=int, default=5, help="Number of normalized records to print")
     parser.add_argument("--min-cli-coverage", type=float, default=0.60, help="Min row-level coverage threshold to consider CLI healthy")
     parser.add_argument("--max-apps-coverage", type=float, default=0.20, help="Max normalized coverage threshold to consider Apps Script poor")
@@ -165,6 +165,20 @@ def main() -> int:
         return 1
 
     payload = path.read_text(encoding="utf-8", errors="ignore")
+    matchmx_markers = len(re.findall(r"\bmatchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[", payload))
+    if matchmx_markers == 0:
+        print(
+            json.dumps(
+                {
+                    "status": "fail",
+                    "reason_code": "ta_matchmx_markers_missing",
+                    "path": str(path),
+                    "matchmx_marker_count": 0,
+                }
+            )
+        )
+        return 1
+
     rows = _extract_rows(payload)
     normalized = _normalize_records(rows)
     normalized_rows = list(normalized.values())

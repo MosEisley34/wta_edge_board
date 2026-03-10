@@ -108,7 +108,7 @@ Output includes:
 Use `scripts/check_ta_parity.py` to verify that Tennis Abstract `matchmx` parsing remains aligned with Apps Script normalization before deploys.
 
 ```bash
-python3 scripts/check_ta_parity.py --input tmp/source_probes/leadersource_wta.js
+python3 scripts/check_ta_parity.py --input tmp/source_probes/raw/tennisabstract_leadersource_wta.body
 ```
 
 The script prints:

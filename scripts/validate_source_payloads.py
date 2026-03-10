@@ -87,6 +87,28 @@ def validate_ta_leaders(payload: str, source: str, payload_path: Path | None) ->
     )
 
 
+def validate_ta_leadersource_wta(payload: str, source: str, payload_path: Path | None) -> ValidationResult:
+    matchmx_rows = re.findall(r"\bmatchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[", payload)
+    if matchmx_rows:
+        return ValidationResult(
+            source=source,
+            ready_for_extraction=True,
+            reason_code="ta_leadersource_matchmx_rows_detected",
+            evidence_samples=matchmx_rows[:3],
+            evidence_counts={"matchmx_row_markers": len(matchmx_rows)},
+            payload_path=str(payload_path) if payload_path else None,
+        )
+
+    return ValidationResult(
+        source=source,
+        ready_for_extraction=False,
+        reason_code="ta_leadersource_no_matchmx",
+        evidence_samples=[],
+        evidence_counts={"matchmx_row_markers": 0},
+        payload_path=str(payload_path) if payload_path else None,
+    )
+
+
 def validate_ta_h2h(payload: str, source: str, payload_path: Path | None) -> ValidationResult:
     anchor_matches = re.findall(r"/cgi-bin/(?:player-classic|h2h)\.cgi\?[^\"'\s<]+", payload)
     matrix_markers = re.findall(r"h2hMatrix|<table[^>]*>", payload, flags=re.IGNORECASE)
@@ -352,6 +374,7 @@ def run_validations(out_dir: Path, mandatory_sources: set[str]) -> tuple[list[Va
     raw_dir = out_dir / "raw"
     validators: dict[str, Callable[[str, str, Path | None], ValidationResult]] = {
         "tennisabstract_leaders": validate_ta_leaders,
+        "tennisabstract_leadersource_wta": validate_ta_leadersource_wta,
         "ta_h2h": validate_ta_h2h,
         "wta_stats_zone": validate_wta_stats_zone,
         "itf": lambda payload, source, payload_path: validate_json_source(
@@ -439,7 +462,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mandatory-sources",
-        default="tennisabstract_leaders,ta_h2h,wta_stats_zone,itf,tennisexplorer,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
+        default="tennisabstract_leaders,tennisabstract_leadersource_wta,ta_h2h,wta_stats_zone,itf,tennisexplorer,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
         help="Comma-separated source keys that must be extraction-ready for zero exit",
     )
     return parser.parse_args()
