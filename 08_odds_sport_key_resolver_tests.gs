@@ -4786,6 +4786,59 @@ function testSummarizeTaLeadersParseDiagnostics_tracksCanonicalizationSamplesAnd
   assertEquals_(2, diagnostics.non_null_feature_count_by_field.break_pct);
 }
 
+
+function testExtractMatchMxRows_parsesStructuredAssignmentRowsContainer_() {
+  const payload = 'var matchmx={meta:{source:"wta"},rows:[["2025-03-01","Doha","Hard","Iga Swiatek","Aryna Sabalenka","6-4 6-4",1,82,78,71,44],["2025-03-01","Doha","Hard","E. Mertens","Aryna Sabalenka","6-4 6-4",21,62,58,71,39]]};';
+  const extracted = extractMatchMxRows_(payload);
+  assertEquals_(1, extracted.rows.length);
+  assertEquals_('Iga Swiatek', extracted.rows[0].player_name);
+  assertEquals_('structured_assignment', extracted.diagnostics.parser_format);
+  assertEquals_('matchmx.rows', extracted.diagnostics.row_container_path);
+}
+
+function testEvaluateTaLeadersQualityGate_rejectsSingleCharNamesAndLowDistinctPlayers_() {
+  const diagnostics = {
+    canonical_name_sanity: {
+      valid_ratio: 1,
+      invalid_single_letter_token: 1,
+    },
+    canonical_overlap: {
+      overlap_with_scheduled_ratio: 0.4,
+    },
+    non_null_by_feature: {
+      ranking: 6,
+      hold_pct: 6,
+      break_pct: 6,
+    },
+    non_zero_non_null_feature_total: 6,
+    unique_players_parsed: 2,
+  };
+  const completeness = { players_with_non_null_stats: 4 };
+  const result = evaluateTaLeadersQualityGate_(diagnostics, completeness, {});
+  assertEquals_(false, result.meets_thresholds);
+  assertEquals_('ta_matchmx_name_quality_low', result.reason_code);
+
+  const diagnosticsDistinct = {
+    canonical_name_sanity: {
+      valid_ratio: 1,
+      invalid_single_letter_token: 0,
+    },
+    canonical_overlap: {
+      overlap_with_scheduled_ratio: 0.4,
+    },
+    non_null_by_feature: {
+      ranking: 6,
+      hold_pct: 6,
+      break_pct: 6,
+    },
+    non_zero_non_null_feature_total: 6,
+    unique_players_parsed: 3,
+  };
+  const distinctResult = evaluateTaLeadersQualityGate_(diagnosticsDistinct, completeness, {});
+  assertEquals_(false, distinctResult.meets_thresholds);
+  assertEquals_('ta_matchmx_distinct_players_low', distinctResult.reason_code);
+}
+
 function testFetchPlayerStatsFromLeadersSource_failsFastWhenFreshRowsLargeButNoMatchedPlayers_() {
   const originalFetch = UrlFetchApp.fetch;
   const originalGetStateJson = getStateJson_;
