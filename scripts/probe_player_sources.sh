@@ -199,6 +199,29 @@ if is_json:
     else:
         api_error_payload = detect_api_error(json_payload)
 
+def json_path_exists(value, path):
+    node = value
+    for key in path.split('.'):
+        if isinstance(node, dict) and key in node:
+            node = node[key]
+        else:
+            return False
+    return True
+
+source_key = os.environ.get("SOURCE_KEY", "")
+required_json_paths = {
+    "itf": ["data.rankings"],
+}.get(source_key, [])
+missing_keys = []
+contract_check_passed = True
+if required_json_paths:
+    if json_payload is None:
+        missing_keys = required_json_paths[:]
+        contract_check_passed = False
+    else:
+        missing_keys = [path for path in required_json_paths if not json_path_exists(json_payload, path)]
+        contract_check_passed = len(missing_keys) == 0
+
 transport_pass = curl_exit_code == 0 and http_code not in ("", "000")
 expected_http_ok = (http_code.startswith("2") and len(http_code) == 3 and http_code.isdigit()) if not expected_http_codes else (http_code in expected_http_codes)
 content_type_match = True
@@ -221,6 +244,9 @@ elif not content_type_match:
     effective_pass = False
 elif (("json" in expected_content_type_lc) or os.environ.get("PARSER_HINT", "").strip().lower() == "json_api") and api_error_payload:
     status = "api_error_payload"
+    effective_pass = False
+elif source_key == "itf" and not contract_check_passed:
+    status = "contract_failed"
     effective_pass = False
 
 challenge_patterns = [
@@ -293,6 +319,8 @@ obj = {
         "api_error_payload": api_error_payload,
         "json_parse_error": json_parse_error,
     },
+    "contract_check_passed": contract_check_passed,
+    "missing_keys": missing_keys,
     "counters": counters,
 }
 

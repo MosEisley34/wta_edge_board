@@ -429,3 +429,56 @@ function testFetchPlayerStatsFromSingleSource_sofascoreRoute_usesAdapter_() {
     fetchPlayerStatsFromSofascore_ = originalFetchSofascore;
   }
 }
+
+function testFetchPlayerStatsFromItfRankings_contractFailureUsesReasonCode_() {
+  const originalFetch = UrlFetchApp.fetch;
+  UrlFetchApp.fetch = function () {
+    return {
+      getResponseCode: function () { return 200; },
+      getHeaders: function () { return { 'Content-Type': 'text/html; charset=utf-8' }; },
+      getContentText: function () { return '<html>blocked</html>'; },
+    };
+  };
+
+  try {
+    const result = fetchPlayerStatsFromSingleSource_({ source_name: 'itf', base_url: 'https://itf.example/rankings' }, {}, ['Iga Swiatek'], new Date('2026-01-01T00:00:00Z'));
+    assertEquals_(false, result.ok);
+    assertEquals_('itf_endpoint_invalid', result.reason_code);
+    assertEquals_(false, result.contract_check_passed);
+    assertTrue_((result.missing_keys || []).indexOf('content-type:application/json') >= 0, 'expected missing content type contract key');
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
+function testFetchPlayerStatsFromItfRankings_contractPassParsesRanking_() {
+  const originalFetch = UrlFetchApp.fetch;
+  UrlFetchApp.fetch = function () {
+    return {
+      getResponseCode: function () { return 200; },
+      getHeaders: function () { return { 'Content-Type': 'application/json; charset=utf-8' }; },
+      getContentText: function () {
+        return JSON.stringify({
+          data: {
+            rankings: {
+              rows: [
+                { playerName: 'Iga Swiatek', rank: 1 },
+              ],
+            },
+          },
+        });
+      },
+    };
+  };
+
+  try {
+    const result = fetchPlayerStatsFromSingleSource_({ source_name: 'itf', base_url: 'https://itf.example/rankings' }, {}, ['Iga Swiatek'], new Date('2026-01-01T00:00:00Z'));
+    assertEquals_(true, result.ok);
+    assertEquals_('player_stats_api_success', result.reason_code);
+    assertEquals_(1, result.stats_by_player['iga swiatek'].ranking);
+    assertEquals_(true, result.contract_check_passed);
+    assertEquals_(0, (result.missing_keys || []).length);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}

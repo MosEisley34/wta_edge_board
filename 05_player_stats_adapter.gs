@@ -1234,10 +1234,14 @@ function parsePlayerStatsSourceConfigs_(config) {
         sourceName = String(pair[0] || '').trim();
         baseUrl = pair.slice(1).join('=').trim();
       }
+      const canonicalSourceName = canonicalizeStatsProviderName_(sourceName || inferStatsProviderNameFromUrl_(baseUrl));
+      if (!String(baseUrl || '').trim() && canonicalSourceName === 'itf') {
+        baseUrl = String(config.PLAYER_STATS_ITF_ENDPOINT || '').trim();
+      }
       baseUrl = String(baseUrl || '').replace(/\/+$/, '');
       if (!baseUrl) return null;
       return {
-        source_name: canonicalizeStatsProviderName_(sourceName || inferStatsProviderNameFromUrl_(baseUrl)),
+        source_name: canonicalSourceName,
         base_url: baseUrl,
       };
     })
@@ -1248,6 +1252,9 @@ function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTi
   const sourceName = canonicalizeStatsProviderName_(sourceConfig && sourceConfig.source_name);
   if (sourceName === 'sofascore') {
     return fetchPlayerStatsFromSofascore_(config, players, asOfTime);
+  }
+  if (sourceName === 'itf') {
+    return fetchPlayerStatsFromItfRankings_(sourceConfig, config, players);
   }
 
   const baseUrl = sourceConfig && sourceConfig.base_url ? sourceConfig.base_url : '';
@@ -1308,6 +1315,110 @@ function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTi
     api_call_count: 1,
     source_name: sourceConfig && sourceConfig.source_name ? sourceConfig.source_name : 'unknown',
   };
+}
+
+function fetchPlayerStatsFromItfRankings_(sourceConfig, config, players) {
+  const endpoint = String((sourceConfig && sourceConfig.base_url) || config.PLAYER_STATS_ITF_ENDPOINT || '').trim();
+  if (!endpoint) return { ok: false, reason_code: 'itf_endpoint_invalid', api_call_count: 0, contract_check_passed: false, missing_keys: ['data.rankings'] };
+
+  let response;
+  try {
+    response = UrlFetchApp.fetch(endpoint, {
+      method: 'get',
+      headers: { Accept: 'application/json' },
+      muteHttpExceptions: true,
+    });
+  } catch (e) {
+    return { ok: false, reason_code: 'itf_endpoint_invalid', api_call_count: 1, contract_check_passed: false, missing_keys: ['transport_error'] };
+  }
+
+  const status = Number(response.getResponseCode() || 0);
+  const responseHeaders = response.getHeaders ? response.getHeaders() : {};
+  const contentType = String(responseHeaders['Content-Type'] || responseHeaders['content-type'] || '');
+  const body = String(response.getContentText() || '');
+  let payload = null;
+  try {
+    payload = JSON.parse(body || '{}');
+  } catch (e) {
+    payload = null;
+  }
+
+  const missingKeys = [];
+  if (!(status >= 200 && status < 300)) missingKeys.push('http_2xx');
+  if (contentType.toLowerCase().indexOf('application/json') < 0) missingKeys.push('content-type:application/json');
+  if (!jsonPathExists_(payload, ['data', 'rankings'])) missingKeys.push('data.rankings');
+
+  if (missingKeys.length) {
+    return {
+      ok: false,
+      reason_code: 'itf_endpoint_invalid',
+      api_call_count: 1,
+      contract_check_passed: false,
+      missing_keys: missingKeys,
+    };
+  }
+
+  const rankingRows = extractItfRankingRows_(payload);
+  const rankByPlayer = {};
+  rankingRows.forEach(function (row) {
+    if (!row || typeof row !== 'object') return;
+    const name = String(row.player_name || row.playerName || row.name || ((row.player && row.player.name) || '')).trim();
+    const canonical = canonicalizePlayerName_(name);
+    if (!canonical) return;
+    const ranking = toNullableNumber_(row.ranking);
+    const rank = ranking !== null ? ranking : toNullableNumber_(row.rank);
+    const position = rank !== null ? rank : toNullableNumber_(row.position);
+    if (position !== null) rankByPlayer[canonical] = position;
+  });
+
+  const statsByPlayer = {};
+  dedupePlayerNames_(players || []).forEach(function (playerName) {
+    const canonical = canonicalizePlayerName_(playerName);
+    statsByPlayer[canonical] = {
+      ranking: Object.prototype.hasOwnProperty.call(rankByPlayer, canonical) ? rankByPlayer[canonical] : null,
+      recent_form: null,
+      recent_form_last_10: null,
+      surface_win_rate: null,
+      hold_pct: null,
+      break_pct: null,
+      surface_recent_form: null,
+      stats_confidence: Object.prototype.hasOwnProperty.call(rankByPlayer, canonical) ? 0.4 : 0,
+      source_used: 'itf_rankings',
+      fallback_mode: 'ranking_only',
+    };
+  });
+
+  return {
+    ok: true,
+    reason_code: 'player_stats_api_success',
+    stats_by_player: statsByPlayer,
+    api_call_count: 1,
+    source_name: 'itf',
+    contract_check_passed: true,
+    missing_keys: [],
+  };
+}
+
+function jsonPathExists_(obj, path) {
+  if (!obj || !path || !path.length) return false;
+  let node = obj;
+  for (let i = 0; i < path.length; i += 1) {
+    const key = path[i];
+    if (!node || typeof node !== 'object' || !Object.prototype.hasOwnProperty.call(node, key)) return false;
+    node = node[key];
+  }
+  return true;
+}
+
+function extractItfRankingRows_(payload) {
+  const rankingsNode = payload && payload.data && payload.data.rankings;
+  if (Array.isArray(rankingsNode)) return rankingsNode;
+  if (rankingsNode && typeof rankingsNode === 'object') {
+    if (Array.isArray(rankingsNode.rows)) return rankingsNode.rows;
+    if (Array.isArray(rankingsNode.items)) return rankingsNode.items;
+    if (Array.isArray(rankingsNode.players)) return rankingsNode.players;
+  }
+  return [];
 }
 
 function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
