@@ -8,7 +8,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from validate_source_payloads import _has_valid_tennis_player_prerequisite, validate_json_source  # noqa: E402
+from validate_source_payloads import (
+    _has_valid_tennis_player_prerequisite,
+    _load_active_probe_sources,
+    validate_json_source,
+)  # noqa: E402
 
 
 class ValidateJsonSourceTests(unittest.TestCase):
@@ -98,6 +102,34 @@ class SofascorePrerequisiteTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual("valid_tennis_player_id_detected", reason)
+
+
+class ActiveProbeSourcesTests(unittest.TestCase):
+    def test_loads_sources_from_summary(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            summary_path = out_dir / "summary.json"
+            summary_path.write_text(
+                json.dumps({
+                    "sources": [
+                        {"source_key": "tennisabstract_leaders"},
+                        {"source_key": "sofascore_events_live"},
+                        {"source_key": ""},
+                    ]
+                }),
+                encoding="utf-8",
+            )
+
+            active = _load_active_probe_sources(out_dir)
+
+        self.assertEqual(active, {"tennisabstract_leaders", "sofascore_events_live"})
+
+    def test_missing_summary_returns_empty_set(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            active = _load_active_probe_sources(out_dir)
+
+        self.assertEqual(active, set())
 
 
 if __name__ == "__main__":
