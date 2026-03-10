@@ -4,8 +4,7 @@ wta_stats_zone	https://www.wtatennis.com/stats	text/html	js_bootstrap
 itf	https://www.itftennis.com/-/media/project/itf/shared/data/rankings/wta/singles.json	application/json	json_api
 tennisexplorer	https://www.tennisexplorer.com/ranking/wta-women/	text/html	html_static
 sofascore_events_live	https://api.sofascore.com/api/v1/sport/tennis/events/live	application/json	json_api
-sofascore_events_scheduled	https://api.sofascore.com/api/v1/sport/tennis/events/scheduled	application/json	json_api
-sofascore_scheduled_events	https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/2026-01-01	application/json	json_api
+sofascore_scheduled_events	https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/{date}	application/json	json_api
 sofascore_player_detail	https://api.sofascore.com/api/v1/player/9472	application/json	json_api
 sofascore_player_recent	https://api.sofascore.com/api/v1/player/9472/events/last/0	application/json	json_api
 sofascore_player_stats_overall	https://api.sofascore.com/api/v1/player/9472/statistics/overall	application/json	json_api
