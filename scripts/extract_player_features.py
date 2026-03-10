@@ -177,7 +177,6 @@ TA_SOURCE_MATRIX: dict[str, ParserContract] = {
 SOURCE_HEALTH_THRESHOLDS = {
     "min_rows": 5,
     "min_unique_players": 5,
-    "max_null_coverage": 0.75,
 }
 
 
@@ -957,17 +956,25 @@ def _compute_parse_health(rows: list[PlayerFeature]) -> dict[str, dict[str, obje
     for source, source_rows in sorted(by_source.items()):
         unique_players = {r.player_canonical_name for r in source_rows if r.player_canonical_name}
         tracked = [r for r in source_rows if r.player_canonical_name]
-        total_cells = 0
-        null_cells = 0
-        for row in tracked:
-            for value in [row.ranking, row.recent_form, row.surface_win_rate, row.hold_pct, row.break_pct, row.h2h_wins, row.h2h_losses]:
-                total_cells += 1
-                if value is None:
-                    null_cells += 1
+        metric_non_null = {
+            "ranking": sum(1 for r in tracked if r.ranking is not None),
+            "hold_pct": sum(1 for r in tracked if r.hold_pct is not None),
+            "break_pct": sum(1 for r in tracked if r.break_pct is not None),
+        }
+        invalid_samples = [
+            {
+                "reason_code": r.reason_code,
+                "reason_code_detail": r.reason_code_detail,
+                "player": r.player_canonical_name,
+            }
+            for r in source_rows
+            if r.reason_code != "ok"
+        ][:5]
         health[source] = {
             "rows_parsed": len(source_rows),
             "unique_players": len(unique_players),
-            "null_coverage": (null_cells / total_cells) if total_cells else 1.0,
+            "metric_non_null": metric_non_null,
+            "first_invalid_rows": invalid_samples,
         }
     return health
 
@@ -979,13 +986,21 @@ def _assert_parse_health(health: dict[str, dict[str, object]]) -> None:
             continue
         rows_parsed = int(metrics.get("rows_parsed", 0))
         unique_players = int(metrics.get("unique_players", 0))
-        null_coverage = float(metrics.get("null_coverage", 1.0))
+        metric_non_null = metrics.get("metric_non_null", {}) if isinstance(metrics.get("metric_non_null"), dict) else {}
+        ranking_non_null = int(metric_non_null.get("ranking", 0))
+        hold_non_null = int(metric_non_null.get("hold_pct", 0))
+        break_non_null = int(metric_non_null.get("break_pct", 0))
+        invalid_rows = metrics.get("first_invalid_rows", [])
         if rows_parsed < SOURCE_HEALTH_THRESHOLDS["min_rows"]:
-            errors.append(f"{source}: rows_parsed={rows_parsed} < {SOURCE_HEALTH_THRESHOLDS['min_rows']}")
+            errors.append(f"{source}: rows_parsed={rows_parsed} < {SOURCE_HEALTH_THRESHOLDS['min_rows']}; invalid_samples={invalid_rows}")
         if unique_players < SOURCE_HEALTH_THRESHOLDS["min_unique_players"]:
-            errors.append(f"{source}: unique_players={unique_players} < {SOURCE_HEALTH_THRESHOLDS['min_unique_players']}")
-        if null_coverage > SOURCE_HEALTH_THRESHOLDS["max_null_coverage"]:
-            errors.append(f"{source}: null_coverage={null_coverage:.3f} > {SOURCE_HEALTH_THRESHOLDS['max_null_coverage']}")
+            errors.append(f"{source}: unique_players={unique_players} < {SOURCE_HEALTH_THRESHOLDS['min_unique_players']}; invalid_samples={invalid_rows}")
+        if ranking_non_null <= 0:
+            errors.append(f"{source}: ranking_non_null_coverage=0; invalid_samples={invalid_rows}")
+        if hold_non_null <= 0:
+            errors.append(f"{source}: hold_pct_non_null_coverage=0; invalid_samples={invalid_rows}")
+        if break_non_null <= 0:
+            errors.append(f"{source}: break_pct_non_null_coverage=0; invalid_samples={invalid_rows}")
     if errors:
         raise RuntimeError("Parse health thresholds not met:\n- " + "\n- ".join(errors))
 

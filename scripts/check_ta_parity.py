@@ -77,28 +77,36 @@ def _build_structured_row(tokens: list[str]) -> dict[str, object]:
     }
 
 
-def _extract_rows(payload: str) -> tuple[list[dict[str, object]], dict[str, int]]:
+def _extract_rows(payload: str) -> tuple[list[dict[str, object]], dict[str, object]]:
     rows: list[dict[str, object]] = []
-    metrics = {"ta_matchmx_unusable_payload": 0}
+    metrics: dict[str, object] = {"ta_matchmx_unusable_payload": 0, "first_invalid_rows": []}
     for parsed in iter_matchmx_rows(payload):
         tokens = parsed.tokens
+
+        def note_invalid(reason: str) -> None:
+            metrics["ta_matchmx_unusable_payload"] = int(metrics["ta_matchmx_unusable_payload"]) + 1
+            samples = metrics["first_invalid_rows"]
+            if isinstance(samples, list) and len(samples) < 5:
+                samples.append({"reason": reason, "token_count": len(tokens), "token_sample": tokens[:8]})
+
         if not has_minimum_schema_columns(tokens):
-            metrics["ta_matchmx_unusable_payload"] += 1
+            note_invalid("row_shape_invalid_for_matchmx_schema")
             continue
         if not required_indices_present(tokens):
-            metrics["ta_matchmx_unusable_payload"] += 1
+            note_invalid("row_indexes_out_of_bounds")
             continue
         row = _build_structured_row(tokens)
         if not row["player_name"] or not row["score"]:
+            note_invalid("required_fields_missing")
             continue
         if not is_usable_canonical_name(str(row["player_name"])):
-            metrics["ta_matchmx_unusable_payload"] += 1
+            note_invalid("canonical_name_rejected")
             continue
         if not has_any_key_metrics(tokens):
-            metrics["ta_matchmx_unusable_payload"] += 1
+            note_invalid("all_key_metrics_null")
             continue
         if row["ranking"] is None and row["hold_pct"] is None and row["break_pct"] is None:
-            metrics["ta_matchmx_unusable_payload"] += 1
+            note_invalid("ranking_hold_break_all_null")
             continue
         rows.append(row)
     return rows, metrics
@@ -145,6 +153,8 @@ def main() -> int:
     parser.add_argument("--sample-size", type=int, default=5, help="Number of normalized records to print")
     parser.add_argument("--min-cli-coverage", type=float, default=0.60, help="Min row-level coverage threshold to consider CLI healthy")
     parser.add_argument("--max-apps-coverage", type=float, default=0.20, help="Max normalized coverage threshold to consider Apps Script poor")
+    parser.add_argument("--min-rows", type=int, default=5, help="Minimum parsed rows required")
+    parser.add_argument("--min-unique-players", type=int, default=5, help="Minimum unique players required")
     args = parser.parse_args()
 
     path = Path(args.input)
@@ -196,6 +206,23 @@ def main() -> int:
     norm_hold_count, norm_hold_ratio = _coverage(normalized_rows, "hold_pct")
     norm_break_count, norm_break_ratio = _coverage(normalized_rows, "break_pct")
 
+
+    thresholds = {
+        "min_rows": max(1, int(args.min_rows)),
+        "min_unique_players": max(1, int(args.min_unique_players)),
+    }
+    threshold_errors: list[str] = []
+    if len(rows) < thresholds["min_rows"]:
+        threshold_errors.append(f"rows={len(rows)} < {thresholds['min_rows']}")
+    if len(normalized_rows) < thresholds["min_unique_players"]:
+        threshold_errors.append(f"unique_players={len(normalized_rows)} < {thresholds['min_unique_players']}")
+    if row_rank_count <= 0:
+        threshold_errors.append("ranking_non_null_coverage=0")
+    if row_hold_count <= 0:
+        threshold_errors.append("hold_pct_non_null_coverage=0")
+    if row_break_count <= 0:
+        threshold_errors.append("break_pct_non_null_coverage=0")
+
     summary = {
         "input": str(path),
         "total_rows": len(rows),
@@ -213,12 +240,20 @@ def main() -> int:
             "break_pct": {"non_null": norm_break_count, "ratio": round(norm_break_ratio, 4)},
         },
         "sample_normalized_records": sorted(normalized_rows, key=lambda r: str(r["player"]))[: max(0, args.sample_size)],
+        "thresholds": thresholds,
+        "threshold_errors": threshold_errors,
+        "first_invalid_rows": parser_metrics.get("first_invalid_rows", []),
     }
 
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    if threshold_errors:
+        summary["status"] = "fail"
+        summary["reason_code"] = "ta_matchmx_unusable_payload"
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 1
 
     cli_good = min(row_rank_ratio, row_hold_ratio, row_break_ratio) >= args.min_cli_coverage
     apps_poor = max(norm_rank_ratio, norm_hold_ratio, norm_break_ratio) <= args.max_apps_coverage
+    print(json.dumps(summary, indent=2, sort_keys=True))
     if cli_good and apps_poor:
         print("parser_parity_regression", file=sys.stderr)
         return 2

@@ -19,6 +19,7 @@ const MATCHMX_ROW_IDX = {
   DOMINANCE_RATIO: 17,
   TOTAL_POINTS_WON_PCT: 18,
 };
+const MATCHMX_MIN_FIELD_COUNT = MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT + 1;
 
 const PLAYER_STATS_H2H_CACHE_KEY = 'PLAYER_STATS_H2H_DATASET';
 const PLAYER_STATS_LEADERS_CACHE_KEY = 'PLAYER_STATS_TA_LEADERS_PAYLOAD';
@@ -655,6 +656,9 @@ function evaluateTaLeadersQualityGate_(diagnostics, statsCompleteness, config) {
   const minDistinctPlayers = Math.max(2, Number((config && config.PLAYER_STATS_TA_MIN_DISTINCT_PLAYERS) || 6));
   const nonNullFeatureTotal = Number(nonNullByFeature.ranking || 0) + Number(nonNullByFeature.hold_pct || 0) + Number(nonNullByFeature.break_pct || 0);
   const minNonNullFeatureTotal = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_NON_NULL_FEATURE_TOTAL) || 6));
+  const minParsedRows = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_PARSED_ROWS) || 25));
+  const parsedRowCount = Number(info.parsed_row_count || 0);
+  const hasEnoughParsedRows = parsedRowCount >= minParsedRows;
   const nonZeroNonNullFeatureTotal = Number(info.non_zero_non_null_feature_total || 0);
   const minNonZeroNonNullFeatureTotal = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_NON_ZERO_NON_NULL_FEATURE_TOTAL) || 2));
   const distinctPlayers = Number(info.unique_players_parsed || 0);
@@ -665,22 +669,31 @@ function evaluateTaLeadersQualityGate_(diagnostics, statsCompleteness, config) {
   const hasEnoughNonZeroFeatures = nonZeroNonNullFeatureTotal >= minNonZeroNonNullFeatureTotal;
   const hasEnoughPlayers = Number(completeness.players_with_non_null_stats || 0) >= minPlayersWithStats;
   const hasEnoughDistinctPlayers = distinctPlayers >= minDistinctPlayers;
+  const hasCoreMetricCoverage = Number(nonNullByFeature.ranking || 0) > 0
+    && Number(nonNullByFeature.hold_pct || 0) > 0
+    && Number(nonNullByFeature.break_pct || 0) > 0;
   const meetsThresholds = !hasLowQualityNames
     && !hasLowOverlap
+    && hasEnoughParsedRows
     && hasEnoughFeatures
     && hasEnoughNonZeroFeatures
     && hasEnoughPlayers
     && hasEnoughDistinctPlayers
+    && hasCoreMetricCoverage
     && !hasSingleCharCanonicalNames;
   const failureReason = hasSingleCharCanonicalNames
     ? 'ta_matchmx_name_quality_low'
-    : (!hasEnoughDistinctPlayers
-      ? 'ta_matchmx_distinct_players_low'
-      : (!hasEnoughNonZeroFeatures
-        ? 'ta_matchmx_feature_coverage_low'
-        : (hasLowQualityNames
-          ? 'ta_matchmx_name_quality_low'
-          : (hasLowOverlap ? 'ta_matchmx_overlap_low' : 'ta_matchmx_feature_coverage_low'))));
+    : (!hasEnoughParsedRows
+      ? 'ta_matchmx_rows_low'
+      : (!hasEnoughDistinctPlayers
+        ? 'ta_matchmx_distinct_players_low'
+        : (!hasCoreMetricCoverage
+          ? 'ta_matchmx_feature_coverage_low'
+          : (!hasEnoughNonZeroFeatures
+            ? 'ta_matchmx_feature_coverage_low'
+            : (hasLowQualityNames
+              ? 'ta_matchmx_name_quality_low'
+              : (hasLowOverlap ? 'ta_matchmx_overlap_low' : 'ta_matchmx_feature_coverage_low'))))));
 
   return {
     meets_thresholds: meetsThresholds,
@@ -689,8 +702,11 @@ function evaluateTaLeadersQualityGate_(diagnostics, statsCompleteness, config) {
     min_valid_name_ratio: minValidNameRatio,
     overlap_ratio: roundNumber_(overlapRatio, 3),
     min_overlap_ratio: minOverlapRatio,
+    parsed_row_count: parsedRowCount,
+    min_parsed_row_count: minParsedRows,
     non_null_feature_total: nonNullFeatureTotal,
     min_non_null_feature_total: minNonNullFeatureTotal,
+    has_core_metric_coverage: hasCoreMetricCoverage,
     non_zero_non_null_feature_total: nonZeroNonNullFeatureTotal,
     min_non_zero_non_null_feature_total: minNonZeroNonNullFeatureTotal,
     players_with_non_null_stats: Number(completeness.players_with_non_null_stats || 0),
@@ -742,17 +758,10 @@ function extractMatchMxRows_(payload) {
   const arrayLiteralFormat = extractMatchMxRowsFromArrayLiteral_(text);
   if (arrayLiteralFormat.rows.length) return arrayLiteralFormat;
 
-  const legacyRows = extractMatchMxRowsFromLegacyAssignments_(text);
-  return {
-    rows: legacyRows,
-    diagnostics: {
-      parser_format: 'legacy_assignment',
-      selected_player_name_col: MATCHMX_ROW_IDX.PLAYER_NAME,
-      valid_name_ratio: computeValidNameRatio_(legacyRows),
-      non_null_by_feature: summarizeMatchMxNonNullByFeature_(legacyRows),
-    },
-  };
+  const legacyFormat = extractMatchMxRowsFromLegacyAssignments_(text);
+  return legacyFormat;
 }
+
 
 
 function stripQuotedJsStrings_(text) {
@@ -866,7 +875,7 @@ function extractMatchMxRowsFromStructuredAssignment_(payloadText) {
   const container = findRowsContainerInMatchMxValue_(parsed, 'matchmx');
   const rawRows = Array.isArray(container.rows) ? container.rows : [];
   const tokenRows = rawRows
-    .filter(function (row) { return Array.isArray(row) && row.length >= 6; })
+    .filter(function (row) { return Array.isArray(row) && row.length >= MATCHMX_MIN_FIELD_COUNT; })
     .map(function (row) { return row.map(function (cell) { return cell === null || cell === undefined ? '' : String(cell); }); });
   const schema = detectMatchMxSchema_(tokenRows);
   const rows = [];
@@ -907,19 +916,43 @@ function extractMatchMxRowsFromArrayLiteral_(payloadText) {
 
 function extractMatchMxRowsFromLegacyAssignments_(payloadText) {
   const rows = [];
+  const invalidRowSamples = [];
   const text = String(payloadText || '');
-  const rowRegex = /matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[([\s\S]*?)\]\s*;/g;
+  const rowRegex = /matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[/g;
   let match;
 
   while ((match = rowRegex.exec(text)) !== null) {
-    const tokens = parseJsArrayTokens_(match[1]);
-    if (tokens.length < 6) continue;
+    const openingIndex = match.index + match[0].lastIndexOf('[');
+    const extracted = extractTopLevelArrayLiteralBody_(text, openingIndex);
+    if (!extracted.ok) {
+      if (invalidRowSamples.length < 5) invalidRowSamples.push({ reason: 'row_array_unterminated', at: openingIndex });
+      continue;
+    }
+    rowRegex.lastIndex = Math.max(rowRegex.lastIndex, extracted.next_index);
+
+    const tokens = parseJsArrayTokens_(extracted.body);
+    if (!hasMinimumMatchMxSchemaColumns_(tokens)) {
+      if (invalidRowSamples.length < 5) invalidRowSamples.push({ reason: 'row_shape_invalid_for_matchmx_schema', token_count: tokens.length, token_sample: tokens.slice(0, 8) });
+      continue;
+    }
     const structured = buildStructuredMatchMxRow_(tokens);
-    if (!isUsableStructuredMatchMxRow_(structured)) continue;
+    if (!isUsableStructuredMatchMxRow_(structured)) {
+      if (invalidRowSamples.length < 5) invalidRowSamples.push({ reason: 'row_unusable_after_normalization', player_name: structured.player_name || '', score: structured.score || '' });
+      continue;
+    }
     rows.push(structured);
   }
 
-  return rows;
+  return {
+    rows: rows,
+    diagnostics: {
+      parser_format: 'legacy_assignment',
+      structured_row_count: rows.length,
+      first_invalid_rows: invalidRowSamples,
+      valid_name_ratio: computeValidNameRatio_(rows),
+      non_null_by_feature: summarizeMatchMxNonNullByFeature_(rows),
+    },
+  };
 }
 
 function parseMatchMxRowsFromArrayLiteralText_(arrayLiteralText) {
@@ -962,7 +995,7 @@ function parseMatchMxRowsFromArrayLiteralText_(arrayLiteralText) {
       if (depth === 0 && rowStart >= 0) {
         const rowBody = literal.slice(rowStart + 1, i);
         const tokens = parseJsArrayTokens_(rowBody);
-        if (tokens.length >= 6) tokenRows.push(tokens);
+        if (hasMinimumMatchMxSchemaColumns_(tokens)) tokenRows.push(tokens);
         rowStart = -1;
       }
     }
@@ -1392,22 +1425,115 @@ function persistTaLeadersParseDiagnostics_(payload) {
 }
 
 function parseJsArrayTokens_(arrayLiteralBody) {
-  const body = String(arrayLiteralBody || '');
-  const pattern = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^,]+)/g;
-  const tokens = [];
-  let part;
+  const tokens = splitTopLevelJsArrayTokens_(arrayLiteralBody);
+  return tokens.map(function (token) {
+    const stripped = String(token || '').trim();
+    const lowered = stripped.toLowerCase();
+    if (lowered === '' || lowered === 'null' || lowered === 'undefined' || lowered === 'nan') return '';
+    if ((stripped[0] === '"' && stripped[stripped.length - 1] === '"') || (stripped[0] === "'" && stripped[stripped.length - 1] === "'")) {
+      return unescapeJsStringToken_(stripped.slice(1, -1));
+    }
+    return stripped;
+  });
+}
 
-  while ((part = pattern.exec(body)) !== null) {
-    const raw = part[1] !== undefined ? part[1] : (part[2] !== undefined ? part[2] : part[3]);
-    const normalized = String(raw || '').trim();
-    if (normalized === 'null' || normalized === 'undefined') {
-      tokens.push('');
+function splitTopLevelJsArrayTokens_(arrayLiteralBody) {
+  const body = String(arrayLiteralBody || '');
+  const tokens = [];
+  let current = '';
+  let quote = '';
+  let escaped = false;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let parenDepth = 0;
+
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (escaped) {
+      current += ch;
+      escaped = false;
       continue;
     }
-    tokens.push(normalized.replace(/\\"/g, '"').replace(/\\'/g, "'"));
+    if (quote) {
+      if (ch === '\\') {
+        current += ch;
+        escaped = true;
+        continue;
+      }
+      current += ch;
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '[') {
+      bracketDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ']') {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === '{') {
+      braceDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === '}') {
+      braceDepth = Math.max(0, braceDepth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === '(') {
+      parenDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ')') {
+      parenDepth = Math.max(0, parenDepth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === ',' && bracketDepth === 0 && braceDepth === 0 && parenDepth === 0) {
+      tokens.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
   }
-
+  if (current || /,\s*$/.test(body)) {
+    tokens.push(current.trim());
+  }
   return tokens;
+}
+
+function unescapeJsStringToken_(value) {
+  const text = String(value || '');
+  return text
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    .replace(/\\\\/g, '\\');
+}
+
+function extractTopLevelArrayLiteralBody_(text, openingIndex) {
+  const source = String(text || '');
+  const start = Number(openingIndex || 0);
+  if (start < 0 || source[start] !== '[') return { ok: false, body: '', next_index: start };
+  const end = findMatchingBracketIndex_(source, start);
+  if (end < 0) return { ok: false, body: '', next_index: source.length };
+  return { ok: true, body: source.slice(start + 1, end), next_index: end + 1 };
+}
+
+function hasMinimumMatchMxSchemaColumns_(tokens) {
+  return Array.isArray(tokens) && tokens.length >= MATCHMX_MIN_FIELD_COUNT;
 }
 
 function buildStructuredMatchMxRow_(tokens, schemaMapping) {
