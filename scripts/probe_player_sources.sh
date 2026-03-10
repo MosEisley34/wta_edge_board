@@ -896,4 +896,11 @@ PY
 
 run_ta_parser_probe "$OUT_DIR/summary.json"
 
+LATEST_LINK="./tmp/source_probe_latest"
+if [[ "$OUT_DIR" != "$LATEST_LINK" ]]; then
+  mkdir -p "$(dirname "$LATEST_LINK")"
+  ln -sfn "$(realpath "$OUT_DIR")" "$LATEST_LINK"
+  echo "latest_link=$LATEST_LINK -> $(realpath "$OUT_DIR")"
+fi
+
 echo "done"
