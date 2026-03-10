@@ -20,6 +20,7 @@ from matchmx_parser import (
     MATCHMX_ROW_IDX,
     iter_matchmx_rows,
     is_accepted_name,
+    is_usable_canonical_name,
     normalize_name,
 )
 from collections.abc import Iterable
@@ -422,12 +423,31 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
                     h2h_losses=None,
                     has_stats=False,
                     reason_code="ta_matchmx_unusable_payload",
-                    reason_code_detail="row_shape_below_matchmx_min_fields",
+                    reason_code_detail="row_shape_invalid_for_matchmx_schema",
                 )
             )
             continue
 
         values = parsed.tokens
+        if MATCHMX_ROW_IDX["PLAYER_NAME"] >= len(values):
+            rows.append(
+                PlayerFeature(
+                    player_canonical_name=None,
+                    source=source,
+                    as_of=as_of,
+                    ranking=None,
+                    recent_form=None,
+                    surface_win_rate=None,
+                    hold_pct=None,
+                    break_pct=None,
+                    h2h_wins=None,
+                    h2h_losses=None,
+                    has_stats=False,
+                    reason_code="ta_matchmx_unusable_payload",
+                    reason_code_detail="row_indexes_out_of_bounds",
+                )
+            )
+            continue
         player_name = normalize_name(values[MATCHMX_ROW_IDX["PLAYER_NAME"]])
         feature = PlayerFeature(
             player_canonical_name=player_name,
@@ -445,8 +465,9 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
             reason_code_detail="normalized_from_matchmx",
         )
         feature.has_stats = _has_stats(feature)
-        if not is_accepted_name(feature.player_canonical_name):
-            feature.reason_code = "missing_player_name"
+        if not is_usable_canonical_name(feature.player_canonical_name):
+            feature.reason_code = "ta_matchmx_unusable_payload"
+            feature.reason_code_detail = "canonical_name_rejected"
             feature.player_canonical_name = None
         elif not feature.has_stats:
             feature.reason_code = "provider_returned_null_features"

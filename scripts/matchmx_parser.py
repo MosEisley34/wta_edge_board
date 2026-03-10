@@ -33,6 +33,7 @@ DEFAULT_SHORT_NAME_WHITELIST = set()
 
 ROW_REGEX = re.compile(r"matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[([\s\S]*?)\]\s*;")
 TOKEN_REGEX = re.compile(r'"((?:\\.|[^"\\])*)"|\'((?:\\.|[^\'\\])*)\'|([^,]+)')
+NAME_LIKE_REGEX = re.compile(r"^[A-Za-z][A-Za-z .'-]*[A-Za-z]$")
 
 
 @dataclass
@@ -44,20 +45,71 @@ class MatchMxParseResult:
 
 def parse_js_array_tokens(array_literal_body: str) -> list[str]:
     tokens: list[str] = []
-    for part in TOKEN_REGEX.finditer(array_literal_body):
-        raw = part.group(1) if part.group(1) is not None else (part.group(2) if part.group(2) is not None else part.group(3))
-        normalized = str(raw or "").strip()
-        if normalized in {"null", "undefined"}:
+    current: list[str] = []
+    quote: str | None = None
+    escape = False
+    in_token = False
+
+    def flush_token() -> None:
+        raw = "".join(current).strip()
+        if raw in {"null", "undefined"}:
             tokens.append("")
+        else:
+            tokens.append(raw)
+
+    for ch in array_literal_body:
+        if escape:
+            current.append(ch)
+            escape = False
+            in_token = True
             continue
-        tokens.append(normalized.replace(r'\"', '"').replace(r"\\'", "'"))
-    return tokens
+
+        if ch == "\\":
+            current.append(ch)
+            escape = True
+            in_token = True
+            continue
+
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                current.append(ch)
+            in_token = True
+            continue
+
+        if ch in {'"', "'"}:
+            quote = ch
+            in_token = True
+            continue
+
+        if ch == ",":
+            flush_token()
+            current = []
+            in_token = False
+            continue
+
+        current.append(ch)
+        if not ch.isspace():
+            in_token = True
+
+    if current or in_token or array_literal_body.rstrip().endswith(","):
+        flush_token()
+
+    normalized_tokens: list[str] = []
+    for token in tokens:
+        normalized_tokens.append(token.replace(r'\"', '"').replace(r"\\'", "'").replace(r"\\\\", "\\"))
+    return normalized_tokens
+
+
+def is_valid_row_shape(tokens: list[str]) -> bool:
+    return len(tokens) == MATCHMX_MIN_FIELD_COUNT
 
 
 def iter_matchmx_rows(payload: str):
     for match in ROW_REGEX.finditer(payload):
         tokens = parse_js_array_tokens(match.group(1))
-        row_shape_valid = len(tokens) >= MATCHMX_MIN_FIELD_COUNT
+        row_shape_valid = is_valid_row_shape(tokens)
         yield MatchMxParseResult(
             tokens=tokens,
             row_shape_valid=row_shape_valid,
@@ -79,5 +131,17 @@ def is_accepted_name(name: str | None, whitelist: set[str] | None = None) -> boo
     canonical = normalized.lower()
     allowed = whitelist if whitelist is not None else DEFAULT_SHORT_NAME_WHITELIST
     if len(canonical) < 3 and canonical not in allowed:
+        return False
+    return True
+
+
+def is_usable_canonical_name(name: str | None, whitelist: set[str] | None = None) -> bool:
+    normalized = normalize_name(name)
+    if not is_accepted_name(normalized, whitelist):
+        return False
+    assert normalized is not None
+    if not NAME_LIKE_REGEX.match(normalized):
+        return False
+    if " " not in normalized and "-" not in normalized:
         return False
     return True
