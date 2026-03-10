@@ -459,7 +459,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mandatory-sources",
-        default="tennisabstract_leaders,tennisabstract_leadersource_wta,ta_h2h,itf,tennisexplorer,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
+        default=os.environ.get(
+            "MANDATORY_SOURCES",
+            "tennisabstract_leaders,tennisabstract_leadersource_wta,ta_h2h,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
+        ),
         help="Comma-separated source keys that must be extraction-ready for zero exit (before allowlist filtering)",
     )
     parser.add_argument(
