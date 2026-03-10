@@ -105,11 +105,13 @@ Output includes:
 
 ## TA parser parity pre-deploy gate
 
-Use `scripts/check_ta_parity.py` to verify that Tennis Abstract `matchmx` parsing remains aligned with Apps Script normalization before deploys.
+Use `scripts/run_ta_parity.sh` to verify that Tennis Abstract `matchmx` parsing remains aligned with Apps Script normalization before deploys.
 
 ```bash
-python3 scripts/check_ta_parity.py --input tmp/source_probes/raw/tennisabstract_leadersource_wta.body
+scripts/run_ta_parity.sh
 ```
+
+This wrapper automatically targets the canonical leadersource artifact at `tmp/source_probe_latest/raw/tennisabstract_leadersource_wta.body` (with a fallback to `tmp/source_probes/raw/tennisabstract_leadersource_wta.body`).
 
 The script prints:
 - total parsed rows,

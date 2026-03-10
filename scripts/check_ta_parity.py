@@ -17,6 +17,9 @@ from pathlib import Path
 
 from matchmx_parser import MATCHMX_ROW_IDX, is_accepted_name, iter_matchmx_rows
 
+DEFAULT_INPUT_PATH = "tmp/source_probe_latest/raw/tennisabstract_leadersource_wta.body"
+FALLBACK_INPUT_PATH = "tmp/source_probes/raw/tennisabstract_leadersource_wta.body"
+
 
 def _to_number(tokens: list[str], idx: int) -> float | None:
     if idx >= len(tokens):
@@ -119,7 +122,7 @@ def _normalize_records(rows: list[dict[str, object]]) -> dict[str, dict[str, obj
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check TA parser parity from leadersource_wta.js payload.")
-    parser.add_argument("--input", default="tmp/source_probes/raw/tennisabstract_leadersource_wta.body", help="Path to leadersource_wta.js payload")
+    parser.add_argument("--input", default=DEFAULT_INPUT_PATH, help="Path to leadersource_wta.js payload")
     parser.add_argument("--sample-size", type=int, default=5, help="Number of normalized records to print")
     parser.add_argument("--min-cli-coverage", type=float, default=0.60, help="Min row-level coverage threshold to consider CLI healthy")
     parser.add_argument("--max-apps-coverage", type=float, default=0.20, help="Max normalized coverage threshold to consider Apps Script poor")
@@ -139,6 +142,9 @@ def main() -> int:
                     "status": "fail",
                     "reason_code": "ta_matchmx_markers_missing",
                     "path": str(path),
+                    "reason": "Input does not include any matchmx rows. TA parity expects leadersource_wta.js content.",
+                    "suggested_input": DEFAULT_INPUT_PATH,
+                    "alternate_input": FALLBACK_INPUT_PATH,
                     "matchmx_marker_count": 0,
                 }
             )
