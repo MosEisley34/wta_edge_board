@@ -291,7 +291,9 @@ function testGetTaH2hCoverageForCanonicalPair_noMatchReturnsDebugSampleNearestKe
     assertEquals_('h2h_player_not_in_matrix', coverage.reason_code);
     assertEquals_('iga swiatek||outside player', coverage.reason_metadata.debug_sample.requested_pair_keys[0]);
     assertEquals_('outside player||iga swiatek', coverage.reason_metadata.debug_sample.requested_pair_keys[1]);
-    assertTrue_((coverage.reason_metadata.debug_sample.nearest_available_keys || []).length > 0, 'expected nearest key samples');
+    assertEquals_('iga swiatek||outside player', coverage.reason_metadata.debug_sample.schedule_key);
+    assertTrue_((coverage.reason_metadata.debug_sample.nearest_candidate_keys || []).length > 0, 'expected nearest key samples');
+    assertTrue_((coverage.reason_metadata.debug_sample.edit_distance_top_matches || []).length > 0, 'expected edit-distance matches');
   } finally {
     getTaH2hDataset_ = originalGetTaH2hDataset;
   }
@@ -481,4 +483,18 @@ function testFetchPlayerStatsFromItfRankings_contractPassParsesRanking_() {
   } finally {
     UrlFetchApp.fetch = originalFetch;
   }
+}
+
+
+function testCanonicalizePlayerName_aliasRules_coverInitialsDiacriticsHyphensAndPunctuation_() {
+  assertEquals_('iga swiatek', canonicalizePlayerName_('I. Świątek', {}));
+  assertEquals_('elena rybakina', canonicalizePlayerName_('E. Rybakina', {}));
+  assertEquals_('marta kostyuk', canonicalizePlayerName_('M. Kostyuk', {}));
+  assertEquals_('sonay kartal', canonicalizePlayerName_("Sonay-Kartal", {}));
+}
+
+function testCanonicalizePlayerName_aliasRules_supportNameOrderAndParticles_() {
+  assertEquals_('iga swiatek', canonicalizePlayerName_('Swiatek, Iga', {}));
+  assertEquals_('elena rybakina', canonicalizePlayerName_('Rybakina Elena', {}));
+  assertEquals_('anna maria de la rosa', canonicalizePlayerName_('Anna Maria de la Rosa', {}));
 }

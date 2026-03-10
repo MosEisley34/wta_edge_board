@@ -2350,7 +2350,17 @@ function getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) {
 
   const directKey = buildTaH2hPairKey_(canonicalA, canonicalB);
   const direct = dataset.by_pair[directKey];
-  if (direct) return { row: direct, reason_code: '', reason_metadata: {} };
+  if (direct) {
+    return {
+      row: direct,
+      reason_code: '',
+      reason_metadata: {
+        matched_pair_verified: true,
+        matched_lookup_key: directKey,
+        canonical_pair_key: buildTaH2hCanonicalPairKey_(canonicalA, canonicalB),
+      },
+    };
+  }
 
   const reverseKey = buildTaH2hPairKey_(canonicalB, canonicalA);
   const reverse = dataset.by_pair[reverseKey];
@@ -2364,7 +2374,12 @@ function getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) {
         source_updated_date: reverse.source_updated_date || dataset.source_updated_date || '',
       },
       reason_code: '',
-      reason_metadata: {},
+      reason_metadata: {
+        matched_pair_verified: true,
+        matched_lookup_key: reverseKey,
+        canonical_pair_key: buildTaH2hCanonicalPairKey_(canonicalA, canonicalB),
+        matched_by_reverse_lookup: true,
+      },
     };
   }
 
@@ -2810,18 +2825,25 @@ function decodeURIComponentSafe_(value) {
 }
 
 function buildTaH2hPairKey_(playerA, playerB) {
-  return [String(playerA || ''), String(playerB || '')].join('||');
+  return [canonicalizePlayerName_(playerA || '', {}), canonicalizePlayerName_(playerB || '', {})].join('||');
+}
+
+function buildTaH2hCanonicalPairKey_(playerA, playerB) {
+  return [canonicalizePlayerName_(playerA || '', {}), canonicalizePlayerName_(playerB || '', {})].sort().join('||');
 }
 
 function buildTaH2hLookupDebugSample_(dataset, canonicalA, canonicalB) {
-  const requestedDirectKey = buildTaH2hPairKey_(canonicalA, canonicalB);
-  const requestedReverseKey = buildTaH2hPairKey_(canonicalB, canonicalA);
+  const scheduleKey = buildTaH2hPairKey_(canonicalA, canonicalB);
+  const reverseScheduleKey = buildTaH2hPairKey_(canonicalB, canonicalA);
   const byPair = dataset && dataset.by_pair ? dataset.by_pair : {};
   const keys = Object.keys(byPair);
   if (!keys.length) {
     return {
-      requested_pair_keys: [requestedDirectKey, requestedReverseKey],
-      nearest_available_keys: [],
+      schedule_key: scheduleKey,
+      reverse_schedule_key: reverseScheduleKey,
+      requested_pair_keys: [scheduleKey, reverseScheduleKey],
+      nearest_candidate_keys: [],
+      edit_distance_top_matches: [],
     };
   }
 
@@ -2833,7 +2855,7 @@ function buildTaH2hLookupDebugSample_(dataset, canonicalA, canonicalB) {
     requestedPlayers.forEach(function (player) {
       if (keyPlayers.indexOf(player) >= 0) overlap += 1;
     });
-    const score = overlap * 10 - Math.abs(key.length - requestedDirectKey.length) / 100;
+    const score = overlap * 10 - Math.abs(key.length - scheduleKey.length) / 100;
     return { key: key, score: score };
   });
 
@@ -2842,10 +2864,49 @@ function buildTaH2hLookupDebugSample_(dataset, canonicalA, canonicalB) {
     return String(a.key || '').localeCompare(String(b.key || ''));
   });
 
+  const distanceMatches = keys.map(function (key) {
+    return {
+      key: key,
+      distance: computeLevenshteinDistance_(scheduleKey, key),
+    };
+  });
+  distanceMatches.sort(function (a, b) {
+    if (a.distance !== b.distance) return a.distance - b.distance;
+    return String(a.key || '').localeCompare(String(b.key || ''));
+  });
+
   return {
-    requested_pair_keys: [requestedDirectKey, requestedReverseKey],
-    nearest_available_keys: scored.slice(0, 5).map(function (entry) { return entry.key; }),
+    schedule_key: scheduleKey,
+    reverse_schedule_key: reverseScheduleKey,
+    requested_pair_keys: [scheduleKey, reverseScheduleKey],
+    nearest_candidate_keys: scored.slice(0, 5).map(function (entry) { return entry.key; }),
+    edit_distance_top_matches: distanceMatches.slice(0, 5),
   };
+}
+
+function computeLevenshteinDistance_(source, target) {
+  const a = String(source || '');
+  const b = String(target || '');
+  if (!a) return b.length;
+  if (!b) return a.length;
+
+  const prev = [];
+  const curr = [];
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(
+        curr[j - 1] + 1,
+        prev[j] + 1,
+        prev[j - 1] + cost
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+  }
+  return prev[b.length];
 }
 
 function getCachedTaLeadersPayload_() {
@@ -3087,6 +3148,20 @@ function logTaH2hParseDiagnostic_(eventName, payload) {
   Logger.log(JSON.stringify(entry));
   try {
     setStateValue_('PLAYER_STATS_TA_H2H_PARSE_DIAGNOSTIC', JSON.stringify(entry));
+  } catch (e) {
+    // Non-fatal best-effort diagnostics only.
+  }
+}
+
+function logTaH2hLookupDiagnostic_(eventName, payload) {
+  const entry = {
+    event: eventName,
+    payload: payload || {},
+    logged_at: new Date().toISOString(),
+  };
+  Logger.log(JSON.stringify(entry));
+  try {
+    setStateValue_('PLAYER_STATS_TA_H2H_LOOKUP_DIAGNOSTIC', JSON.stringify(entry));
   } catch (e) {
     // Non-fatal best-effort diagnostics only.
   }

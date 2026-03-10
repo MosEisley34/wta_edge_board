@@ -3498,7 +3498,7 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hMixedCoverageTracksReason
   getTaH2hCoverageForCanonicalPair_ = function (config, playerA, playerB) {
     const key = String(playerA || '') + '::' + String(playerB || '');
     if (key === 'iga swiatek::aryna sabalenka') {
-      return { row: { wins_a: 2, wins_b: 1 }, reason_code: '' };
+      return { row: { wins_a: 2, wins_b: 1 }, reason_code: '', reason_metadata: { matched_pair_verified: true } };
     }
     if (key === 'iga swiatek::coco gauff') {
       return {
@@ -3507,7 +3507,8 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hMixedCoverageTracksReason
         reason_metadata: {
           debug_sample: {
             requested_pair_keys: ['iga swiatek||coco gauff', 'coco gauff||iga swiatek'],
-            nearest_available_keys: ['iga swiatek||aryna sabalenka'],
+            nearest_candidate_keys: ['iga swiatek||aryna sabalenka'],
+            edit_distance_top_matches: [{ key: 'iga swiatek||aryna sabalenka', distance: 11 }],
           },
         },
       };
@@ -3518,7 +3519,8 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hMixedCoverageTracksReason
       reason_metadata: {
         debug_sample: {
           requested_pair_keys: ['iga swiatek||outside player', 'outside player||iga swiatek'],
-          nearest_available_keys: ['iga swiatek||aryna sabalenka', 'coco gauff||aryna sabalenka'],
+          nearest_candidate_keys: ['iga swiatek||aryna sabalenka', 'coco gauff||aryna sabalenka'],
+          edit_distance_top_matches: [{ key: 'iga swiatek||aryna sabalenka', distance: 8 }],
         },
       },
     };
@@ -3556,9 +3558,9 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hMixedCoverageTracksReason
     assertEquals_(1, result.events[0].h2h_p2_wins);
     assertEquals_(2, (result.h2h_lookup_debug_samples || []).length);
     assertEquals_('h2h_partial_coverage', result.h2h_lookup_debug_samples[0].reason_code);
-    assertEquals_('iga swiatek||coco gauff', result.h2h_lookup_debug_samples[0].requested_pair_keys[0]);
+    assertEquals_('iga swiatek||coco gauff', result.h2h_lookup_debug_samples[0].schedule_key);
     assertEquals_('h2h_player_not_in_matrix', result.h2h_lookup_debug_samples[1].reason_code);
-    assertEquals_('iga swiatek||outside player', result.h2h_lookup_debug_samples[1].requested_pair_keys[0]);
+    assertEquals_('iga swiatek||outside player', result.h2h_lookup_debug_samples[1].schedule_key);
 
   } finally {
     fetchPlayerStatsBatch_ = originalFetchPlayerStatsBatch;
