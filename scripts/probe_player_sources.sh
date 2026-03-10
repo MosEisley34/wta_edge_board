@@ -6,6 +6,7 @@ OUT_DIR="${1:-./tmp/source_probe}"
 CATALOG_PATH="${2:-./config/probe_sources.tsv}"
 SCHEDULED_PLAYERS_PATH="${3:-}"
 PROVIDER_ALLOWLIST="${PROVIDER_ALLOWLIST:-tennisabstract_*,sofascore_*}"
+SOFASCORE_PROBE_TENNIS_PLAYER_ID="${SOFASCORE_PROBE_TENNIS_PLAYER_ID:-}"
 DEFAULT_EXCLUDED_PROVIDERS="${DEFAULT_EXCLUDED_PROVIDERS:-wta_stats_zone,tennisexplorer,itf}"
 INCLUDE_DEFAULT_EXCLUDED_PROVIDERS="${INCLUDE_DEFAULT_EXCLUDED_PROVIDERS:-false}"
 
@@ -63,6 +64,94 @@ is_provider_allowed() {
   return 1
 }
 
+
+
+validate_sofascore_tennis_player_id() {
+  local candidate_id="$1"
+  [[ -z "$candidate_id" || ! "$candidate_id" =~ ^[0-9]+$ ]] && return 1
+
+  local detail_url="https://api.sofascore.com/api/v1/player/$candidate_id"
+  local body
+  body="$(curl -sS -L --max-time 20 --retry 1 --retry-delay 1 -H "User-Agent: $UA" "$detail_url" 2>/dev/null || true)"
+  [[ -z "$body" ]] && return 1
+
+  PLAYER_DETAIL_JSON="$body" python3 - <<'PYT'
+import json, os, sys
+raw = os.environ.get('PLAYER_DETAIL_JSON', '')
+try:
+    payload = json.loads(raw)
+except Exception:
+    sys.exit(1)
+player = payload.get('player') if isinstance(payload, dict) else None
+sport = player.get('sport') if isinstance(player, dict) else None
+slug = str((sport or {}).get('slug', '')).strip().lower() if isinstance(sport, dict) else ''
+sys.exit(0 if slug == 'tennis' else 1)
+PYT
+}
+
+sample_sofascore_tennis_player_id_from_schedule() {
+  local date_token
+  date_token="$(date -u +%F)"
+  local scheduled_url="https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/$date_token"
+  local body
+  body="$(curl -sS -L --max-time 20 --retry 1 --retry-delay 1 -H "User-Agent: $UA" "$scheduled_url" 2>/dev/null || true)"
+  [[ -z "$body" ]] && return 1
+
+  SCHEDULED_JSON="$body" python3 - <<'PYT'
+import json, os, sys
+raw = os.environ.get('SCHEDULED_JSON', '')
+try:
+    payload = json.loads(raw)
+except Exception:
+    sys.exit(1)
+if not isinstance(payload, dict):
+    sys.exit(1)
+for event in payload.get('events', []) or []:
+    if not isinstance(event, dict):
+        continue
+    for side in ('homeTeam', 'awayTeam'):
+        team = event.get(side)
+        if isinstance(team, dict):
+            team_id = team.get('id')
+            if isinstance(team_id, int) and team_id > 0:
+                print(team_id)
+                sys.exit(0)
+            if isinstance(team_id, str) and team_id.isdigit():
+                print(team_id)
+                sys.exit(0)
+sys.exit(1)
+PYT
+}
+
+resolve_sofascore_probe_tennis_player_id() {
+  if [[ -n "${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID:-}" ]]; then
+    printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+    return 0
+  fi
+
+  local configured_id="$SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+  if [[ -z "$configured_id" ]]; then
+    configured_id="9472"
+  fi
+
+  if validate_sofascore_tennis_player_id "$configured_id"; then
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
+    printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+    return 0
+  fi
+
+  local sampled_id=""
+  sampled_id="$(sample_sofascore_tennis_player_id_from_schedule || true)"
+  if [[ -n "$sampled_id" ]] && validate_sofascore_tennis_player_id "$sampled_id"; then
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$sampled_id"
+    printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+    return 0
+  fi
+
+  RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
+  echo "WARN: falling back to unverified SOFASCORE_PROBE_TENNIS_PLAYER_ID=$configured_id" >&2
+  printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+}
 record_allowlist_skip() {
   local source_key="$1"
   local reason="not_in_provider_allowlist"
@@ -481,6 +570,12 @@ iterate_tsv_catalog() {
       url="${url//\{date\}/$date_token}"
     fi
 
+    if [[ "$url" == *"{tennis_player_id}"* ]]; then
+      local tennis_player_id
+      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id)"
+      url="${url//\{tennis_player_id\}/$tennis_player_id}"
+    fi
+
     if [[ -z "$url" || -z "$expected_content_type" || -z "$parser_hint" ]]; then
       echo "WARN: skipping malformed TSV row for source '$source_key'" >&2
       continue
@@ -524,6 +619,11 @@ PY
     if [[ "$url" == *"{date}"* ]]; then
       date_token="$(date -u +%F)"
       url="${url//\{date\}/$date_token}"
+    fi
+
+    if [[ "$url" == *"{tennis_player_id}"* ]]; then
+      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id)"
+      url="${url//\{tennis_player_id\}/$tennis_player_id}"
     fi
 
     [[ -z "$source_key" || -z "$url" || -z "$expected_content_type" || -z "$parser_hint" ]] && {

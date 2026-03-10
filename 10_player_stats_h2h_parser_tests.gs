@@ -642,6 +642,12 @@ function testBuildTaH2hLookupDebugSample_reportsPairKeyComparisonAfterNormalizat
 
 
 
+
+function testIsSofascoreTennisPlayer_requiresTennisSlug_() {
+  assertTrue_(isSofascoreTennisPlayer_({ player: { sport: { slug: 'tennis', id: 5, name: 'Tennis' } } }));
+  assertFalse_(isSofascoreTennisPlayer_({ player: { sport: { slug: 'football', id: 5, name: 'Tennis' } } }));
+}
+
 const TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID = 9472;
 const TEST_SOFASCORE_NON_TENNIS_PLAYER_ID = 7000;
 
