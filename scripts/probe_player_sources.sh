@@ -302,6 +302,12 @@ elif not expected_http_ok:
 elif not content_type_match:
     status = "content_type_mismatch"
     effective_pass = False
+elif source_key == "itf" and http_code == "404":
+    status = "itf_contract_http_404"
+    effective_pass = False
+elif source_key == "itf" and not is_json:
+    status = "itf_contract_non_json"
+    effective_pass = False
 elif (("json" in expected_content_type_lc) or os.environ.get("PARSER_HINT", "").strip().lower() == "json_api") and api_error_payload:
     status = "api_error_payload"
     effective_pass = False
