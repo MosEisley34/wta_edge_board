@@ -2030,6 +2030,7 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
 
     if (String(enrichment.reason_code || '') === 'source_entity_domain_mismatch') {
       sawDomainMismatch = true;
+      const domainMismatchReason = String(enrichment.domain_mismatch_reason || 'source_entity_domain_mismatch');
       statsByPlayer[playerName] = {
         ranking: null,
         recent_form: null,
@@ -2040,7 +2041,7 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
         source_used: sourceUsed,
         fallback_mode: 'source_entity_domain_mismatch',
         has_stats: false,
-        failure_reason: 'source_entity_domain_mismatch',
+        failure_reason: domainMismatchReason,
       };
       endpointFeatureSourcesByPlayer[playerName] = {
         ranking: null,
@@ -2124,7 +2125,11 @@ function fetchSofascorePlayerEnrichment_(playerId, config) {
     };
   }
 
-  if (detail.ok && !isSofascoreTennisPlayer_(detail.payload)) {
+  const detailSportSlug = getSofascorePlayerSportSlug_(detail.payload);
+  if (detail.ok && detailSportSlug !== 'tennis') {
+    const mismatchReason = detailSportSlug
+      ? ('source_entity_domain_mismatch_non_tennis_sport_slug_' + detailSportSlug)
+      : 'source_entity_domain_mismatch_non_tennis_missing_sport_slug';
     return {
       detail_payload: detail.payload,
       recent_payload: null,
@@ -2137,6 +2142,7 @@ function fetchSofascorePlayerEnrichment_(playerId, config) {
       api_call_count: Number(detail.api_call_count || 0),
       attempted_endpoints: [detailEndpoint.url],
       reason_code: 'source_entity_domain_mismatch',
+      domain_mismatch_reason: mismatchReason,
     };
   }
 
@@ -2162,10 +2168,14 @@ function fetchSofascorePlayerEnrichment_(playerId, config) {
 }
 
 function isSofascoreTennisPlayer_(payload) {
+  return getSofascorePlayerSportSlug_(payload) === 'tennis';
+}
+
+function getSofascorePlayerSportSlug_(payload) {
   const sport = payload && payload.player && payload.player.sport;
-  if (!sport || typeof sport !== 'object') return false;
+  if (!sport || typeof sport !== 'object') return '';
   const slug = String(sport.slug || '').toLowerCase();
-  return slug === 'tennis';
+  return slug || '';
 }
 
 function fetchSofascorePlayerDetail_(playerId, config) {
