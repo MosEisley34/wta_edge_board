@@ -496,11 +496,133 @@ def _records_from_json(data: object) -> Iterable[dict[str, object]]:
             yield data
 
 
+def _as_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of: str) -> list[PlayerFeature]:
+    events = data.get("events")
+    if not isinstance(events, list):
+        return []
+
+    rows: list[PlayerFeature] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        for side in ("homeTeam", "awayTeam"):
+            team = _as_dict(event.get(side))
+            player_name = normalize_name(_pick(team, "name", "shortName"))
+            if not player_name:
+                continue
+            rows.append(
+                PlayerFeature(
+                    player_canonical_name=player_name,
+                    source=source,
+                    as_of=as_of,
+                    ranking=_to_int(_pick(team, "ranking", "seed")),
+                    recent_form=None,
+                    surface_win_rate=None,
+                    hold_pct=None,
+                    break_pct=None,
+                    h2h_wins=None,
+                    h2h_losses=None,
+                    has_stats=False,
+                    reason_code="ok",
+                    reason_code_detail="normalized_from_sofascore_events",
+                )
+            )
+
+    if rows:
+        for row in rows:
+            row.has_stats = _has_stats(row)
+        return rows
+    return [
+        PlayerFeature(
+            player_canonical_name=None,
+            source=source,
+            as_of=as_of,
+            ranking=None,
+            recent_form=None,
+            surface_win_rate=None,
+            hold_pct=None,
+            break_pct=None,
+            h2h_wins=None,
+            h2h_losses=None,
+            has_stats=False,
+            reason_code="sofascore_events_payload_without_players",
+            reason_code_detail="events_present_but_no_home_away_team_names",
+        )
+    ]
+
+
+def _parse_sofascore_player_record(data: dict[str, object], source: str, as_of: str) -> list[PlayerFeature]:
+    player = data.get("player")
+    if not isinstance(player, dict):
+        return []
+    feature = PlayerFeature(
+        player_canonical_name=normalize_name(_pick(player, "name", "shortName", "slug")),
+        source=source,
+        as_of=as_of,
+        ranking=_to_int(_pick(player, "ranking", "position", "seed")),
+        recent_form=None,
+        surface_win_rate=None,
+        hold_pct=None,
+        break_pct=None,
+        h2h_wins=None,
+        h2h_losses=None,
+        has_stats=False,
+        reason_code="ok",
+        reason_code_detail="normalized_from_sofascore_player",
+    )
+    feature.has_stats = _has_stats(feature)
+    if feature.player_canonical_name is None:
+        feature.reason_code = "sofascore_player_missing_name"
+    return [feature]
+
+
+def _parse_sofascore_statistics_record(data: dict[str, object], source: str, as_of: str) -> list[PlayerFeature]:
+    statistics = data.get("statistics")
+    if not isinstance(statistics, dict):
+        return []
+    stat_keys = sorted([str(key) for key in statistics.keys()])
+    detail = ",".join(stat_keys[:5]) if stat_keys else "no_statistics_keys"
+    return [
+        PlayerFeature(
+            player_canonical_name=None,
+            source=source,
+            as_of=as_of,
+            ranking=None,
+            recent_form=None,
+            surface_win_rate=None,
+            hold_pct=None,
+            break_pct=None,
+            h2h_wins=None,
+            h2h_losses=None,
+            has_stats=False,
+            reason_code="sofascore_statistics_payload",
+            reason_code_detail=f"statistics_keys:{detail}",
+        )
+    ]
+
+
 def _parse_json_rows(source: str, text: str, as_of: str) -> list[PlayerFeature]:
     try:
         data = json.loads(text)
     except Exception:
         return []
+
+    if isinstance(data, dict):
+        sofascore_events = _parse_sofascore_events_records(data, source, as_of)
+        if sofascore_events:
+            return sofascore_events
+        sofascore_player = _parse_sofascore_player_record(data, source, as_of)
+        if sofascore_player:
+            return sofascore_player
+        sofascore_statistics = _parse_sofascore_statistics_record(data, source, as_of)
+        if sofascore_statistics:
+            return sofascore_statistics
 
     rows: list[PlayerFeature] = []
     for obj in _records_from_json(data):

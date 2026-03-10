@@ -1,0 +1,9 @@
+{
+  "events": [
+    {
+      "id": 1,
+      "homeTeam": {"name": "Iga Swiatek", "ranking": 1},
+      "awayTeam": {"name": "Aryna Sabalenka", "ranking": 2}
+    }
+  ]
+}
