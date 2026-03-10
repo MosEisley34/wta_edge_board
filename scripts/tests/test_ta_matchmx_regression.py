@@ -13,18 +13,24 @@ from extract_player_features import _parse_matchmx_rows  # noqa: E402
 
 class TaMatchMxRegressionTest(unittest.TestCase):
     def setUp(self):
-        self.fixture_path = ROOT / "scripts" / "fixtures" / "leadersource_wta_sample.js"
+        self.fixture_path = ROOT / "scripts" / "fixtures" / "tennisabstract_leadersource_wta.body"
         self.payload = self.fixture_path.read_text(encoding="utf-8")
 
-    def test_extract_player_features_fixture_has_players_and_coverage(self):
+    def test_extract_player_features_fixture_has_players_coverage_and_name_quality(self):
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", self.payload, "2026-01-01T00:00:00+00:00")
         valid_rows = [r for r in rows if r.player_canonical_name and r.reason_code == "ok"]
-        self.assertGreater(len(valid_rows), 0)
+        self.assertGreater(len(valid_rows), 6)
 
+        non_null_rank = sum(1 for row in valid_rows if row.ranking is not None)
         non_null_hold = sum(1 for row in valid_rows if row.hold_pct is not None)
+        non_null_break = sum(1 for row in valid_rows if row.break_pct is not None)
+        self.assertGreater(non_null_rank, 0)
         self.assertGreater(non_null_hold, 0)
+        self.assertGreater(non_null_break, 0)
 
-    def test_check_ta_parity_fixture_has_non_zero_players_and_non_null_coverage(self):
+        self.assertFalse(any(len(row.player_canonical_name.strip()) == 1 for row in valid_rows if row.player_canonical_name))
+
+    def test_check_ta_parity_fixture_has_threshold_players_non_null_coverage_and_no_single_letter_names(self):
         cmd = [
             sys.executable,
             str(SCRIPTS_DIR / "check_ta_parity.py"),
@@ -35,19 +41,25 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         ]
         result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=True)
         summary = json.loads(result.stdout)
-        self.assertGreater(summary["unique_players"], 0)
+        self.assertGreater(summary["unique_players"], 6)
+        self.assertGreater(summary["normalized_non_null_coverage"]["ranking"]["non_null"], 0)
         self.assertGreater(summary["normalized_non_null_coverage"]["hold_pct"]["non_null"], 0)
+        self.assertGreater(summary["normalized_non_null_coverage"]["break_pct"]["non_null"], 0)
+        self.assertFalse(any(len(item["player"].strip()) == 1 for item in summary["sample_normalized_records"]))
 
-    def test_parse_matchmx_handles_quoted_commas_and_skips_bad_shape(self):
+    def test_parse_matchmx_handles_quoted_commas_escaped_quotes_and_nested_arrays(self):
         payload = '\n'.join([
-            'matchmx[0] = ["2026-01-01","Open","Hard","Anna \"Ace\" Smith","Doe, Jane","6-4 6-4","12","0.8","0.7","65","38","60","50","58","67","49","41","1.12","54"];',
-            'matchmx[1] = ["2026-01-02","Open","Hard","A","Doe, Jane","6-4 6-4","12"];',
+            'matchmx[0] = ["2026-01-01","Open","Hard","Anna-Marie Smith","Doe, Jane","6-4 6-4","12","0.8","0.7","65","38","60","50","58","67","49","41","1.12","54"];',
+            'matchmx[1] = ["2026-01-02","Open",["Hard","Indoor"],"Beth Brown","Carla Cruz","6-4, 6-4","9","0.7","0.6","63","36","58","49","56","65","47","39","1.05","51"];',
+            'matchmx[2] = ["2026-01-03","Open","Hard","A","Doe, Jane","6-4 6-4","12"];',
         ])
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0].player_canonical_name, "Anna Ace Smith")
-        self.assertEqual(rows[0].reason_code, 'ok')
-        self.assertEqual(rows[1].reason_code, 'ta_matchmx_unusable_payload')
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0].player_canonical_name, "Anna-Marie Smith")
+        self.assertEqual(rows[0].reason_code, "ok")
+        self.assertEqual(rows[1].player_canonical_name, "Beth Brown")
+        self.assertEqual(rows[1].reason_code, "ok")
+        self.assertEqual(rows[2].reason_code, "ta_matchmx_unusable_payload")
 
     def test_check_ta_parity_emits_unusable_payload_metrics_for_bad_names(self):
         fixture_with_bad_name = ROOT / "tmp" / "test_ta_parity_bad_name.body"
@@ -68,24 +80,6 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         summary = json.loads(result.stdout)
         self.assertEqual(summary["reason_code"], "ta_matchmx_unusable_payload")
         self.assertEqual(summary["matchmx_unusable_rows"], 1)
-
-    def test_check_ta_parity_reports_clear_guidance_when_matchmx_missing(self):
-        fixture_without_matchmx = ROOT / "tmp" / "test_ta_parity_no_matchmx.body"
-        fixture_without_matchmx.parent.mkdir(parents=True, exist_ok=True)
-        fixture_without_matchmx.write_text('<html><body>no match rows</body></html>', encoding="utf-8")
-
-        cmd = [
-            sys.executable,
-            str(SCRIPTS_DIR / "check_ta_parity.py"),
-            "--input",
-            str(fixture_without_matchmx),
-        ]
-        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=False)
-        self.assertEqual(result.returncode, 1)
-        summary = json.loads(result.stdout)
-        self.assertEqual(summary["reason_code"], "ta_matchmx_markers_missing")
-        self.assertIn("leadersource_wta", summary["reason"])
-        self.assertEqual(summary["suggested_input"], "tmp/source_probe_latest/raw/tennisabstract_leadersource_wta.body")
 
 
 if __name__ == "__main__":

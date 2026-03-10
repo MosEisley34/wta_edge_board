@@ -18,10 +18,13 @@ from fnmatch import fnmatch
 
 from matchmx_parser import (
     MATCHMX_ROW_IDX,
+    has_any_key_metrics,
+    has_minimum_schema_columns,
     iter_matchmx_rows,
     is_accepted_name,
     is_usable_canonical_name,
     normalize_name,
+    required_indices_present,
 )
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
@@ -408,7 +411,8 @@ def _has_stats(row: PlayerFeature) -> bool:
 def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeature]:
     rows: list[PlayerFeature] = []
     for parsed in iter_matchmx_rows(text):
-        if not parsed.row_shape_valid:
+        values = parsed.tokens
+        if not has_minimum_schema_columns(values):
             rows.append(
                 PlayerFeature(
                     player_canonical_name=None,
@@ -428,8 +432,7 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
             )
             continue
 
-        values = parsed.tokens
-        if MATCHMX_ROW_IDX["PLAYER_NAME"] >= len(values):
+        if not required_indices_present(values):
             rows.append(
                 PlayerFeature(
                     player_canonical_name=None,
@@ -468,6 +471,10 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
         if not is_usable_canonical_name(feature.player_canonical_name):
             feature.reason_code = "ta_matchmx_unusable_payload"
             feature.reason_code_detail = "canonical_name_rejected"
+            feature.player_canonical_name = None
+        elif not has_any_key_metrics(values):
+            feature.reason_code = "ta_matchmx_unusable_payload"
+            feature.reason_code_detail = "all_key_metrics_null"
             feature.player_canonical_name = None
         elif not feature.has_stats:
             feature.reason_code = "provider_returned_null_features"

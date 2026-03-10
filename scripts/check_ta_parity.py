@@ -15,7 +15,14 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from matchmx_parser import MATCHMX_ROW_IDX, is_usable_canonical_name, iter_matchmx_rows
+from matchmx_parser import (
+    MATCHMX_ROW_IDX,
+    has_any_key_metrics,
+    has_minimum_schema_columns,
+    is_usable_canonical_name,
+    iter_matchmx_rows,
+    required_indices_present,
+)
 
 DEFAULT_INPUT_PATH = "tmp/source_probe_latest/raw/tennisabstract_leadersource_wta.body"
 FALLBACK_INPUT_PATH = "tmp/source_probes/raw/tennisabstract_leadersource_wta.body"
@@ -74,17 +81,23 @@ def _extract_rows(payload: str) -> tuple[list[dict[str, object]], dict[str, int]
     rows: list[dict[str, object]] = []
     metrics = {"ta_matchmx_unusable_payload": 0}
     for parsed in iter_matchmx_rows(payload):
-        if not parsed.row_shape_valid:
+        tokens = parsed.tokens
+        if not has_minimum_schema_columns(tokens):
             metrics["ta_matchmx_unusable_payload"] += 1
             continue
-        tokens = parsed.tokens
-        if any(idx >= len(tokens) for idx in (MATCHMX_ROW_IDX["PLAYER_NAME"], MATCHMX_ROW_IDX["SCORE"], MATCHMX_ROW_IDX["DATE"])):
+        if not required_indices_present(tokens):
             metrics["ta_matchmx_unusable_payload"] += 1
             continue
         row = _build_structured_row(tokens)
         if not row["player_name"] or not row["score"]:
             continue
         if not is_usable_canonical_name(str(row["player_name"])):
+            metrics["ta_matchmx_unusable_payload"] += 1
+            continue
+        if not has_any_key_metrics(tokens):
+            metrics["ta_matchmx_unusable_payload"] += 1
+            continue
+        if row["ranking"] is None and row["hold_pct"] is None and row["break_pct"] is None:
             metrics["ta_matchmx_unusable_payload"] += 1
             continue
         rows.append(row)
