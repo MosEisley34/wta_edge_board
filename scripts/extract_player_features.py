@@ -565,26 +565,71 @@ def _looks_like_singles_player_name(name: str) -> bool:
     return not any(token in normalized for token in blocked_tokens)
 
 
+def _split_sofascore_team_name(value: str) -> list[str]:
+    text = value.strip()
+    if not text:
+        return []
+    parts = re.split(r"\s*(?:/|&| and )\s*", text, flags=re.IGNORECASE)
+    if len(parts) <= 1:
+        return [text]
+    return [part for part in (segment.strip() for segment in parts) if part]
+
+
+def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[str], bool]:
+    candidates: list[str] = []
+    has_participant_fields = False
+
+    def _collect_name_fields(node: dict[str, object]) -> None:
+        nonlocal has_participant_fields
+        if any(key in node for key in ("name", "shortName", "slug")):
+            has_participant_fields = True
+        name = normalize_name(_pick(node, "name", "shortName", "slug"))
+        if not name:
+            return
+        candidates.extend(_split_sofascore_team_name(name))
+
+    def _collect_entity(value: object) -> None:
+        if isinstance(value, dict):
+            _collect_name_fields(value)
+        elif isinstance(value, list):
+            if value:
+                has_nonlocal_participant[0] = True
+            for item in value:
+                if isinstance(item, dict):
+                    _collect_name_fields(item)
+
+    has_nonlocal_participant = [False]
+    _collect_name_fields(team)
+    _collect_entity(team.get("player"))
+    for key in (
+        "players",
+        "participants",
+        "participant",
+        "members",
+        "athletes",
+        "team",
+        "homeTeam",
+        "awayTeam",
+    ):
+        _collect_entity(team.get(key))
+
+    normalized_unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = normalize_name(candidate)
+        if not normalized or normalized in seen:
+            continue
+        if _looks_like_singles_player_name(normalized):
+            seen.add(normalized)
+            normalized_unique.append(normalized)
+
+    has_participant_fields = has_participant_fields or has_nonlocal_participant[0]
+    return normalized_unique, has_participant_fields
+
+
 def _normalize_sofascore_team_player_name(team: dict[str, object]) -> str | None:
-    direct_player = _as_dict(team.get("player"))
-    direct_player_name = normalize_name(_pick(direct_player, "name", "shortName", "slug"))
-    if direct_player_name and _looks_like_singles_player_name(direct_player_name):
-        return direct_player_name
-
-    team_players = team.get("players")
-    if isinstance(team_players, list):
-        if len(team_players) != 1:
-            return None
-        candidate = _as_dict(team_players[0])
-        candidate_name = normalize_name(_pick(candidate, "name", "shortName", "slug"))
-        if candidate_name and _looks_like_singles_player_name(candidate_name):
-            return candidate_name
-        return None
-
-    fallback_name = normalize_name(_pick(team, "name", "shortName"))
-    if fallback_name and _looks_like_singles_player_name(fallback_name):
-        return fallback_name
-    return None
+    names, _ = _extract_sofascore_team_player_names(team)
+    return names[0] if names else None
 
 
 def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of: str) -> list[PlayerFeature]:
@@ -593,6 +638,7 @@ def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of:
         return []
 
     rows: list[PlayerFeature] = []
+    participant_fields_seen = False
     for event in events:
         if not isinstance(event, dict):
             continue
@@ -602,31 +648,33 @@ def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of:
             continue
         for side in ("homeTeam", "awayTeam"):
             team = _as_dict(event.get(side))
-            player_name = _normalize_sofascore_team_player_name(team)
-            if not player_name:
-                continue
-            rows.append(
-                PlayerFeature(
-                    player_canonical_name=player_name,
-                    source=source,
-                    as_of=as_of,
-                    ranking=_to_int(_pick(team, "ranking", "seed")),
-                    recent_form=None,
-                    surface_win_rate=None,
-                    hold_pct=None,
-                    break_pct=None,
-                    h2h_wins=None,
-                    h2h_losses=None,
-                    has_stats=False,
-                    reason_code="ok",
-                    reason_code_detail="normalized_from_sofascore_events",
+            player_names, has_participant_fields = _extract_sofascore_team_player_names(team)
+            participant_fields_seen = participant_fields_seen or has_participant_fields
+            for player_name in player_names:
+                rows.append(
+                    PlayerFeature(
+                        player_canonical_name=player_name,
+                        source=source,
+                        as_of=as_of,
+                        ranking=_to_int(_pick(team, "ranking", "seed")),
+                        recent_form=None,
+                        surface_win_rate=None,
+                        hold_pct=None,
+                        break_pct=None,
+                        h2h_wins=None,
+                        h2h_losses=None,
+                        has_stats=False,
+                        reason_code="ok",
+                        reason_code_detail="normalized_from_sofascore_events",
+                    )
                 )
-            )
 
     if rows:
         for row in rows:
             row.has_stats = _has_stats(row)
         return rows
+    if participant_fields_seen:
+        return []
     return [
         PlayerFeature(
             player_canonical_name=None,
