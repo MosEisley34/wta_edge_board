@@ -2,6 +2,8 @@
   "events": [
     {
       "id": 1,
+      "sport": {"slug": "tennis", "name": "Tennis"},
+      "category": {"name": "WTA", "slug": "wta"},
       "homeTeam": {"name": "Iga Swiatek", "ranking": 1},
       "awayTeam": {"name": "Aryna Sabalenka", "ranking": 2}
     }

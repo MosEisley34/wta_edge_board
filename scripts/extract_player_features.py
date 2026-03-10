@@ -528,6 +528,76 @@ def _as_dict(value: object) -> dict[str, object]:
     return {}
 
 
+def _contains_any_token(value: str, tokens: tuple[str, ...]) -> bool:
+    normalized = value.casefold()
+    return any(token in normalized for token in tokens)
+
+
+def _is_sofascore_tennis_event(event: dict[str, object]) -> bool:
+    sport = _as_dict(event.get("sport"))
+    if _contains_any_token(str(sport.get("slug") or ""), ("tennis",)):
+        return True
+    if _contains_any_token(str(sport.get("name") or ""), ("tennis",)):
+        return True
+    return False
+
+
+def _is_sofascore_wta_event(event: dict[str, object]) -> bool:
+    searchable_segments: list[str] = []
+    for node in (
+        _as_dict(event.get("category")),
+        _as_dict(event.get("tournament")),
+        _as_dict(event.get("uniqueTournament")),
+        _as_dict(_as_dict(event.get("tournament")).get("category")),
+        _as_dict(_as_dict(event.get("tournament")).get("uniqueTournament")),
+    ):
+        searchable_segments.extend([
+            str(node.get("name") or ""),
+            str(node.get("slug") or ""),
+            str(node.get("gender") or ""),
+        ])
+
+    return any(_contains_any_token(segment, ("wta",)) for segment in searchable_segments)
+
+
+def _looks_like_singles_player_name(name: str) -> bool:
+    normalized = name.casefold().strip()
+    if not normalized:
+        return False
+    blocked_tokens = (
+        " / ",
+        "/",
+        " & ",
+        " and ",
+        " doubles",
+        " team",
+        "-team",
+    )
+    return not any(token in normalized for token in blocked_tokens)
+
+
+def _normalize_sofascore_team_player_name(team: dict[str, object]) -> str | None:
+    direct_player = _as_dict(team.get("player"))
+    direct_player_name = normalize_name(_pick(direct_player, "name", "shortName", "slug"))
+    if direct_player_name and _looks_like_singles_player_name(direct_player_name):
+        return direct_player_name
+
+    team_players = team.get("players")
+    if isinstance(team_players, list):
+        if len(team_players) != 1:
+            return None
+        candidate = _as_dict(team_players[0])
+        candidate_name = normalize_name(_pick(candidate, "name", "shortName", "slug"))
+        if candidate_name and _looks_like_singles_player_name(candidate_name):
+            return candidate_name
+        return None
+
+    fallback_name = normalize_name(_pick(team, "name", "shortName"))
+    if fallback_name and _looks_like_singles_player_name(fallback_name):
+        return fallback_name
+    return None
+
+
 def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of: str) -> list[PlayerFeature]:
     events = data.get("events")
     if not isinstance(events, list):
@@ -537,9 +607,13 @@ def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of:
     for event in events:
         if not isinstance(event, dict):
             continue
+        if not _is_sofascore_tennis_event(event):
+            continue
+        if not _is_sofascore_wta_event(event):
+            continue
         for side in ("homeTeam", "awayTeam"):
             team = _as_dict(event.get(side))
-            player_name = normalize_name(_pick(team, "name", "shortName"))
+            player_name = _normalize_sofascore_team_player_name(team)
             if not player_name:
                 continue
             rows.append(
