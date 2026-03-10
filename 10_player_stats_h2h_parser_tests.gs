@@ -639,3 +639,112 @@ function testBuildTaH2hLookupDebugSample_reportsPairKeyComparisonAfterNormalizat
   assertEquals_('1||marta kostyuk||2||elena rybakina', debug.pair_key_comparison.normalized_key_drift_samples[0].raw);
   assertEquals_('marta kostyuk||elena rybakina', debug.pair_key_comparison.normalized_key_drift_samples[0].normalized);
 }
+
+
+function testFetchSofascorePlayerEnrichment_tennisPlayerRequestsRecentAndStats_() {
+  const originalFetch = fetchSofascoreJson_;
+  const calledUrls = [];
+  fetchSofascoreJson_ = function (url) {
+    calledUrls.push(url);
+    if (url.indexOf('/player/9472') >= 0 && url.indexOf('/events/last/0') < 0 && url.indexOf('/statistics/') < 0) {
+      return { ok: true, payload: { player: { id: 9472, sport: { slug: 'tennis', id: 5 } } }, api_call_count: 1 };
+    }
+    if (url.indexOf('/player/9472/events/last/0') >= 0) return { ok: true, payload: { events: [] }, api_call_count: 1 };
+    if (url.indexOf('/player/9472/statistics/overall') >= 0) return { ok: true, payload: { statistics: {} }, api_call_count: 1 };
+    if (url.indexOf('/player/9472/statistics/last/52') >= 0) return { ok: true, payload: { statistics: {} }, api_call_count: 1 };
+    return { ok: false, payload: null, api_call_count: 1 };
+  };
+
+  try {
+    const result = fetchSofascorePlayerEnrichment_(9472, {});
+    assertEquals_('sofascore_ok', result.reason_code);
+    assertEquals_(4, calledUrls.length);
+    assertTrue_(calledUrls.some(function (u) { return u.indexOf('/player/9472/events/last/0') >= 0; }), 'recent endpoint should be requested for tennis');
+    assertTrue_(calledUrls.some(function (u) { return u.indexOf('/player/9472/statistics/overall') >= 0; }), 'overall statistics endpoint should be requested for tennis');
+  } finally {
+    fetchSofascoreJson_ = originalFetch;
+  }
+}
+
+function testFetchSofascorePlayerEnrichment_nonTennisPlayerSkipsRecentAndStats_() {
+  const originalFetch = fetchSofascoreJson_;
+  const calledUrls = [];
+  fetchSofascoreJson_ = function (url) {
+    calledUrls.push(url);
+    if (url.indexOf('/player/7000') >= 0 && url.indexOf('/events/last/0') < 0 && url.indexOf('/statistics/') < 0) {
+      return { ok: true, payload: { player: { id: 7000, sport: { slug: 'football', id: 1 } } }, api_call_count: 1 };
+    }
+    return { ok: true, payload: {}, api_call_count: 1 };
+  };
+
+  try {
+    const result = fetchSofascorePlayerEnrichment_(7000, {});
+    assertEquals_('source_entity_domain_mismatch', result.reason_code);
+    assertEquals_(1, calledUrls.length);
+    assertTrue_(calledUrls[0].indexOf('/player/7000') >= 0, 'only player detail endpoint should be requested for non-tennis');
+  } finally {
+    fetchSofascoreJson_ = originalFetch;
+  }
+}
+
+
+function testFetchPlayerStatsFromSofascore_domainMismatchSetsFailureAndNoDownstreamMetrics_() {
+  const originalFetchJson = fetchSofascoreJson_;
+  const originalEnrichment = fetchSofascorePlayerEnrichment_;
+
+  fetchSofascoreJson_ = function () {
+    return {
+      ok: true,
+      payload: {
+        events: [
+          {
+            homeTeam: { id: 7000, name: 'Non Tennis Player' },
+            awayTeam: { id: 9472, name: 'Iga Swiatek' },
+          },
+        ],
+      },
+      api_call_count: 1,
+    };
+  };
+
+  fetchSofascorePlayerEnrichment_ = function (playerId) {
+    if (Number(playerId) === 7000) {
+      return {
+        reason_code: 'source_entity_domain_mismatch',
+        detail_payload: { player: { id: 7000, sport: { slug: 'football' } } },
+        recent_payload: null,
+        payloads_with_endpoints: [],
+        detail_endpoint: 'https://api.sofascore.com/api/v1/player/7000',
+        recent_endpoint: null,
+        attempted_endpoints: ['https://api.sofascore.com/api/v1/player/7000'],
+        api_call_count: 1,
+      };
+    }
+    return {
+      reason_code: 'sofascore_ok',
+      detail_payload: { player: { ranking: 1, sport: { slug: 'tennis' } } },
+      recent_payload: { events: [] },
+      payloads_with_endpoints: [],
+      detail_endpoint: 'https://api.sofascore.com/api/v1/player/9472',
+      recent_endpoint: 'https://api.sofascore.com/api/v1/player/9472/events/last/0',
+      attempted_endpoints: [
+        'https://api.sofascore.com/api/v1/player/9472',
+        'https://api.sofascore.com/api/v1/player/9472/events/last/0',
+        'https://api.sofascore.com/api/v1/player/9472/statistics/overall',
+      ],
+      api_call_count: 3,
+    };
+  };
+
+  try {
+    const result = fetchPlayerStatsFromSofascore_({}, ['Non Tennis Player']);
+    assertEquals_('source_entity_domain_mismatch', result.reason_code);
+    assertEquals_('source_entity_domain_mismatch', result.stats_by_player['non tennis player'].fallback_mode);
+    assertEquals_('source_entity_domain_mismatch', result.stats_by_player['non tennis player'].failure_reason);
+    assertEquals_(null, result.endpoint_feature_sources_by_player['non tennis player'].recent_form);
+    assertEquals_(null, result.endpoint_feature_sources_by_player['non tennis player'].hold_pct);
+  } finally {
+    fetchSofascoreJson_ = originalFetchJson;
+    fetchSofascorePlayerEnrichment_ = originalEnrichment;
+  }
+}

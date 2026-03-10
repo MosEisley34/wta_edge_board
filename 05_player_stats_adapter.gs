@@ -1691,6 +1691,7 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
 
   const statsByPlayer = {};
   const endpointFeatureSourcesByPlayer = {};
+  let sawDomainMismatch = false;
   canonicalPlayers.forEach(function (playerName) {
     const participant = participantIndex[playerName];
     if (!participant || !participant.id) {
@@ -1710,6 +1711,29 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
     const enrichment = fetchSofascorePlayerEnrichment_(participant.id, config);
     apiCallCount += Number(enrichment.api_call_count || 0);
     attemptedEndpoints.push.apply(attemptedEndpoints, enrichment.attempted_endpoints || []);
+
+    if (String(enrichment.reason_code || '') === 'source_entity_domain_mismatch') {
+      sawDomainMismatch = true;
+      statsByPlayer[playerName] = {
+        ranking: null,
+        recent_form: null,
+        surface_win_rate: null,
+        hold_pct: null,
+        break_pct: null,
+        stats_confidence: 0,
+        source_used: sourceUsed,
+        fallback_mode: 'source_entity_domain_mismatch',
+        has_stats: false,
+        failure_reason: 'source_entity_domain_mismatch',
+      };
+      endpointFeatureSourcesByPlayer[playerName] = {
+        ranking: null,
+        recent_form: null,
+        hold_pct: null,
+        break_pct: null,
+      };
+      return;
+    }
 
     const ranking = extractSofascoreRanking_(enrichment.detail_payload);
     const recentForm = extractSofascoreFormProxy_(enrichment.recent_payload, participant.id);
@@ -1742,10 +1766,14 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
   });
 
   const missingCore = summarizeMissingCoreFields_(statsByPlayer, canonicalPlayers);
+  const hasAnyStats = canonicalPlayers.some(function (playerName) {
+    const row = statsByPlayer[playerName] || {};
+    return row.ranking !== null || row.recent_form !== null || row.hold_pct !== null || row.break_pct !== null;
+  });
 
   return {
     ok: true,
-    reason_code: 'player_stats_sofascore_success',
+    reason_code: sawDomainMismatch && !hasAnyStats ? 'source_entity_domain_mismatch' : 'player_stats_sofascore_success',
     stats_by_player: statsByPlayer,
     endpoint_feature_sources_by_player: endpointFeatureSourcesByPlayer,
     api_call_count: apiCallCount,
@@ -1758,32 +1786,56 @@ function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
 
 function fetchSofascorePlayerEnrichment_(playerId, config) {
   const pid = encodeURIComponent(String(playerId || ''));
-  const endpoints = [
-    { name: 'player_detail', url: 'https://api.sofascore.com/api/v1/player/' + pid, contract: { required_top_level_keys: ['player'], expected_payload_shape: { player: 'object' } } },
-    { name: 'player_recent_events', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/events/last/0', contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } } },
-    { name: 'player_stats_overall', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/overall', contract: { required_top_level_keys: ['statistics'], expected_payload_shape: { statistics: 'object_or_array' } } },
-    { name: 'player_stats_last_52', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/last/52', contract: { required_top_level_keys: ['statistics'], expected_payload_shape: { statistics: 'object_or_array' } } },
-  ];
+  const detailEndpoint = { name: 'player_detail', url: 'https://api.sofascore.com/api/v1/player/' + pid, contract: { required_top_level_keys: ['player'], expected_payload_shape: { player: 'object' } } };
+  const recentEndpoint = { name: 'player_recent_events', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/events/last/0', contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } } };
+  const statsOverallEndpoint = { name: 'player_stats_overall', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/overall', contract: { required_top_level_keys: ['statistics'], expected_payload_shape: { statistics: 'object_or_array' } } };
+  const statsLast52Endpoint = { name: 'player_stats_last_52', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/last/52', contract: { required_top_level_keys: ['statistics'], expected_payload_shape: { statistics: 'object_or_array' } } };
 
-  const detail = fetchSofascoreJson_(endpoints[0].url, config, endpoints[0].contract);
-  const recent = fetchSofascoreJson_(endpoints[1].url, config, endpoints[1].contract);
-  const statsOverall = fetchSofascoreJson_(endpoints[2].url, config, endpoints[2].contract);
-  const statsLast52 = fetchSofascoreJson_(endpoints[3].url, config, endpoints[3].contract);
+  const detail = fetchSofascoreJson_(detailEndpoint.url, config, detailEndpoint.contract);
+  if (detail.ok && !isSofascoreTennisPlayer_(detail.payload)) {
+    return {
+      detail_payload: detail.payload,
+      recent_payload: null,
+      stats_payloads: [],
+      payloads_with_endpoints: [
+        { endpoint: detailEndpoint.url, payload: detail.payload },
+      ],
+      detail_endpoint: detailEndpoint.url,
+      recent_endpoint: null,
+      api_call_count: Number(detail.api_call_count || 0),
+      attempted_endpoints: [detailEndpoint.url],
+      reason_code: 'source_entity_domain_mismatch',
+    };
+  }
+
+  const recent = fetchSofascoreJson_(recentEndpoint.url, config, recentEndpoint.contract);
+  const statsOverall = fetchSofascoreJson_(statsOverallEndpoint.url, config, statsOverallEndpoint.contract);
+  const statsLast52 = fetchSofascoreJson_(statsLast52Endpoint.url, config, statsLast52Endpoint.contract);
 
   return {
     detail_payload: detail.payload,
     recent_payload: recent.payload,
     stats_payloads: [statsOverall.payload, statsLast52.payload],
     payloads_with_endpoints: [
-      { endpoint: endpoints[0].url, payload: detail.payload },
-      { endpoint: endpoints[2].url, payload: statsOverall.payload },
-      { endpoint: endpoints[3].url, payload: statsLast52.payload },
+      { endpoint: detailEndpoint.url, payload: detail.payload },
+      { endpoint: statsOverallEndpoint.url, payload: statsOverall.payload },
+      { endpoint: statsLast52Endpoint.url, payload: statsLast52.payload },
     ],
-    detail_endpoint: endpoints[0].url,
-    recent_endpoint: endpoints[1].url,
+    detail_endpoint: detailEndpoint.url,
+    recent_endpoint: recentEndpoint.url,
     api_call_count: Number(detail.api_call_count || 0) + Number(recent.api_call_count || 0) + Number(statsOverall.api_call_count || 0) + Number(statsLast52.api_call_count || 0),
-    attempted_endpoints: endpoints.map(function (entry) { return entry.url; }),
+    attempted_endpoints: [detailEndpoint.url, recentEndpoint.url, statsOverallEndpoint.url, statsLast52Endpoint.url],
+    reason_code: 'sofascore_ok',
   };
+}
+
+function isSofascoreTennisPlayer_(payload) {
+  const sport = payload && payload.player && payload.player.sport;
+  if (!sport || typeof sport !== 'object') return false;
+  const slug = String(sport.slug || '').toLowerCase();
+  const name = String(sport.name || '').toLowerCase();
+  const sportId = Number(sport.id || 0);
+  return slug === 'tennis' || name === 'tennis' || sportId === 5;
 }
 
 function fetchSofascorePlayerDetail_(playerId, config) {
