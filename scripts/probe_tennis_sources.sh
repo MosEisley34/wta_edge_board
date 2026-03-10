@@ -5,6 +5,8 @@ UA='Mozilla/5.0 (compatible; WTA-Edge-Board/1.0)'
 OUT_DIR="${1:-./tmp/source_probes}"
 CATALOG_PATH="${2:-./config/probe_sources.tsv}"
 PROVIDER_ALLOWLIST="${PROVIDER_ALLOWLIST:-tennisabstract_*,sofascore_*}"
+DEFAULT_EXCLUDED_PROVIDERS="${DEFAULT_EXCLUDED_PROVIDERS:-wta_stats_zone,tennisexplorer,itf}"
+INCLUDE_DEFAULT_EXCLUDED_PROVIDERS="${INCLUDE_DEFAULT_EXCLUDED_PROVIDERS:-false}"
 
 RAW_DIR="$OUT_DIR/raw"
 LOGS_DIR="$OUT_DIR/logs"
@@ -13,6 +15,8 @@ mkdir -p "$RAW_DIR" "$LOGS_DIR" "$META_DIR"
 
 SUMMARY_TSV="$META_DIR/.summary.tsv"
 : > "$SUMMARY_TSV"
+SKIPPED_ALLOWLIST_TSV="$META_DIR/.skipped_allowlist.tsv"
+: > "$SKIPPED_ALLOWLIST_TSV"
 
 trim() {
   local value="$1"
@@ -21,10 +25,31 @@ trim() {
   printf '%s' "$value"
 }
 
+is_provider_default_excluded() {
+  local source_key="$1"
+  local pattern=""
+
+  [[ "${INCLUDE_DEFAULT_EXCLUDED_PROVIDERS,,}" == "true" ]] && return 1
+
+  IFS=',' read -r -a patterns <<< "$DEFAULT_EXCLUDED_PROVIDERS"
+  for pattern in "${patterns[@]}"; do
+    pattern="$(trim "$pattern")"
+    [[ -z "$pattern" ]] && continue
+    if [[ "$source_key" == "$pattern" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 is_provider_allowed() {
   local source_key="$1"
   local allowlist_raw="$PROVIDER_ALLOWLIST"
   local pattern=""
+
+  if is_provider_default_excluded "$source_key"; then
+    return 1
+  fi
 
   IFS=',' read -r -a patterns <<< "$allowlist_raw"
   for pattern in "${patterns[@]}"; do
@@ -35,6 +60,18 @@ is_provider_allowed() {
     fi
   done
   return 1
+}
+
+record_allowlist_skip() {
+  local source_key="$1"
+  local reason="not_in_provider_allowlist"
+
+  if is_provider_default_excluded "$source_key"; then
+    reason="excluded_from_default_probe_run"
+  fi
+
+  printf '%s\t%s\n' "$source_key" "$reason" >> "$SKIPPED_ALLOWLIST_TSV"
+  echo "INFO: skipping provider '$source_key' (status=skipped_by_allowlist; reason=$reason; PROVIDER_ALLOWLIST=$PROVIDER_ALLOWLIST)" >&2
 }
 
 emit_entry() {
@@ -198,7 +235,7 @@ iterate_tsv_catalog() {
     fi
 
     if ! is_provider_allowed "$source_key"; then
-      echo "INFO: skipping provider '$source_key' (not in PROVIDER_ALLOWLIST=$PROVIDER_ALLOWLIST)" >&2
+      record_allowlist_skip "$source_key"
       continue
     fi
 
@@ -237,7 +274,7 @@ PY
     }
 
     if ! is_provider_allowed "$source_key"; then
-      echo "INFO: skipping provider '$source_key' (not in PROVIDER_ALLOWLIST=$PROVIDER_ALLOWLIST)" >&2
+      record_allowlist_skip "$source_key"
       continue
     fi
 
@@ -259,12 +296,14 @@ case "$CATALOG_PATH" in
     ;;
 esac
 
-python3 - "$SUMMARY_TSV" "$META_DIR/summary.json" <<'PY'
+python3 - "$SUMMARY_TSV" "$SKIPPED_ALLOWLIST_TSV" "$META_DIR/summary.json" <<'PY'
 import json
+import os
 import sys
 
 summary_tsv = sys.argv[1]
-summary_out = sys.argv[2]
+skipped_tsv = sys.argv[2]
+summary_out = sys.argv[3]
 
 sources = []
 pass_count = 0
@@ -288,10 +327,26 @@ with open(summary_tsv, 'r', encoding='utf-8') as fh:
         else:
             fail_count += 1
 
+skipped_by_allowlist = []
+if os.path.exists(skipped_tsv):
+    with open(skipped_tsv, 'r', encoding='utf-8') as fh:
+        for line in fh:
+            line = line.rstrip('\n')
+            if not line:
+                continue
+            source_key, reason = line.split('\t')
+            skipped_by_allowlist.append({
+                'source_key': source_key,
+                'status': 'skipped_by_allowlist',
+                'reason': reason,
+            })
+
 summary = {
     'total_sources': len(sources),
     'pass_count': pass_count,
     'fail_count': fail_count,
+    'skipped_by_allowlist_count': len(skipped_by_allowlist),
+    'skipped_by_allowlist': skipped_by_allowlist,
     'sources': sources,
 }
 
@@ -301,6 +356,7 @@ with open(summary_out, 'w', encoding='utf-8') as fh:
 PY
 
 rm -f "$SUMMARY_TSV"
+rm -f "$SKIPPED_ALLOWLIST_TSV"
 
 LATEST_LINK="./tmp/source_probe_latest"
 if [[ "$OUT_DIR" != "$LATEST_LINK" ]]; then
