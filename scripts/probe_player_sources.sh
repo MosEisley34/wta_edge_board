@@ -117,14 +117,27 @@ for event in payload.get('events', []) or []:
         continue
     for side in ('homeTeam', 'awayTeam'):
         team = event.get(side)
-        if isinstance(team, dict):
-            team_id = team.get('id')
-            if isinstance(team_id, int) and team_id > 0:
-                print(team_id)
-                sys.exit(0)
-            if isinstance(team_id, str) and team_id.isdigit():
-                print(team_id)
-                sys.exit(0)
+        if not isinstance(team, dict):
+            continue
+
+        # Prefer explicit player ids when present.
+        player = team.get('player')
+        player_id = player.get('id') if isinstance(player, dict) else None
+        if isinstance(player_id, int) and player_id > 0:
+            print(player_id)
+            sys.exit(0)
+        if isinstance(player_id, str) and player_id.isdigit():
+            print(player_id)
+            sys.exit(0)
+
+        # Fallback to team id when player object is absent in event payload.
+        team_id = team.get('id')
+        if isinstance(team_id, int) and team_id > 0:
+            print(team_id)
+            sys.exit(0)
+        if isinstance(team_id, str) and team_id.isdigit():
+            print(team_id)
+            sys.exit(0)
 sys.exit(1)
 PYT
   local resolver_exit_code=$?
@@ -161,6 +174,7 @@ resolve_sofascore_probe_tennis_player_id() {
   fi
 
   local configured_id="$SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+  configured_id="$(trim "$configured_id")"
 
   local sampled_id=""
   sampled_id="$(sample_sofascore_tennis_player_id_from_live_or_schedule || true)"
@@ -178,6 +192,16 @@ resolve_sofascore_probe_tennis_player_id() {
     return 0
   fi
 
+  # If dynamic resolution failed, force configured fallback id so dependent
+  # player endpoints still run and artifacts are generated for diagnostics.
+  if [[ -n "$configured_id" ]] && [[ "$configured_id" =~ ^[0-9]+$ ]]; then
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="configured_tennis_player_id_forced_fallback"
+    echo "WARN: using configured SOFASCORE_PROBE_TENNIS_PLAYER_ID without tennis-domain verification (configured=$configured_id)" >&2
+    printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+    return 0
+  fi
+
   if [[ -n "$configured_id" ]]; then
     RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="player_detail_domain_mismatch"
   else
@@ -191,7 +215,7 @@ resolve_sofascore_probe_tennis_player_id() {
 source_requires_sofascore_tennis_domain() {
   local source_key="$1"
   case "$source_key" in
-    sofascore_player_recent|sofascore_player_stats_overall|sofascore_player_stats_last52) return 0 ;;
+    sofascore_player_detail|sofascore_player_recent|sofascore_player_stats_overall|sofascore_player_stats_last52) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -223,6 +247,10 @@ emit_entry() {
 
   local write_out=""
   local curl_exit_code=0
+
+  # Ensure payload artifact exists even when curl fails so downstream
+  # validators can report contract failures instead of payload absence.
+  : > "$raw_out"
   set +e
   write_out="$(
     curl -sS -L --max-time 30 \
