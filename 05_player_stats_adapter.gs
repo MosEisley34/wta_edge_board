@@ -2687,8 +2687,8 @@ function getTaH2hRowForCanonicalPair_(config, playerA, playerB) {
 }
 
 function getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) {
-  const canonicalA = canonicalizePlayerName_(playerA || '', {});
-  const canonicalB = canonicalizePlayerName_(playerB || '', {});
+  const canonicalA = canonicalizeTaH2hPlayerName_(playerA || '');
+  const canonicalB = canonicalizeTaH2hPlayerName_(playerB || '');
   if (!canonicalA || !canonicalB || canonicalA === canonicalB) {
     return { row: null, reason_code: 'h2h_pair_invalid', reason_metadata: {} };
   }
@@ -2773,8 +2773,8 @@ function buildTaH2hPlayersInMatrixSet_(dataset) {
   const rows = dataset && Array.isArray(dataset.rows) ? dataset.rows : [];
   const seen = {};
   rows.forEach(function (row) {
-    const playerA = canonicalizePlayerName_(row && row.player_a, {});
-    const playerB = canonicalizePlayerName_(row && row.player_b, {});
+    const playerA = canonicalizeTaH2hPlayerName_(row && row.player_a);
+    const playerB = canonicalizeTaH2hPlayerName_(row && row.player_b);
     if (playerA) seen[playerA] = true;
     if (playerB) seen[playerB] = true;
   });
@@ -2975,8 +2975,8 @@ function extractTaH2hMatrixRows_(html) {
     const names = extractTaH2hPlayersFromHref_(href);
     if (!names) continue;
 
-    const playerA = canonicalizePlayerName_(names.player_a, {});
-    const playerB = canonicalizePlayerName_(names.player_b, {});
+    const playerA = canonicalizeTaH2hPlayerName_(names.player_a);
+    const playerB = canonicalizeTaH2hPlayerName_(names.player_b);
     if (!playerA || !playerB || playerA === playerB) continue;
 
     const key = buildTaH2hPairKey_(playerA, playerB);
@@ -3002,8 +3002,8 @@ function normalizeTaH2hRowsForDataset_(rows) {
 
   for (let i = 0; i < sourceRows.length; i += 1) {
     const row = sourceRows[i] || {};
-    const playerA = canonicalizePlayerName_(row.player_a, {});
-    const playerB = canonicalizePlayerName_(row.player_b, {});
+    const playerA = canonicalizeTaH2hPlayerName_(row.player_a);
+    const playerB = canonicalizeTaH2hPlayerName_(row.player_b);
     const winsA = Number(row.wins_a);
     const winsB = Number(row.wins_b);
     if (!playerA || !playerB || playerA === playerB) continue;
@@ -3104,7 +3104,7 @@ function extractTaH2hNameFromCell_(cellHtml) {
 function normalizeTaH2hMatrixName_(rawName) {
   const clean = stripHtmlTags_(String(rawName || '')).replace(/\s+/g, ' ').trim();
   if (!clean) return '';
-  return canonicalizePlayerName_(clean, {});
+  return canonicalizeTaH2hPlayerName_(clean);
 }
 
 function buildTaH2hHtmlDiagnostics_(html) {
@@ -3187,11 +3187,11 @@ function decodeURIComponentSafe_(value) {
 }
 
 function buildTaH2hPairKey_(playerA, playerB) {
-  return [canonicalizePlayerName_(playerA || '', {}), canonicalizePlayerName_(playerB || '', {})].join('||');
+  return [canonicalizeTaH2hPlayerName_(playerA || ''), canonicalizeTaH2hPlayerName_(playerB || '')].join('||');
 }
 
 function buildTaH2hCanonicalPairKey_(playerA, playerB) {
-  return [canonicalizePlayerName_(playerA || '', {}), canonicalizePlayerName_(playerB || '', {})].sort().join('||');
+  return [canonicalizeTaH2hPlayerName_(playerA || ''), canonicalizeTaH2hPlayerName_(playerB || '')].sort().join('||');
 }
 
 function buildTaH2hLookupDebugSample_(dataset, canonicalA, canonicalB) {
@@ -3199,11 +3199,35 @@ function buildTaH2hLookupDebugSample_(dataset, canonicalA, canonicalB) {
   const reverseScheduleKey = buildTaH2hPairKey_(canonicalB, canonicalA);
   const byPair = dataset && dataset.by_pair ? dataset.by_pair : {};
   const keys = Object.keys(byPair);
+  const normalizedDatasetKeyMap = {};
+  keys.forEach(function (key) {
+    const normalized = normalizeTaH2hPairKey_(key);
+    if (normalized) normalizedDatasetKeyMap[normalized] = true;
+  });
+  const normalizedDatasetKeys = Object.keys(normalizedDatasetKeyMap);
+  const comparison = {
+    schedule_pair_keys: [scheduleKey, reverseScheduleKey],
+    schedule_matches_normalized_dataset: {
+      direct: normalizedDatasetKeyMap[scheduleKey] === true,
+      reverse: normalizedDatasetKeyMap[reverseScheduleKey] === true,
+    },
+    dataset_key_counts: {
+      raw: keys.length,
+      normalized_unique: normalizedDatasetKeys.length,
+    },
+    normalized_key_drift_samples: keys
+      .filter(function (key) { return normalizeTaH2hPairKey_(key) !== key; })
+      .slice(0, 5)
+      .map(function (key) {
+        return { raw: key, normalized: normalizeTaH2hPairKey_(key) };
+      }),
+  };
   if (!keys.length) {
     return {
       schedule_key: scheduleKey,
       reverse_schedule_key: reverseScheduleKey,
       requested_pair_keys: [scheduleKey, reverseScheduleKey],
+      pair_key_comparison: comparison,
       nearest_candidate_keys: [],
       edit_distance_top_matches: [],
     };
@@ -3241,9 +3265,38 @@ function buildTaH2hLookupDebugSample_(dataset, canonicalA, canonicalB) {
     schedule_key: scheduleKey,
     reverse_schedule_key: reverseScheduleKey,
     requested_pair_keys: [scheduleKey, reverseScheduleKey],
+    pair_key_comparison: comparison,
     nearest_candidate_keys: scored.slice(0, 5).map(function (entry) { return entry.key; }),
     edit_distance_top_matches: distanceMatches.slice(0, 5),
   };
+}
+
+function canonicalizeTaH2hPlayerName_(name) {
+  const canonical = canonicalizePlayerName_(name || '', {});
+  if (!canonical) return '';
+  return canonical.replace(/^\d+(?:\s+|\s*\|\|\s*)+/, '').trim();
+}
+
+function normalizeTaH2hPairKey_(pairKey) {
+  const parts = String(pairKey || '').split('||');
+  if (parts.length < 2) return '';
+  let leftRaw = '';
+  let rightRaw = '';
+  if (parts.length === 2) {
+    leftRaw = parts[0];
+    rightRaw = parts[1];
+  } else if (parts.length % 2 === 0) {
+    const half = parts.length / 2;
+    leftRaw = parts.slice(0, half).join('||');
+    rightRaw = parts.slice(half).join('||');
+  } else {
+    leftRaw = parts[0];
+    rightRaw = parts.slice(1).join('||');
+  }
+  const left = canonicalizeTaH2hPlayerName_(leftRaw);
+  const right = canonicalizeTaH2hPlayerName_(rightRaw);
+  if (!left || !right) return '';
+  return left + '||' + right;
 }
 
 function computeLevenshteinDistance_(source, target) {

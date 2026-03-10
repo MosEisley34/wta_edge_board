@@ -590,3 +590,30 @@ function testCanonicalizePlayerName_aliasRules_supportNameOrderAndParticles_() {
   assertEquals_('elena rybakina', canonicalizePlayerName_('Rybakina Elena', {}));
   assertEquals_('anna maria de la rosa', canonicalizePlayerName_('Anna Maria de la Rosa', {}));
 }
+
+function testCanonicalizeTaH2hPlayerName_stripsNumericPrefixesAndNormalizes_() {
+  assertEquals_('marta kostyuk', canonicalizeTaH2hPlayerName_('1||Marta Kostyuk'));
+  assertEquals_('elena rybakina', canonicalizeTaH2hPlayerName_('2 Elena Rybakina'));
+  assertEquals_('aryna sabalenka', canonicalizeTaH2hPlayerName_('3  || Aryna Sabalenka'));
+}
+
+function testNormalizeTaH2hPairKey_handlesCurrentRealPairs_() {
+  assertEquals_('marta kostyuk||elena rybakina', normalizeTaH2hPairKey_('1||Marta Kostyuk||2||Elena Rybakina'));
+  assertEquals_('aryna sabalenka||naomi osaka', normalizeTaH2hPairKey_('Aryna Sabalenka||Naomi Osaka'));
+}
+
+function testBuildTaH2hLookupDebugSample_reportsPairKeyComparisonAfterNormalization_() {
+  const debug = buildTaH2hLookupDebugSample_({
+    by_pair: {
+      '1||marta kostyuk||2||elena rybakina': { wins_a: 1, wins_b: 0 },
+      'aryna sabalenka||naomi osaka': { wins_a: 2, wins_b: 1 },
+    },
+  }, 'marta kostyuk', 'elena rybakina');
+
+  assertEquals_(2, debug.pair_key_comparison.dataset_key_counts.raw);
+  assertEquals_(2, debug.pair_key_comparison.dataset_key_counts.normalized_unique);
+  assertEquals_(true, debug.pair_key_comparison.schedule_matches_normalized_dataset.direct);
+  assertEquals_(false, debug.pair_key_comparison.schedule_matches_normalized_dataset.reverse);
+  assertEquals_('1||marta kostyuk||2||elena rybakina', debug.pair_key_comparison.normalized_key_drift_samples[0].raw);
+  assertEquals_('marta kostyuk||elena rybakina', debug.pair_key_comparison.normalized_key_drift_samples[0].normalized);
+}
