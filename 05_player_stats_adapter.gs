@@ -652,16 +652,35 @@ function evaluateTaLeadersQualityGate_(diagnostics, statsCompleteness, config) {
   const overlapRatio = Number(overlap.overlap_with_scheduled_ratio || overlap.overlap_ratio || 0);
   const minOverlapRatio = Math.max(0.05, Number((config && config.PLAYER_STATS_TA_MIN_CANONICAL_OVERLAP_RATIO) || 0.1));
   const minPlayersWithStats = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_PLAYERS_WITH_STATS) || 2));
+  const minDistinctPlayers = Math.max(2, Number((config && config.PLAYER_STATS_TA_MIN_DISTINCT_PLAYERS) || 6));
   const nonNullFeatureTotal = Number(nonNullByFeature.ranking || 0) + Number(nonNullByFeature.hold_pct || 0) + Number(nonNullByFeature.break_pct || 0);
   const minNonNullFeatureTotal = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_NON_NULL_FEATURE_TOTAL) || 6));
+  const nonZeroNonNullFeatureTotal = Number(info.non_zero_non_null_feature_total || 0);
+  const minNonZeroNonNullFeatureTotal = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_NON_ZERO_NON_NULL_FEATURE_TOTAL) || 2));
+  const distinctPlayers = Number(info.unique_players_parsed || 0);
+  const hasSingleCharCanonicalNames = Number(nameSanity.invalid_single_letter_token || 0) > 0;
   const hasLowQualityNames = validNameRatio < minValidNameRatio || invalidNameRatio > 0.45;
   const hasLowOverlap = overlapRatio < minOverlapRatio;
   const hasEnoughFeatures = nonNullFeatureTotal >= minNonNullFeatureTotal;
+  const hasEnoughNonZeroFeatures = nonZeroNonNullFeatureTotal >= minNonZeroNonNullFeatureTotal;
   const hasEnoughPlayers = Number(completeness.players_with_non_null_stats || 0) >= minPlayersWithStats;
-  const meetsThresholds = !hasLowQualityNames && !hasLowOverlap && hasEnoughFeatures && hasEnoughPlayers;
-  const failureReason = hasLowQualityNames
+  const hasEnoughDistinctPlayers = distinctPlayers >= minDistinctPlayers;
+  const meetsThresholds = !hasLowQualityNames
+    && !hasLowOverlap
+    && hasEnoughFeatures
+    && hasEnoughNonZeroFeatures
+    && hasEnoughPlayers
+    && hasEnoughDistinctPlayers
+    && !hasSingleCharCanonicalNames;
+  const failureReason = hasSingleCharCanonicalNames
     ? 'ta_matchmx_name_quality_low'
-    : (hasLowOverlap ? 'ta_matchmx_overlap_low' : 'ta_matchmx_feature_coverage_low');
+    : (!hasEnoughDistinctPlayers
+      ? 'ta_matchmx_distinct_players_low'
+      : (!hasEnoughNonZeroFeatures
+        ? 'ta_matchmx_feature_coverage_low'
+        : (hasLowQualityNames
+          ? 'ta_matchmx_name_quality_low'
+          : (hasLowOverlap ? 'ta_matchmx_overlap_low' : 'ta_matchmx_feature_coverage_low'))));
 
   return {
     meets_thresholds: meetsThresholds,
@@ -672,8 +691,13 @@ function evaluateTaLeadersQualityGate_(diagnostics, statsCompleteness, config) {
     min_overlap_ratio: minOverlapRatio,
     non_null_feature_total: nonNullFeatureTotal,
     min_non_null_feature_total: minNonNullFeatureTotal,
+    non_zero_non_null_feature_total: nonZeroNonNullFeatureTotal,
+    min_non_zero_non_null_feature_total: minNonZeroNonNullFeatureTotal,
     players_with_non_null_stats: Number(completeness.players_with_non_null_stats || 0),
     min_players_with_non_null_stats: minPlayersWithStats,
+    unique_players_parsed: distinctPlayers,
+    min_distinct_players: minDistinctPlayers,
+    has_single_char_canonical_names: hasSingleCharCanonicalNames,
     non_null_by_feature: nonNullByFeature,
     reason_code: meetsThresholds ? 'ta_matchmx_ok' : failureReason,
   };
@@ -712,8 +736,11 @@ function extractLeadersJsUrl_(html, baseUrl) {
 
 function extractMatchMxRows_(payload) {
   const text = String(payload || '');
-  const currentFormat = extractMatchMxRowsFromArrayLiteral_(text);
+  const currentFormat = extractMatchMxRowsFromStructuredAssignment_(text);
   if (currentFormat.rows.length) return currentFormat;
+
+  const arrayLiteralFormat = extractMatchMxRowsFromArrayLiteral_(text);
+  if (arrayLiteralFormat.rows.length) return arrayLiteralFormat;
 
   const legacyRows = extractMatchMxRowsFromLegacyAssignments_(text);
   return {
@@ -725,6 +752,137 @@ function extractMatchMxRows_(payload) {
       non_null_by_feature: summarizeMatchMxNonNullByFeature_(legacyRows),
     },
   };
+}
+
+
+function stripQuotedJsStrings_(text) {
+  const source = String(text || '');
+  let quote = '';
+  let escaped = false;
+  let out = '';
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = '';
+      }
+      out += ' ';
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ' ';
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function findExpressionEndIndex_(text, startIndex) {
+  const source = String(text || '');
+  const start = Number(startIndex || 0);
+  let quote = '';
+  let escaped = false;
+  let depthSquare = 0;
+  let depthCurly = 0;
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = '';
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '[') depthSquare += 1;
+    else if (ch === ']') depthSquare = Math.max(0, depthSquare - 1);
+    else if (ch === '{') depthCurly += 1;
+    else if (ch === '}') depthCurly = Math.max(0, depthCurly - 1);
+    else if (ch === ';' && depthSquare === 0 && depthCurly === 0) return i;
+  }
+  return -1;
+}
+
+function safeEvaluateJsLiteral_(literalText) {
+  const expression = String(literalText || '').trim();
+  if (!expression) return null;
+  const stripped = stripQuotedJsStrings_(expression);
+  if (/[();=]/.test(stripped)) return null;
+  if (/=>|\b(?:function|return|while|for|if|new|this|constructor|prototype)\b/.test(stripped)) return null;
+  try {
+    return Function('"use strict"; return (' + expression + ');')();
+  } catch (e) {
+    return null;
+  }
+}
+
+function findRowsContainerInMatchMxValue_(value, path) {
+  const containerPath = path || 'matchmx';
+  if (Array.isArray(value)) {
+    if (!value.length) return { rows: [], container_path: containerPath };
+    const first = value[0];
+    if (Array.isArray(first)) return { rows: value, container_path: containerPath };
+    if (first && typeof first === 'object' && Array.isArray(first.rows)) {
+      return { rows: first.rows, container_path: containerPath + '[0].rows' };
+    }
+  }
+  if (value && typeof value === 'object') {
+    const preferred = ['rows', 'data', 'matchmx', 'leaders'];
+    for (let i = 0; i < preferred.length; i += 1) {
+      const key = preferred[i];
+      if (Array.isArray(value[key])) {
+        return { rows: value[key], container_path: containerPath + '.' + key };
+      }
+    }
+  }
+  return { rows: [], container_path: containerPath };
+}
+
+function extractMatchMxRowsFromStructuredAssignment_(payloadText) {
+  const text = String(payloadText || '');
+  const assignmentMatch = /\b(?:var|let|const)\s+matchmx\s*=/.exec(text);
+  if (!assignmentMatch) return { rows: [], diagnostics: { parser_format: 'structured_assignment', reason: 'assignment_missing' } };
+  const expressionStart = assignmentMatch.index + assignmentMatch[0].length;
+  const expressionEnd = findExpressionEndIndex_(text, expressionStart);
+  if (expressionEnd < 0) return { rows: [], diagnostics: { parser_format: 'structured_assignment', reason: 'assignment_end_missing' } };
+
+  const expression = text.slice(expressionStart, expressionEnd).trim();
+  const parsed = safeEvaluateJsLiteral_(expression);
+  if (!parsed) return { rows: [], diagnostics: { parser_format: 'structured_assignment', reason: 'assignment_eval_failed' } };
+
+  const container = findRowsContainerInMatchMxValue_(parsed, 'matchmx');
+  const rawRows = Array.isArray(container.rows) ? container.rows : [];
+  const tokenRows = rawRows
+    .filter(function (row) { return Array.isArray(row) && row.length >= 6; })
+    .map(function (row) { return row.map(function (cell) { return cell === null || cell === undefined ? '' : String(cell); }); });
+  const schema = detectMatchMxSchema_(tokenRows);
+  const rows = [];
+  for (let i = 0; i < tokenRows.length; i += 1) {
+    const structured = buildStructuredMatchMxRow_(tokenRows[i], schema.mapping);
+    if (isUsableStructuredMatchMxRow_(structured)) rows.push(structured);
+  }
+  const diagnostics = Object.assign({}, schema.diagnostics, {
+    parser_format: 'structured_assignment',
+    row_container_path: container.container_path,
+    token_row_count: tokenRows.length,
+    structured_row_count: rows.length,
+    valid_name_ratio: computeValidNameRatio_(rows),
+    non_null_by_feature: summarizeMatchMxNonNullByFeature_(rows),
+  });
+  return { rows: rows, diagnostics: diagnostics };
 }
 
 function extractMatchMxRowsFromArrayLiteral_(payloadText) {
@@ -757,7 +915,7 @@ function extractMatchMxRowsFromLegacyAssignments_(payloadText) {
     const tokens = parseJsArrayTokens_(match[1]);
     if (tokens.length < 6) continue;
     const structured = buildStructuredMatchMxRow_(tokens);
-    if (!structured.player_name || !structured.score) continue;
+    if (!isUsableStructuredMatchMxRow_(structured)) continue;
     rows.push(structured);
   }
 
@@ -814,7 +972,7 @@ function parseMatchMxRowsFromArrayLiteralText_(arrayLiteralText) {
   const rows = [];
   for (let i = 0; i < tokenRows.length; i += 1) {
     const structured = buildStructuredMatchMxRow_(tokenRows[i], schema.mapping);
-    if (structured.player_name && structured.score) rows.push(structured);
+    if (isUsableStructuredMatchMxRow_(structured)) rows.push(structured);
   }
 
   const diagnostics = Object.assign({}, schema.diagnostics, {
@@ -1129,12 +1287,24 @@ function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer, extractionDiag
   let rankingNonNull = 0;
   let holdPctNonNull = 0;
   let breakPctNonNull = 0;
+  let rankingNonZero = 0;
+  let holdPctNonZero = 0;
+  let breakPctNonZero = 0;
   Object.keys(normalizedMap).forEach(function (player) {
     const stats = normalizedMap[player];
     if (!stats || typeof stats !== 'object') return;
-    if (stats.ranking !== null && stats.ranking !== undefined) rankingNonNull += 1;
-    if (stats.hold_pct !== null && stats.hold_pct !== undefined) holdPctNonNull += 1;
-    if (stats.break_pct !== null && stats.break_pct !== undefined) breakPctNonNull += 1;
+    if (stats.ranking !== null && stats.ranking !== undefined) {
+      rankingNonNull += 1;
+      if (Number(stats.ranking) !== 0) rankingNonZero += 1;
+    }
+    if (stats.hold_pct !== null && stats.hold_pct !== undefined) {
+      holdPctNonNull += 1;
+      if (Number(stats.hold_pct) !== 0) holdPctNonZero += 1;
+    }
+    if (stats.break_pct !== null && stats.break_pct !== undefined) {
+      breakPctNonNull += 1;
+      if (Number(stats.break_pct) !== 0) breakPctNonZero += 1;
+    }
   });
 
   return Object.assign({}, extractionDiagnostics || {}, {
@@ -1172,6 +1342,12 @@ function summarizeTaLeadersParseDiagnostics_(rows, statsByPlayer, extractionDiag
       hold_pct: holdPctNonNull,
       break_pct: breakPctNonNull,
     },
+    normalized_non_zero_non_null_counts: {
+      ranking: rankingNonZero,
+      hold_pct: holdPctNonZero,
+      break_pct: breakPctNonZero,
+    },
+    non_zero_non_null_feature_total: rankingNonZero + holdPctNonZero + breakPctNonZero,
   });
 }
 
@@ -1277,6 +1453,21 @@ function buildStructuredMatchMxRow_(tokens, schemaMapping) {
     tpw_pct: hasWalkoverOrRet ? null : take(mapping.tpw_pct),
     numeric_stats: numericStats,
   };
+}
+
+
+function hasNonNullCoreMatchMxStats_(row) {
+  if (!row || typeof row !== 'object') return false;
+  return row.ranking !== null && row.ranking !== undefined
+    && row.hold_pct !== null && row.hold_pct !== undefined
+    && row.break_pct !== null && row.break_pct !== undefined;
+}
+
+function isUsableStructuredMatchMxRow_(row) {
+  if (!row || typeof row !== 'object') return false;
+  if (!row.player_name || !isLikelyFullPlayerName_(row.player_name)) return false;
+  if (!row.score) return false;
+  return hasNonNullCoreMatchMxStats_(row);
 }
 
 
