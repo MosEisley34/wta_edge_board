@@ -44,6 +44,18 @@ class MatchMxParseResult:
     reason_code: str | None
 
 
+@dataclass
+class MatchMxPlayerRow:
+    date: str
+    player_name: str
+    score: str
+    ranking: float | None
+    recent_form: float | None
+    surface_win_rate: float | None
+    hold_pct: float | None
+    break_pct: float | None
+
+
 def _unescape_js_string(value: str) -> str:
     out: list[str] = []
     i = 0
@@ -199,6 +211,11 @@ def has_minimum_schema_columns(tokens: list[str]) -> bool:
     return len(tokens) >= MATCHMX_MIN_FIELD_COUNT
 
 
+def has_consistent_metric_index_mapping() -> bool:
+    indices = sorted(MATCHMX_ROW_IDX.values())
+    return indices == list(range(MATCHMX_MIN_FIELD_COUNT))
+
+
 def required_indices_present(tokens: list[str]) -> bool:
     return all(MATCHMX_ROW_IDX[key] < len(tokens) for key in MATCHMX_REQUIRED_KEYS)
 
@@ -235,3 +252,72 @@ def is_usable_canonical_name(name: str | None, whitelist: set[str] | None = None
     if " " not in normalized and "-" not in normalized:
         return False
     return True
+
+
+def _to_number(tokens: list[str], idx: int) -> float | None:
+    if idx >= len(tokens):
+        return None
+    raw = str(tokens[idx]).strip()
+    if not raw or raw.lower() in {"null", "undefined", "nan"}:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value != value:
+        return None
+    return value
+
+
+def parse_matchmx_player_row(tokens: list[str]) -> tuple[MatchMxPlayerRow | None, str | None]:
+    if not has_consistent_metric_index_mapping():
+        return None, "metric_index_mapping_invalid"
+    if not has_minimum_schema_columns(tokens):
+        return None, "row_shape_invalid_for_matchmx_schema"
+    if not required_indices_present(tokens):
+        return None, "row_indexes_out_of_bounds"
+
+    score = str(tokens[MATCHMX_ROW_IDX["SCORE"]]).strip()
+    player_name = normalize_name(tokens[MATCHMX_ROW_IDX["PLAYER_NAME"]]) or ""
+    if not player_name or not score:
+        return None, "required_fields_missing"
+    if not is_usable_canonical_name(player_name):
+        return None, "canonical_name_rejected"
+    if not has_any_key_metrics(tokens):
+        return None, "all_key_metrics_null"
+
+    has_walkover_or_ret = bool(re.search(r"\b(?:ret|wo)\b", score, flags=re.IGNORECASE))
+    retired_metric_keys = {
+        "RECENT_FORM",
+        "SURFACE_WIN_RATE",
+        "HOLD_PCT",
+        "BREAK_PCT",
+        "BP_SAVED_PCT",
+        "BP_CONV_PCT",
+        "FIRST_SERVE_IN_PCT",
+        "FIRST_SERVE_POINTS_WON_PCT",
+        "SECOND_SERVE_POINTS_WON_PCT",
+        "RETURN_POINTS_WON_PCT",
+        "DOMINANCE_RATIO",
+        "TOTAL_POINTS_WON_PCT",
+    }
+
+    def take(key: str) -> float | None:
+        if has_walkover_or_ret and key in retired_metric_keys:
+            return None
+        return _to_number(tokens, MATCHMX_ROW_IDX[key])
+
+    row = MatchMxPlayerRow(
+        date=str(tokens[MATCHMX_ROW_IDX["DATE"]]),
+        player_name=player_name,
+        score=score,
+        ranking=take("RANKING"),
+        recent_form=take("RECENT_FORM"),
+        surface_win_rate=take("SURFACE_WIN_RATE"),
+        hold_pct=take("HOLD_PCT"),
+        break_pct=take("BREAK_PCT"),
+    )
+
+    if row.ranking is None and row.hold_pct is None and row.break_pct is None:
+        return None, "ranking_hold_break_all_null"
+    return row, None
