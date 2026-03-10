@@ -15,7 +15,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from matchmx_parser import MATCHMX_ROW_IDX, is_accepted_name, iter_matchmx_rows
+from matchmx_parser import MATCHMX_ROW_IDX, is_usable_canonical_name, iter_matchmx_rows
 
 DEFAULT_INPUT_PATH = "tmp/source_probe_latest/raw/tennisabstract_leadersource_wta.body"
 FALLBACK_INPUT_PATH = "tmp/source_probes/raw/tennisabstract_leadersource_wta.body"
@@ -70,19 +70,25 @@ def _build_structured_row(tokens: list[str]) -> dict[str, object]:
     }
 
 
-def _extract_rows(payload: str) -> tuple[list[dict[str, object]], int]:
+def _extract_rows(payload: str) -> tuple[list[dict[str, object]], dict[str, int]]:
     rows: list[dict[str, object]] = []
-    unusable_payload_rows = 0
+    metrics = {"ta_matchmx_unusable_payload": 0}
     for parsed in iter_matchmx_rows(payload):
         if not parsed.row_shape_valid:
-            unusable_payload_rows += 1
+            metrics["ta_matchmx_unusable_payload"] += 1
             continue
         tokens = parsed.tokens
+        if any(idx >= len(tokens) for idx in (MATCHMX_ROW_IDX["PLAYER_NAME"], MATCHMX_ROW_IDX["SCORE"], MATCHMX_ROW_IDX["DATE"])):
+            metrics["ta_matchmx_unusable_payload"] += 1
+            continue
         row = _build_structured_row(tokens)
         if not row["player_name"] or not row["score"]:
             continue
+        if not is_usable_canonical_name(str(row["player_name"])):
+            metrics["ta_matchmx_unusable_payload"] += 1
+            continue
         rows.append(row)
-    return rows, unusable_payload_rows
+    return rows, metrics
 
 
 def _coverage(items: list[dict[str, object]], key: str) -> tuple[int, float]:
@@ -95,7 +101,7 @@ def _normalize_records(rows: list[dict[str, object]]) -> dict[str, dict[str, obj
     grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
     for row in rows:
         canonical = _canonicalize_name(str(row.get("player_name") or ""))
-        if not is_accepted_name(canonical):
+        if not is_usable_canonical_name(canonical):
             continue
         grouped[canonical].append(row)
 
@@ -151,7 +157,8 @@ def main() -> int:
         )
         return 1
 
-    rows, unusable_payload_rows = _extract_rows(payload)
+    rows, parser_metrics = _extract_rows(payload)
+    unusable_payload_rows = parser_metrics["ta_matchmx_unusable_payload"]
     if unusable_payload_rows > 0 and not rows:
         print(
             json.dumps(
@@ -160,6 +167,7 @@ def main() -> int:
                     "reason_code": "ta_matchmx_unusable_payload",
                     "path": str(path),
                     "matchmx_unusable_rows": unusable_payload_rows,
+        "parser_metrics": parser_metrics,
                 }
             )
         )
@@ -179,6 +187,7 @@ def main() -> int:
         "input": str(path),
         "total_rows": len(rows),
         "matchmx_unusable_rows": unusable_payload_rows,
+        "parser_metrics": parser_metrics,
         "unique_players": len(normalized_rows),
         "row_non_null_coverage": {
             "ranking": {"non_null": row_rank_count, "ratio": round(row_rank_ratio, 4)},
