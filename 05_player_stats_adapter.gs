@@ -2337,16 +2337,67 @@ function indexSofascoreParticipants_(payload, index) {
   events.forEach(function (event) {
     const teams = [event && event.homeTeam, event && event.awayTeam].filter(function (team) { return !!team; });
     teams.forEach(function (team) {
-      const canonicalName = canonicalizePlayerName_(team.name || team.shortName || '', {});
-      if (!canonicalName) return;
-      target[canonicalName] = {
-        id: team.id,
-        raw_name: team.name || team.shortName || canonicalName,
-      };
+      const teamId = Number(team.id || (team.player && team.player.id) || (team.team && team.team.id) || 0);
+      if (!teamId) return;
+
+      const nameCandidates = extractSofascoreTeamNameCandidates_(team);
+      nameCandidates.forEach(function (candidate) {
+        const variants = splitSofascoreParticipantNameVariants_(candidate);
+        variants.forEach(function (variant) {
+          const canonicalName = canonicalizePlayerName_(variant, {});
+          if (!canonicalName) return;
+          target[canonicalName] = {
+            id: teamId,
+            raw_name: String(candidate || variant || canonicalName),
+          };
+        });
+      });
     });
   });
 
   return target;
+}
+
+function extractSofascoreTeamNameCandidates_(team) {
+  const root = team || {};
+  const out = [];
+  const stack = [{ node: root, depth: 0 }];
+  while (stack.length) {
+    const cur = stack.pop();
+    const node = cur.node;
+    const depth = Number(cur.depth || 0);
+    if (!node || typeof node !== 'object' || depth > 3) continue;
+
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i += 1) stack.push({ node: node[i], depth: depth + 1 });
+      continue;
+    }
+
+    const keys = Object.keys(node);
+    for (let i = 0; i < keys.length; i += 1) {
+      const key = keys[i];
+      const value = node[key];
+      if (typeof value === 'string') {
+        const normalizedKey = key.toLowerCase();
+        if (normalizedKey === 'name' || normalizedKey === 'shortname' || normalizedKey === 'slug') {
+          out.push(normalizedKey === 'slug' ? value.replace(/[-_]+/g, ' ') : value);
+        }
+      } else if (value && typeof value === 'object') {
+        stack.push({ node: value, depth: depth + 1 });
+      }
+    }
+  }
+  return dedupeStringList_(out);
+}
+
+function splitSofascoreParticipantNameVariants_(rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) return [];
+  const parts = name.split(/\s*(?:\/|&|\+|\band\b)\s*/i)
+    .map(function (part) { return String(part || '').trim(); })
+    .filter(function (part) { return !!part; });
+  const variants = dedupeStringList_([name].concat(parts.length >= 2 ? parts : []));
+  return variants.length ? variants : [name];
 }
 
 function extractSofascoreRanking_(payload) {
