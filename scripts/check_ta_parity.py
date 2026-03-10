@@ -16,65 +16,18 @@ from collections import defaultdict
 from pathlib import Path
 
 from matchmx_parser import (
-    MATCHMX_ROW_IDX,
-    has_any_key_metrics,
-    has_minimum_schema_columns,
+    has_consistent_metric_index_mapping,
     is_usable_canonical_name,
     iter_matchmx_rows,
-    required_indices_present,
+    parse_matchmx_player_row,
 )
 
 DEFAULT_INPUT_PATH = "tmp/source_probe_latest/raw/tennisabstract_leadersource_wta.body"
 FALLBACK_INPUT_PATH = "tmp/source_probes/raw/tennisabstract_leadersource_wta.body"
 
 
-def _to_number(tokens: list[str], idx: int) -> float | None:
-    if idx >= len(tokens):
-        return None
-    try:
-        value = float(tokens[idx])
-    except (TypeError, ValueError):
-        return None
-    if value != value:
-        return None
-    return value
-
-
 def _canonicalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", str(name or "")).strip().lower()
-
-
-def _build_structured_row(tokens: list[str]) -> dict[str, object]:
-    score = str(tokens[MATCHMX_ROW_IDX["SCORE"]] if len(tokens) > MATCHMX_ROW_IDX["SCORE"] else "").strip()
-    has_walkover_or_ret = bool(re.search(r"\b(?:ret|wo)\b", score, flags=re.IGNORECASE))
-
-    def take(key: str) -> float | None:
-        value = _to_number(tokens, MATCHMX_ROW_IDX[key])
-        if has_walkover_or_ret and key in {
-            "RECENT_FORM",
-            "SURFACE_WIN_RATE",
-            "HOLD_PCT",
-            "BREAK_PCT",
-            "BP_SAVED_PCT",
-            "BP_CONV_PCT",
-            "FIRST_SERVE_IN_PCT",
-            "FIRST_SERVE_POINTS_WON_PCT",
-            "SECOND_SERVE_POINTS_WON_PCT",
-            "RETURN_POINTS_WON_PCT",
-            "DOMINANCE_RATIO",
-            "TOTAL_POINTS_WON_PCT",
-        }:
-            return None
-        return value
-
-    return {
-        "date": str(tokens[MATCHMX_ROW_IDX["DATE"]] if len(tokens) > MATCHMX_ROW_IDX["DATE"] else ""),
-        "player_name": str(tokens[MATCHMX_ROW_IDX["PLAYER_NAME"]] if len(tokens) > MATCHMX_ROW_IDX["PLAYER_NAME"] else ""),
-        "score": score,
-        "ranking": take("RANKING"),
-        "hold_pct": take("HOLD_PCT"),
-        "break_pct": take("BREAK_PCT"),
-    }
 
 
 def _extract_rows(payload: str) -> tuple[list[dict[str, object]], dict[str, object]]:
@@ -89,26 +42,21 @@ def _extract_rows(payload: str) -> tuple[list[dict[str, object]], dict[str, obje
             if isinstance(samples, list) and len(samples) < 5:
                 samples.append({"reason": reason, "token_count": len(tokens), "token_sample": tokens[:8]})
 
-        if not has_minimum_schema_columns(tokens):
-            note_invalid("row_shape_invalid_for_matchmx_schema")
+        parsed_row, reason = parse_matchmx_player_row(tokens)
+        if reason:
+            note_invalid(reason)
             continue
-        if not required_indices_present(tokens):
-            note_invalid("row_indexes_out_of_bounds")
-            continue
-        row = _build_structured_row(tokens)
-        if not row["player_name"] or not row["score"]:
-            note_invalid("required_fields_missing")
-            continue
-        if not is_usable_canonical_name(str(row["player_name"])):
-            note_invalid("canonical_name_rejected")
-            continue
-        if not has_any_key_metrics(tokens):
-            note_invalid("all_key_metrics_null")
-            continue
-        if row["ranking"] is None and row["hold_pct"] is None and row["break_pct"] is None:
-            note_invalid("ranking_hold_break_all_null")
-            continue
-        rows.append(row)
+        assert parsed_row is not None
+        rows.append(
+            {
+                "date": parsed_row.date,
+                "player_name": parsed_row.player_name,
+                "score": parsed_row.score,
+                "ranking": parsed_row.ranking,
+                "hold_pct": parsed_row.hold_pct,
+                "break_pct": parsed_row.break_pct,
+            }
+        )
     return rows, metrics
 
 
@@ -163,6 +111,10 @@ def main() -> int:
         return 1
 
     payload = path.read_text(encoding="utf-8", errors="ignore")
+    if not has_consistent_metric_index_mapping():
+        print(json.dumps({"status": "fail", "reason_code": "metric_index_mapping_invalid"}))
+        return 1
+
     matchmx_markers = len(re.findall(r"\bmatchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[", payload))
     if matchmx_markers == 0:
         print(
