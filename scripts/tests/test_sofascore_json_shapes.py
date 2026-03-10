@@ -28,6 +28,55 @@ class SofascoreJsonShapeTests(unittest.TestCase):
         self.assertEqual("Coco Gauff", rows[0].player_canonical_name)
         self.assertEqual("normalized_from_sofascore_player", rows[0].reason_code_detail)
 
+
+    def test_events_payload_filters_non_tennis_and_non_wta(self):
+        diagnostics = []
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "sofascore_events_live.json"
+            path.write_text(
+                '{"events": ['
+                '{"sport": {"slug": "football"}, "category": {"name": "WTA"}, "homeTeam": {"name": "Iga Swiatek"}, "awayTeam": {"name": "Aryna Sabalenka"}},'
+                '{"sport": {"slug": "tennis"}, "category": {"name": "ATP"}, "homeTeam": {"name": "Iga Swiatek"}, "awayTeam": {"name": "Aryna Sabalenka"}},'
+                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, "homeTeam": {"name": "Iga Swiatek"}, "awayTeam": {"name": "Aryna Sabalenka"}}'
+                ']}' ,
+                encoding="utf-8",
+            )
+
+            rows = _extract_from_file(path, selected_sources=set(), diagnostics=diagnostics)
+
+        self.assertEqual(2, len(rows))
+        self.assertEqual(["Iga Swiatek", "Aryna Sabalenka"], [row.player_canonical_name for row in rows])
+
+    def test_events_payload_skips_doubles_pairs_and_ambiguous_players(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "sofascore_events_live.json"
+            path.write_text(
+                '{"events": ['
+                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, "homeTeam": {"name": "Iga Swiatek / Aryna Sabalenka"}, "awayTeam": {"name": "Coco Gauff"}},'
+                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, "homeTeam": {"players": [{"name": "Ons Jabeur"}, {"name": "Marketa Vondrousova"}]}, "awayTeam": {"players": [{"name": "Elena Rybakina"}]}}'
+                ']}' ,
+                encoding="utf-8",
+            )
+
+            rows = _extract_from_file(path, selected_sources=set())
+
+        self.assertEqual(2, len(rows))
+        self.assertEqual(["Coco Gauff", "Elena Rybakina"], [row.player_canonical_name for row in rows])
+
+    def test_events_payload_prefers_single_player_identity_from_team_object(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "sofascore_events_live.json"
+            path.write_text(
+                '{"events": ['
+                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, "homeTeam": {"name": "Home Team", "player": {"name": "Mirra Andreeva"}}, "awayTeam": {"name": "Away Team", "players": [{"name": "Jessica Pegula"}]}}'
+                ']}' ,
+                encoding="utf-8",
+            )
+
+            rows = _extract_from_file(path, selected_sources=set())
+
+        self.assertEqual(["Mirra Andreeva", "Jessica Pegula"], [row.player_canonical_name for row in rows])
+
     def test_statistics_payload_emits_diagnostic_record_without_parse_error(self):
         path = ROOT / "scripts" / "fixtures" / "sofascore_player_stats_overall.json"
         rows = _extract_from_file(path, selected_sources=set())
