@@ -445,8 +445,38 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
         )
         return rows
 
-    for parsed in iter_matchmx_rows(text):
+    for logical_row_number, parsed in enumerate(iter_matchmx_rows(text), start=1):
         values = parsed.tokens
+        if parsed.reason_code:
+            rows.append(
+                PlayerFeature(
+                    player_canonical_name=None,
+                    source=source,
+                    as_of=as_of,
+                    ranking=None,
+                    recent_form=None,
+                    surface_win_rate=None,
+                    hold_pct=None,
+                    break_pct=None,
+                    h2h_wins=None,
+                    h2h_losses=None,
+                    has_stats=False,
+                    reason_code="ta_matchmx_unusable_payload",
+                    reason_code_detail=json.dumps(
+                        {
+                            "reason": parsed.reason_code,
+                            "row_number": logical_row_number,
+                            "row_index": parsed.row_index,
+                            "token_count": len(values),
+                            "token_sample": values[:8],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                )
+            )
+            continue
+
         parsed_row, reason = parse_matchmx_player_row(values)
         if reason:
             rows.append(
@@ -463,7 +493,17 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
                     h2h_losses=None,
                     has_stats=False,
                     reason_code="ta_matchmx_unusable_payload",
-                    reason_code_detail=reason,
+                    reason_code_detail=json.dumps(
+                        {
+                            "reason": reason,
+                            "row_number": logical_row_number,
+                            "row_index": parsed.row_index,
+                            "token_count": len(values),
+                            "token_sample": values[:8],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                 )
             )
             continue
@@ -487,6 +527,47 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
         if not feature.has_stats:
             feature.reason_code = "provider_returned_null_features"
         rows.append(feature)
+
+    valid_rows = [r for r in rows if r.reason_code == "ok" and r.player_canonical_name]
+    metric_non_null = {
+        "ranking": sum(1 for r in valid_rows if r.ranking is not None),
+        "hold_pct": sum(1 for r in valid_rows if r.hold_pct is not None),
+        "break_pct": sum(1 for r in valid_rows if r.break_pct is not None),
+    }
+    unique_players = len({r.player_canonical_name for r in valid_rows if r.player_canonical_name})
+    threshold_failures: list[str] = []
+    if unique_players < SOURCE_HEALTH_THRESHOLDS["min_unique_players"]:
+        threshold_failures.append("min_unique_players")
+    for metric, count in metric_non_null.items():
+        if count <= 0:
+            threshold_failures.append(f"{metric}_non_null_coverage")
+    if threshold_failures:
+        rows.append(
+            PlayerFeature(
+                player_canonical_name=None,
+                source=source,
+                as_of=as_of,
+                ranking=None,
+                recent_form=None,
+                surface_win_rate=None,
+                hold_pct=None,
+                break_pct=None,
+                h2h_wins=None,
+                h2h_losses=None,
+                has_stats=False,
+                reason_code="ta_matchmx_unusable_payload",
+                reason_code_detail=json.dumps(
+                    {
+                        "reason": "ta_matchmx_guardrail_failed",
+                        "failed_checks": threshold_failures,
+                        "unique_players": unique_players,
+                        "metric_non_null": metric_non_null,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        )
     return rows
 
 

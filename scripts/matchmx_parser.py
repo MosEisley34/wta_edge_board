@@ -42,6 +42,32 @@ class MatchMxParseResult:
     tokens: list[str]
     row_shape_valid: bool
     reason_code: str | None
+    row_index: int | None = None
+
+
+def _is_array_literal(value: str) -> bool:
+    stripped = value.strip()
+    return len(stripped) >= 2 and stripped[0] == "[" and stripped[-1] == "]"
+
+
+def _parse_row_collection(array_literal_body: str) -> list[list[str]] | None:
+    """Return rows for `matchmx = [[...], [...]]` payloads.
+
+    For standard `matchmx[0] = [...]` payloads we return None so callers can
+    treat the body as a single row.
+    """
+
+    outer_tokens = _split_top_level_tokens(array_literal_body)
+    if not outer_tokens:
+        return []
+    if not all(_is_array_literal(token) for token in outer_tokens):
+        return None
+
+    rows: list[list[str]] = []
+    for token in outer_tokens:
+        inner = token.strip()[1:-1]
+        rows.append(parse_js_array_tokens(inner))
+    return rows
 
 
 @dataclass
@@ -191,12 +217,25 @@ def iter_matchmx_rows(payload: str):
             continue
 
         body = payload[start_idx : i - 1]
+        collection_rows = _parse_row_collection(body)
+        if collection_rows is not None:
+            for row_idx, row_tokens in enumerate(collection_rows):
+                row_shape_valid = is_valid_row_shape(row_tokens)
+                yield MatchMxParseResult(
+                    tokens=row_tokens,
+                    row_shape_valid=row_shape_valid,
+                    reason_code=None if row_shape_valid else "ta_matchmx_unusable_payload",
+                    row_index=row_idx,
+                )
+            continue
+
         tokens = parse_js_array_tokens(body)
         row_shape_valid = is_valid_row_shape(tokens)
         yield MatchMxParseResult(
             tokens=tokens,
             row_shape_valid=row_shape_valid,
             reason_code=None if row_shape_valid else "ta_matchmx_unusable_payload",
+            row_index=None,
         )
 
 
