@@ -127,5 +127,6 @@ Use `scripts/extract_player_features.py` to normalize probe payloads under `OUT_
 
 - `OUT_DIR/normalized/player_features.jsonl`
 - `OUT_DIR/normalized/player_features.csv`
+- `OUT_DIR/normalized/source_diagnostics.csv`
 
-The extractor always emits fixed schema fields plus `reason_code` and `reason_code_detail` so Apps Script can preserve diagnostics even when stats are null/missing.
+The extractor keeps model features clean by routing source-level parse/status issues (for example pointer/metadata payloads and hard API errors) into `source_diagnostics.csv` instead of `player_features.csv`.

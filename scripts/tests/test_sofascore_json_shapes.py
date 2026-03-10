@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
@@ -35,6 +36,29 @@ class SofascoreJsonShapeTests(unittest.TestCase):
         self.assertEqual("sofascore_statistics_payload", rows[0].reason_code)
         self.assertNotEqual("source_parse_error", rows[0].reason_code)
         self.assertIsNone(rows[0].player_canonical_name)
+
+    def test_pointer_source_payload_is_skipped_and_recorded_in_diagnostics(self):
+        diagnostics = []
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "tennisabstract_leaders.body"
+            path.write_text('matchmx[0] = ["2026-01-01"]', encoding="utf-8")
+            rows = _extract_from_file(path, selected_sources=set(), diagnostics=diagnostics)
+
+        self.assertEqual([], rows)
+        self.assertEqual(1, len(diagnostics))
+        self.assertEqual("source_role_pointer_skipped", diagnostics[0].issue_code)
+
+    def test_hard_api_error_payload_is_routed_to_diagnostics(self):
+        diagnostics = []
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "sofascore_events_live.json"
+            path.write_text('{"status": 500, "error": "upstream timeout"}', encoding="utf-8")
+
+            rows = _extract_from_file(path, selected_sources=set(), diagnostics=diagnostics)
+
+        self.assertEqual([], rows)
+        self.assertEqual(1, len(diagnostics))
+        self.assertEqual("api_hard_error", diagnostics[0].issue_code)
 
 
 if __name__ == "__main__":

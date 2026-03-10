@@ -47,6 +47,15 @@ SCHEMA_COLUMNS = [
     "reason_code_detail",
 ]
 
+DIAGNOSTIC_COLUMNS = [
+    "source",
+    "as_of",
+    "payload_file",
+    "payload_mode",
+    "issue_code",
+    "issue_detail",
+]
+
 
 CATALOG_PATH = Path(__file__).resolve().parents[1] / "config" / "probe_sources.tsv"
 
@@ -257,6 +266,16 @@ class PlayerFeature:
     has_stats: bool
     reason_code: str
     reason_code_detail: str | None
+
+
+@dataclass
+class SourceDiagnostic:
+    source: str
+    as_of: str
+    payload_file: str
+    payload_mode: str
+    issue_code: str
+    issue_detail: str | None
 
 
 def _to_float(value: object) -> float | None:
@@ -687,7 +706,45 @@ def _parse_csv_rows(source: str, text: str, as_of: str) -> list[PlayerFeature]:
     return rows
 
 
-def _extract_from_file(path: Path, selected_sources: set[str]) -> list[PlayerFeature]:
+def _source_role(source: str) -> str:
+    if source in {"tennisabstract_leaders"}:
+        return "pointer"
+    return "features"
+
+
+def _detect_hard_api_error(text: str, payload_mode: str) -> tuple[str, str] | None:
+    if payload_mode != "json":
+        return None
+
+    try:
+        data = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    status = data.get("status")
+    if isinstance(status, int) and status >= 400:
+        return "api_hard_error", f"status:{status}"
+
+    status_code = data.get("statusCode")
+    if isinstance(status_code, int) and status_code >= 400:
+        return "api_hard_error", f"statusCode:{status_code}"
+
+    error_value = data.get("error")
+    if isinstance(error_value, (str, dict, list)):
+        detail = error_value if isinstance(error_value, str) else json.dumps(error_value, ensure_ascii=False)[:300]
+        return "api_hard_error", f"error:{detail}"
+
+    success = data.get("success")
+    if success is False and data.get("data") in (None, [], {}):
+        message = str(data.get("message") or "success_false_empty_data")
+        return "api_hard_error", message
+
+    return None
+
+
+def _extract_from_file(path: Path, selected_sources: set[str], diagnostics: list[SourceDiagnostic] | None = None) -> list[PlayerFeature]:
     source = path.stem.split(".")[0]
     as_of = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
 
@@ -696,6 +753,36 @@ def _extract_from_file(path: Path, selected_sources: set[str]) -> list[PlayerFea
 
     text = path.read_text(encoding="utf-8", errors="ignore")
     payload_mode = _detect_payload_mode(source, path, text)
+
+    if _source_role(source) == "pointer":
+        if diagnostics is not None:
+            diagnostics.append(
+                SourceDiagnostic(
+                    source=source,
+                    as_of=as_of,
+                    payload_file=path.name,
+                    payload_mode=payload_mode,
+                    issue_code="source_role_pointer_skipped",
+                    issue_detail="pointer_or_metadata_payload_not_emitted_to_player_features",
+                )
+            )
+        return []
+
+    hard_error = _detect_hard_api_error(text, payload_mode)
+    if hard_error is not None:
+        issue_code, issue_detail = hard_error
+        if diagnostics is not None:
+            diagnostics.append(
+                SourceDiagnostic(
+                    source=source,
+                    as_of=as_of,
+                    payload_file=path.name,
+                    payload_mode=payload_mode,
+                    issue_code=issue_code,
+                    issue_detail=issue_detail,
+                )
+            )
+        return []
 
     if payload_mode == "matchmx":
         rows = _parse_matchmx_rows(source, text, as_of)
@@ -716,23 +803,18 @@ def _extract_from_file(path: Path, selected_sources: set[str]) -> list[PlayerFea
         if csv_rows:
             return csv_rows
 
-    return [
-        PlayerFeature(
-            player_canonical_name=None,
-            source=source,
-            as_of=as_of,
-            ranking=None,
-            recent_form=None,
-            surface_win_rate=None,
-            hold_pct=None,
-            break_pct=None,
-            h2h_wins=None,
-            h2h_losses=None,
-            has_stats=False,
-            reason_code="source_parse_error",
-            reason_code_detail=f"unsupported_or_empty_payload:{path.name}",
+    if diagnostics is not None:
+        diagnostics.append(
+            SourceDiagnostic(
+                source=source,
+                as_of=as_of,
+                payload_file=path.name,
+                payload_mode=payload_mode,
+                issue_code="source_parse_error",
+                issue_detail=f"unsupported_or_empty_payload:{path.name}",
+            )
         )
-    ]
+    return []
 
 
 def _quality_score(row: PlayerFeature) -> int:
@@ -781,6 +863,15 @@ def _write_csv(path: Path, rows: list[PlayerFeature]) -> None:
         for row in rows:
             data = asdict(row)
             writer.writerow({key: data.get(key) for key in SCHEMA_COLUMNS})
+
+
+def _write_diagnostics_csv(path: Path, rows: list[SourceDiagnostic]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=DIAGNOSTIC_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            data = asdict(row)
+            writer.writerow({key: data.get(key) for key in DIAGNOSTIC_COLUMNS})
 
 
 def _compute_parse_health(rows: list[PlayerFeature]) -> dict[str, dict[str, object]]:
@@ -868,18 +959,21 @@ def main() -> int:
     provider_allowlist = _parse_allowlist(args.provider_allowlist)
 
     extracted: list[PlayerFeature] = []
+    diagnostics: list[SourceDiagnostic] = []
     for path in payload_files:
         source = path.stem.split(".")[0]
         if not _is_allowed_source(source, provider_allowlist):
             print(f"INFO: skipping provider '{source}' (not in provider allowlist: {args.provider_allowlist})")
             continue
-        extracted.extend(_extract_from_file(path, selected_sources))
+        extracted.extend(_extract_from_file(path, selected_sources, diagnostics))
 
     normalized = _dedupe_rows(extracted)
     jsonl_path = normalized_dir / "player_features.jsonl"
     csv_path = normalized_dir / "player_features.csv"
+    diagnostics_path = normalized_dir / "source_diagnostics.csv"
     _write_jsonl(jsonl_path, normalized)
     _write_csv(csv_path, normalized)
+    _write_diagnostics_csv(diagnostics_path, diagnostics)
     health = _compute_parse_health(normalized)
     health_path = normalized_dir / "parse_health.json"
     health_path.write_text(json.dumps(health, indent=2, sort_keys=True), encoding="utf-8")
@@ -887,6 +981,7 @@ def main() -> int:
 
     print(f"Wrote {len(normalized)} rows to {jsonl_path}")
     print(f"Wrote {len(normalized)} rows to {csv_path}")
+    print(f"Wrote {len(diagnostics)} rows to {diagnostics_path}")
     print(f"Wrote parse health to {health_path}")
     return 0
 
