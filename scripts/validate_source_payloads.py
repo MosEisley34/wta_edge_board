@@ -285,11 +285,26 @@ def run_validations(out_dir: Path, mandatory_sources: set[str]) -> tuple[list[Va
             payload, source, payload_path, marker_paths=[("data",), ("rankings",), ("results",), ("players",)]
         ),
         "tennisexplorer": validate_tennisexplorer,
-        "sofascore": lambda payload, source, payload_path: validate_json_source(
-            payload,
-            source,
-            payload_path,
-            marker_paths=[("rankings",), ("standings",), ("rows",), ("rankings", "rows")],
+        "sofascore_events_live": lambda payload, source, payload_path: validate_json_source(
+            payload, source, payload_path, marker_paths=[("events",)]
+        ),
+        "sofascore_events_scheduled": lambda payload, source, payload_path: validate_json_source(
+            payload, source, payload_path, marker_paths=[("events",)]
+        ),
+        "sofascore_scheduled_events": lambda payload, source, payload_path: validate_json_source(
+            payload, source, payload_path, marker_paths=[("events",)]
+        ),
+        "sofascore_player_detail": lambda payload, source, payload_path: validate_json_source(
+            payload, source, payload_path, marker_paths=[("player",)]
+        ),
+        "sofascore_player_recent": lambda payload, source, payload_path: validate_json_source(
+            payload, source, payload_path, marker_paths=[("events",)]
+        ),
+        "sofascore_player_stats_overall": lambda payload, source, payload_path: validate_json_source(
+            payload, source, payload_path, marker_paths=[("statistics",)]
+        ),
+        "sofascore_player_stats_last52": lambda payload, source, payload_path: validate_json_source(
+            payload, source, payload_path, marker_paths=[("statistics",)]
         ),
     }
 
@@ -325,7 +340,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mandatory-sources",
-        default="tennisabstract_leaders,ta_h2h,wta_stats_zone,itf,tennisexplorer,sofascore",
+        default="tennisabstract_leaders,ta_h2h,wta_stats_zone,itf,tennisexplorer,sofascore_events_live,sofascore_events_scheduled,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
         help="Comma-separated source keys that must be extraction-ready for zero exit",
     )
     return parser.parse_args()

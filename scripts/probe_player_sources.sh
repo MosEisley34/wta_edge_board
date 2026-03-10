@@ -209,11 +209,64 @@ def json_path_exists(value, path):
     return True
 
 source_key = os.environ.get("SOURCE_KEY", "")
-required_json_paths = {
-    "itf": ["data.rankings"],
-}.get(source_key, [])
+endpoint_contracts = {
+    "itf": {
+        "required_json_paths": ["data.rankings"],
+        "expected_shape": {"data.rankings": "object_or_array"},
+    },
+    "sofascore_events_live": {
+        "required_json_paths": ["events"],
+        "expected_shape": {"events": "array"},
+    },
+    "sofascore_events_scheduled": {
+        "required_json_paths": ["events"],
+        "expected_shape": {"events": "array"},
+    },
+    "sofascore_scheduled_events": {
+        "required_json_paths": ["events"],
+        "expected_shape": {"events": "array"},
+    },
+    "sofascore_player_detail": {
+        "required_json_paths": ["player"],
+        "expected_shape": {"player": "object"},
+    },
+    "sofascore_player_recent": {
+        "required_json_paths": ["events"],
+        "expected_shape": {"events": "array"},
+    },
+    "sofascore_player_stats_overall": {
+        "required_json_paths": ["statistics"],
+        "expected_shape": {"statistics": "object_or_array"},
+    },
+    "sofascore_player_stats_last52": {
+        "required_json_paths": ["statistics"],
+        "expected_shape": {"statistics": "object_or_array"},
+    },
+}
+contract = endpoint_contracts.get(source_key, {"required_json_paths": [], "expected_shape": {}})
+required_json_paths = contract.get("required_json_paths", [])
+
+def get_json_path(value, path):
+    node = value
+    for key in path.split('.'):
+        if isinstance(node, dict) and key in node:
+            node = node[key]
+        else:
+            return None
+    return node
+
+def matches_shape(value, expected):
+    if expected == 'array':
+        return isinstance(value, list)
+    if expected == 'object':
+        return isinstance(value, dict)
+    if expected == 'object_or_array':
+        return isinstance(value, (dict, list))
+    return True
+
 missing_keys = []
 contract_check_passed = True
+shape_failures = []
 if required_json_paths:
     if json_payload is None:
         missing_keys = required_json_paths[:]
@@ -221,6 +274,13 @@ if required_json_paths:
     else:
         missing_keys = [path for path in required_json_paths if not json_path_exists(json_payload, path)]
         contract_check_passed = len(missing_keys) == 0
+        if contract_check_passed:
+            expected_shape = contract.get("expected_shape", {})
+            for path, expected in expected_shape.items():
+                value = get_json_path(json_payload, path)
+                if not matches_shape(value, expected):
+                    shape_failures.append({"path": path, "expected": expected, "actual": type(value).__name__})
+            contract_check_passed = len(shape_failures) == 0
 
 transport_pass = curl_exit_code == 0 and http_code not in ("", "000")
 expected_http_ok = (http_code.startswith("2") and len(http_code) == 3 and http_code.isdigit()) if not expected_http_codes else (http_code in expected_http_codes)
@@ -245,7 +305,10 @@ elif not content_type_match:
 elif (("json" in expected_content_type_lc) or os.environ.get("PARSER_HINT", "").strip().lower() == "json_api") and api_error_payload:
     status = "api_error_payload"
     effective_pass = False
-elif source_key == "itf" and not contract_check_passed:
+elif is_json and isinstance(json_payload, dict) and (json_payload.get('code') == 404 or json_payload.get('status') == 404 or json_payload.get('statusCode') == 404):
+    status = "contract_failed_404_json_error"
+    effective_pass = False
+elif required_json_paths and not contract_check_passed:
     status = "contract_failed"
     effective_pass = False
 
@@ -321,6 +384,7 @@ obj = {
     },
     "contract_check_passed": contract_check_passed,
     "missing_keys": missing_keys,
+    "shape_failures": shape_failures,
     "counters": counters,
 }
 
