@@ -679,6 +679,26 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
     const h2hDatasetMeta = getStateJson_('PLAYER_STATS_H2H_LAST_FETCH_META') || {};
     const h2hSummaryReasonCode = resolveScheduleEnrichmentH2hReasonCode_(h2hDatasetMeta);
     const h2hImpact = buildScheduleEnrichmentH2hImpact_(h2hSummaryReasonCode, h2hDatasetMeta);
+    const h2hDataset = getTaH2hDataset_(config || {}) || { by_pair: {} };
+    const datasetKeys = Object.keys((h2hDataset && h2hDataset.by_pair) || {});
+    const scheduleNormalizedKeys = [];
+    const scheduleSeen = {};
+    scheduleEvents.forEach(function (event) {
+      const playerA = canonicalizePlayerName_(event && event.player_1, {});
+      const playerB = canonicalizePlayerName_(event && event.player_2, {});
+      if (!playerA || !playerB || playerA === playerB) return;
+      const scheduleKey = buildTaH2hPairKey_(playerA, playerB);
+      if (scheduleSeen[scheduleKey]) return;
+      scheduleSeen[scheduleKey] = true;
+      scheduleNormalizedKeys.push(scheduleKey);
+    });
+    logTaH2hLookupDiagnostic_('ta_h2h_schedule_lookup_keys', {
+      schedule_pair_keys: scheduleNormalizedKeys.slice(0, 25),
+      schedule_pair_count: scheduleNormalizedKeys.length,
+      dataset_pair_keys_sample: datasetKeys.slice(0, 25),
+      dataset_pair_count: datasetKeys.length,
+      h2h_reason_code: h2hSummaryReasonCode,
+    });
 
     const enrichedEvents = scheduleEvents.map(function (event) {
       const playerA = canonicalizePlayerName_(event.player_1, {});
@@ -700,13 +720,14 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
 
       if (playerA && playerB && playerA !== playerB) h2hPairsRequested += 1;
 
+      const h2hPairVerified = !!(h2hCoverage && h2hCoverage.reason_metadata && h2hCoverage.reason_metadata.matched_pair_verified === true);
       if (h2hRow) {
         merged.h2h_p1_wins = Number(h2hRow.wins_a || 0);
         merged.h2h_p2_wins = Number(h2hRow.wins_b || 0);
         merged.h2h_total_matches = Number(h2hRow.wins_a || 0) + Number(h2hRow.wins_b || 0);
         merged.h2h_source = merged.h2h_source || 'ta_h2h_matrix';
         h2hRowsApplied += 1;
-        h2hPairsFound += 1;
+        if (h2hPairVerified) h2hPairsFound += 1;
       } else {
         h2hMissing += 1;
         const missingReasonCode = String((h2hCoverage && h2hCoverage.reason_code) || 'h2h_missing');
@@ -725,8 +746,10 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
             event_id: merged.event_id || '',
             players: [playerA, playerB],
             reason_code: missingReasonCode,
+            schedule_key: debugSample.schedule_key || '',
             requested_pair_keys: debugSample.requested_pair_keys || [],
-            nearest_available_keys: debugSample.nearest_available_keys || [],
+            nearest_candidate_keys: debugSample.nearest_candidate_keys || [],
+            edit_distance_top_matches: debugSample.edit_distance_top_matches || [],
           });
         }
       }

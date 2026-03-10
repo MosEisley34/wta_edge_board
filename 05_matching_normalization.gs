@@ -470,8 +470,55 @@ function normalizePlayers_(a, b, aliasMap) {
 function canonicalizePlayerName_(name, aliasMap) {
   let normalized = String(name || '').toLowerCase();
   normalized = normalized.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  normalized = normalized.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  normalized = normalized
+    .replace(/[’'`]/g, '')
+    .replace(/[._,;:()\[\]{}!/?]/g, ' ')
+    .replace(/[\-–—]/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  normalized = normalizePlayerNameAliasRules_(normalized);
   return aliasMap[normalized] || normalized;
+}
+
+function normalizePlayerNameAliasRules_(normalized) {
+  const value = String(normalized || '').trim();
+  if (!value) return '';
+
+  const aliasRules = {
+    'i swiatek': 'iga swiatek',
+    'swiatek iga': 'iga swiatek',
+    'iga swiatek': 'iga swiatek',
+    'e rybakina': 'elena rybakina',
+    'rybakina elena': 'elena rybakina',
+    'elena rybakina': 'elena rybakina',
+    'm kostyuk': 'marta kostyuk',
+    'kostyuk marta': 'marta kostyuk',
+    'marta kostyuk': 'marta kostyuk',
+    's kartal': 'sonay kartal',
+    'kartal sonay': 'sonay kartal',
+    'sonay kartal': 'sonay kartal',
+  };
+  if (aliasRules[value]) return aliasRules[value];
+
+  const surnameParticles = ['de', 'del', 'della', 'da', 'di', 'van', 'von', 'la', 'le', 'st', 'saint'];
+  const tokens = value.split(' ');
+  if (tokens.length >= 3) {
+    for (let i = 1; i < tokens.length - 1; i += 1) {
+      if (surnameParticles.indexOf(tokens[i]) >= 0) {
+        const merged = tokens.slice(0, i).concat([tokens.slice(i).join(' ')]).join(' ').trim();
+        if (merged) return merged;
+      }
+    }
+  }
+
+  if (/^[a-z]\s+[a-z]+(?:\s+[a-z]+)*$/.test(value)) {
+    const initial = value.split(' ')[0];
+    const rest = value.split(' ').slice(1).join(' ');
+    if (aliasRules[initial + ' ' + rest]) return aliasRules[initial + ' ' + rest];
+  }
+
+  return value;
 }
 
 function buildPlayerAliasMap_(json) {
