@@ -93,15 +93,23 @@ sample_sofascore_tennis_player_id_from_schedule() {
   local date_token
   date_token="$(date -u +%F)"
   local scheduled_url="https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/$date_token"
-  local body
-  body="$(curl -sS -L --max-time 20 --retry 1 --retry-delay 1 -H "User-Agent: $UA" "$scheduled_url" 2>/dev/null || true)"
-  [[ -z "$body" ]] && return 1
+  local scheduled_payload_path
+  scheduled_payload_path="$(mktemp "$LOGS_DIR/sofascore_scheduled_events.XXXXXX.json")"
+  if ! curl -sS -L --max-time 20 --retry 1 --retry-delay 1 -H "User-Agent: $UA" -o "$scheduled_payload_path" "$scheduled_url" 2>/dev/null; then
+    rm -f "$scheduled_payload_path"
+    return 1
+  fi
+  [[ ! -s "$scheduled_payload_path" ]] && {
+    rm -f "$scheduled_payload_path"
+    return 1
+  }
 
-  SCHEDULED_JSON="$body" python3 - <<'PYT'
-import json, os, sys
-raw = os.environ.get('SCHEDULED_JSON', '')
+  python3 - "$scheduled_payload_path" <<'PYT'
+import json, sys
+path = sys.argv[1]
 try:
-    payload = json.loads(raw)
+    with open(path, 'r', encoding='utf-8') as fh:
+        payload = json.load(fh)
 except Exception:
     sys.exit(1)
 if not isinstance(payload, dict):
@@ -121,6 +129,9 @@ for event in payload.get('events', []) or []:
                 sys.exit(0)
 sys.exit(1)
 PYT
+  local resolver_exit_code=$?
+  rm -f "$scheduled_payload_path"
+  return "$resolver_exit_code"
 }
 
 resolve_sofascore_probe_tennis_player_id() {
@@ -152,7 +163,7 @@ resolve_sofascore_probe_tennis_player_id() {
     return 0
   fi
 
-  echo "ERROR: unable to resolve a tennis player id from Sofascore scheduled events and no SOFASCORE_PROBE_TENNIS_PLAYER_ID override is set" >&2
+  echo "ERROR: unable to resolve a tennis player id from Sofascore scheduled events; set SOFASCORE_PROBE_TENNIS_PLAYER_ID to continue" >&2
   return 1
 }
 record_allowlist_skip() {
