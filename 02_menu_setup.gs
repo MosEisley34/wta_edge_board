@@ -467,6 +467,7 @@ function dedupeConfigSheet_(sheet, options) {
   const auditedKeys = {
     ODDS_SPORT_KEY: true,
     PLAYER_STATS_API_BASE_URL: true,
+    PLAYER_STATS_ITF_ENDPOINT: true,
     PLAYER_STATS_API_KEY: true,
     PLAYER_STATS_SCRAPE_URLS: true,
   };
