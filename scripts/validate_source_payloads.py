@@ -167,6 +167,28 @@ def _json_path_exists(obj: object, path: tuple[str, ...]) -> bool:
     return True
 
 
+def _json_is_404_error_payload(data: object) -> bool:
+    if not isinstance(data, dict):
+        return False
+
+    candidates = [data.get("code"), data.get("status"), data.get("statusCode")]
+    for value in candidates:
+        if value is None:
+            continue
+        if str(value).strip() == "404":
+            return True
+
+    error_value = data.get("error")
+    if isinstance(error_value, dict):
+        nested_candidates = [error_value.get("code"), error_value.get("status"), error_value.get("statusCode")]
+        for value in nested_candidates:
+            if value is None:
+                continue
+            if str(value).strip() == "404":
+                return True
+    return False
+
+
 def validate_json_source(payload: str, source: str, payload_path: Path | None, marker_paths: list[tuple[str, ...]]) -> ValidationResult:
     data = _load_json(payload_path) if payload_path else None
     if data is None:
@@ -186,6 +208,16 @@ def validate_json_source(payload: str, source: str, payload_path: Path | None, m
             reason_code="invalid_json_or_missing_bootstrap",
             evidence_samples=[],
             evidence_counts={"bootstrap_marker_count": 0},
+            payload_path=str(payload_path) if payload_path else None,
+        )
+
+    if _json_is_404_error_payload(data):
+        return ValidationResult(
+            source=source,
+            ready_for_extraction=False,
+            reason_code="json_404_error_payload",
+            evidence_samples=["404_error_payload_detected"],
+            evidence_counts={"http_404_payload": 1},
             payload_path=str(payload_path) if payload_path else None,
         )
 
@@ -288,9 +320,6 @@ def run_validations(out_dir: Path, mandatory_sources: set[str]) -> tuple[list[Va
         "sofascore_events_live": lambda payload, source, payload_path: validate_json_source(
             payload, source, payload_path, marker_paths=[("events",)]
         ),
-        "sofascore_events_scheduled": lambda payload, source, payload_path: validate_json_source(
-            payload, source, payload_path, marker_paths=[("events",)]
-        ),
         "sofascore_scheduled_events": lambda payload, source, payload_path: validate_json_source(
             payload, source, payload_path, marker_paths=[("events",)]
         ),
@@ -340,7 +369,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mandatory-sources",
-        default="tennisabstract_leaders,ta_h2h,wta_stats_zone,itf,tennisexplorer,sofascore_events_live,sofascore_events_scheduled,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
+        default="tennisabstract_leaders,ta_h2h,wta_stats_zone,itf,tennisexplorer,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
         help="Comma-separated source keys that must be extraction-ready for zero exit",
     )
     return parser.parse_args()

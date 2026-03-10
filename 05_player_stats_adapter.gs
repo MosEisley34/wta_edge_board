@@ -1656,17 +1656,16 @@ function extractItfRankingRows_(payload) {
 
 function fetchPlayerStatsFromSofascore_(config, players, asOfTime) {
   const baseUrl = 'https://api.sofascore.com/api/v1';
-  const eventEndpoints = [
-    { name: 'events_live', url: baseUrl + '/sport/tennis/events/live', contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } } },
-    { name: 'events_scheduled', url: baseUrl + '/sport/tennis/events/scheduled', contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } } },
-  ];
   const asOfDate = asOfTime instanceof Date ? asOfTime : new Date(asOfTime || Date.now());
   const dateToken = Utilities.formatDate(asOfDate, 'UTC', 'yyyy-MM-dd');
-  eventEndpoints.push({
-    name: 'scheduled_events_by_date',
-    url: baseUrl + '/sport/tennis/scheduled-events/' + dateToken,
-    contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } },
-  });
+  const eventEndpoints = [
+    { name: 'events_live', url: baseUrl + '/sport/tennis/events/live', contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } } },
+    {
+      name: 'scheduled_events_by_date',
+      url: baseUrl + '/sport/tennis/scheduled-events/' + dateToken,
+      contract: { required_top_level_keys: ['events'], expected_payload_shape: { events: 'array' } },
+    },
+  ];
 
   const participantIndex = {};
   const canonicalPlayers = dedupePlayerNames_(players || []);

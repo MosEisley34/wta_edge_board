@@ -218,10 +218,6 @@ endpoint_contracts = {
         "required_json_paths": ["events"],
         "expected_shape": {"events": "array"},
     },
-    "sofascore_events_scheduled": {
-        "required_json_paths": ["events"],
-        "expected_shape": {"events": "array"},
-    },
     "sofascore_scheduled_events": {
         "required_json_paths": ["events"],
         "expected_shape": {"events": "array"},
@@ -425,6 +421,12 @@ iterate_tsv_catalog() {
     parser_hint="$(trim "${parser_hint:-}")"
     extra="$(trim "${extra:-}")"
 
+    if [[ "$url" == *"{date}"* ]]; then
+      local date_token
+      date_token="$(date -u +%F)"
+      url="${url//\{date\}/$date_token}"
+    fi
+
     if [[ -z "$url" || -z "$expected_content_type" || -z "$parser_hint" ]]; then
       echo "WARN: skipping malformed TSV row for source '$source_key'" >&2
       continue
@@ -460,6 +462,11 @@ for entry in data:
         continue
     print("\t".join(values))
 PY
+    if [[ "$url" == *"{date}"* ]]; then
+      date_token="$(date -u +%F)"
+      url="${url//\{date\}/$date_token}"
+    fi
+
     [[ -z "$source_key" || -z "$url" || -z "$expected_content_type" || -z "$parser_hint" ]] && {
       echo "WARN: skipping malformed JSON entry for source '$source_key'" >&2
       continue
