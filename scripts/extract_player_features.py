@@ -47,6 +47,127 @@ SCHEMA_COLUMNS = [
 CATALOG_PATH = Path(__file__).resolve().parents[1] / "config" / "probe_sources.tsv"
 
 
+@dataclass(frozen=True)
+class ParserContract:
+    endpoint: str
+    table_markers: tuple[str, ...]
+    expected_headers: tuple[str, ...]
+    player_column_aliases: tuple[str, ...]
+    stat_column_map: dict[str, tuple[str, ...]]
+    percent_stats: tuple[str, ...] = ()
+
+
+TA_SOURCE_MATRIX: dict[str, ParserContract] = {
+    "ta_leaders_top50_serve": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top50&view=serve",
+        table_markers=("leaders_wta", "Serve"),
+        expected_headers=("Player", "Hold%", "Break%", "Ace%", "DF%"),
+        player_column_aliases=("Player",),
+        stat_column_map={"hold_pct": ("Hold%", "Hold %"), "break_pct": ("Break%", "Break %")},
+        percent_stats=("hold_pct", "break_pct"),
+    ),
+    "ta_leaders_top50_return": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top50&view=return",
+        table_markers=("leaders_wta", "Return"),
+        expected_headers=("Player", "Break%", "RPW%"),
+        player_column_aliases=("Player",),
+        stat_column_map={"break_pct": ("Break%", "Break %")},
+        percent_stats=("break_pct",),
+    ),
+    "ta_leaders_top50_breaks": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top50&view=breaks",
+        table_markers=("leaders_wta", "Breaks"),
+        expected_headers=("Player", "Break%", "BPs Created"),
+        player_column_aliases=("Player",),
+        stat_column_map={"break_pct": ("Break%", "Break %")},
+        percent_stats=("break_pct",),
+    ),
+    "ta_leaders_top50_more": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top50&view=more",
+        table_markers=("leaders_wta", "More"),
+        expected_headers=("Player", "Rank", "Win%"),
+        player_column_aliases=("Player",),
+        stat_column_map={"ranking": ("Rank", "Rk")},
+    ),
+    "ta_leaders_51_100_serve": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=51-100&view=serve",
+        table_markers=("leaders_wta", "Serve"),
+        expected_headers=("Player", "Hold%"),
+        player_column_aliases=("Player",),
+        stat_column_map={"hold_pct": ("Hold%", "Hold %")},
+        percent_stats=("hold_pct",),
+    ),
+    "ta_leaders_51_100_return": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=51-100&view=return",
+        table_markers=("leaders_wta", "Return"),
+        expected_headers=("Player", "Break%"),
+        player_column_aliases=("Player",),
+        stat_column_map={"break_pct": ("Break%", "Break %")},
+        percent_stats=("break_pct",),
+    ),
+    "ta_leaders_51_100_breaks": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=51-100&view=breaks",
+        table_markers=("leaders_wta", "Breaks"),
+        expected_headers=("Player", "Break%"),
+        player_column_aliases=("Player",),
+        stat_column_map={"break_pct": ("Break%", "Break %")},
+        percent_stats=("break_pct",),
+    ),
+    "ta_leaders_51_100_more": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=51-100&view=more",
+        table_markers=("leaders_wta", "More"),
+        expected_headers=("Player", "Rank"),
+        player_column_aliases=("Player",),
+        stat_column_map={"ranking": ("Rank", "Rk")},
+    ),
+    "ta_winners_errors": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/reports_wta.cgi?report=winners-errors",
+        table_markers=("reports_wta", "winners", "errors"),
+        expected_headers=("Player", "Winners", "Unforced Errors"),
+        player_column_aliases=("Player",),
+        stat_column_map={"recent_form": ("W/UE", "Winners/UE")},
+    ),
+    "mcp_report_serve": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/mcp_leaders_wta.cgi?tab=serve",
+        table_markers=("mcp", "serve"),
+        expected_headers=("Player", "Hold%"),
+        player_column_aliases=("Player", "Server"),
+        stat_column_map={"hold_pct": ("Hold%", "Service Hold%")},
+        percent_stats=("hold_pct",),
+    ),
+    "mcp_report_return": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/mcp_leaders_wta.cgi?tab=return",
+        table_markers=("mcp", "return"),
+        expected_headers=("Player", "Break%"),
+        player_column_aliases=("Player", "Returner"),
+        stat_column_map={"break_pct": ("Break%", "Return Break%")},
+        percent_stats=("break_pct",),
+    ),
+    "mcp_report_rally": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/mcp_leaders_wta.cgi?tab=rally",
+        table_markers=("mcp", "rally"),
+        expected_headers=("Player", "Rally Win%"),
+        player_column_aliases=("Player",),
+        stat_column_map={"recent_form": ("Rally Win%",)},
+        percent_stats=("recent_form",),
+    ),
+    "mcp_report_tactics": ParserContract(
+        endpoint="https://www.tennisabstract.com/cgi-bin/mcp_leaders_wta.cgi?tab=tactics",
+        table_markers=("mcp", "tactics"),
+        expected_headers=("Player", "Approach Win%"),
+        player_column_aliases=("Player",),
+        stat_column_map={"recent_form": ("Approach Win%", "Tactic Win%")},
+        percent_stats=("recent_form",),
+    ),
+}
+
+SOURCE_HEALTH_THRESHOLDS = {
+    "min_rows": 5,
+    "min_unique_players": 5,
+    "max_null_coverage": 0.75,
+}
+
+
 def _load_selected_sources(catalog_path: Path) -> set[str]:
     if not catalog_path.exists():
         return set()
@@ -148,6 +269,107 @@ def _to_float(value: object) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _to_percent(value: object) -> float | None:
+    num = _to_float(value)
+    if num is None:
+        return None
+    if num <= 1:
+        return num * 100
+    return num
+
+
+def _strip_html(text: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _extract_tables(html: str) -> list[tuple[list[str], list[list[str]]]]:
+    tables: list[tuple[list[str], list[list[str]]]] = []
+    for table in re.findall(r"<table\b.*?</table>", html, flags=re.IGNORECASE | re.DOTALL):
+        rows: list[list[str]] = []
+        for tr in re.findall(r"<tr\b.*?</tr>", table, flags=re.IGNORECASE | re.DOTALL):
+            cells = re.findall(r"<t[hd]\b[^>]*>(.*?)</t[hd]>", tr, flags=re.IGNORECASE | re.DOTALL)
+            cleaned = [_strip_html(cell) for cell in cells]
+            if cleaned:
+                rows.append(cleaned)
+        if not rows:
+            continue
+        headers = rows[0]
+        tables.append((headers, rows[1:]))
+    return tables
+
+
+def _find_column_index(headers: list[str], aliases: tuple[str, ...]) -> int | None:
+    for idx, header in enumerate(headers):
+        normalized = header.lower().strip()
+        for alias in aliases:
+            if normalized == alias.lower().strip():
+                return idx
+    return None
+
+
+def _parse_contract_html_rows(source: str, text: str, as_of: str) -> list[PlayerFeature]:
+    contract = TA_SOURCE_MATRIX.get(source)
+    if not contract:
+        return []
+    haystack = text.lower()
+    if not all(marker.lower() in haystack for marker in contract.table_markers):
+        return []
+
+    rows: list[PlayerFeature] = []
+    for headers, data_rows in _extract_tables(text):
+        if not all(any(h.lower() == expected.lower() for h in headers) for expected in contract.expected_headers[:2]):
+            continue
+
+        player_col = _find_column_index(headers, contract.player_column_aliases)
+        if player_col is None:
+            continue
+
+        stat_indices: dict[str, int] = {}
+        for stat, aliases in contract.stat_column_map.items():
+            idx = _find_column_index(headers, aliases)
+            if idx is not None:
+                stat_indices[stat] = idx
+
+        for raw in data_rows:
+            if player_col >= len(raw):
+                continue
+            player_name = normalize_name(raw[player_col])
+            stat_values: dict[str, object] = {}
+            for stat, idx in stat_indices.items():
+                stat_values[stat] = raw[idx] if idx < len(raw) else None
+            feature = PlayerFeature(
+                player_canonical_name=player_name,
+                source=source,
+                as_of=as_of,
+                ranking=_to_int(stat_values.get("ranking")),
+                recent_form=(
+                    _to_percent(stat_values.get("recent_form"))
+                    if "recent_form" in contract.percent_stats
+                    else _to_float(stat_values.get("recent_form"))
+                ),
+                surface_win_rate=_to_percent(stat_values.get("surface_win_rate")) if "surface_win_rate" in contract.percent_stats else _to_float(stat_values.get("surface_win_rate")),
+                hold_pct=_to_percent(stat_values.get("hold_pct")) if "hold_pct" in contract.percent_stats else _to_float(stat_values.get("hold_pct")),
+                break_pct=_to_percent(stat_values.get("break_pct")) if "break_pct" in contract.percent_stats else _to_float(stat_values.get("break_pct")),
+                h2h_wins=None,
+                h2h_losses=None,
+                has_stats=False,
+                reason_code="ok",
+                reason_code_detail=f"normalized_from_contract:{source}",
+            )
+            feature.has_stats = _has_stats(feature)
+            if not is_accepted_name(feature.player_canonical_name):
+                feature.reason_code = "missing_player_name"
+                feature.player_canonical_name = None
+            elif not feature.has_stats:
+                feature.reason_code = "provider_returned_null_features"
+            rows.append(feature)
+        if rows:
+            return rows
+    return []
 
 
 def _to_int(value: object) -> int | None:
@@ -330,6 +552,10 @@ def _extract_from_file(path: Path, selected_sources: set[str]) -> list[PlayerFea
         if rows:
             return rows
 
+    contract_rows = _parse_contract_html_rows(source, text, as_of)
+    if contract_rows:
+        return contract_rows
+
     if payload_mode == "json":
         json_rows = _parse_json_rows(source, text, as_of)
         if json_rows:
@@ -407,6 +633,48 @@ def _write_csv(path: Path, rows: list[PlayerFeature]) -> None:
             writer.writerow({key: data.get(key) for key in SCHEMA_COLUMNS})
 
 
+def _compute_parse_health(rows: list[PlayerFeature]) -> dict[str, dict[str, object]]:
+    by_source: dict[str, list[PlayerFeature]] = {}
+    for row in rows:
+        by_source.setdefault(row.source, []).append(row)
+
+    health: dict[str, dict[str, object]] = {}
+    for source, source_rows in sorted(by_source.items()):
+        unique_players = {r.player_canonical_name for r in source_rows if r.player_canonical_name}
+        tracked = [r for r in source_rows if r.player_canonical_name]
+        total_cells = 0
+        null_cells = 0
+        for row in tracked:
+            for value in [row.ranking, row.recent_form, row.surface_win_rate, row.hold_pct, row.break_pct, row.h2h_wins, row.h2h_losses]:
+                total_cells += 1
+                if value is None:
+                    null_cells += 1
+        health[source] = {
+            "rows_parsed": len(source_rows),
+            "unique_players": len(unique_players),
+            "null_coverage": (null_cells / total_cells) if total_cells else 1.0,
+        }
+    return health
+
+
+def _assert_parse_health(health: dict[str, dict[str, object]]) -> None:
+    errors: list[str] = []
+    for source, metrics in health.items():
+        if source not in TA_SOURCE_MATRIX and not source.startswith("tennisabstract_"):
+            continue
+        rows_parsed = int(metrics.get("rows_parsed", 0))
+        unique_players = int(metrics.get("unique_players", 0))
+        null_coverage = float(metrics.get("null_coverage", 1.0))
+        if rows_parsed < SOURCE_HEALTH_THRESHOLDS["min_rows"]:
+            errors.append(f"{source}: rows_parsed={rows_parsed} < {SOURCE_HEALTH_THRESHOLDS['min_rows']}")
+        if unique_players < SOURCE_HEALTH_THRESHOLDS["min_unique_players"]:
+            errors.append(f"{source}: unique_players={unique_players} < {SOURCE_HEALTH_THRESHOLDS['min_unique_players']}")
+        if null_coverage > SOURCE_HEALTH_THRESHOLDS["max_null_coverage"]:
+            errors.append(f"{source}: null_coverage={null_coverage:.3f} > {SOURCE_HEALTH_THRESHOLDS['max_null_coverage']}")
+    if errors:
+        raise RuntimeError("Parse health thresholds not met:\n- " + "\n- ".join(errors))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract normalized player features from source payloads")
     parser.add_argument(
@@ -462,9 +730,14 @@ def main() -> int:
     csv_path = normalized_dir / "player_features.csv"
     _write_jsonl(jsonl_path, normalized)
     _write_csv(csv_path, normalized)
+    health = _compute_parse_health(normalized)
+    health_path = normalized_dir / "parse_health.json"
+    health_path.write_text(json.dumps(health, indent=2, sort_keys=True), encoding="utf-8")
+    _assert_parse_health(health)
 
     print(f"Wrote {len(normalized)} rows to {jsonl_path}")
     print(f"Wrote {len(normalized)} rows to {csv_path}")
+    print(f"Wrote parse health to {health_path}")
     return 0
 
 
