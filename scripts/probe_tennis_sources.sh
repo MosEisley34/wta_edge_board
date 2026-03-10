@@ -125,14 +125,6 @@ resolve_sofascore_probe_tennis_player_id() {
     return 0
   fi
   local configured_id="$SOFASCORE_PROBE_TENNIS_PLAYER_ID"
-  if [[ -z "$configured_id" ]]; then
-    configured_id="9472"
-  fi
-  if validate_sofascore_tennis_player_id "$configured_id"; then
-    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
-    printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
-    return 0
-  fi
   local sampled_id=""
   sampled_id="$(sample_sofascore_tennis_player_id_from_schedule || true)"
   if [[ -n "$sampled_id" ]] && validate_sofascore_tennis_player_id "$sampled_id"; then
@@ -140,9 +132,19 @@ resolve_sofascore_probe_tennis_player_id() {
     printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
     return 0
   fi
-  RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
-  echo "WARN: falling back to unverified SOFASCORE_PROBE_TENNIS_PLAYER_ID=$configured_id" >&2
-  printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+  if [[ -n "$configured_id" ]] && validate_sofascore_tennis_player_id "$configured_id"; then
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
+    printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+    return 0
+  fi
+  if [[ -n "$configured_id" ]]; then
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
+    echo "WARN: using unverified SOFASCORE_PROBE_TENNIS_PLAYER_ID=$configured_id after sampling failure" >&2
+    printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+    return 0
+  fi
+  echo "ERROR: unable to resolve a tennis player id from Sofascore scheduled events and no SOFASCORE_PROBE_TENNIS_PLAYER_ID override is set" >&2
+  return 1
 }
 record_allowlist_skip() {
   local source_key="$1"

@@ -690,6 +690,7 @@ function testFetchSofascorePlayerEnrichment_nonTennisPlayerSkipsRecentAndStats_(
   try {
     const result = fetchSofascorePlayerEnrichment_(TEST_SOFASCORE_NON_TENNIS_PLAYER_ID, {});
     assertEquals_('source_entity_domain_mismatch', result.reason_code);
+    assertEquals_('source_entity_domain_mismatch_non_tennis_sport_slug_football', result.domain_mismatch_reason);
     assertEquals_(1, calledUrls.length);
     assertTrue_(calledUrls[0].indexOf('/player/' + String(TEST_SOFASCORE_NON_TENNIS_PLAYER_ID)) >= 0, 'only player detail endpoint should be requested for non-tennis');
   } finally {
@@ -721,6 +722,7 @@ function testFetchPlayerStatsFromSofascore_domainMismatchSetsFailureAndNoDownstr
     if (Number(playerId) === TEST_SOFASCORE_NON_TENNIS_PLAYER_ID) {
       return {
         reason_code: 'source_entity_domain_mismatch',
+        domain_mismatch_reason: 'source_entity_domain_mismatch_non_tennis_sport_slug_football',
         detail_payload: { player: { id: TEST_SOFASCORE_NON_TENNIS_PLAYER_ID, sport: { slug: 'football' } } },
         recent_payload: null,
         payloads_with_endpoints: [],
@@ -750,7 +752,7 @@ function testFetchPlayerStatsFromSofascore_domainMismatchSetsFailureAndNoDownstr
     const result = fetchPlayerStatsFromSofascore_({}, ['Non Tennis Player']);
     assertEquals_('source_entity_domain_mismatch', result.reason_code);
     assertEquals_('source_entity_domain_mismatch', result.stats_by_player['non tennis player'].fallback_mode);
-    assertEquals_('source_entity_domain_mismatch', result.stats_by_player['non tennis player'].failure_reason);
+    assertEquals_('source_entity_domain_mismatch_non_tennis_sport_slug_football', result.stats_by_player['non tennis player'].failure_reason);
     assertEquals_(null, result.endpoint_feature_sources_by_player['non tennis player'].recent_form);
     assertEquals_(null, result.endpoint_feature_sources_by_player['non tennis player'].hold_pct);
   } finally {
