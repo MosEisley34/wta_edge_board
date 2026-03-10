@@ -490,6 +490,62 @@ function testSofascoreParticipantIndexAndFeatureExtraction_minimalCoverage_() {
   assertEquals_(0.667, form);
 }
 
+function testSofascoreParticipantIndex_supportsLiveDoublesTeamNameVariants_() {
+  const liveFixture = {
+    events: [
+      {
+        id: 101,
+        status: { type: 'inprogress' },
+        homeTeam: {
+          id: 901,
+          name: 'Coco Gauff / Jessica Pegula',
+          shortName: 'Gauff/Pegula',
+        },
+        awayTeam: {
+          id: 902,
+          team: {
+            name: 'Gabriela Dabrowski & Erin Routliffe',
+            slug: 'gabriela-dabrowski-erin-routliffe',
+          },
+        },
+      },
+    ],
+  };
+
+  const indexed = indexSofascoreParticipants_(liveFixture, {});
+  assertEquals_(901, indexed['coco gauff'].id);
+  assertEquals_(901, indexed['jessica pegula'].id);
+  assertEquals_(902, indexed['gabriela dabrowski'].id);
+}
+
+function testSofascoreParticipantIndex_supportsScheduledNestedNamesAndSlugFallbacks_() {
+  const scheduledFixture = {
+    events: [
+      {
+        id: 202,
+        startTimestamp: 1770115200,
+        homeTeam: {
+          id: 1001,
+          player: {
+            name: 'Iga Swiatek',
+            slug: 'iga-swiatek',
+          },
+        },
+        awayTeam: {
+          id: 1002,
+          team: {
+            slug: 'aryna-sabalenka',
+          },
+        },
+      },
+    ],
+  };
+
+  const indexed = indexSofascoreParticipants_(scheduledFixture, {});
+  assertEquals_(1001, indexed['iga swiatek'].id);
+  assertEquals_(1002, indexed['aryna sabalenka'].id);
+}
+
 function testFetchPlayerStatsFromSingleSource_sofascoreRoute_usesAdapter_() {
   const originalFetchSofascore = fetchPlayerStatsFromSofascore_;
   fetchPlayerStatsFromSofascore_ = function () {
