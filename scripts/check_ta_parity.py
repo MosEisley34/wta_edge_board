@@ -15,43 +15,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-MATCHMX_ROW_IDX = {
-    "DATE": 0,
-    "EVENT": 1,
-    "SURFACE": 2,
-    "PLAYER_NAME": 3,
-    "OPPONENT": 4,
-    "SCORE": 5,
-    "RANKING": 6,
-    "RECENT_FORM": 7,
-    "SURFACE_WIN_RATE": 8,
-    "HOLD_PCT": 9,
-    "BREAK_PCT": 10,
-    "BP_SAVED_PCT": 11,
-    "BP_CONV_PCT": 12,
-    "FIRST_SERVE_IN_PCT": 13,
-    "FIRST_SERVE_POINTS_WON_PCT": 14,
-    "SECOND_SERVE_POINTS_WON_PCT": 15,
-    "RETURN_POINTS_WON_PCT": 16,
-    "DOMINANCE_RATIO": 17,
-    "TOTAL_POINTS_WON_PCT": 18,
-}
-
-
-ROW_REGEX = re.compile(r"matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[([\s\S]*?)\]\s*;")
-TOKEN_REGEX = re.compile(r'"((?:\\.|[^"\\])*)"|\'((?:\\.|[^\'\\])*)\'|([^,]+)')
-
-
-def _parse_js_array_tokens(array_literal_body: str) -> list[str]:
-    tokens: list[str] = []
-    for part in TOKEN_REGEX.finditer(array_literal_body):
-        raw = part.group(1) if part.group(1) is not None else (part.group(2) if part.group(2) is not None else part.group(3))
-        normalized = str(raw or "").strip()
-        if normalized in {"null", "undefined"}:
-            tokens.append("")
-            continue
-        tokens.append(normalized.replace(r'\"', '"').replace(r"\\'", "'"))
-    return tokens
+from matchmx_parser import MATCHMX_ROW_IDX, is_accepted_name, iter_matchmx_rows
 
 
 def _to_number(tokens: list[str], idx: int) -> float | None:
@@ -103,17 +67,19 @@ def _build_structured_row(tokens: list[str]) -> dict[str, object]:
     }
 
 
-def _extract_rows(payload: str) -> list[dict[str, object]]:
+def _extract_rows(payload: str) -> tuple[list[dict[str, object]], int]:
     rows: list[dict[str, object]] = []
-    for match in ROW_REGEX.finditer(payload):
-        tokens = _parse_js_array_tokens(match.group(1))
-        if len(tokens) < 6:
+    unusable_payload_rows = 0
+    for parsed in iter_matchmx_rows(payload):
+        if not parsed.row_shape_valid:
+            unusable_payload_rows += 1
             continue
+        tokens = parsed.tokens
         row = _build_structured_row(tokens)
         if not row["player_name"] or not row["score"]:
             continue
         rows.append(row)
-    return rows
+    return rows, unusable_payload_rows
 
 
 def _coverage(items: list[dict[str, object]], key: str) -> tuple[int, float]:
@@ -126,7 +92,7 @@ def _normalize_records(rows: list[dict[str, object]]) -> dict[str, dict[str, obj
     grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
     for row in rows:
         canonical = _canonicalize_name(str(row.get("player_name") or ""))
-        if not canonical:
+        if not is_accepted_name(canonical):
             continue
         grouped[canonical].append(row)
 
@@ -179,7 +145,19 @@ def main() -> int:
         )
         return 1
 
-    rows = _extract_rows(payload)
+    rows, unusable_payload_rows = _extract_rows(payload)
+    if unusable_payload_rows > 0 and not rows:
+        print(
+            json.dumps(
+                {
+                    "status": "fail",
+                    "reason_code": "ta_matchmx_unusable_payload",
+                    "path": str(path),
+                    "matchmx_unusable_rows": unusable_payload_rows,
+                }
+            )
+        )
+        return 1
     normalized = _normalize_records(rows)
     normalized_rows = list(normalized.values())
 
@@ -194,6 +172,7 @@ def main() -> int:
     summary = {
         "input": str(path),
         "total_rows": len(rows),
+        "matchmx_unusable_rows": unusable_payload_rows,
         "unique_players": len(normalized_rows),
         "row_non_null_coverage": {
             "ranking": {"non_null": row_rank_count, "ratio": round(row_rank_ratio, 4)},

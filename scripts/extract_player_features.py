@@ -14,6 +14,13 @@ import json
 import os
 import re
 import sys
+
+from matchmx_parser import (
+    MATCHMX_ROW_IDX,
+    iter_matchmx_rows,
+    is_accepted_name,
+    normalize_name,
+)
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -150,13 +157,6 @@ def _pick(obj: dict[str, object], *keys: str) -> object | None:
     return None
 
 
-def _normalize_name(value: object) -> str | None:
-    if value is None:
-        return None
-    normalized = re.sub(r"\s+", " ", str(value)).strip()
-    return normalized or None
-
-
 def _has_stats(row: PlayerFeature) -> bool:
     return any(
         value is not None
@@ -174,25 +174,38 @@ def _has_stats(row: PlayerFeature) -> bool:
 
 def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeature]:
     rows: list[PlayerFeature] = []
-    for match in re.finditer(r"matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[([\s\S]*?)\]\s*;", text):
-        tokens = re.findall(r'"((?:\\.|[^"\\])*)"|\'((?:\\.|[^\'\\])*)\'|([^,]+)', match.group(1))
-        values: list[str] = []
-        for quoted_a, quoted_b, unquoted in tokens:
-            value = quoted_a or quoted_b or unquoted.strip()
-            values.append(value)
-        if len(values) < 11:
+    for parsed in iter_matchmx_rows(text):
+        if not parsed.row_shape_valid:
+            rows.append(
+                PlayerFeature(
+                    player_canonical_name=None,
+                    source=source,
+                    as_of=as_of,
+                    ranking=None,
+                    recent_form=None,
+                    surface_win_rate=None,
+                    hold_pct=None,
+                    break_pct=None,
+                    h2h_wins=None,
+                    h2h_losses=None,
+                    has_stats=False,
+                    reason_code="ta_matchmx_unusable_payload",
+                    reason_code_detail="row_shape_below_matchmx_min_fields",
+                )
+            )
             continue
 
-        player_name = _normalize_name(values[3] if len(values) > 3 else None)
+        values = parsed.tokens
+        player_name = normalize_name(values[MATCHMX_ROW_IDX["PLAYER_NAME"]])
         feature = PlayerFeature(
             player_canonical_name=player_name,
             source=source,
             as_of=as_of,
-            ranking=_to_int(values[1] if len(values) > 1 else None),
-            recent_form=_to_float(values[7] if len(values) > 7 else None),
-            surface_win_rate=_to_float(values[8] if len(values) > 8 else None),
-            hold_pct=_to_float(values[9] if len(values) > 9 else None),
-            break_pct=_to_float(values[10] if len(values) > 10 else None),
+            ranking=_to_int(values[MATCHMX_ROW_IDX["RANKING"]]),
+            recent_form=_to_float(values[MATCHMX_ROW_IDX["RECENT_FORM"]]),
+            surface_win_rate=_to_float(values[MATCHMX_ROW_IDX["SURFACE_WIN_RATE"]]),
+            hold_pct=_to_float(values[MATCHMX_ROW_IDX["HOLD_PCT"]]),
+            break_pct=_to_float(values[MATCHMX_ROW_IDX["BREAK_PCT"]]),
             h2h_wins=None,
             h2h_losses=None,
             has_stats=False,
@@ -200,8 +213,9 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
             reason_code_detail="normalized_from_matchmx",
         )
         feature.has_stats = _has_stats(feature)
-        if feature.player_canonical_name is None:
+        if not is_accepted_name(feature.player_canonical_name):
             feature.reason_code = "missing_player_name"
+            feature.player_canonical_name = None
         elif not feature.has_stats:
             feature.reason_code = "provider_returned_null_features"
         rows.append(feature)
@@ -237,7 +251,7 @@ def _parse_json_rows(source: str, text: str, as_of: str) -> list[PlayerFeature]:
 
     rows: list[PlayerFeature] = []
     for obj in _records_from_json(data):
-        player_name = _normalize_name(_pick(obj, "player_canonical_name", "player", "player_name", "name", "athlete"))
+        player_name = normalize_name(_pick(obj, "player_canonical_name", "player", "player_name", "name", "athlete"))
         feature = PlayerFeature(
             player_canonical_name=player_name,
             source=source,
@@ -266,7 +280,7 @@ def _parse_csv_rows(source: str, text: str, as_of: str) -> list[PlayerFeature]:
     reader = csv.DictReader(text.splitlines())
     rows: list[PlayerFeature] = []
     for obj in reader:
-        player_name = _normalize_name(_pick(obj, "player_canonical_name", "player", "player_name", "name"))
+        player_name = normalize_name(_pick(obj, "player_canonical_name", "player", "player_name", "name"))
         feature = PlayerFeature(
             player_canonical_name=player_name,
             source=source,
