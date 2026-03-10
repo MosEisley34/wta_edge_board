@@ -2039,9 +2039,7 @@ function isSofascoreTennisPlayer_(payload) {
   const sport = payload && payload.player && payload.player.sport;
   if (!sport || typeof sport !== 'object') return false;
   const slug = String(sport.slug || '').toLowerCase();
-  const name = String(sport.name || '').toLowerCase();
-  const sportId = Number(sport.id || 0);
-  return slug === 'tennis' || name === 'tennis' || sportId === 5;
+  return slug === 'tennis';
 }
 
 function fetchSofascorePlayerDetail_(playerId, config) {
