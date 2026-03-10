@@ -641,26 +641,30 @@ function testBuildTaH2hLookupDebugSample_reportsPairKeyComparisonAfterNormalizat
 }
 
 
+
+const TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID = 9472;
+const TEST_SOFASCORE_NON_TENNIS_PLAYER_ID = 7000;
+
 function testFetchSofascorePlayerEnrichment_tennisPlayerRequestsRecentAndStats_() {
   const originalFetch = fetchSofascoreJson_;
   const calledUrls = [];
   fetchSofascoreJson_ = function (url) {
     calledUrls.push(url);
-    if (url.indexOf('/player/9472') >= 0 && url.indexOf('/events/last/0') < 0 && url.indexOf('/statistics/') < 0) {
-      return { ok: true, payload: { player: { id: 9472, sport: { slug: 'tennis', id: 5 } } }, api_call_count: 1 };
+    if (url.indexOf('/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID)) >= 0 && url.indexOf('/events/last/0') < 0 && url.indexOf('/statistics/') < 0) {
+      return { ok: true, payload: { player: { id: TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID, sport: { slug: 'tennis', id: 5 } } }, api_call_count: 1 };
     }
-    if (url.indexOf('/player/9472/events/last/0') >= 0) return { ok: true, payload: { events: [] }, api_call_count: 1 };
-    if (url.indexOf('/player/9472/statistics/overall') >= 0) return { ok: true, payload: { statistics: {} }, api_call_count: 1 };
-    if (url.indexOf('/player/9472/statistics/last/52') >= 0) return { ok: true, payload: { statistics: {} }, api_call_count: 1 };
+    if (url.indexOf('/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID) + '/events/last/0') >= 0) return { ok: true, payload: { events: [] }, api_call_count: 1 };
+    if (url.indexOf('/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID) + '/statistics/overall') >= 0) return { ok: true, payload: { statistics: {} }, api_call_count: 1 };
+    if (url.indexOf('/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID) + '/statistics/last/52') >= 0) return { ok: true, payload: { statistics: {} }, api_call_count: 1 };
     return { ok: false, payload: null, api_call_count: 1 };
   };
 
   try {
-    const result = fetchSofascorePlayerEnrichment_(9472, {});
+    const result = fetchSofascorePlayerEnrichment_(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID, {});
     assertEquals_('sofascore_ok', result.reason_code);
     assertEquals_(4, calledUrls.length);
-    assertTrue_(calledUrls.some(function (u) { return u.indexOf('/player/9472/events/last/0') >= 0; }), 'recent endpoint should be requested for tennis');
-    assertTrue_(calledUrls.some(function (u) { return u.indexOf('/player/9472/statistics/overall') >= 0; }), 'overall statistics endpoint should be requested for tennis');
+    assertTrue_(calledUrls.some(function (u) { return u.indexOf('/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID) + '/events/last/0') >= 0; }), 'recent endpoint should be requested for tennis');
+    assertTrue_(calledUrls.some(function (u) { return u.indexOf('/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID) + '/statistics/overall') >= 0; }), 'overall statistics endpoint should be requested for tennis');
   } finally {
     fetchSofascoreJson_ = originalFetch;
   }
@@ -671,17 +675,17 @@ function testFetchSofascorePlayerEnrichment_nonTennisPlayerSkipsRecentAndStats_(
   const calledUrls = [];
   fetchSofascoreJson_ = function (url) {
     calledUrls.push(url);
-    if (url.indexOf('/player/7000') >= 0 && url.indexOf('/events/last/0') < 0 && url.indexOf('/statistics/') < 0) {
-      return { ok: true, payload: { player: { id: 7000, sport: { slug: 'football', id: 1 } } }, api_call_count: 1 };
+    if (url.indexOf('/player/' + String(TEST_SOFASCORE_NON_TENNIS_PLAYER_ID)) >= 0 && url.indexOf('/events/last/0') < 0 && url.indexOf('/statistics/') < 0) {
+      return { ok: true, payload: { player: { id: TEST_SOFASCORE_NON_TENNIS_PLAYER_ID, sport: { slug: 'football', id: 1 } } }, api_call_count: 1 };
     }
     return { ok: true, payload: {}, api_call_count: 1 };
   };
 
   try {
-    const result = fetchSofascorePlayerEnrichment_(7000, {});
+    const result = fetchSofascorePlayerEnrichment_(TEST_SOFASCORE_NON_TENNIS_PLAYER_ID, {});
     assertEquals_('source_entity_domain_mismatch', result.reason_code);
     assertEquals_(1, calledUrls.length);
-    assertTrue_(calledUrls[0].indexOf('/player/7000') >= 0, 'only player detail endpoint should be requested for non-tennis');
+    assertTrue_(calledUrls[0].indexOf('/player/' + String(TEST_SOFASCORE_NON_TENNIS_PLAYER_ID)) >= 0, 'only player detail endpoint should be requested for non-tennis');
   } finally {
     fetchSofascoreJson_ = originalFetch;
   }
@@ -698,8 +702,8 @@ function testFetchPlayerStatsFromSofascore_domainMismatchSetsFailureAndNoDownstr
       payload: {
         events: [
           {
-            homeTeam: { id: 7000, name: 'Non Tennis Player' },
-            awayTeam: { id: 9472, name: 'Iga Swiatek' },
+            homeTeam: { id: TEST_SOFASCORE_NON_TENNIS_PLAYER_ID, name: 'Non Tennis Player' },
+            awayTeam: { id: TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID, name: 'Iga Swiatek' },
           },
         ],
       },
@@ -708,15 +712,15 @@ function testFetchPlayerStatsFromSofascore_domainMismatchSetsFailureAndNoDownstr
   };
 
   fetchSofascorePlayerEnrichment_ = function (playerId) {
-    if (Number(playerId) === 7000) {
+    if (Number(playerId) === TEST_SOFASCORE_NON_TENNIS_PLAYER_ID) {
       return {
         reason_code: 'source_entity_domain_mismatch',
-        detail_payload: { player: { id: 7000, sport: { slug: 'football' } } },
+        detail_payload: { player: { id: TEST_SOFASCORE_NON_TENNIS_PLAYER_ID, sport: { slug: 'football' } } },
         recent_payload: null,
         payloads_with_endpoints: [],
-        detail_endpoint: 'https://api.sofascore.com/api/v1/player/7000',
+        detail_endpoint: 'https://api.sofascore.com/api/v1/player/' + String(TEST_SOFASCORE_NON_TENNIS_PLAYER_ID),
         recent_endpoint: null,
-        attempted_endpoints: ['https://api.sofascore.com/api/v1/player/7000'],
+        attempted_endpoints: ['https://api.sofascore.com/api/v1/player/' + String(TEST_SOFASCORE_NON_TENNIS_PLAYER_ID)],
         api_call_count: 1,
       };
     }
@@ -725,12 +729,12 @@ function testFetchPlayerStatsFromSofascore_domainMismatchSetsFailureAndNoDownstr
       detail_payload: { player: { ranking: 1, sport: { slug: 'tennis' } } },
       recent_payload: { events: [] },
       payloads_with_endpoints: [],
-      detail_endpoint: 'https://api.sofascore.com/api/v1/player/9472',
-      recent_endpoint: 'https://api.sofascore.com/api/v1/player/9472/events/last/0',
+      detail_endpoint: 'https://api.sofascore.com/api/v1/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID),
+      recent_endpoint: 'https://api.sofascore.com/api/v1/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID) + '/events/last/0',
       attempted_endpoints: [
-        'https://api.sofascore.com/api/v1/player/9472',
-        'https://api.sofascore.com/api/v1/player/9472/events/last/0',
-        'https://api.sofascore.com/api/v1/player/9472/statistics/overall',
+        'https://api.sofascore.com/api/v1/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID),
+        'https://api.sofascore.com/api/v1/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID) + '/events/last/0',
+        'https://api.sofascore.com/api/v1/player/' + String(TEST_SOFASCORE_VERIFIED_TENNIS_PLAYER_ID) + '/statistics/overall',
       ],
       api_call_count: 3,
     };

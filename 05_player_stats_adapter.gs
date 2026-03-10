@@ -1982,6 +1982,22 @@ function fetchSofascorePlayerEnrichment_(playerId, config) {
   const statsLast52Endpoint = { name: 'player_stats_last_52', url: 'https://api.sofascore.com/api/v1/player/' + pid + '/statistics/last/52', contract: { required_top_level_keys: ['statistics'], expected_payload_shape: { statistics: 'object_or_array' } } };
 
   const detail = fetchSofascoreJson_(detailEndpoint.url, config, detailEndpoint.contract);
+  if (!detail.ok) {
+    return {
+      detail_payload: detail.payload || null,
+      recent_payload: null,
+      stats_payloads: [],
+      payloads_with_endpoints: [
+        { endpoint: detailEndpoint.url, payload: detail.payload || null },
+      ],
+      detail_endpoint: detailEndpoint.url,
+      recent_endpoint: null,
+      api_call_count: Number(detail.api_call_count || 0),
+      attempted_endpoints: [detailEndpoint.url],
+      reason_code: String(detail.reason_code || 'sofascore_player_detail_unavailable'),
+    };
+  }
+
   if (detail.ok && !isSofascoreTennisPlayer_(detail.payload)) {
     return {
       detail_payload: detail.payload,
