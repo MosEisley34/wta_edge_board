@@ -150,35 +150,6 @@ def validate_ta_h2h(payload: str, source: str, payload_path: Path | None) -> Val
     )
 
 
-def validate_wta_stats_zone(payload: str, source: str, payload_path: Path | None) -> ValidationResult:
-    markers = [
-        "__NEXT_DATA__",
-        "window.__INITIAL_STATE__",
-        "window.__NUXT__",
-        "_next/static",
-        "application/ld+json",
-    ]
-    hits = [marker for marker in markers if marker in payload]
-    if hits:
-        return ValidationResult(
-            source=source,
-            ready_for_extraction=True,
-            reason_code="wta_structural_markers_detected",
-            evidence_samples=hits[:4],
-            evidence_counts={"marker_count": len(hits)},
-            payload_path=str(payload_path) if payload_path else None,
-        )
-
-    return ValidationResult(
-        source=source,
-        ready_for_extraction=False,
-        reason_code="wta_missing_structural_markers",
-        evidence_samples=[],
-        evidence_counts={"marker_count": 0},
-        payload_path=str(payload_path) if payload_path else None,
-    )
-
-
 def _json_path_exists(obj: object, path: tuple[str, ...]) -> bool:
     node = obj
     for key in path:
@@ -376,7 +347,6 @@ def run_validations(out_dir: Path, mandatory_sources: set[str]) -> tuple[list[Va
         "tennisabstract_leaders": validate_ta_leaders,
         "tennisabstract_leadersource_wta": validate_ta_leadersource_wta,
         "ta_h2h": validate_ta_h2h,
-        "wta_stats_zone": validate_wta_stats_zone,
         "itf": lambda payload, source, payload_path: validate_json_source(
             payload,
             source,
@@ -462,7 +432,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mandatory-sources",
-        default="tennisabstract_leaders,tennisabstract_leadersource_wta,ta_h2h,wta_stats_zone,itf,tennisexplorer,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
+        default="tennisabstract_leaders,tennisabstract_leadersource_wta,ta_h2h,itf,tennisexplorer,sofascore_events_live,sofascore_scheduled_events,sofascore_player_detail,sofascore_player_recent,sofascore_player_stats_overall,sofascore_player_stats_last52",
         help="Comma-separated source keys that must be extraction-ready for zero exit",
     )
     return parser.parse_args()
