@@ -78,6 +78,10 @@ def _coverage(items: list[dict[str, object]], key: str) -> tuple[int, float]:
     return non_null, (non_null / denom) if denom else 0.0
 
 
+def _is_alphabetic_full_name(value: str) -> bool:
+    return bool(re.match(r"^[A-Za-z][A-Za-z .'-]*\s[A-Za-z .'-]*[A-Za-z]$", value.strip()))
+
+
 def _normalize_records(rows: list[dict[str, object]]) -> dict[str, dict[str, object]]:
     grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
     for row in rows:
@@ -115,6 +119,7 @@ def main() -> int:
     parser.add_argument("--max-apps-coverage", type=float, default=0.20, help="Max normalized coverage threshold to consider Apps Script poor")
     parser.add_argument("--min-rows", type=int, default=5, help="Minimum parsed rows required")
     parser.add_argument("--min-unique-players", type=int, default=5, help="Minimum unique players required")
+    parser.add_argument("--name-check-rows", type=int, default=20, help="Rows to sample for alphabetic full-name regression check")
     args = parser.parse_args()
 
     path = Path(args.input)
@@ -154,7 +159,7 @@ def main() -> int:
                     "reason_code": "ta_matchmx_unusable_payload",
                     "path": str(path),
                     "matchmx_unusable_rows": unusable_payload_rows,
-        "parser_metrics": parser_metrics,
+                    "parser_metrics": parser_metrics,
                 }
             )
         )
@@ -187,6 +192,15 @@ def main() -> int:
     if row_break_count <= 0:
         threshold_errors.append("break_pct_non_null_coverage=0")
 
+    name_check_rows = max(1, int(args.name_check_rows))
+    bad_name_rows = []
+    for idx, row in enumerate(rows[:name_check_rows], start=1):
+        name = str(row.get("player_name") or "").strip()
+        if not _is_alphabetic_full_name(name):
+            bad_name_rows.append({"row": idx, "player_name": name})
+    if bad_name_rows:
+        threshold_errors.append("first_n_rows_non_alphabetic_full_name")
+
     summary = {
         "input": str(path),
         "total_rows": len(rows),
@@ -206,6 +220,11 @@ def main() -> int:
         "sample_normalized_records": sorted(normalized_rows, key=lambda r: str(r["player"]))[: max(0, args.sample_size)],
         "thresholds": thresholds,
         "threshold_errors": threshold_errors,
+        "name_check": {
+            "rows_checked": min(len(rows), name_check_rows),
+            "requested_rows": name_check_rows,
+            "bad_rows": bad_name_rows[:10],
+        },
         "first_invalid_rows": parser_metrics.get("first_invalid_rows", []),
     }
 
