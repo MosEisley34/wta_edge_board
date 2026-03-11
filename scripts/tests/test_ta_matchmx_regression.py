@@ -13,14 +13,33 @@ from extract_player_features import _parse_matchmx_rows  # noqa: E402
 from matchmx_parser import (  # noqa: E402
     MATCHMX_NEW_ROW_IDX,
     MATCHMX_OLD_ROW_IDX,
+    iter_matchmx_rows,
     parse_matchmx_player_row,
 )
-
 
 class TaMatchMxRegressionTest(unittest.TestCase):
     def setUp(self):
         self.fixture_path = ROOT / "scripts" / "fixtures" / "tennisabstract_leadersource_wta.body"
         self.payload = self.fixture_path.read_text(encoding="utf-8")
+
+    def _load_live_probe_payload(self) -> str:
+        probe_path = ROOT / "tmp" / "source_probe_latest" / "raw" / "tennisabstract_leadersource_wta.body"
+        if probe_path.exists():
+            return probe_path.read_text(encoding="utf-8")
+        return self.payload
+
+    def _collect_probe_rows(self, max_rows: int = 25):
+        rows = []
+        for parsed in iter_matchmx_rows(self._load_live_probe_payload()):
+            if not parsed.row_shape_valid:
+                continue
+            row, error = parse_matchmx_player_row(parsed.tokens)
+            if error or row is None:
+                continue
+            rows.append(row)
+            if len(rows) >= max_rows:
+                break
+        return rows
 
     def test_extract_player_features_fixture_has_players_coverage_and_name_quality(self):
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", self.payload, "2026-01-01T00:00:00+00:00")
@@ -161,6 +180,33 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self._assert_schema_metric_window(MATCHMX_OLD_ROW_IDX, old_tokens, expected_hold=74.2, expected_break=31.9)
         self._assert_schema_metric_window(MATCHMX_NEW_ROW_IDX, new_tokens, expected_hold=69.4, expected_break=28.6)
 
+    def test_probe_rows_have_plausible_hold_band_and_non_constant_break_values(self):
+        rows = self._collect_probe_rows(max_rows=25)
+        self.assertGreaterEqual(len(rows), 5)
+
+        hold_values = [row.hold_pct for row in rows if row.hold_pct is not None]
+        self.assertGreater(len(hold_values), 0)
+        self.assertTrue(all(35.0 <= value <= 95.0 for value in hold_values))
+
+        break_values = [row.break_pct for row in rows if row.break_pct is not None]
+        self.assertGreater(len(break_values), 0)
+        self.assertGreater(len(set(break_values)), 1)
+
+    def test_parse_matchmx_new_schema_seed_variant_keeps_hold_break_distinct_from_ranking_and_seed(self):
+        payload = 'matchmx[0] = ["2026-03-15","Indian Wells","Hard","Aryna Sabalenka","W","Mirra Andreeva","7-6(4) 6-4","12","9","0.64","0.59","71.3","34.8","63.1","45.5","61.9","69.0","50.4","39.2","1.09","52.7"];'
+        rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+        self.assertEqual(len(ok_rows), 1)
+
+        row = ok_rows[0]
+        self.assertEqual(row.ranking, 12.0)
+        self.assertEqual(row.hold_pct, 71.3)
+        self.assertEqual(row.break_pct, 34.8)
+        self.assertNotEqual(row.hold_pct, row.ranking)
+        self.assertNotEqual(row.break_pct, row.ranking)
+        self.assertNotEqual(row.hold_pct, 9.0)
+        self.assertNotEqual(row.break_pct, 9.0)
+
     def test_parse_matchmx_realistic_new_schema_row_keeps_hold_break_distinct_from_ranking(self):
         payload = 'matchmx[0] = ["2026-03-14","Indian Wells","Hard","Aryna Sabalenka","W","Mirra Andreeva","7-6(4) 6-4","12","0.64","0.59","71.3","34.8","63.1","45.5","61.9","69.0","50.4","39.2","1.09","52.7"];'
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
@@ -203,7 +249,6 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         summary = json.loads(result.stdout)
         self.assertEqual(summary["reason_code"], "ta_matchmx_unusable_payload")
         self.assertEqual(summary["matchmx_unusable_rows"], 1)
-
 
     def test_check_ta_parity_reason_code_prefers_parser_failure_when_unusable_payload_present(self):
         fixture = ROOT / "tmp" / "test_ta_parity_parser_and_threshold_failure.body"
@@ -272,7 +317,6 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertEqual(summary["threshold_errors"], [])
         self.assertEqual(summary["threshold_failure_keys"], [])
 
-
     def test_parse_matchmx_first_20_rows_resolve_to_canonical_names_with_row_diagnostics(self):
         canonical_names = [
             "Amanda Anisimova",
@@ -325,7 +369,6 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertGreater(sum(1 for row in ok_rows[:20] if row.ranking is not None), 0)
         self.assertGreater(sum(1 for row in ok_rows[:20] if row.hold_pct is not None), 0)
         self.assertGreater(sum(1 for row in ok_rows[:20] if row.break_pct is not None), 0)
-
 
 if __name__ == "__main__":
     unittest.main()

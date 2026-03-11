@@ -51,9 +51,34 @@ MATCHMX_NEW_ROW_IDX = {
     "TOTAL_POINTS_WON_PCT": 19,
 }
 
+MATCHMX_NEW_WITH_SEED_ROW_IDX = {
+    "DATE": 0,
+    "EVENT": 1,
+    "SURFACE": 2,
+    "OPPONENT": 3,
+    "RESULT_FLAG": 4,
+    "PLAYER_NAME": 5,
+    "SCORE": 6,
+    "RANKING": 7,
+    "SEED": 8,
+    "RECENT_FORM": 9,
+    "SURFACE_WIN_RATE": 10,
+    "HOLD_PCT": 11,
+    "BREAK_PCT": 12,
+    "BP_SAVED_PCT": 13,
+    "BP_CONV_PCT": 14,
+    "FIRST_SERVE_IN_PCT": 15,
+    "FIRST_SERVE_POINTS_WON_PCT": 16,
+    "SECOND_SERVE_POINTS_WON_PCT": 17,
+    "RETURN_POINTS_WON_PCT": 18,
+    "DOMINANCE_RATIO": 19,
+    "TOTAL_POINTS_WON_PCT": 20,
+}
+
 MATCHMX_SCHEMA_INDEX_MAPS = {
     "old": MATCHMX_OLD_ROW_IDX,
     "new": MATCHMX_NEW_ROW_IDX,
+    "new_with_seed": MATCHMX_NEW_WITH_SEED_ROW_IDX,
 }
 
 # Backwards-compatible alias used in existing callers/tests.
@@ -303,14 +328,37 @@ def _is_full_name_like(value: object) -> bool:
 
 
 def get_matchmx_row_idx(tokens: list[str]) -> dict[str, int]:
+    def _plausible_pct(value: float | None, low: float, high: float) -> bool:
+        return value is not None and low <= value <= high
+
+    def _schema_quality(idx_map: dict[str, int]) -> tuple[int, int]:
+        hold = _to_number(tokens, idx_map["HOLD_PCT"])
+        brk = _to_number(tokens, idx_map["BREAK_PCT"])
+        ranking = _to_number(tokens, idx_map["RANKING"])
+        quality = 0
+        if _plausible_pct(hold, 35.0, 95.0):
+            quality += 1
+        if _plausible_pct(brk, 5.0, 70.0):
+            quality += 1
+        if ranking is not None and 0.0 <= ranking <= 2000.0:
+            quality += 1
+        return quality, -max(idx_map.values())
+
     if len(tokens) > MATCHMX_OLD_ROW_IDX["PLAYER_NAME"] and _is_full_name_like(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]]):
         return MATCHMX_OLD_ROW_IDX
-    if (
-        len(tokens) > MATCHMX_NEW_ROW_IDX["PLAYER_NAME"]
-        and _is_result_flag(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]])
-        and _is_full_name_like(tokens[MATCHMX_NEW_ROW_IDX["PLAYER_NAME"]])
-    ):
-        return MATCHMX_NEW_ROW_IDX
+
+    if len(tokens) > MATCHMX_NEW_ROW_IDX["PLAYER_NAME"] and _is_result_flag(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]]):
+        new_candidates = []
+        if len(tokens) > max(MATCHMX_NEW_ROW_IDX.values()) and _is_full_name_like(tokens[MATCHMX_NEW_ROW_IDX["PLAYER_NAME"]]):
+            new_candidates.append(MATCHMX_NEW_ROW_IDX)
+        if (
+            len(tokens) > max(MATCHMX_NEW_WITH_SEED_ROW_IDX.values())
+            and _is_full_name_like(tokens[MATCHMX_NEW_WITH_SEED_ROW_IDX["PLAYER_NAME"]])
+        ):
+            new_candidates.append(MATCHMX_NEW_WITH_SEED_ROW_IDX)
+        if new_candidates:
+            return max(new_candidates, key=_schema_quality)
+
     return MATCHMX_OLD_ROW_IDX
 
 
