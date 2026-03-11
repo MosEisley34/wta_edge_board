@@ -1,0 +1,25 @@
+{
+  "events": [
+    {
+      "id": 2,
+      "sport": {"slug": "tennis", "name": "Tennis"},
+      "category": {"name": "WTA", "slug": "wta"},
+      "homeTeam": {
+        "id": 1001,
+        "team": {
+          "players": [
+            {"player": {"name": "Belinda Bencic"}},
+            {"player": {"displayName": "Lulu Sun"}}
+          ]
+        }
+      },
+      "awayTeam": {
+        "id": 1002,
+        "participants": [
+          {"fullName": "Donna Vekic"},
+          {"participantName": "Petra Martic"}
+        ]
+      }
+    }
+  ]
+}
