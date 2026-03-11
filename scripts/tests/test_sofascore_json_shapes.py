@@ -122,6 +122,38 @@ class SofascoreJsonShapeTests(unittest.TestCase):
 
         self.assertEqual(["Belinda Bencic", "Lulu Sun", "Donna Vekic", "Petra Martic"], [row.player_canonical_name for row in rows])
 
+    def test_events_payload_supports_event_level_home_away_name_fallbacks(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "sofascore_events_live.json"
+            path.write_text(
+                '{"events": ['
+                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, '
+                '"homeTeam": {}, "awayTeam": {}, '
+                '"homeTeamName": "Beatriz Haddad Maia", "awayParticipantName": "Elina Svitolina"}'
+                ']}' ,
+                encoding="utf-8",
+            )
+
+            rows = _extract_from_file(path, selected_sources=set())
+
+        self.assertEqual(["Beatriz Haddad Maia", "Elina Svitolina"], [row.player_canonical_name for row in rows])
+
+    def test_events_payload_prefers_field_fallback_order_over_slug(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "sofascore_events_live.json"
+            path.write_text(
+                '{"events": ['
+                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, '
+                '"homeTeam": {"fullName": "Qinwen Zheng", "slug": "qinwen-zheng-test"}, '
+                '"awayTeam": {"participantName": "Karolina Muchova", "slug": "karolina-muchova-test"}}'
+                ']}' ,
+                encoding="utf-8",
+            )
+
+            rows = _extract_from_file(path, selected_sources=set())
+
+        self.assertEqual(["Qinwen Zheng", "Karolina Muchova"], [row.player_canonical_name for row in rows])
+
     def test_events_payload_emits_diagnostics_only_row_when_participant_floor_unmet(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "sofascore_events_live.json"
