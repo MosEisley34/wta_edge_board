@@ -125,25 +125,43 @@ resolve_sofascore_probe_tennis_player_id() {
     return 0
   fi
   local configured_id="$SOFASCORE_PROBE_TENNIS_PLAYER_ID"
+  configured_id="$(trim "$configured_id")"
+
+  local validation_outcome="invalid"
+  local selected_source="none"
   local sampled_id=""
   sampled_id="$(sample_sofascore_tennis_player_id_from_schedule || true)"
   if [[ -n "$sampled_id" ]] && validate_sofascore_tennis_player_id "$sampled_id"; then
     RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$sampled_id"
+    validation_outcome="valid"
+    selected_source="resolver"
+    echo "INFO: Sofascore probe player selection id=$sampled_id source=$selected_source validation=$validation_outcome" >&2
     printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
     return 0
   fi
+
+  if [[ -n "$sampled_id" ]]; then
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="resolver_selected_player_failed_validation"
+  else
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="resolver_no_tennis_player_id_from_live_or_scheduled_events"
+  fi
+
   if [[ -n "$configured_id" ]] && validate_sofascore_tennis_player_id "$configured_id"; then
     RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="configured_tennis_player_id"
+    validation_outcome="valid"
+    selected_source="configured_fallback"
+    echo "INFO: Sofascore probe player selection id=$configured_id source=$selected_source validation=$validation_outcome" >&2
     printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
     return 0
   fi
+
   if [[ -n "$configured_id" ]]; then
-    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
-    echo "WARN: using unverified SOFASCORE_PROBE_TENNIS_PLAYER_ID=$configured_id after sampling failure" >&2
-    printf '%s' "$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID"
-    return 0
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="player_detail_domain_mismatch"
   fi
-  echo "ERROR: unable to resolve a tennis player id from Sofascore scheduled events and no SOFASCORE_PROBE_TENNIS_PLAYER_ID override is set" >&2
+
+  echo "INFO: Sofascore probe player selection id=${configured_id:-none} source=none validation=$validation_outcome" >&2
+  echo "ERROR: unable to resolve a verified tennis player id from Sofascore schedule and configured fallback did not validate" >&2
   return 1
 }
 record_allowlist_skip() {
