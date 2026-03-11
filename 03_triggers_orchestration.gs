@@ -191,6 +191,7 @@ function runEdgeBoard() {
   const startedAt = new Date();
   const scriptProps = PropertiesService.getScriptProperties();
   const lock = LockService.getScriptLock();
+  let lifecycleContext = null;
 
   if (!tryLock_(lock, 5000)) {
     const prevented = incrementDuplicatePreventedCount_();
@@ -237,6 +238,7 @@ function runEdgeBoard() {
     }
 
     const config = getConfig_();
+    const maxRuntimeMs = resolvePipelineMaxRuntimeMs_(config);
     if (!config.RUN_ENABLED) {
       appendLogRow_({
         row_type: 'summary',
@@ -318,10 +320,46 @@ function runEdgeBoard() {
       }),
     });
 
-    const initialOddsStage = oddsWindowDecision.should_fetch_odds
-      ? stageFetchOdds(runId, config, oddsWindowDecision.odds_fetch_window)
-      : buildSkippedOddsStage_(runId, oddsWindowDecision.decision_reason_code, oddsWindowDecision.decision_message);
-    const oddsStage = applyOpeningLagActionabilityGate_(runId, config, initialOddsStage);
+    const runKey = buildRunIdempotencyKey_(config, oddsWindowDecision, nowMs);
+    lifecycleContext = acquireRunLifecycleLease_(scriptProps, runId, runKey, startedAt, maxRuntimeMs);
+    if (!lifecycleContext.acquired) {
+      const prevented = incrementDuplicatePreventedCount_();
+      appendLogRow_({
+        row_type: 'summary',
+        run_id: runId,
+        stage: 'runEdgeBoard',
+        started_at: startedAt,
+        ended_at: new Date(),
+        status: 'skipped',
+        reason_code: 'run_idempotency_overlap_skip',
+        message: 'Skipped due to active run lease for same idempotency key.',
+        duplicate_suppressed: prevented,
+      });
+      return;
+    }
+    appendRunLifecycleStatus_(runId, lifecycleContext.wasResumed ? 'resumed' : 'started', {
+      run_key: runKey,
+      run_key_hash: lifecycleContext.runKeyHash,
+      lease_status: lifecycleContext.watchdogRecovered ? 'watchdog_recovered' : 'active',
+    });
+    if (lifecycleContext.watchdogRecovered) {
+      appendRunLifecycleStatus_(runId, 'watchdog_recovered', {
+        run_key: runKey,
+        run_key_hash: lifecycleContext.runKeyHash,
+        recovered_from_run_id: lifecycleContext.recoveredFromRunId,
+      });
+    }
+
+    const initialOddsStage = runCheckpointedStage_(lifecycleContext, 'odds_fetch', function () {
+      assertPipelineRuntimeBudget_(lifecycleContext, runId);
+      return oddsWindowDecision.should_fetch_odds
+        ? stageFetchOdds(runId, config, oddsWindowDecision.odds_fetch_window)
+        : buildSkippedOddsStage_(runId, oddsWindowDecision.decision_reason_code, oddsWindowDecision.decision_message);
+    });
+    const oddsStage = runCheckpointedStage_(lifecycleContext, 'odds_gate', function () {
+      assertPipelineRuntimeBudget_(lifecycleContext, runId);
+      return applyOpeningLagActionabilityGate_(runId, config, initialOddsStage);
+    });
     appendStageLog_(runId, oddsStage.summary);
 
     const selectedOddsSource = (oddsWindowDecision.selected_source === 'fallback_static_window' || oddsWindowDecision.selected_source === 'bootstrap_static_window')
@@ -336,42 +374,57 @@ function runEdgeBoard() {
       message: 'Odds source selected for this run: ' + selectedOddsSource,
     });
 
-    const scheduleStage = stageFetchSchedule(runId, config, oddsStage.events, {
-      bootstrap_empty_cycle_mitigation_active: !!oddsWindowDecision.bootstrap_empty_cycle_mitigation_active,
+    const scheduleStage = runCheckpointedStage_(lifecycleContext, 'schedule', function () {
+      assertPipelineRuntimeBudget_(lifecycleContext, runId);
+      return stageFetchSchedule(runId, config, oddsStage.events, {
+        bootstrap_empty_cycle_mitigation_active: !!oddsWindowDecision.bootstrap_empty_cycle_mitigation_active,
+      });
     });
     appendStageLog_(runId, scheduleStage.summary);
 
-    const matchStage = stageMatchEvents(runId, config, oddsStage.events, scheduleStage.events);
+    const matchStage = runCheckpointedStage_(lifecycleContext, 'match', function () {
+      assertPipelineRuntimeBudget_(lifecycleContext, runId);
+      return stageMatchEvents(runId, config, oddsStage.events, scheduleStage.events);
+    });
     appendStageLog_(runId, matchStage.summary);
 
     const playerStatsSkipReason = derivePlayerStatsSkipReason_(oddsStage, matchStage);
-    const playerStatsStage = playerStatsSkipReason
-      ? buildSkippedPlayerStatsStage_(runId, playerStatsSkipReason)
-      : stageFetchPlayerStats(runId, config, oddsStage.events, matchStage.rows);
+    const playerStatsStage = runCheckpointedStage_(lifecycleContext, 'player_stats', function () {
+      assertPipelineRuntimeBudget_(lifecycleContext, runId);
+      return playerStatsSkipReason
+        ? buildSkippedPlayerStatsStage_(runId, playerStatsSkipReason)
+        : stageFetchPlayerStats(runId, config, oddsStage.events, matchStage.rows);
+    });
     appendStageLog_(runId, playerStatsStage.summary);
 
     const signalUpstreamGateReason = deriveSignalUpstreamGateReason_(oddsStage, matchStage, playerStatsStage);
-    const signalStage = stageGenerateSignals(
-      runId,
-      config,
-      oddsStage.events,
-      matchStage.rows,
-      playerStatsStage.byOddsEventId,
-      {
-        upstream_gate_reason: signalUpstreamGateReason,
-      }
-    );
+    const signalStage = runCheckpointedStage_(lifecycleContext, 'signals', function () {
+      assertPipelineRuntimeBudget_(lifecycleContext, runId);
+      return stageGenerateSignals(
+        runId,
+        config,
+        oddsStage.events,
+        matchStage.rows,
+        playerStatsStage.byOddsEventId,
+        {
+          upstream_gate_reason: signalUpstreamGateReason,
+        }
+      );
+    });
     appendStageLog_(runId, signalStage.summary);
 
-    const persistStage = stagePersist(runId, {
-      odds: oddsStage.rows,
-      schedule: scheduleStage.rows,
-      playerStats: playerStatsStage.rows,
-      matchMap: matchStage.rows,
-      matchMapMatchedCount: matchStage.matchedCount,
-      matchMapRejectedCount: matchStage.rejectedCount,
-      matchMapDiagnosticRecordsWritten: matchStage.diagnosticRecordsWritten,
-      signals: signalStage.rows,
+    const persistStage = runCheckpointedStage_(lifecycleContext, 'persist', function () {
+      assertPipelineRuntimeBudget_(lifecycleContext, runId);
+      return stagePersist(runId, {
+        odds: oddsStage.rows,
+        schedule: scheduleStage.rows,
+        playerStats: playerStatsStage.rows,
+        matchMap: matchStage.rows,
+        matchMapMatchedCount: matchStage.matchedCount,
+        matchMapRejectedCount: matchStage.rejectedCount,
+        matchMapDiagnosticRecordsWritten: matchStage.diagnosticRecordsWritten,
+        signals: signalStage.rows,
+      });
     });
     appendStageLog_(runId, persistStage.summary);
 
@@ -639,8 +692,13 @@ function runEdgeBoard() {
       cooldown_suppressed: signalStage.cooldownSuppressedCount,
       duplicate_suppressed: signalStage.duplicateSuppressedCount,
     });
+    markRunLifecycleCompleted_(lifecycleContext, runId);
   } catch (error) {
     const errorMessage = String(error && error.message ? error.message : error);
+    appendRunLifecycleStatus_(runId, 'aborted', {
+      reason_code: error && error.reason_code ? error.reason_code : 'run_exception',
+      message: errorMessage,
+    });
     appendLogRow_({
       row_type: 'summary',
       run_id: runId,
@@ -655,8 +713,190 @@ function runEdgeBoard() {
     });
     throw error;
   } finally {
+    releaseRunLifecycleLease_(scriptProps, lifecycleContext, runId);
     lock.releaseLock();
   }
+}
+
+function resolvePipelineMaxRuntimeMs_(config) {
+  const configured = Number(config && config.PIPELINE_MAX_RUNTIME_MS || 0);
+  if (configured > 0) return configured;
+  return 330000;
+}
+
+function buildRunIdempotencyKey_(config, oddsWindowDecision, nowMs) {
+  const anchorDate = new Date(Number(nowMs || Date.now()));
+  const dateWindow = [
+    formatLocalIso_(anchorDate).slice(0, 10),
+    oddsWindowDecision && oddsWindowDecision.refresh_window_start_ms ? String(oddsWindowDecision.refresh_window_start_ms) : '',
+    oddsWindowDecision && oddsWindowDecision.refresh_window_end_ms ? String(oddsWindowDecision.refresh_window_end_ms) : '',
+  ].join('|');
+  const tournamentWindow = [
+    'wta125:' + (config && config.ALLOW_WTA_125 ? '1' : '0'),
+    'wta250:' + (config && config.ALLOW_WTA_250 ? '1' : '0'),
+    'lookahead:' + String(config && config.LOOKAHEAD_HOURS || ''),
+  ].join('|');
+  const mode = [
+    String(config && config.MODEL_MODE || ''),
+    String(oddsWindowDecision && oddsWindowDecision.current_refresh_mode || ''),
+    String(oddsWindowDecision && oddsWindowDecision.decision_reason_code || ''),
+  ].join('|');
+  return [dateWindow, tournamentWindow, mode].join('::');
+}
+
+function acquireRunLifecycleLease_(scriptProps, runId, runKey, startedAt, maxRuntimeMs) {
+  const runKeyHash = String(stringHashCode_(runKey));
+  const leasePropKey = 'RUN_ACTIVE_LEASE_' + runKeyHash;
+  const checkpointStateKey = 'RUN_CHECKPOINT_' + runKeyHash;
+  const nowMs = Date.now();
+  const existing = safeJsonParse_(scriptProps.getProperty(leasePropKey) || '{}') || {};
+  const leaseAgeMs = Number(existing.heartbeat_ms || existing.started_at_ms || 0) > 0
+    ? (nowMs - Number(existing.heartbeat_ms || existing.started_at_ms || 0))
+    : Number.MAX_SAFE_INTEGER;
+  const isStale = !!(existing.run_id && leaseAgeMs > Math.max(30000, Number(maxRuntimeMs || 0)));
+  if (existing.run_id && !isStale) {
+    return { acquired: false, runKeyHash: runKeyHash };
+  }
+  const checkpoint = getStateJson_(checkpointStateKey) || {};
+  const wasResumed = checkpoint && checkpoint.last_stage && checkpoint.status !== 'completed';
+  const leasePayload = {
+    run_id: runId,
+    run_key_hash: runKeyHash,
+    started_at_ms: startedAt.getTime(),
+    heartbeat_ms: nowMs,
+    max_runtime_ms: Number(maxRuntimeMs || 0),
+    status: 'active',
+  };
+  scriptProps.setProperty(leasePropKey, JSON.stringify(leasePayload));
+  return {
+    acquired: true,
+    runId: runId,
+    wasResumed: !!wasResumed,
+    checkpoint: checkpoint,
+    checkpointStateKey: checkpointStateKey,
+    leasePropKey: leasePropKey,
+    runKeyHash: runKeyHash,
+    maxRuntimeMs: Number(maxRuntimeMs || 0),
+    startedAtMs: startedAt.getTime(),
+    watchdogRecovered: isStale,
+    recoveredFromRunId: String(existing.run_id || ''),
+  };
+}
+
+function runCheckpointedStage_(lifecycleContext, stageName, computeFn) {
+  if (!lifecycleContext) return computeFn();
+  const checkpoint = lifecycleContext.checkpoint || {};
+  const stageOutputs = checkpoint.stage_outputs || {};
+  const stageOrder = {
+    odds_fetch: 1,
+    odds_gate: 2,
+    schedule: 3,
+    match: 4,
+    player_stats: 5,
+    signals: 6,
+    persist: 7,
+  };
+  const checkpointStageOrder = Number(stageOrder[checkpoint.last_stage] || 0);
+  const currentStageOrder = Number(stageOrder[stageName] || 0);
+  if (checkpointStageOrder >= currentStageOrder && stageOutputs[stageName]) {
+    refreshRunHeartbeat_(lifecycleContext, stageName);
+    return hydrateCheckpointedStageOutput_(stageName, stageOutputs[stageName]);
+  }
+  const output = computeFn();
+  const nextCheckpoint = {
+    run_id: lifecycleContext.runId,
+    run_key_hash: lifecycleContext.runKeyHash,
+    last_stage: stageName,
+    updated_at: formatLocalIso_(new Date()),
+    stage_outputs: Object.assign({}, stageOutputs, { [stageName]: output }),
+  };
+  lifecycleContext.checkpoint = nextCheckpoint;
+  setStateValue_(lifecycleContext.checkpointStateKey, JSON.stringify(nextCheckpoint));
+  refreshRunHeartbeat_(lifecycleContext, stageName);
+  return output;
+}
+
+function hydrateCheckpointedStageOutput_(stageName, output) {
+  if (!output) return output;
+  if (stageName !== 'odds_fetch' && stageName !== 'odds_gate') return output;
+  const hydrated = JSON.parse(JSON.stringify(output));
+  const events = Array.isArray(hydrated.events) ? hydrated.events : [];
+  events.forEach(function (event) {
+    if (!event || typeof event !== 'object') return;
+    if (event.provider_odds_updated_time && typeof event.provider_odds_updated_time === 'string') {
+      event.provider_odds_updated_time = new Date(event.provider_odds_updated_time);
+    }
+    if (event.commence_time && typeof event.commence_time === 'string') {
+      event.commence_time = new Date(event.commence_time);
+    }
+    if (event.open_timestamp && typeof event.open_timestamp === 'string') {
+      event.open_timestamp = new Date(event.open_timestamp);
+    }
+    if (event.opening_lag_evaluated_at && typeof event.opening_lag_evaluated_at === 'string') {
+      event.opening_lag_evaluated_at = new Date(event.opening_lag_evaluated_at);
+    }
+  });
+  hydrated.events = events;
+  return hydrated;
+}
+
+function refreshRunHeartbeat_(lifecycleContext, stageName) {
+  if (!lifecycleContext) return;
+  const payload = {
+    run_id: lifecycleContext.runId,
+    run_key_hash: lifecycleContext.runKeyHash,
+    started_at_ms: lifecycleContext.startedAtMs,
+    heartbeat_ms: Date.now(),
+    max_runtime_ms: lifecycleContext.maxRuntimeMs,
+    stage: stageName || '',
+    status: 'active',
+  };
+  PropertiesService.getScriptProperties().setProperty(lifecycleContext.leasePropKey, JSON.stringify(payload));
+}
+
+function assertPipelineRuntimeBudget_(lifecycleContext, runId) {
+  if (!lifecycleContext) return;
+  const elapsed = Date.now() - Number(lifecycleContext.startedAtMs || 0);
+  if (elapsed <= Number(lifecycleContext.maxRuntimeMs || 0)) return;
+  const error = new Error('Pipeline max runtime exceeded; aborting run.');
+  error.reason_code = 'run_max_runtime_exceeded';
+  appendRunLifecycleStatus_(runId, 'aborted', {
+    reason_code: error.reason_code,
+    elapsed_ms: elapsed,
+    max_runtime_ms: lifecycleContext.maxRuntimeMs,
+  });
+  throw error;
+}
+
+function markRunLifecycleCompleted_(lifecycleContext, runId) {
+  if (!lifecycleContext) return;
+  appendRunLifecycleStatus_(runId, 'completed', {
+    run_key_hash: lifecycleContext.runKeyHash,
+  });
+  setStateValue_(lifecycleContext.checkpointStateKey, JSON.stringify({
+    run_id: runId,
+    run_key_hash: lifecycleContext.runKeyHash,
+    completed_at: formatLocalIso_(new Date()),
+    status: 'completed',
+  }));
+}
+
+function releaseRunLifecycleLease_(scriptProps, lifecycleContext, runId) {
+  if (!lifecycleContext || !lifecycleContext.leasePropKey) return;
+  const lease = safeJsonParse_(scriptProps.getProperty(lifecycleContext.leasePropKey) || '{}') || {};
+  if (String(lease.run_id || '') !== String(runId || '')) return;
+  scriptProps.deleteProperty(lifecycleContext.leasePropKey);
+}
+
+function appendRunLifecycleStatus_(runId, status, payload) {
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: runId,
+    stage: 'run_lifecycle',
+    status: status,
+    reason_code: status,
+    message: JSON.stringify(Object.assign({ status: status }, payload || {})),
+  });
 }
 
 
