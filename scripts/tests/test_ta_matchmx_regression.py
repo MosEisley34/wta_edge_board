@@ -347,6 +347,26 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         idx = get_matchmx_row_idx(rows[0], sample_rows=rows)
         self.assertEqual(idx, MATCHMX_NEW_ROW_IDX)
 
+    def test_get_matchmx_row_idx_rejects_new_with_seed_when_break_token_is_name_like(self):
+        tokens = [
+            "2026-04-01", "Madrid", "Clay", "Opponent", "W", "Iga Swiatek", "6-2 6-3", "3", "9",
+            "0.90", "0.82", "72.4", "Aryna Sabalenka", "64.2", "49.8", "61.7", "70.1", "52.5", "41.3", "1.14", "53.9",
+        ]
+
+        idx = get_matchmx_row_idx(tokens)
+        self.assertEqual(idx, MATCHMX_NEW_ROW_IDX)
+
+    def test_get_matchmx_row_idx_uses_live_45_shape_only_with_plausible_numeric_hold_break(self):
+        tokens = [
+            "2026-04-01", "Madrid", "Clay", "Opponent Q", "Main Draw", "W", "Iga Swiatek", "R16", "64", "Outdoor",
+            "3", "98", "M555", "POL", "WTA1000", "WTA", "2026", "1", "", "23.5", "R", "3", "2", "63",
+            "6-2 6-4", "2", "0.88", "0.81", "71.4", "39.6", "64.2", "48.5", "62.1", "69.3", "51.0", "41.4",
+            "1.18", "54.1", "10", "10", "132", "2-0", "-120", "-135", "phase-shifted live row",
+        ]
+
+        idx = get_matchmx_row_idx(tokens)
+        self.assertEqual(idx, MATCHMX_LONG_LIVE_ROW_IDX)
+
     def test_realistic_new_schema_rows_keep_hold_non_null_and_break_non_constant_and_distinct_from_ranking(self):
         payload = '\n'.join([
             'matchmx[0] = ["2026-03-20","Miami","Hard","Opponent A","W","Iga Swiatek","6-2 6-3","2","0.88","0.82","73.6","41.1","66.5","51.2","62.1","70.3","53.4","43.0","1.20","54.8"];',

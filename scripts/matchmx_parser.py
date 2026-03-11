@@ -445,6 +445,13 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
     def _plausible_ratio_or_pct(value: float | None) -> bool:
         return value is not None and (0.0 <= value <= 1.0 or 0.0 <= value <= 100.0)
 
+    def _is_numeric_token(value: object) -> bool:
+        try:
+            float(str(value).strip())
+            return True
+        except (TypeError, ValueError):
+            return False
+
     def _schema_quality(idx_map: dict[str, int], rows: list[list[str]]) -> tuple[int, int, int]:
         quality = 0
         valid_rows = 0
@@ -539,6 +546,49 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
 
         return True
 
+    def _matches_live_45_shape() -> bool:
+        idx_map = MATCHMX_LONG_LIVE_ROW_IDX
+        required = ("TOURNAMENT_PHASE", "RESULT_FLAG", "PLAYER_NAME", "ROUND", "SCORE", "RANKING", "HOLD_PCT", "BREAK_PCT")
+        if any(idx_map[key] >= len(tokens) for key in required):
+            return False
+        if len(tokens) != 45:
+            return False
+
+        phase = str(tokens[idx_map["TOURNAMENT_PHASE"]]).strip()
+        if not phase or _is_result_flag(phase) or _is_score_like(phase):
+            return False
+        if not _is_result_flag(tokens[idx_map["RESULT_FLAG"]]):
+            return False
+        if not _is_full_name_like(tokens[idx_map["PLAYER_NAME"]]):
+            return False
+        if not str(tokens[idx_map["ROUND"]]).strip():
+            return False
+        if not _is_score_like(tokens[idx_map["SCORE"]]):
+            return False
+
+        ranking = _to_number(tokens, idx_map["RANKING"])
+        hold = _to_number(tokens, idx_map["HOLD_PCT"])
+        brk = _to_number(tokens, idx_map["BREAK_PCT"])
+        if ranking is None or not (0.0 <= ranking <= 2000.0):
+            return False
+        if not _plausible_pct(hold, 35.0, 95.0):
+            return False
+        if not _plausible_pct(brk, 5.0, 70.0):
+            return False
+
+        # Guard against mapping into text/identity columns.
+        hold_token = str(tokens[idx_map["HOLD_PCT"]]).strip()
+        break_token = str(tokens[idx_map["BREAK_PCT"]]).strip()
+        if not _is_numeric_token(hold_token) or not _is_numeric_token(break_token):
+            return False
+        if _is_full_name_like(hold_token) or _is_full_name_like(break_token):
+            return False
+
+        return True
+
+    if _matches_live_45_shape():
+        return MATCHMX_LONG_LIVE_ROW_IDX
+
     if len(tokens) >= 45 and _matches_long_variant(MATCHMX_LONG_LIVE_ROW_IDX, require_phase=True):
         return MATCHMX_LONG_LIVE_ROW_IDX
 
@@ -563,7 +613,17 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
             len(tokens) > max(MATCHMX_NEW_WITH_SEED_ROW_IDX.values())
             and _is_full_name_like(tokens[MATCHMX_NEW_WITH_SEED_ROW_IDX["PLAYER_NAME"]])
         ):
-            new_candidates.append(MATCHMX_NEW_WITH_SEED_ROW_IDX)
+            hold_token = str(tokens[MATCHMX_NEW_WITH_SEED_ROW_IDX["HOLD_PCT"]]).strip()
+            break_token = str(tokens[MATCHMX_NEW_WITH_SEED_ROW_IDX["BREAK_PCT"]]).strip()
+            hold_numeric = _to_number(tokens, MATCHMX_NEW_WITH_SEED_ROW_IDX["HOLD_PCT"]) is not None
+            break_numeric = _to_number(tokens, MATCHMX_NEW_WITH_SEED_ROW_IDX["BREAK_PCT"]) is not None
+            if (
+                hold_numeric
+                and break_numeric
+                and not _is_full_name_like(hold_token)
+                and not _is_full_name_like(break_token)
+            ):
+                new_candidates.append(MATCHMX_NEW_WITH_SEED_ROW_IDX)
         if new_candidates:
             scored_rows = [tokens]
             if sample_rows:
