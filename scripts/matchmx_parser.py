@@ -35,6 +35,7 @@ DEFAULT_SHORT_NAME_WHITELIST = set()
 
 ROW_START_REGEX = re.compile(r"matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[")
 NAME_LIKE_REGEX = re.compile(r"^[A-Za-z][A-Za-z .'-]*[A-Za-z]$")
+PLAYER_NAME_DRIFT_SENTINELS = {"i", "p"}
 
 
 @dataclass
@@ -308,6 +309,22 @@ def _to_number(tokens: list[str], idx: int) -> float | None:
     return value
 
 
+def _select_player_name(tokens: list[str]) -> str | None:
+    candidate_indices = [MATCHMX_ROW_IDX["PLAYER_NAME"], MATCHMX_ROW_IDX["OPPONENT"]]
+    fallback: str | None = None
+    for idx in candidate_indices:
+        if idx >= len(tokens):
+            continue
+        candidate = normalize_name(tokens[idx])
+        if not candidate:
+            continue
+        if fallback is None:
+            fallback = candidate
+        if is_usable_canonical_name(candidate):
+            return candidate
+    return fallback
+
+
 def parse_matchmx_player_row(tokens: list[str]) -> tuple[MatchMxPlayerRow | None, str | None]:
     if not has_consistent_metric_index_mapping():
         return None, "metric_index_mapping_invalid"
@@ -317,10 +334,12 @@ def parse_matchmx_player_row(tokens: list[str]) -> tuple[MatchMxPlayerRow | None
         return None, "row_indexes_out_of_bounds"
 
     score = str(tokens[MATCHMX_ROW_IDX["SCORE"]]).strip()
-    player_name = normalize_name(tokens[MATCHMX_ROW_IDX["PLAYER_NAME"]]) or ""
+    player_name = _select_player_name(tokens) or ""
     if not player_name or not score:
         return None, "required_fields_missing"
     if not is_usable_canonical_name(player_name):
+        if player_name.lower() in PLAYER_NAME_DRIFT_SENTINELS:
+            return None, "player_name_mapping_drift"
         return None, "canonical_name_rejected"
     if not has_any_key_metrics(tokens):
         return None, "all_key_metrics_null"

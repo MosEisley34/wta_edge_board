@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 import unittest
@@ -88,6 +89,56 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         summary = json.loads(result.stdout)
         self.assertEqual(summary["reason_code"], "ta_matchmx_unusable_payload")
         self.assertEqual(summary["matchmx_unusable_rows"], 1)
+
+
+    def test_parse_matchmx_first_20_rows_resolve_to_canonical_names_with_row_diagnostics(self):
+        canonical_names = [
+            "Amanda Anisimova",
+            "Elina Svitolina",
+            "Iga Swiatek",
+            "Coco Gauff",
+            "Jessica Pegula",
+            "Aryna Sabalenka",
+            "Elena Rybakina",
+            "Ons Jabeur",
+            "Marketa Vondrousova",
+            "Daria Kasatkina",
+            "Madison Keys",
+            "Caroline Garcia",
+            "Maria Sakkari",
+            "Jelena Ostapenko",
+            "Qinwen Zheng",
+            "Paula Badosa",
+            "Beatriz Haddad Maia",
+            "Donna Vekic",
+            "Marta Kostyuk",
+            "Anna Kalinskaya",
+        ]
+        rows_payload = []
+        for idx, canonical_name in enumerate(canonical_names):
+            sentinel = "I" if idx % 2 == 0 else "P"
+            rows_payload.append(
+                'matchmx[{idx}] = ["2026-02-{day:02d}","Doha","Hard","{sentinel}","{canonical_name}","6-4 6-4","{rank}","0.81","0.75","65","38","60","50","58","67","49","41","1.12","54"];'.format(
+                    idx=idx,
+                    day=idx + 1,
+                    sentinel=sentinel,
+                    canonical_name=canonical_name,
+                    rank=idx + 1,
+                )
+            )
+
+        payload = "\n".join(rows_payload)
+        rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+        self.assertEqual(len(ok_rows), 20)
+
+        name_pattern = re.compile(r"^[A-Za-z][A-Za-z .'-]*\s[A-Za-z .'-]*[A-Za-z]$")
+        for row_idx, row in enumerate(ok_rows[:20]):
+            name = (row.player_canonical_name or "").strip()
+            diagnostic = f"row_idx={row_idx} name={name!r}"
+            self.assertGreaterEqual(len(name), 3, diagnostic)
+            self.assertRegex(name, name_pattern, diagnostic)
+            self.assertEqual(name, canonical_names[row_idx], diagnostic)
 
 
 if __name__ == "__main__":
