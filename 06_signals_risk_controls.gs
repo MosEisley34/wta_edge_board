@@ -486,6 +486,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     edge_below_threshold: 0,
     too_close_to_start_skip: 0,
     stale_odds_skip: 0,
+    line_drift_exceeded: 0,
+    edge_decay_exceeded: 0,
+    liquidity_too_low: 0,
     notify_http_failed: 0,
     notify_missing_config: 0,
     fallback_only: 0,
@@ -636,6 +639,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     const edgeValue = roundNumber_(modelProbability - impliedProbability, 4);
     const edgeTierAndStake = classifyEdgeAndStake_(edgeValue, config);
     const signalHash = buildSignalHash_(event.event_id, event.market, event.outcome, modelVersion);
+    const preActionGate = evaluatePreActionRiskGuard_(event, config, nowMs);
 
     if (edgeTierAndStake.edge_tier === 'NONE') {
       rows.push(buildSignalRow_(runId, config, event, match, {
@@ -653,6 +657,37 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         scored: true,
         stats_confidence: resolvedStatsConfidence,
       });
+      return;
+    }
+
+    if (!preActionGate.is_tradable) {
+      captureDecision_(event, match, preActionGate.reason_code, {
+        scored: true,
+        model_probability: modelProbability,
+        market_implied_probability: impliedProbability,
+        edge_value: edgeValue,
+        edge_tier: edgeTierAndStake.edge_tier,
+        stake_units: edgeTierAndStake.stake_units,
+        stats_confidence: resolvedStatsConfidence,
+        pre_action_guard: preActionGate,
+      });
+
+      rows.push(buildSignalRow_(runId, config, event, match, {
+        notification_outcome: preActionGate.reason_code,
+        model_probability: modelProbability,
+        market_implied_probability: impliedProbability,
+        edge_value: edgeValue,
+        edge_tier: 'NONE',
+        stake_units: 0,
+        signal_hash: signalHash,
+        model_version: modelVersion,
+        stats_confidence: resolvedStatsConfidence,
+        signal_delivery_mode: 'risk_guard_non_tradable',
+        notification_metadata: {
+          non_tradable: true,
+          pre_action_guard: preActionGate,
+        },
+      }));
       return;
     }
 
@@ -856,6 +891,131 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     cooldownSuppressedCount: reasonCounts.cooldown_suppressed || 0,
     duplicateSuppressedCount: reasonCounts.duplicate_suppressed || 0,
   };
+}
+
+function evaluatePreActionRiskGuard_(event, config, nowMs) {
+  const thresholds = {
+    max_current_vs_open_line_delta: Number(config.MAX_CURRENT_VS_OPEN_LINE_DELTA || 0),
+    max_minutes_since_open_snapshot: Number(config.MAX_MINUTES_SINCE_OPEN_SNAPSHOT || 0),
+    min_book_count: Number(config.MIN_BOOK_COUNT || 0),
+    min_liquidity: Number(config.MIN_LIQUIDITY || 0),
+  };
+
+  const currentVsOpenLineDelta = resolveCurrentVsOpenLineDelta_(event);
+  const minutesSinceOpenSnapshot = resolveMinutesSinceOpenSnapshot_(event, nowMs);
+  const bookCount = resolveBookCount_(event);
+  const liquidity = resolveLiquidity_(event);
+
+  const checks = [
+    {
+      reason_code: 'line_drift_exceeded',
+      threshold_key: 'max_current_vs_open_line_delta',
+      observed: currentVsOpenLineDelta,
+      threshold: thresholds.max_current_vs_open_line_delta,
+      compare: function (observed, threshold) { return observed > threshold; },
+    },
+    {
+      reason_code: 'edge_decay_exceeded',
+      threshold_key: 'max_minutes_since_open_snapshot',
+      observed: minutesSinceOpenSnapshot,
+      threshold: thresholds.max_minutes_since_open_snapshot,
+      compare: function (observed, threshold) { return observed > threshold; },
+    },
+    {
+      reason_code: 'liquidity_too_low',
+      threshold_key: 'min_book_count',
+      observed: bookCount,
+      threshold: thresholds.min_book_count,
+      compare: function (observed, threshold) { return observed < threshold; },
+    },
+    {
+      reason_code: 'liquidity_too_low',
+      threshold_key: 'min_liquidity',
+      observed: liquidity,
+      threshold: thresholds.min_liquidity,
+      compare: function (observed, threshold) { return observed < threshold; },
+    },
+  ];
+
+  for (let i = 0; i < checks.length; i += 1) {
+    const check = checks[i];
+    const thresholdEnabled = Number.isFinite(check.threshold) && check.threshold > 0;
+    const observedAvailable = Number.isFinite(check.observed);
+    if (!thresholdEnabled || !observedAvailable) continue;
+    if (check.compare(check.observed, check.threshold)) {
+      return {
+        is_tradable: false,
+        reason_code: check.reason_code,
+        threshold_key: check.threshold_key,
+        threshold: check.threshold,
+        observed: check.observed,
+        metrics: {
+          current_vs_open_line_delta: Number.isFinite(currentVsOpenLineDelta) ? roundNumber_(currentVsOpenLineDelta, 4) : null,
+          minutes_since_open_snapshot: Number.isFinite(minutesSinceOpenSnapshot) ? roundNumber_(minutesSinceOpenSnapshot, 2) : null,
+          book_count: Number.isFinite(bookCount) ? bookCount : null,
+          liquidity: Number.isFinite(liquidity) ? liquidity : null,
+        },
+      };
+    }
+  }
+
+  return {
+    is_tradable: true,
+    reason_code: '',
+  };
+}
+
+function resolveCurrentVsOpenLineDelta_(event) {
+  const directDelta = Number(event && event.current_vs_open_line_delta);
+  if (Number.isFinite(directDelta)) return Math.abs(directDelta);
+
+  const openPriceCandidates = [
+    Number(event && event.open_price),
+    Number(event && event.opening_price),
+    Number(event && event.open_odds_price),
+  ];
+  const openPrice = openPriceCandidates.find(function (value) { return Number.isFinite(value); });
+  const currentPrice = Number(event && event.price);
+  if (!Number.isFinite(openPrice) || !Number.isFinite(currentPrice)) return NaN;
+
+  return Math.abs(oddsPriceToImpliedProbability_(openPrice) - oddsPriceToImpliedProbability_(currentPrice));
+}
+
+function resolveMinutesSinceOpenSnapshot_(event, nowMs) {
+  const directMinutes = Number(event && event.minutes_since_open_snapshot);
+  if (Number.isFinite(directMinutes)) return directMinutes;
+
+  const openSnapshotMs = Number(event && event.open_timestamp_epoch_ms);
+  if (Number.isFinite(openSnapshotMs) && openSnapshotMs > 0) {
+    return (nowMs - openSnapshotMs) / 60000;
+  }
+
+  if (event && event.open_timestamp instanceof Date) {
+    return (nowMs - event.open_timestamp.getTime()) / 60000;
+  }
+
+  return NaN;
+}
+
+function resolveBookCount_(event) {
+  const explicitBookCount = Number(event && event.book_count);
+  if (Number.isFinite(explicitBookCount)) return explicitBookCount;
+
+  const bookmakerCount = Number(event && event.bookmaker_count);
+  if (Number.isFinite(bookmakerCount)) return bookmakerCount;
+
+  const bookmakerKeys = event && event.bookmaker_keys_considered;
+  return Array.isArray(bookmakerKeys) ? bookmakerKeys.length : NaN;
+}
+
+function resolveLiquidity_(event) {
+  const candidates = [
+    Number(event && event.liquidity),
+    Number(event && event.market_liquidity),
+    Number(event && event.available_liquidity),
+  ];
+  const value = candidates.find(function (candidate) { return Number.isFinite(candidate); });
+  return Number.isFinite(value) ? value : NaN;
 }
 
 function buildSignalRow_(runId, config, event, match, detail) {
