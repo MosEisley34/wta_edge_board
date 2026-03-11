@@ -86,7 +86,7 @@ sys.exit(0 if slug == 'tennis' else 1)
 PYT
 }
 
-sample_sofascore_tennis_player_id_from_schedule() {
+sample_sofascore_tennis_player_ids_from_schedule() {
   local date_token
   date_token="$(date -u +%F)"
   local scheduled_url="https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/$date_token"
@@ -102,20 +102,69 @@ except Exception:
     sys.exit(1)
 if not isinstance(payload, dict):
     sys.exit(1)
+
+def append_candidate(bucket, value):
+    if isinstance(value, int) and value > 0:
+        bucket.append(str(value))
+    elif isinstance(value, str) and value.isdigit() and int(value) > 0:
+        bucket.append(value)
+
+def collect_ids_from_obj(obj, bucket):
+    if not isinstance(obj, dict):
+        return
+    append_candidate(bucket, obj.get('id'))
+
+    player = obj.get('player')
+    if isinstance(player, dict):
+        append_candidate(bucket, player.get('id'))
+
+    for key in ('players', 'participants'):
+        values = obj.get(key)
+        if not isinstance(values, list):
+            continue
+        for entry in values:
+            if not isinstance(entry, dict):
+                continue
+            append_candidate(bucket, entry.get('id'))
+            nested_player = entry.get('player')
+            if isinstance(nested_player, dict):
+                append_candidate(bucket, nested_player.get('id'))
+
+    nested_team = obj.get('team')
+    if isinstance(nested_team, dict):
+        collect_ids_from_obj(nested_team, bucket)
+
+seen = set()
+candidates = []
 for event in payload.get('events', []) or []:
     if not isinstance(event, dict):
         continue
+    sport = event.get('sport') if isinstance(event.get('sport'), dict) else {}
+    sport_slug = str((sport or {}).get('slug', '')).strip().lower()
+    if sport_slug and sport_slug != 'tennis':
+        continue
+
+    category = event.get('category') if isinstance(event.get('category'), dict) else {}
+    category_name = str((category or {}).get('name', '')).strip().lower()
+    category_slug = str((category or {}).get('slug', '')).strip().lower()
+    is_wta_event = 'wta' in category_name or category_slug == 'wta'
+
+    event_candidates = []
     for side in ('homeTeam', 'awayTeam'):
-        team = event.get(side)
-        if isinstance(team, dict):
-            team_id = team.get('id')
-            if isinstance(team_id, int) and team_id > 0:
-                print(team_id)
-                sys.exit(0)
-            if isinstance(team_id, str) and team_id.isdigit():
-                print(team_id)
-                sys.exit(0)
-sys.exit(1)
+        collect_ids_from_obj(event.get(side), event_candidates)
+
+    for candidate_id in event_candidates:
+        if candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        candidates.append((0 if is_wta_event else 1, candidate_id))
+
+if not candidates:
+    sys.exit(1)
+
+candidates.sort(key=lambda item: item[0])
+for _, candidate_id in candidates:
+    print(candidate_id)
 PYT
 }
 
@@ -130,9 +179,18 @@ resolve_sofascore_probe_tennis_player_id() {
   local validation_outcome="invalid"
   local selected_source="none"
   local sampled_id=""
-  sampled_id="$(sample_sofascore_tennis_player_id_from_schedule || true)"
-  if [[ -n "$sampled_id" ]] && validate_sofascore_tennis_player_id "$sampled_id"; then
+  local candidate_id=""
+  while IFS= read -r candidate_id; do
+    [[ -z "$candidate_id" ]] && continue
+    if validate_sofascore_tennis_player_id "$candidate_id"; then
+      sampled_id="$candidate_id"
+      break
+    fi
+  done < <(sample_sofascore_tennis_player_ids_from_schedule || true)
+
+  if [[ -n "$sampled_id" ]]; then
     RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$sampled_id"
+    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="resolver_valid"
     validation_outcome="valid"
     selected_source="resolver"
     echo "INFO: Sofascore probe player selection id=$sampled_id source=$selected_source validation=$validation_outcome" >&2
@@ -140,11 +198,8 @@ resolve_sofascore_probe_tennis_player_id() {
     return 0
   fi
 
-  if [[ -n "$sampled_id" ]]; then
-    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="resolver_selected_player_failed_validation"
-  else
-    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="resolver_no_tennis_player_id_from_live_or_scheduled_events"
-  fi
+  RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="no_tennis_participants_found"
+  echo "WARN: Sofascore probe player selection source=resolver validation=invalid reason=$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON" >&2
 
   if [[ -n "$configured_id" ]] && validate_sofascore_tennis_player_id "$configured_id"; then
     RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_id"
@@ -156,12 +211,11 @@ resolve_sofascore_probe_tennis_player_id() {
     return 0
   fi
 
-  if [[ -n "$configured_id" ]]; then
-    RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="player_detail_domain_mismatch"
-  fi
+  local resolver_reason="$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON"
+  RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="fallback_invalid"
 
-  echo "INFO: Sofascore probe player selection id=${configured_id:-none} source=none validation=$validation_outcome" >&2
-  echo "ERROR: unable to resolve a verified tennis player id from Sofascore schedule and configured fallback did not validate" >&2
+  echo "INFO: Sofascore probe player selection id=${configured_id:-none} source=none validation=$validation_outcome reason=$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON resolver_reason=$resolver_reason" >&2
+  echo "ERROR: unable to resolve a verified tennis player id from Sofascore schedule reason=$RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON resolver_reason=$resolver_reason" >&2
   return 1
 }
 record_allowlist_skip() {
