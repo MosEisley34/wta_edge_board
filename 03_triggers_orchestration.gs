@@ -251,6 +251,8 @@ function runEdgeBoard() {
       return;
     }
 
+    appendRunStartConfigAuditLog_(runId, config, startedAt);
+
     const nowMs = Date.now();
     const debounceMs = config.DUPLICATE_DEBOUNCE_MS;
     const lastRunTs = Number(scriptProps.getProperty(PROPS.LAST_PIPELINE_RUN_TS) || 0);

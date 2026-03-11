@@ -231,26 +231,31 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     };
   }
 
-  const sofascoreFallback = fetchPlayerStatsFromSofascore_(config, players, asOfTime);
-  totalApiCalls += Number(sofascoreFallback.api_call_count || 0);
-  if (sofascoreFallback.ok) {
-    return {
-      ok: true,
-      reason_code: sofascoreFallback.reason_code || 'player_stats_sofascore_success',
-      detail: attempts.join(','),
-      stats_by_player: sofascoreFallback.stats_by_player || {},
-      api_credit_usage: 0,
-      api_call_count: totalApiCalls,
-      scrape_call_count: 0,
-      selection_metadata: {
-        source_count: 1,
-        merge_diagnostics: buildPlayerStatsMergeDiagnostics_([{ source_name: 'sofascore', stats_by_player: sofascoreFallback.stats_by_player || {}, endpoint_feature_sources_by_player: sofascoreFallback.endpoint_feature_sources_by_player || {} }], sofascoreFallback.stats_by_player || {}, players, [{
-          source_name: 'sofascore',
-          attempted_endpoints: sofascoreFallback.attempted_endpoints || [],
-          missing_fields: sofascoreFallback.missing_fields || [],
-        }]),
-      },
-    };
+  const disableSofascore = !!config.DISABLE_SOFASCORE;
+  if (!disableSofascore) {
+    const sofascoreFallback = fetchPlayerStatsFromSofascore_(config, players, asOfTime);
+    totalApiCalls += Number(sofascoreFallback.api_call_count || 0);
+    if (sofascoreFallback.ok) {
+      return {
+        ok: true,
+        reason_code: sofascoreFallback.reason_code || 'player_stats_sofascore_success',
+        detail: attempts.join(','),
+        stats_by_player: sofascoreFallback.stats_by_player || {},
+        api_credit_usage: 0,
+        api_call_count: totalApiCalls,
+        scrape_call_count: 0,
+        selection_metadata: {
+          source_count: 1,
+          merge_diagnostics: buildPlayerStatsMergeDiagnostics_([{ source_name: 'sofascore', stats_by_player: sofascoreFallback.stats_by_player || {}, endpoint_feature_sources_by_player: sofascoreFallback.endpoint_feature_sources_by_player || {} }], sofascoreFallback.stats_by_player || {}, players, [{
+            source_name: 'sofascore',
+            attempted_endpoints: sofascoreFallback.attempted_endpoints || [],
+            missing_fields: sofascoreFallback.missing_fields || [],
+          }]),
+        },
+      };
+    }
+  } else {
+    attempts.push('player_stats_sofascore_disabled');
   }
 
   const leadersSource = fetchPlayerStatsFromLeadersSource_(players, config, asOfTime);
@@ -1658,6 +1663,7 @@ function sleepTennisAbstractRequestGap_(config) {
 function parsePlayerStatsSourceConfigs_(config) {
   const baseValue = String(config.PLAYER_STATS_API_BASE_URL || '').trim();
   if (!baseValue) return [];
+  const disableSofascore = !!(config && config.DISABLE_SOFASCORE);
   return baseValue.split(',')
     .map(function (value) {
       const token = String(value || '').trim();
@@ -1675,6 +1681,7 @@ function parsePlayerStatsSourceConfigs_(config) {
       }
       baseUrl = String(baseUrl || '').replace(/\/+$/, '');
       if (!baseUrl) return null;
+      if (disableSofascore && canonicalSourceName === 'sofascore') return null;
       return {
         source_name: canonicalSourceName,
         base_url: baseUrl,
@@ -1687,6 +1694,18 @@ function fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTi
   const sourceName = canonicalizeStatsProviderName_(sourceConfig && sourceConfig.source_name);
   const baseUrl = sourceConfig && sourceConfig.base_url ? sourceConfig.base_url : '';
   if (sourceName === 'sofascore') {
+    if (config && config.DISABLE_SOFASCORE) {
+      return {
+        ok: false,
+        reason_code: 'player_stats_sofascore_disabled',
+        stats_by_player: {},
+        api_call_count: 0,
+        source_name: 'sofascore',
+        attempted_endpoints: [],
+        missing_fields: [],
+        contract_check_passed: true,
+      };
+    }
     return fetchPlayerStatsFromSofascore_(config, players, asOfTime);
   }
   if (sourceName === 'itf') {

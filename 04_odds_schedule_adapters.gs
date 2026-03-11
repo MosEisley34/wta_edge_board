@@ -578,6 +578,10 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
       h2h_pairs_found: scheduleEnrichment.h2h_pairs_found,
       h2h_missing_reason_codes: scheduleEnrichment.h2h_missing_reason_codes || {},
       h2h_missing_classification: scheduleEnrichment.h2h_missing_classification || {},
+      source_routing: scheduleEnrichment.source_routing || {
+        model_mode: String((config && config.MODEL_MODE) || ''),
+        disable_sofascore: !!(config && config.DISABLE_SOFASCORE),
+      },
       failed: scheduleEnrichment.failed,
       error: scheduleEnrichment.error || '',
     },
@@ -626,6 +630,10 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
         unclassified: 0,
       },
       h2h_lookup_debug_samples: [],
+      source_routing: {
+        model_mode: String((config && config.MODEL_MODE) || ''),
+        disable_sofascore: !!(config && config.DISABLE_SOFASCORE),
+      },
       failed: false,
       error: '',
     };
@@ -664,6 +672,10 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
     }, new Date(0));
     const statsBatch = fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime.getTime() > 0 ? asOfTime : new Date());
     const statsByPlayer = statsBatch.stats_by_player || {};
+    const sourceRouting = {
+      model_mode: String((config && config.MODEL_MODE) || ''),
+      disable_sofascore: !!(config && config.DISABLE_SOFASCORE),
+    };
     let statsRowsApplied = 0;
     let h2hRowsApplied = 0;
     let h2hMissing = 0;
@@ -772,6 +784,7 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       h2h_missing_reason_codes: h2hMissingReasonCodes,
       h2h_missing_classification: h2hMissingClassification,
       h2h_lookup_debug_samples: h2hLookupDebugSamples,
+      source_routing: sourceRouting,
       failed: false,
       error: '',
     };
@@ -795,6 +808,10 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
         unclassified: 0,
       },
       h2h_lookup_debug_samples: [],
+      source_routing: {
+        model_mode: String((config && config.MODEL_MODE) || ''),
+        disable_sofascore: !!(config && config.DISABLE_SOFASCORE),
+      },
       failed: true,
       error: String(error && error.message ? error.message : error),
     };

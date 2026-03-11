@@ -19,6 +19,25 @@ const SECRET_REDACTION_MAP = {
   query_param_pattern: /([?&](?:apiKey|api_key|token|access_token|key|secret|password|webhook|authorization)=)([^&#\s]*)/gi,
 };
 
+
+function appendRunStartConfigAuditLog_(runId, config, startedAt) {
+  const cfg = config || {};
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: runId,
+    stage: 'run_start_config_audit',
+    started_at: startedAt || new Date(),
+    status: 'success',
+    reason_code: 'run_mode_gates',
+    message: JSON.stringify({
+      model_mode: String(cfg.MODEL_MODE || ''),
+      disable_sofascore: !!cfg.DISABLE_SOFASCORE,
+      require_opening_line_proximity: !!cfg.REQUIRE_OPENING_LINE_PROXIMITY,
+      max_opening_lag_minutes: Math.max(0, Number(cfg.MAX_OPENING_LAG_MINUTES || 0)),
+    }),
+  });
+}
+
 function stagePersist(runId, payload) {
   const start = Date.now();
 
