@@ -16,6 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from matchmx_parser import (
+    classify_expected_non_model_row,
     has_consistent_metric_index_mapping,
     is_usable_canonical_name,
     iter_matchmx_rows,
@@ -33,17 +34,36 @@ def _canonicalize_name(name: str) -> str:
 
 def _extract_rows(payload: str) -> tuple[list[dict[str, object]], dict[str, object]]:
     rows: list[dict[str, object]] = []
-    metrics: dict[str, object] = {"ta_matchmx_unusable_payload": 0, "first_invalid_rows": []}
+    metrics: dict[str, object] = {
+        "ta_matchmx_unusable_payload": 0,
+        "ta_matchmx_expected_non_model_rows": 0,
+        "ta_matchmx_unexpected_parse_failure_rows": 0,
+        "ta_matchmx_invalid_reason_counts": {},
+        "first_invalid_rows": [],
+    }
     for logical_row_number, parsed in enumerate(iter_matchmx_rows(payload), start=1):
         tokens = parsed.tokens
 
         def note_invalid(reason: str) -> None:
+            expected_bucket = classify_expected_non_model_row(tokens)
+            if expected_bucket:
+                reason_bucket = f"expected_non_model:{expected_bucket}"
+                metrics["ta_matchmx_expected_non_model_rows"] = int(metrics["ta_matchmx_expected_non_model_rows"]) + 1
+            else:
+                reason_bucket = f"unexpected_parse_failure:{reason}"
+                metrics["ta_matchmx_unexpected_parse_failure_rows"] = int(
+                    metrics["ta_matchmx_unexpected_parse_failure_rows"]
+                ) + 1
             metrics["ta_matchmx_unusable_payload"] = int(metrics["ta_matchmx_unusable_payload"]) + 1
+            reason_counts = metrics["ta_matchmx_invalid_reason_counts"]
+            if isinstance(reason_counts, dict):
+                reason_counts[reason_bucket] = int(reason_counts.get(reason_bucket, 0)) + 1
             samples = metrics["first_invalid_rows"]
             if isinstance(samples, list) and len(samples) < 5:
                 samples.append(
                     {
                         "reason": reason,
+                        "reason_bucket": reason_bucket,
                         "row_number": logical_row_number,
                         "row_index": parsed.row_index,
                         "token_count": len(tokens),
@@ -157,14 +177,23 @@ def main() -> int:
 
     rows, parser_metrics = _extract_rows(payload)
     unusable_payload_rows = parser_metrics["ta_matchmx_unusable_payload"]
+    expected_non_model_rows = int(parser_metrics.get("ta_matchmx_expected_non_model_rows", 0))
+    unexpected_parse_failure_rows = int(parser_metrics.get("ta_matchmx_unexpected_parse_failure_rows", 0))
     if unusable_payload_rows > 0 and not rows:
+        reason_code = (
+            "ta_matchmx_unexpected_parse_failure"
+            if unexpected_parse_failure_rows > 0
+            else "ta_matchmx_expected_non_model_rows"
+        )
         print(
             json.dumps(
                 {
                     "status": "fail",
-                    "reason_code": "ta_matchmx_unusable_payload",
+                    "reason_code": reason_code,
                     "path": str(path),
                     "matchmx_unusable_rows": unusable_payload_rows,
+                    "matchmx_expected_non_model_rows": expected_non_model_rows,
+                    "matchmx_unexpected_parse_failure_rows": unexpected_parse_failure_rows,
                     "parser_metrics": parser_metrics,
                 }
             )
@@ -220,6 +249,8 @@ def main() -> int:
         "input": str(path),
         "total_rows": len(rows),
         "matchmx_unusable_rows": unusable_payload_rows,
+        "matchmx_expected_non_model_rows": expected_non_model_rows,
+        "matchmx_unexpected_parse_failure_rows": unexpected_parse_failure_rows,
         "parser_metrics": parser_metrics,
         "unique_players": len(normalized_rows),
         "row_non_null_coverage": {
@@ -247,9 +278,13 @@ def main() -> int:
     if threshold_errors:
         summary["status"] = "fail"
         summary["reason_code"] = (
-            "ta_matchmx_unusable_payload"
-            if unusable_payload_rows > 0
-            else "ta_matchmx_threshold_failure"
+            "ta_matchmx_unexpected_parse_failure"
+            if unexpected_parse_failure_rows > 0
+            else (
+                "ta_matchmx_expected_non_model_rows"
+                if expected_non_model_rows > 0
+                else "ta_matchmx_threshold_failure"
+            )
         )
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 1
