@@ -23,7 +23,11 @@ from matchmx_parser import (  # noqa: E402
 class TaMatchMxRegressionTest(unittest.TestCase):
     def setUp(self):
         self.fixture_path = ROOT / "scripts" / "fixtures" / "tennisabstract_leadersource_wta.body"
+        self.live_shape_fixture_path = (
+            ROOT / "scripts" / "fixtures" / "tennisabstract_leadersource_wta_live_shape_regression.body"
+        )
         self.payload = self.fixture_path.read_text(encoding="utf-8")
+        self.live_shape_payload = self.live_shape_fixture_path.read_text(encoding="utf-8")
 
     def _load_live_probe_payload(self) -> str:
         probe_path = ROOT / "tmp" / "source_probe_latest" / "raw" / "tennisabstract_leadersource_wta.body"
@@ -377,6 +381,71 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         break_values = [row.break_pct for row in rows if row.break_pct is not None]
         self.assertGreater(len(break_values), 0)
         self.assertGreater(len(set(break_values)), 1)
+
+    def test_live_shape_regression_fixture_includes_hold_none_and_break_three_rows(self):
+        rows = _parse_matchmx_rows(
+            "tennisabstract_leadersource_wta",
+            self.live_shape_payload,
+            "2026-01-01T00:00:00+00:00",
+        )
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+        self.assertTrue(any(row.hold_pct is None and row.break_pct == 3.0 for row in ok_rows))
+
+    def test_live_shape_regression_fixture_has_non_zero_hold_pct_coverage_and_non_constant_break_pct(self):
+        rows = _parse_matchmx_rows(
+            "tennisabstract_leadersource_wta",
+            self.live_shape_payload,
+            "2026-01-01T00:00:00+00:00",
+        )
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+
+        hold_values = [row.hold_pct for row in ok_rows if row.hold_pct is not None]
+        break_values = [row.break_pct for row in ok_rows if row.break_pct is not None]
+
+        self.assertGreater(len(hold_values), 0)
+        self.assertGreater(len(break_values), 0)
+        self.assertGreater(len(set(break_values)), 1)
+
+    def test_live_shape_regression_fixture_hold_break_not_equal_to_rank_or_seed_columns(self):
+        parsed_rows = []
+        for parsed in iter_matchmx_rows(self.live_shape_payload):
+            if not parsed.row_shape_valid:
+                continue
+            row, error = parse_matchmx_player_row(parsed.tokens)
+            if error or row is None:
+                continue
+            parsed_rows.append((parsed.tokens, row))
+
+        self.assertGreater(len(parsed_rows), 0)
+        compared_rows = 0
+        seed_indices = [8, 16, 17]
+
+        for tokens, row in parsed_rows:
+            if row.hold_pct is not None and row.ranking is not None:
+                compared_rows += 1
+                self.assertNotEqual(row.hold_pct, row.ranking)
+            if row.break_pct is not None and row.ranking is not None:
+                compared_rows += 1
+                self.assertNotEqual(row.break_pct, row.ranking)
+
+            for idx in seed_indices:
+                if idx >= len(tokens):
+                    continue
+                raw_seed = str(tokens[idx]).strip()
+                if not raw_seed:
+                    continue
+                try:
+                    seed = float(raw_seed)
+                except ValueError:
+                    continue
+                if row.hold_pct is not None:
+                    compared_rows += 1
+                    self.assertNotEqual(row.hold_pct, seed)
+                if row.break_pct is not None:
+                    compared_rows += 1
+                    self.assertNotEqual(row.break_pct, seed)
+
+        self.assertGreater(compared_rows, 0)
 
     def test_parse_matchmx_new_schema_seed_variant_keeps_hold_break_distinct_from_ranking_and_seed(self):
         payload = 'matchmx[0] = ["2026-03-15","Indian Wells","Hard","Aryna Sabalenka","W","Mirra Andreeva","7-6(4) 6-4","12","9","0.64","0.59","71.3","34.8","63.1","45.5","61.9","69.0","50.4","39.2","1.09","52.7"];'
