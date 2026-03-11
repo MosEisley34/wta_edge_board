@@ -61,6 +61,14 @@ SOFASCORE_MIN_PARTICIPANTS_BY_SOURCE: dict[str, int] = {
     "sofascore_scheduled_events": 2,
 }
 
+SOFASCORE_LIVE_PARSE_HEALTH_THRESHOLDS_BY_SOURCE: dict[str, dict[str, int]] = {
+    "sofascore_events_live": {
+        "participants_extracted_count": int(os.environ.get("SOFASCORE_LIVE_MIN_PARTICIPANTS_EXTRACTED_COUNT", "2")),
+        "events_rows_with_players": int(os.environ.get("SOFASCORE_LIVE_MIN_EVENTS_ROWS_WITH_PLAYERS", "1")),
+        "has_stats_true_count": int(os.environ.get("SOFASCORE_LIVE_MIN_HAS_STATS_TRUE_COUNT", "1")),
+    }
+}
+
 
 @dataclass(frozen=True)
 class ParserContract:
@@ -840,13 +848,15 @@ def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of:
 
     rows: list[PlayerFeature] = []
     participant_fields_seen = False
-    for event in events:
+    events_rows_with_players = 0
+    for event_index, event in enumerate(events):
         if not isinstance(event, dict):
             continue
         if not _is_sofascore_tennis_event(event):
             continue
         if not _is_sofascore_wta_event(event):
             continue
+        event_players_before = len(rows)
         for side in ("homeTeam", "awayTeam"):
             team = _as_dict(event.get(side))
             player_names, has_participant_fields = _extract_sofascore_team_player_names(team)
@@ -857,6 +867,12 @@ def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of:
                 has_participant_fields = has_participant_fields or event_has_fields
             participant_fields_seen = participant_fields_seen or has_participant_fields
             for player_name in player_names:
+                reason_detail = {
+                    "normalized_from": "sofascore_events",
+                    "event_index": event_index,
+                }
+                if event.get("id") is not None:
+                    reason_detail["event_id"] = event.get("id")
                 rows.append(
                     PlayerFeature(
                         player_canonical_name=player_name,
@@ -871,17 +887,24 @@ def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of:
                         h2h_losses=None,
                         has_stats=False,
                         reason_code="ok",
-                        reason_code_detail="normalized_from_sofascore_events",
+                        reason_code_detail=json.dumps(reason_detail, ensure_ascii=False, sort_keys=True),
                     )
                 )
 
+        if len(rows) > event_players_before:
+            events_rows_with_players += 1
+
+    for row in rows:
+        row.has_stats = _has_stats(row)
+
+    participants_extracted_count = len(rows)
+    has_stats_true_count = sum(1 for row in rows if row.has_stats)
+
     min_participants = SOFASCORE_MIN_PARTICIPANTS_BY_SOURCE.get(source, 1)
-    if len(rows) >= min_participants:
-        for row in rows:
-            row.has_stats = _has_stats(row)
+    if participants_extracted_count >= min_participants:
         return rows
 
-    if len(rows) < min_participants:
+    if participants_extracted_count < min_participants:
         return [
             PlayerFeature(
                 player_canonical_name=None,
@@ -896,7 +919,16 @@ def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of:
                 h2h_losses=None,
                 has_stats=False,
                 reason_code="sofascore_events_participant_floor_unmet",
-                reason_code_detail=f"participants_extracted:{len(rows)}_min_required:{min_participants}",
+                reason_code_detail=json.dumps(
+                    {
+                        "participants_extracted_count": participants_extracted_count,
+                        "min_required": min_participants,
+                        "events_rows_with_players": events_rows_with_players,
+                        "has_stats_true_count": has_stats_true_count,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
             )
         ]
 
@@ -1226,6 +1258,36 @@ def _compute_parse_health(rows: list[PlayerFeature]) -> dict[str, dict[str, obje
             "hold_pct": sum(1 for r in tracked if r.hold_pct is not None),
             "break_pct": sum(1 for r in tracked if r.break_pct is not None),
         }
+        participants_extracted_count = len(tracked)
+        has_stats_true_count = sum(1 for r in tracked if r.has_stats)
+        events_rows_with_players = 0
+        if source.startswith("sofascore_events_"):
+            event_keys: set[str] = set()
+            for r in tracked:
+                if not isinstance(r.reason_code_detail, str):
+                    continue
+                try:
+                    detail = json.loads(r.reason_code_detail)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(detail, dict):
+                    continue
+                if "event_id" in detail:
+                    event_keys.add(f"event_id:{detail['event_id']}")
+                elif "event_index" in detail:
+                    event_keys.add(f"event_index:{detail['event_index']}")
+            events_rows_with_players = len(event_keys)
+            if events_rows_with_players == 0:
+                for invalid in source_rows:
+                    if not isinstance(invalid.reason_code_detail, str):
+                        continue
+                    try:
+                        detail = json.loads(invalid.reason_code_detail)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(detail, dict) and "events_rows_with_players" in detail:
+                        events_rows_with_players = int(detail.get("events_rows_with_players", 0))
+                        break
         invalid_samples = [
             {
                 "reason_code": r.reason_code,
@@ -1239,6 +1301,9 @@ def _compute_parse_health(rows: list[PlayerFeature]) -> dict[str, dict[str, obje
             "rows_parsed": len(source_rows),
             "unique_players": len(unique_players),
             "metric_non_null": metric_non_null,
+            "participants_extracted_count": participants_extracted_count,
+            "events_rows_with_players": events_rows_with_players,
+            "has_stats_true_count": has_stats_true_count,
             "first_invalid_rows": invalid_samples,
         }
     return health
@@ -1247,8 +1312,11 @@ def _compute_parse_health(rows: list[PlayerFeature]) -> dict[str, dict[str, obje
 def _assert_parse_health(health: dict[str, dict[str, object]]) -> None:
     errors: list[str] = []
     for source, metrics in health.items():
-        if source not in TA_SOURCE_MATRIX and not source.startswith("tennisabstract_"):
+        sofascore_live_thresholds = SOFASCORE_LIVE_PARSE_HEALTH_THRESHOLDS_BY_SOURCE.get(source)
+        enforce_ta_thresholds = source in TA_SOURCE_MATRIX or source.startswith("tennisabstract_")
+        if not enforce_ta_thresholds and not sofascore_live_thresholds:
             continue
+
         rows_parsed = int(metrics.get("rows_parsed", 0))
         unique_players = int(metrics.get("unique_players", 0))
         metric_non_null = metrics.get("metric_non_null", {}) if isinstance(metrics.get("metric_non_null"), dict) else {}
@@ -1256,16 +1324,38 @@ def _assert_parse_health(health: dict[str, dict[str, object]]) -> None:
         hold_non_null = int(metric_non_null.get("hold_pct", 0))
         break_non_null = int(metric_non_null.get("break_pct", 0))
         invalid_rows = metrics.get("first_invalid_rows", [])
-        if rows_parsed < SOURCE_HEALTH_THRESHOLDS["min_rows"]:
-            errors.append(f"{source}: rows_parsed={rows_parsed} < {SOURCE_HEALTH_THRESHOLDS['min_rows']}; invalid_samples={invalid_rows}")
-        if unique_players < SOURCE_HEALTH_THRESHOLDS["min_unique_players"]:
-            errors.append(f"{source}: unique_players={unique_players} < {SOURCE_HEALTH_THRESHOLDS['min_unique_players']}; invalid_samples={invalid_rows}")
-        if ranking_non_null <= 0:
-            errors.append(f"{source}: ranking_non_null_coverage=0; invalid_samples={invalid_rows}")
-        if hold_non_null <= 0:
-            errors.append(f"{source}: hold_pct_non_null_coverage=0; invalid_samples={invalid_rows}")
-        if break_non_null <= 0:
-            errors.append(f"{source}: break_pct_non_null_coverage=0; invalid_samples={invalid_rows}")
+        if enforce_ta_thresholds:
+            if rows_parsed < SOURCE_HEALTH_THRESHOLDS["min_rows"]:
+                errors.append(f"{source}: rows_parsed={rows_parsed} < {SOURCE_HEALTH_THRESHOLDS['min_rows']}; invalid_samples={invalid_rows}")
+            if unique_players < SOURCE_HEALTH_THRESHOLDS["min_unique_players"]:
+                errors.append(f"{source}: unique_players={unique_players} < {SOURCE_HEALTH_THRESHOLDS['min_unique_players']}; invalid_samples={invalid_rows}")
+            if ranking_non_null <= 0:
+                errors.append(f"{source}: ranking_non_null_coverage=0; invalid_samples={invalid_rows}")
+            if hold_non_null <= 0:
+                errors.append(f"{source}: hold_pct_non_null_coverage=0; invalid_samples={invalid_rows}")
+            if break_non_null <= 0:
+                errors.append(f"{source}: break_pct_non_null_coverage=0; invalid_samples={invalid_rows}")
+
+        if sofascore_live_thresholds:
+            participants_extracted_count = int(metrics.get("participants_extracted_count", 0))
+            events_rows_with_players = int(metrics.get("events_rows_with_players", 0))
+            has_stats_true_count = int(metrics.get("has_stats_true_count", 0))
+
+            if participants_extracted_count < sofascore_live_thresholds["participants_extracted_count"]:
+                errors.append(
+                    f"{source}: participants_extracted_count={participants_extracted_count} < "
+                    f"{sofascore_live_thresholds['participants_extracted_count']}; invalid_samples={invalid_rows}"
+                )
+            if events_rows_with_players < sofascore_live_thresholds["events_rows_with_players"]:
+                errors.append(
+                    f"{source}: events_rows_with_players={events_rows_with_players} < "
+                    f"{sofascore_live_thresholds['events_rows_with_players']}; invalid_samples={invalid_rows}"
+                )
+            if has_stats_true_count < sofascore_live_thresholds["has_stats_true_count"]:
+                errors.append(
+                    f"{source}: has_stats_true_count={has_stats_true_count} < "
+                    f"{sofascore_live_thresholds['has_stats_true_count']}; invalid_samples={invalid_rows}"
+                )
     if errors:
         raise RuntimeError("Parse health thresholds not met:\n- " + "\n- ".join(errors))
 
