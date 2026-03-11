@@ -509,24 +509,48 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertEqual(selected_idx, MATCHMX_LONG_LIVE_ROW_IDX)
 
         name_like_token = re.compile(r"^[A-Za-z][A-Za-z .'-]*[A-Za-z]$")
+        score_like_token = re.compile(r"\d\s*-\s*\d")
+
+        def _is_full_name_like(value: str) -> bool:
+            candidate = value.strip()
+            return bool(name_like_token.fullmatch(candidate) and (" " in candidate or "-" in candidate))
+
         hold_values = []
         break_values = []
 
         for tokens in probe_token_rows:
+            player_token = str(tokens[selected_idx["PLAYER_NAME"]]).strip()
             hold_token = str(tokens[selected_idx["HOLD_PCT"]]).strip()
             break_token = str(tokens[selected_idx["BREAK_PCT"]]).strip()
 
-            self.assertFalse(name_like_token.fullmatch(hold_token), f"hold token looks name-like: {hold_token!r}")
-            self.assertFalse(name_like_token.fullmatch(break_token), f"break token looks name-like: {break_token!r}")
+            self.assertTrue(_is_full_name_like(player_token), f"player token is not full-name-like: {player_token!r}")
+
+            self.assertRegex(
+                hold_token,
+                r"^-?\d+(?:\.\d+)?$",
+                f"hold token is not numeric under selected schema: {hold_token!r}",
+            )
+            self.assertRegex(
+                break_token,
+                r"^-?\d+(?:\.\d+)?$",
+                f"break token is not numeric under selected schema: {break_token!r}",
+            )
+
+            self.assertFalse(_is_full_name_like(hold_token), f"hold token looks name-like: {hold_token!r}")
+            self.assertFalse(_is_full_name_like(break_token), f"break token looks name-like: {break_token!r}")
+            self.assertFalse(score_like_token.search(break_token), f"break token looks score-like: {break_token!r}")
 
             hold_value = float(hold_token)
             break_value = float(break_token)
 
+            self.assertGreaterEqual(hold_value, 35.0, f"hold value out of plausible band: {hold_value}")
+            self.assertLessEqual(hold_value, 95.0, f"hold value out of plausible band: {hold_value}")
+            self.assertGreaterEqual(break_value, 0.0, f"break value out of plausible band: {break_value}")
+            self.assertLessEqual(break_value, 70.0, f"break value out of plausible band: {break_value}")
+
             hold_values.append(hold_value)
             break_values.append(break_value)
 
-        self.assertTrue(all(35.0 <= value <= 95.0 for value in hold_values))
-        self.assertTrue(all(0.0 <= value <= 70.0 for value in break_values))
         self.assertGreater(sum(1 for value in break_values if value != 0.0), 0)
         self.assertGreater(len(set(break_values)), 1)
 
