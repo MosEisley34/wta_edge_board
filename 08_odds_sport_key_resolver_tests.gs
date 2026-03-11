@@ -5620,3 +5620,138 @@ function testBuildSignalRationaleParagraph_fallbackGenericAndLengthBounded_() {
 
   assertTrue_(longRationale.length <= 680, 'long rationale should be trimmed');
 }
+
+
+function testStageGenerateSignals_preActionGuardSuppressesOnLineDrift_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalAppendLogRow = appendLogRow_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:10:00.000Z');
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function () {};
+  appendLogRow_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return { local: '2026-01-01T00:10:00-07:00', utc: '2026-01-01T07:10:00.000Z' };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_line_drift_guard',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      bookmaker_keys_considered: ['book_x', 'book_y'],
+      price: 130,
+      open_price: 200,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+      open_timestamp_epoch_ms: nowMs - (10 * 60 * 1000),
+    };
+    const match = {
+      odds_event_id: 'evt_line_drift_guard',
+      schedule_event_id: 'sched_line_drift_guard',
+      competition_tier: 'WTA_500',
+    };
+    const stats = {
+      evt_line_drift_guard: {
+        player_a: { has_stats: true, features: { ranking: 5, recent_form: 0.7, surface_win_rate: 0.68, hold_pct: 0.72, break_pct: 0.4 } },
+        player_b: { has_stats: true, features: { ranking: 35, recent_form: 0.43, surface_win_rate: 0.49, hold_pct: 0.59, break_pct: 0.27 } },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1', EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08, STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5, SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      MAX_CURRENT_VS_OPEN_LINE_DELTA: 0.05, MAX_MINUTES_SINCE_OPEN_SNAPSHOT: 0, MIN_BOOK_COUNT: 0, MIN_LIQUIDITY: 0,
+      NOTIFY_ENABLED: true, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: 'https://hooks.slack.com/services/mock',
+    };
+
+    const result = stageGenerateSignals('run_line_drift_guard', config, [event], [match], stats);
+
+    assertEquals_(1, result.rows.length);
+    assertEquals_('line_drift_exceeded', result.rows[0].notification_outcome);
+    assertEquals_('risk_guard_non_tradable', result.rows[0].signal_delivery_mode);
+    assertEquals_(0, Number(result.rows[0].stake_units || 0));
+    assertEquals_(1, Number(result.summary.reason_codes.line_drift_exceeded || 0));
+    assertEquals_(true, !!(result.rows[0].notification_metadata && result.rows[0].notification_metadata.non_tradable));
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    appendLogRow_ = originalAppendLogRow;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testStageGenerateSignals_preActionGuardSuppressesOnEdgeDecayAndLowBooks_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalAppendLogRow = appendLogRow_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:10:00.000Z');
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function () {};
+  appendLogRow_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return { local: '2026-01-01T00:10:00-07:00', utc: '2026-01-01T07:10:00.000Z' };
+  };
+
+  try {
+    const event = {
+      event_id: 'evt_edge_decay_guard',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      bookmaker_keys_considered: ['book_x'],
+      price: 150,
+      open_price: 152,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+      open_timestamp_epoch_ms: nowMs - (130 * 60 * 1000),
+    };
+    const match = {
+      odds_event_id: 'evt_edge_decay_guard',
+      schedule_event_id: 'sched_edge_decay_guard',
+      competition_tier: 'WTA_500',
+    };
+    const stats = {
+      evt_edge_decay_guard: {
+        player_a: { has_stats: true, features: { ranking: 11, recent_form: 0.61, surface_win_rate: 0.6, hold_pct: 0.66, break_pct: 0.35 } },
+        player_b: { has_stats: true, features: { ranking: 19, recent_form: 0.55, surface_win_rate: 0.54, hold_pct: 0.62, break_pct: 0.31 } },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1', EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08, STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5, SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      MAX_CURRENT_VS_OPEN_LINE_DELTA: 0.25, MAX_MINUTES_SINCE_OPEN_SNAPSHOT: 60, MIN_BOOK_COUNT: 2, MIN_LIQUIDITY: 0,
+      NOTIFY_ENABLED: true, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: 'https://hooks.slack.com/services/mock',
+    };
+
+    const result = stageGenerateSignals('run_edge_decay_guard', config, [event], [match], stats);
+
+    assertEquals_(1, result.rows.length);
+    assertEquals_('edge_decay_exceeded', result.rows[0].notification_outcome);
+    assertEquals_(1, Number(result.summary.reason_codes.edge_decay_exceeded || 0));
+    assertEquals_(0, Number(result.sentCount || 0));
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    appendLogRow_ = originalAppendLogRow;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
