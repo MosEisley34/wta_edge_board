@@ -450,7 +450,10 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
         )
         return rows
 
-    for logical_row_number, parsed in enumerate(iter_matchmx_rows(text), start=1):
+    parsed_rows = list(iter_matchmx_rows(text))
+    valid_tokens = [parsed.tokens for parsed in parsed_rows if parsed.row_shape_valid]
+
+    for logical_row_number, parsed in enumerate(parsed_rows, start=1):
         values = parsed.tokens
         if parsed.reason_code:
             rows.append(
@@ -482,7 +485,8 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
             )
             continue
 
-        parsed_row, reason = parse_matchmx_player_row(values)
+        sample_rows = valid_tokens[:5] if valid_tokens else None
+        parsed_row, reason = parse_matchmx_player_row(values, sample_rows=sample_rows)
         if reason:
             rows.append(
                 PlayerFeature(
