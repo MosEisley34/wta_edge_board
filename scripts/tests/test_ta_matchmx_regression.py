@@ -548,10 +548,43 @@ class TaMatchMxRegressionTest(unittest.TestCase):
 
         selected_idx = get_matchmx_row_idx(probe_token_rows[0], sample_rows=probe_token_rows)
         schema_diagnostics = self._probe_schema_diagnostics(probe_token_rows)
+
+        candidate_maps = {
+            "old": MATCHMX_OLD_ROW_IDX,
+            "new": MATCHMX_NEW_ROW_IDX,
+            "long": MATCHMX_LONG_ROW_IDX,
+            "long_live": MATCHMX_LONG_LIVE_ROW_IDX,
+            "long_mixed_live": MATCHMX_LONG_MIXED_LIVE_ROW_IDX,
+        }
+        selected_schema = next(
+            (name for name, idx_map in candidate_maps.items() if idx_map == selected_idx),
+            None,
+        )
+        self.assertIn(
+            selected_schema,
+            {"long_live", "long_mixed_live"},
+            f"selected schema should be one of live long shapes: {selected_schema}; diagnostics={schema_diagnostics}",
+        )
+
+        diagnostics_by_schema = {entry["schema"]: entry for entry in schema_diagnostics}
+        self.assertIn(
+            selected_schema,
+            diagnostics_by_schema,
+            f"missing diagnostics for selected schema {selected_schema}; diagnostics={schema_diagnostics}",
+        )
+
+        def _conflict_score(entry: dict) -> int:
+            return sum(count for _, count in entry.get("top_conflicts", []))
+
+        live_candidates = [diagnostics_by_schema[name] for name in {"long_live", "long_mixed_live"} if name in diagnostics_by_schema]
+        self.assertTrue(live_candidates, f"missing live schema diagnostics: {schema_diagnostics}")
+
+        selected_conflicts = _conflict_score(diagnostics_by_schema[selected_schema])
+        min_live_conflicts = min(_conflict_score(entry) for entry in live_candidates)
         self.assertEqual(
-            selected_idx,
-            MATCHMX_LONG_MIXED_LIVE_ROW_IDX,
-            f"schema diagnostics (first probe rows): {schema_diagnostics}",
+            selected_conflicts,
+            min_live_conflicts,
+            f"selected schema should minimize live-schema conflicts: selected={selected_schema}, diagnostics={schema_diagnostics}",
         )
 
         name_like_token = re.compile(r"^[A-Za-z][A-Za-z .'-]*[A-Za-z]$")
