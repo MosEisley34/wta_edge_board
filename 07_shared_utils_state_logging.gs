@@ -43,7 +43,7 @@ function stagePersist(runId, payload) {
 
   upsertSheetRows_(SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
-    'odds_updated_epoch_ms', 'provider_odds_updated_time', 'open_timestamp', 'open_timestamp_epoch_ms', 'opening_lag_minutes', 'opening_lag_evaluated_at', 'is_actionable', 'reason_code', 'ingestion_timestamp', 'commence_time',
+    'odds_updated_epoch_ms', 'provider_odds_updated_time', 'opening_price', 'evaluation_price', 'price_delta_bps', 'open_timestamp', 'open_timestamp_epoch_ms', 'opening_lag_minutes', 'opening_lag_evaluated_at', 'decision_gate_status', 'is_actionable', 'reason_code', 'ingestion_timestamp', 'commence_time',
     'commence_epoch_ms', 'competition', 'player_1', 'player_2',
     'player_1_hold_pct', 'player_2_hold_pct', 'player_1_break_pct', 'player_2_break_pct',
     'player_1_form_score', 'player_2_form_score',
@@ -73,7 +73,7 @@ function stagePersist(runId, payload) {
   upsertSheetRows_(SHEETS.SIGNALS, [
     'key', 'run_id', 'odds_event_id', 'schedule_event_id',
     'market', 'side', 'bookmaker', 'competition_tier', 'model_version',
-    'model_probability', 'market_implied_probability', 'edge_value', 'edge_tier', 'stake_units',
+    'model_probability', 'market_implied_probability', 'edge_value', 'edge_tier', 'stake_units', 'opening_price', 'evaluation_price', 'price_delta_bps', 'opening_lag_minutes', 'decision_gate_status',
     'signal_hash', 'notification_outcome', 'reason_code', 'created_at',
   ], payload.signals);
 
