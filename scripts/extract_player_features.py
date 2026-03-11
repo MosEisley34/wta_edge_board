@@ -546,6 +546,18 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
     for metric, count in metric_non_null.items():
         if count <= 0:
             threshold_failures.append(f"{metric}_non_null_coverage")
+
+    full_name_pattern = re.compile(r"^[A-Za-z][A-Za-z .'-]*\s[A-Za-z .'-]*[A-Za-z]$")
+    first_n = 20
+    name_quality_rows = [r for r in valid_rows if r.player_canonical_name][:first_n]
+    bad_name_rows = [
+        {"row": idx, "player_name": r.player_canonical_name}
+        for idx, r in enumerate(name_quality_rows, start=1)
+        if not full_name_pattern.match((r.player_canonical_name or "").strip())
+    ]
+    if bad_name_rows:
+        threshold_failures.append("first_n_rows_non_alphabetic_full_name")
+
     if threshold_failures:
         rows.append(
             PlayerFeature(
@@ -567,6 +579,10 @@ def _parse_matchmx_rows(source: str, text: str, as_of: str) -> list[PlayerFeatur
                         "failed_checks": threshold_failures,
                         "unique_players": unique_players,
                         "metric_non_null": metric_non_null,
+                        "name_quality": {
+                            "rows_checked": len(name_quality_rows),
+                            "bad_rows": bad_name_rows[:10],
+                        },
                     },
                     ensure_ascii=False,
                     sort_keys=True,

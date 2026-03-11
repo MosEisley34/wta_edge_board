@@ -50,8 +50,8 @@ class TaMatchMxRegressionTest(unittest.TestCase):
 
     def test_parse_matchmx_handles_quoted_commas_escaped_quotes_and_nested_arrays(self):
         payload = '\n'.join([
-            'matchmx[0] = ["2026-01-01","Open","Hard","Anna-Marie Smith","Doe, Jane","6-4 6-4","12","0.8","0.7","65","38","60","50","58","67","49","41","1.12","54"];',
-            'matchmx[1] = ["2026-01-02","Open",["Hard","Indoor"],"Beth Brown","Carla Cruz","6-4, 6-4","9","0.7","0.6","63","36","58","49","56","65","47","39","1.05","51"];',
+            'matchmx[0] = ["2026-01-01","Open","Hard","Doe, Jane","Anna-Marie Smith","6-4 6-4","12","0.8","0.7","65","38","60","50","58","67","49","41","1.12","54"];',
+            'matchmx[1] = ["2026-01-02","Open",["Hard","Indoor"],"Carla Cruz","Beth Brown","6-4, 6-4","9","0.7","0.6","63","36","58","49","56","65","47","39","1.05","51"];',
             'matchmx[2] = ["2026-01-03","Open","Hard","A","Doe, Jane","6-4 6-4","12"];',
         ])
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
@@ -63,7 +63,7 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertGreaterEqual(len(unusable_rows), 1)
 
     def test_parse_matchmx_parses_each_row_independently_from_array_assignment(self):
-        payload = 'matchmx = [["2026-01-01","Open","Hard","Iga Swiatek","Opponent A","6-1 6-1","1","0.9","0.8","70","40","60","50","58","67","49","41","1.12","54"],["2026-01-02","Open","Hard","Coco Gauff","Opponent B","6-2 6-2","3","0.8","0.7","68","39","59","49","57","66","48","40","1.08","52"]];'
+        payload = 'matchmx = [["2026-01-01","Open","Hard","Opponent A","Iga Swiatek","6-1 6-1","1","0.9","0.8","70","40","60","50","58","67","49","41","1.12","54"],["2026-01-02","Open","Hard","Opponent B","Coco Gauff","6-2 6-2","3","0.8","0.7","68","39","59","49","57","66","48","40","1.08","52"]];'
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
         ok_rows = [r for r in rows if r.reason_code == "ok"]
         self.assertEqual(len(ok_rows), 2)
@@ -116,7 +116,7 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         ]
         rows_payload = []
         for idx, canonical_name in enumerate(canonical_names):
-            sentinel = "I" if idx % 2 == 0 else "P"
+            sentinel = "I P" if idx % 2 == 0 else "P I"
             rows_payload.append(
                 'matchmx[{idx}] = ["2026-02-{day:02d}","Doha","Hard","{sentinel}","{canonical_name}","6-4 6-4","{rank}","0.81","0.75","65","38","60","50","58","67","49","41","1.12","54"];'.format(
                     idx=idx,
@@ -139,6 +139,10 @@ class TaMatchMxRegressionTest(unittest.TestCase):
             self.assertGreaterEqual(len(name), 3, diagnostic)
             self.assertRegex(name, name_pattern, diagnostic)
             self.assertEqual(name, canonical_names[row_idx], diagnostic)
+
+        self.assertGreater(sum(1 for row in ok_rows[:20] if row.ranking is not None), 0)
+        self.assertGreater(sum(1 for row in ok_rows[:20] if row.hold_pct is not None), 0)
+        self.assertGreater(sum(1 for row in ok_rows[:20] if row.break_pct is not None), 0)
 
 
 if __name__ == "__main__":
