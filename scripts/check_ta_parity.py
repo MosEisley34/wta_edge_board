@@ -24,6 +24,7 @@ from matchmx_parser import (
 
 DEFAULT_INPUT_PATH = "tmp/source_probe_latest/raw/tennisabstract_leadersource_wta.body"
 FALLBACK_INPUT_PATH = "tmp/source_probes/raw/tennisabstract_leadersource_wta.body"
+FIXTURE_INPUT_PATH = "scripts/fixtures/tennisabstract_leadersource_wta.body"
 
 
 def _canonicalize_name(name: str) -> str:
@@ -123,6 +124,11 @@ def main() -> int:
     args = parser.parse_args()
 
     path = Path(args.input)
+    if not path.exists() and args.input == DEFAULT_INPUT_PATH:
+        for candidate in (Path(FALLBACK_INPUT_PATH), Path(FIXTURE_INPUT_PATH)):
+            if candidate.exists():
+                path = candidate
+                break
     if not path.exists():
         print(json.dumps({"status": "fail", "reason_code": "input_missing", "path": str(path)}))
         return 1

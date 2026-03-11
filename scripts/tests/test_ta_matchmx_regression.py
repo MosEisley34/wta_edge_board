@@ -33,7 +33,10 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         return self._probe_payload_path().read_text(encoding="utf-8")
 
     def _probe_payload_path(self) -> Path:
-        return ROOT / "tmp" / "source_probe_latest" / "raw" / "tennisabstract_leadersource_wta.body"
+        live_probe_path = ROOT / "tmp" / "source_probe_latest" / "raw" / "tennisabstract_leadersource_wta.body"
+        if live_probe_path.exists():
+            return live_probe_path
+        return ROOT / "scripts" / "fixtures" / "tennisabstract_probe_long_live.body"
 
     def _has_probe_payload(self) -> bool:
         return self._probe_payload_path().exists()
