@@ -354,7 +354,65 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         ]
 
         idx = get_matchmx_row_idx(tokens)
-        self.assertEqual(idx, MATCHMX_NEW_ROW_IDX)
+        self.assertEqual(idx, MATCHMX_OLD_ROW_IDX)
+
+
+    def test_get_matchmx_row_idx_rejects_candidate_when_sampled_hold_break_tokens_are_non_numeric(self):
+        rows = [
+            [
+                "2026-04-01", "Rome", "Clay", "Opp A", "W", "Player A", "6-3 6-3", "4",
+                "0.86", "0.79", "71.5", "35", "63.2", "48.1", "60.3", "68.7", "51.4", "39.8", "1.10", "52.9",
+            ],
+            [
+                "2026-04-02", "Rome", "Clay", "Opp B", "L", "Player B", "4-6 6-4 4-6", "8",
+                "0.78", "0.72", "69.1", "NaNish", "59.8", "45.7", "57.6", "65.1", "48.9", "37.4", "1.03", "50.8",
+            ],
+            [
+                "2026-04-03", "Rome", "Clay", "Opp C", "W", "Player C", "7-5 6-4", "11",
+                "0.74", "0.69", "66.2", "Aryna Sabalenka", "58.4", "44.2", "56.1", "63.7", "47.3", "36.1", "1.01", "49.6",
+            ],
+        ]
+
+        idx = get_matchmx_row_idx(rows[0], sample_rows=rows)
+        self.assertEqual(idx, MATCHMX_OLD_ROW_IDX)
+
+    def test_get_matchmx_row_idx_rejects_candidate_when_break_resolves_to_name_like_tokens(self):
+        rows = [
+            [
+                "2026-04-01", "Rome", "Clay", "Opp A", "W", "Player A", "6-3 6-3", "4",
+                "0.86", "0.79", "71.5", "35", "63.2", "48.1", "60.3", "68.7", "51.4", "39.8", "1.10", "52.9",
+            ],
+            [
+                "2026-04-02", "Rome", "Clay", "Opp B", "L", "Player B", "4-6 6-4 4-6", "8",
+                "0.78", "0.72", "69.1", "Iga Swiatek", "59.8", "45.7", "57.6", "65.1", "48.9", "37.4", "1.03", "50.8",
+            ],
+            [
+                "2026-04-03", "Rome", "Clay", "Opp C", "W", "Player C", "7-5 6-4", "11",
+                "0.74", "0.69", "66.2", "Jessica Pegula", "58.4", "44.2", "56.1", "63.7", "47.3", "36.1", "1.01", "49.6",
+            ],
+        ]
+
+        idx = get_matchmx_row_idx(rows[0], sample_rows=rows)
+        self.assertEqual(idx, MATCHMX_OLD_ROW_IDX)
+
+    def test_get_matchmx_row_idx_rejects_candidate_when_hold_or_break_valid_counts_are_too_low(self):
+        rows = [
+            [
+                "2026-04-01", "Rome", "Clay", "Opp A", "W", "Player A", "6-3 6-3", "4",
+                "0.86", "0.79", "71.5", "35.1", "63.2", "48.1", "60.3", "68.7", "51.4", "39.8", "1.10", "52.9",
+            ],
+            [
+                "2026-04-02", "Rome", "Clay", "Opp B", "L", "Player B", "4-6 6-4 4-6", "8",
+                "0.78", "0.72", "null", "null", "59.8", "45.7", "57.6", "65.1", "48.9", "37.4", "1.03", "50.8",
+            ],
+            [
+                "2026-04-03", "Rome", "Clay", "Opp C", "W", "Player C", "7-5 6-4", "11",
+                "0.74", "0.69", "undefined", "undefined", "58.4", "44.2", "56.1", "63.7", "47.3", "36.1", "1.01", "49.6",
+            ],
+        ]
+
+        idx = get_matchmx_row_idx(rows[0], sample_rows=rows)
+        self.assertEqual(idx, MATCHMX_OLD_ROW_IDX)
 
     def test_get_matchmx_row_idx_uses_live_45_shape_only_with_plausible_numeric_hold_break(self):
         tokens = [
