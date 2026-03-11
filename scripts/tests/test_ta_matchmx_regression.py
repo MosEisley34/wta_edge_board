@@ -10,6 +10,11 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from extract_player_features import _parse_matchmx_rows  # noqa: E402
+from matchmx_parser import (  # noqa: E402
+    MATCHMX_NEW_ROW_IDX,
+    MATCHMX_OLD_ROW_IDX,
+    parse_matchmx_player_row,
+)
 
 
 class TaMatchMxRegressionTest(unittest.TestCase):
@@ -92,6 +97,84 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertNotEqual(row.hold_pct, 0.83)
         self.assertNotEqual(row.break_pct, 67.0)
         self.assertEqual(row.ranking, 6.0)
+
+    def _assert_schema_metric_window(self, row_idx, tokens, expected_hold, expected_break):
+        self.assertGreaterEqual(expected_hold, 40.0)
+        self.assertLessEqual(expected_hold, 95.0)
+        self.assertGreaterEqual(expected_break, 5.0)
+        self.assertLessEqual(expected_break, 70.0)
+
+        self.assertEqual(float(tokens[row_idx["HOLD_PCT"]]), expected_hold)
+        self.assertEqual(float(tokens[row_idx["BREAK_PCT"]]), expected_break)
+
+        parsed, error = parse_matchmx_player_row(tokens)
+        self.assertIsNone(error)
+        assert parsed is not None
+        self.assertEqual(parsed.hold_pct, expected_hold)
+        self.assertEqual(parsed.break_pct, expected_break)
+
+    def test_debug_helper_validates_hold_break_positions_for_old_and_new_schema_rows(self):
+        old_tokens = [
+            "2026-03-10",
+            "Doha",
+            "Hard",
+            "Opponent X",
+            "Iga Swiatek",
+            "6-3 6-4",
+            "2",
+            "0.88",
+            "0.81",
+            "74.2",
+            "31.9",
+            "67.0",
+            "52.3",
+            "63.2",
+            "71.1",
+            "54.1",
+            "44.7",
+            "1.23",
+            "55.0",
+        ]
+        new_tokens = [
+            "2026-03-11",
+            "Doha",
+            "Hard",
+            "Opponent Y",
+            "W",
+            "Coco Gauff",
+            "6-4 7-5",
+            "3",
+            "0.79",
+            "0.73",
+            "69.4",
+            "28.6",
+            "64.8",
+            "50.2",
+            "62.0",
+            "68.1",
+            "51.7",
+            "41.5",
+            "1.10",
+            "53.8",
+        ]
+
+        self._assert_schema_metric_window(MATCHMX_OLD_ROW_IDX, old_tokens, expected_hold=74.2, expected_break=31.9)
+        self._assert_schema_metric_window(MATCHMX_NEW_ROW_IDX, new_tokens, expected_hold=69.4, expected_break=28.6)
+
+    def test_parse_matchmx_realistic_new_schema_row_keeps_hold_break_distinct_from_ranking(self):
+        payload = 'matchmx[0] = ["2026-03-14","Indian Wells","Hard","Aryna Sabalenka","W","Mirra Andreeva","7-6(4) 6-4","12","0.64","0.59","71.3","34.8","63.1","45.5","61.9","69.0","50.4","39.2","1.09","52.7"];'
+        rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+        self.assertEqual(len(ok_rows), 1)
+
+        row = ok_rows[0]
+        self.assertEqual(row.hold_pct, 71.3)
+        self.assertEqual(row.break_pct, 34.8)
+        self.assertNotEqual(row.hold_pct, row.break_pct)
+        self.assertNotEqual(row.hold_pct, row.ranking)
+        self.assertNotEqual(row.break_pct, row.ranking)
+        self.assertNotEqual(row.hold_pct, 0.59)
+        self.assertNotEqual(row.break_pct, 12.0)
 
     def test_parse_matchmx_parses_each_row_independently_from_array_assignment(self):
         payload = 'matchmx = [["2026-01-01","Open","Hard","Opponent A","Iga Swiatek","6-1 6-1","1","0.9","0.8","70","40","60","50","58","67","49","41","1.12","54"],["2026-01-02","Open","Hard","Opponent B","Coco Gauff","6-2 6-2","3","0.8","0.7","68","39","59","49","57","66","48","40","1.08","52"]];'
