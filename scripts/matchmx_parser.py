@@ -28,7 +28,31 @@ MATCHMX_ROW_IDX = {
     "TOTAL_POINTS_WON_PCT": 18,
 }
 
+MATCHMX_NEW_ROW_IDX = {
+    "DATE": 0,
+    "EVENT": 1,
+    "SURFACE": 2,
+    "OPPONENT": 3,
+    "RESULT_FLAG": 4,
+    "PLAYER_NAME": 5,
+    "SCORE": 6,
+    "RANKING": 7,
+    "RECENT_FORM": 8,
+    "SURFACE_WIN_RATE": 9,
+    "HOLD_PCT": 10,
+    "BREAK_PCT": 11,
+    "BP_SAVED_PCT": 12,
+    "BP_CONV_PCT": 13,
+    "FIRST_SERVE_IN_PCT": 14,
+    "FIRST_SERVE_POINTS_WON_PCT": 15,
+    "SECOND_SERVE_POINTS_WON_PCT": 16,
+    "RETURN_POINTS_WON_PCT": 17,
+    "DOMINANCE_RATIO": 18,
+    "TOTAL_POINTS_WON_PCT": 19,
+}
+
 MATCHMX_MIN_FIELD_COUNT = max(MATCHMX_ROW_IDX.values()) + 1
+MATCHMX_NEW_MIN_FIELD_COUNT = max(MATCHMX_NEW_ROW_IDX.values()) + 1
 MATCHMX_REQUIRED_KEYS = ("DATE", "PLAYER_NAME", "SCORE")
 MATCHMX_KEY_METRIC_KEYS = ("RANKING", "RECENT_FORM", "SURFACE_WIN_RATE", "HOLD_PCT", "BREAK_PCT")
 DEFAULT_SHORT_NAME_WHITELIST = set()
@@ -251,18 +275,44 @@ def has_minimum_schema_columns(tokens: list[str]) -> bool:
     return len(tokens) >= MATCHMX_MIN_FIELD_COUNT
 
 
-def has_consistent_metric_index_mapping() -> bool:
-    indices = sorted(MATCHMX_ROW_IDX.values())
-    return indices == list(range(MATCHMX_MIN_FIELD_COUNT))
+def has_consistent_metric_index_mapping(row_idx: dict[str, int] | None = None) -> bool:
+    idx_map = row_idx or MATCHMX_ROW_IDX
+    indices = sorted(idx_map.values())
+    return indices == list(range(max(idx_map.values()) + 1))
 
 
-def required_indices_present(tokens: list[str]) -> bool:
-    return all(MATCHMX_ROW_IDX[key] < len(tokens) for key in MATCHMX_REQUIRED_KEYS)
+def _is_result_flag(value: object) -> bool:
+    return str(value).strip().upper() in {"W", "L"}
 
 
-def has_any_key_metrics(tokens: list[str]) -> bool:
+def _is_full_name_like(value: object) -> bool:
+    candidate = normalize_name(value)
+    if not candidate:
+        return False
+    if not NAME_LIKE_REGEX.match(candidate):
+        return False
+    return " " in candidate or "-" in candidate
+
+
+def get_matchmx_row_idx(tokens: list[str]) -> dict[str, int]:
+    if len(tokens) > MATCHMX_ROW_IDX["PLAYER_NAME"] and _is_full_name_like(tokens[MATCHMX_ROW_IDX["PLAYER_NAME"]]):
+        return MATCHMX_ROW_IDX
+    if (
+        len(tokens) > MATCHMX_NEW_ROW_IDX["PLAYER_NAME"]
+        and _is_result_flag(tokens[MATCHMX_ROW_IDX["PLAYER_NAME"]])
+        and _is_full_name_like(tokens[MATCHMX_NEW_ROW_IDX["PLAYER_NAME"]])
+    ):
+        return MATCHMX_NEW_ROW_IDX
+    return MATCHMX_ROW_IDX
+
+
+def required_indices_present(tokens: list[str], row_idx: dict[str, int]) -> bool:
+    return all(row_idx[key] < len(tokens) for key in MATCHMX_REQUIRED_KEYS)
+
+
+def has_any_key_metrics(tokens: list[str], row_idx: dict[str, int]) -> bool:
     for key in MATCHMX_KEY_METRIC_KEYS:
-        idx = MATCHMX_ROW_IDX[key]
+        idx = row_idx[key]
         if idx >= len(tokens):
             continue
         token = str(tokens[idx]).strip().lower()
@@ -309,8 +359,8 @@ def _to_number(tokens: list[str], idx: int) -> float | None:
     return value
 
 
-def _select_player_name(tokens: list[str]) -> str | None:
-    candidate_indices = [MATCHMX_ROW_IDX["PLAYER_NAME"], MATCHMX_ROW_IDX["OPPONENT"]]
+def _select_player_name(tokens: list[str], row_idx: dict[str, int]) -> str | None:
+    candidate_indices = [row_idx["PLAYER_NAME"], row_idx["OPPONENT"]]
     fallback: str | None = None
     for idx in candidate_indices:
         if idx >= len(tokens):
@@ -326,22 +376,24 @@ def _select_player_name(tokens: list[str]) -> str | None:
 
 
 def parse_matchmx_player_row(tokens: list[str]) -> tuple[MatchMxPlayerRow | None, str | None]:
-    if not has_consistent_metric_index_mapping():
+    row_idx = get_matchmx_row_idx(tokens)
+    if not has_consistent_metric_index_mapping(row_idx):
         return None, "metric_index_mapping_invalid"
-    if not has_minimum_schema_columns(tokens):
+    min_field_count = max(row_idx.values()) + 1
+    if len(tokens) < min_field_count:
         return None, "row_shape_invalid_for_matchmx_schema"
-    if not required_indices_present(tokens):
+    if not required_indices_present(tokens, row_idx):
         return None, "row_indexes_out_of_bounds"
 
-    score = str(tokens[MATCHMX_ROW_IDX["SCORE"]]).strip()
-    player_name = _select_player_name(tokens) or ""
+    score = str(tokens[row_idx["SCORE"]]).strip()
+    player_name = _select_player_name(tokens, row_idx) or ""
     if not player_name or not score:
         return None, "required_fields_missing"
     if not is_usable_canonical_name(player_name):
         if player_name.lower() in PLAYER_NAME_DRIFT_SENTINELS:
             return None, "player_name_mapping_drift"
         return None, "canonical_name_rejected"
-    if not has_any_key_metrics(tokens):
+    if not has_any_key_metrics(tokens, row_idx):
         return None, "all_key_metrics_null"
 
     has_walkover_or_ret = bool(re.search(r"\b(?:ret|wo)\b", score, flags=re.IGNORECASE))
@@ -363,10 +415,10 @@ def parse_matchmx_player_row(tokens: list[str]) -> tuple[MatchMxPlayerRow | None
     def take(key: str) -> float | None:
         if has_walkover_or_ret and key in retired_metric_keys:
             return None
-        return _to_number(tokens, MATCHMX_ROW_IDX[key])
+        return _to_number(tokens, row_idx[key])
 
     row = MatchMxPlayerRow(
-        date=str(tokens[MATCHMX_ROW_IDX["DATE"]]),
+        date=str(tokens[row_idx["DATE"]]),
         player_name=player_name,
         score=score,
         ranking=take("RANKING"),

@@ -62,6 +62,21 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         unusable_rows = [row for row in rows if row.reason_code == "ta_matchmx_unusable_payload"]
         self.assertGreaterEqual(len(unusable_rows), 1)
 
+    def test_parse_matchmx_old_schema_row_parses_to_canonical_name(self):
+        payload = 'matchmx[0] = ["2026-03-01","Open","Hard","Opponent A","Iga Swiatek","6-1 6-2","1","0.9","0.8","70","40","60","50","58","67","49","41","1.12","54"];'
+        rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+        self.assertEqual(len(ok_rows), 1)
+        self.assertEqual(ok_rows[0].player_canonical_name, "Iga Swiatek")
+
+    def test_parse_matchmx_new_schema_row_with_result_flag_parses_without_name_rejection(self):
+        payload = 'matchmx[0] = ["2026-03-02","Open","Hard","Opponent B","W","Coco Gauff","6-2 6-2","3","0.8","0.7","68","39","59","49","57","66","48","40","1.08","52"];'
+        rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+        self.assertEqual(len(ok_rows), 1)
+        self.assertEqual(ok_rows[0].player_canonical_name, "Coco Gauff")
+        self.assertFalse(any(row.reason_code == "canonical_name_rejected" for row in rows))
+
     def test_parse_matchmx_parses_each_row_independently_from_array_assignment(self):
         payload = 'matchmx = [["2026-01-01","Open","Hard","Opponent A","Iga Swiatek","6-1 6-1","1","0.9","0.8","70","40","60","50","58","67","49","41","1.12","54"],["2026-01-02","Open","Hard","Opponent B","Coco Gauff","6-2 6-2","3","0.8","0.7","68","39","59","49","57","66","48","40","1.08","52"]];'
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
