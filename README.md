@@ -74,33 +74,64 @@ All logs continue to pass through secret redaction before being persisted.
 
 `matched` and `unmatched` summary fields are derived from these explicit counters rather than total `MATCH_MAP` upsert rows, so a run can clearly show patterns like **`0 matched / N rejected`** while still persisting rejection rows for troubleshooting.
 
-## Runtime diagnostics (local)
+## Runtime diagnostics triage flow
 
-Use `scripts/scan_runtime_diagnostics.sh` to scan **only explicit runtime artifacts** (exported Run_Log/State CSV or JSON) for common diagnostic keys:
+Use this 3-step flow so local and CI triage always consume the same exported artifacts from `./exports` (default):
 
-- `provider_returned_null_features`
-- `ta_h2h_empty_table`
-- `missing_stats`
-- `schedule_enrichment_h2h_missing`
+1. **Export artifacts to a known directory** (`./exports` by default).
+2. **Run diagnostics scan/triage** against that export directory.
+3. **Interpret grouped counts + row previews** to identify the dominant failure mode.
 
-The script intentionally fails fast when no supported artifacts are found in the paths you provide, so it does not fall back to scanning repo source files.
-
-### Usage
+### 1) Export Run_Log/State artifacts
 
 ```bash
-scripts/scan_runtime_diagnostics.sh <file-or-directory> [more paths...]
+scripts/export_runtime_artifacts.sh [--out-dir ./exports] <file-or-directory> [more paths...]
 ```
 
 Examples:
 
 ```bash
-scripts/scan_runtime_diagnostics.sh ./exports/Run_Log.csv
-scripts/scan_runtime_diagnostics.sh ./exports/run_logs ./exports/state_dump.json
+scripts/export_runtime_artifacts.sh ./runtime
+scripts/export_runtime_artifacts.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
 ```
 
-Output includes:
-- grouped counts per diagnostic key,
-- top matching rows (file + row + preview) for quick local triage.
+This command copies matching `Run_Log`/`State` CSV/JSON files into `./exports` and fails with a clear error when no exportable artifacts are found.
+
+### 2) Run scanner/triage
+
+Local triage wrapper (fails fast if exports are missing):
+
+```bash
+scripts/triage_runtime_diagnostics_local.sh [./exports]
+```
+
+CI triage wrapper (uses `RUNTIME_EXPORT_DIR` or defaults to `./exports`):
+
+```bash
+scripts/triage_runtime_diagnostics_ci.sh
+```
+
+Direct scanner usage is still available:
+
+```bash
+scripts/scan_runtime_diagnostics.sh ./exports
+```
+
+### 3) Interpret expected output
+
+The scan reports:
+- **Grouped counts** for each diagnostic key:
+  - `provider_returned_null_features`
+  - `ta_h2h_empty_table`
+  - `missing_stats`
+  - `schedule_enrichment_h2h_missing`
+- **Top matching rows** (file + row + preview) to quickly locate the first representative examples.
+
+Interpretation guide:
+- high `provider_returned_null_features`: upstream source returned rows but usable features were null,
+- high `ta_h2h_empty_table`: TA H2H source response resolved to an empty table,
+- high `missing_stats`: event/player rows were present but stat fields were absent,
+- high `schedule_enrichment_h2h_missing`: schedule rows lacked expected H2H enrichment.
 
 
 ## TA parser parity pre-deploy gate
