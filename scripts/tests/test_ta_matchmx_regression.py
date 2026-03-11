@@ -30,10 +30,13 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.live_shape_payload = self.live_shape_fixture_path.read_text(encoding="utf-8")
 
     def _load_live_probe_payload(self) -> str:
-        probe_path = ROOT / "tmp" / "source_probe_latest" / "raw" / "tennisabstract_leadersource_wta.body"
-        if probe_path.exists():
-            return probe_path.read_text(encoding="utf-8")
-        return self.payload
+        return self._probe_payload_path().read_text(encoding="utf-8")
+
+    def _probe_payload_path(self) -> Path:
+        return ROOT / "tmp" / "source_probe_latest" / "raw" / "tennisabstract_leadersource_wta.body"
+
+    def _has_probe_payload(self) -> bool:
+        return self._probe_payload_path().exists()
 
     def _collect_probe_rows(self, max_rows: int = 25):
         rows = []
@@ -449,15 +452,42 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertTrue(all(float(b) not in set(float(r) for r in ranking_values if r is not None) for b in break_values if b is not None))
 
     def test_probe_rows_have_plausible_hold_band_and_non_constant_break_values(self):
-        rows = self._collect_probe_rows(max_rows=25)
-        self.assertGreaterEqual(len(rows), 5)
+        if not self._has_probe_payload():
+            self.skipTest("probe artifact not present")
 
-        hold_values = [row.hold_pct for row in rows if row.hold_pct is not None]
-        self.assertGreater(len(hold_values), 0)
+        payload = self._load_live_probe_payload()
+        probe_token_rows = []
+        for parsed in iter_matchmx_rows(payload):
+            if parsed.row_shape_valid:
+                probe_token_rows.append(parsed.tokens)
+            if len(probe_token_rows) >= 25:
+                break
+
+        self.assertGreaterEqual(len(probe_token_rows), 5)
+
+        selected_idx = get_matchmx_row_idx(probe_token_rows[0], sample_rows=probe_token_rows)
+        self.assertEqual(selected_idx, MATCHMX_LONG_LIVE_ROW_IDX)
+
+        name_like_token = re.compile(r"^[A-Za-z][A-Za-z .'-]*[A-Za-z]$")
+        hold_values = []
+        break_values = []
+
+        for tokens in probe_token_rows:
+            hold_token = str(tokens[selected_idx["HOLD_PCT"]]).strip()
+            break_token = str(tokens[selected_idx["BREAK_PCT"]]).strip()
+
+            self.assertFalse(name_like_token.fullmatch(hold_token), f"hold token looks name-like: {hold_token!r}")
+            self.assertFalse(name_like_token.fullmatch(break_token), f"break token looks name-like: {break_token!r}")
+
+            hold_value = float(hold_token)
+            break_value = float(break_token)
+
+            hold_values.append(hold_value)
+            break_values.append(break_value)
+
         self.assertTrue(all(35.0 <= value <= 95.0 for value in hold_values))
-
-        break_values = [row.break_pct for row in rows if row.break_pct is not None]
-        self.assertGreater(len(break_values), 0)
+        self.assertTrue(all(0.0 <= value <= 70.0 for value in break_values))
+        self.assertGreater(sum(1 for value in break_values if value != 0.0), 0)
         self.assertGreater(len(set(break_values)), 1)
 
     def test_live_shape_regression_fixture_includes_hold_none_and_break_three_rows(self):
