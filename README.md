@@ -76,7 +76,22 @@ All logs continue to pass through secret redaction before being persisted.
 
 ## Runtime diagnostics triage flow
 
-Use this 3-step flow so local and CI triage always consume the same exported artifacts from `./exports` (default):
+Use this standard bundle flow so each triage cycle always exports `Run_Log`/`State` CSV/JSON into `./exports` (default) before analysis:
+
+```bash
+scripts/run_triage_bundle.sh [--out-dir ./exports] <file-or-directory> [more paths...]
+```
+
+Examples:
+
+```bash
+scripts/run_triage_bundle.sh ./runtime
+scripts/run_triage_bundle.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
+```
+
+The wrapper runs `scripts/export_runtime_artifacts.sh` and then invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`) so diagnostics inputs are consistently prepared before scanning.
+
+Manual 3-step flow is still available when needed:
 
 1. **Export artifacts to a known directory** (`./exports` by default).
 2. **Run diagnostics scan/triage** against that export directory.
