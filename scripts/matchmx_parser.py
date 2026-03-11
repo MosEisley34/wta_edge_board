@@ -309,9 +309,14 @@ def has_minimum_schema_columns(tokens: list[str]) -> bool:
 
 
 def has_consistent_metric_index_mapping(row_idx: dict[str, int] | None = None) -> bool:
-    idx_map = row_idx or MATCHMX_ROW_IDX
-    indices = sorted(idx_map.values())
-    return indices == list(range(max(idx_map.values()) + 1))
+    candidate_maps = [row_idx] if row_idx is not None else list(MATCHMX_SCHEMA_INDEX_MAPS.values())
+    for idx_map in candidate_maps:
+        if idx_map is None:
+            return False
+        indices = sorted(idx_map.values())
+        if indices != list(range(max(idx_map.values()) + 1)):
+            return False
+    return True
 
 
 def _is_result_flag(value: object) -> bool:
@@ -331,11 +336,20 @@ def get_matchmx_row_idx(tokens: list[str]) -> dict[str, int]:
     def _plausible_pct(value: float | None, low: float, high: float) -> bool:
         return value is not None and low <= value <= high
 
+    def _plausible_ratio_or_pct(value: float | None) -> bool:
+        return value is not None and (0.0 <= value <= 1.0 or 0.0 <= value <= 100.0)
+
     def _schema_quality(idx_map: dict[str, int]) -> tuple[int, int]:
+        recent_form = _to_number(tokens, idx_map["RECENT_FORM"])
+        surface = _to_number(tokens, idx_map["SURFACE_WIN_RATE"])
         hold = _to_number(tokens, idx_map["HOLD_PCT"])
         brk = _to_number(tokens, idx_map["BREAK_PCT"])
         ranking = _to_number(tokens, idx_map["RANKING"])
         quality = 0
+        if _plausible_ratio_or_pct(recent_form):
+            quality += 1
+        if _plausible_ratio_or_pct(surface):
+            quality += 1
         if _plausible_pct(hold, 35.0, 95.0):
             quality += 1
         if _plausible_pct(brk, 5.0, 70.0):
