@@ -122,6 +122,74 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertEqual(summary["matchmx_unusable_rows"], 1)
 
 
+    def test_check_ta_parity_reason_code_prefers_parser_failure_when_unusable_payload_present(self):
+        fixture = ROOT / "tmp" / "test_ta_parity_parser_and_threshold_failure.body"
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_text(
+            '\n'.join([
+                'matchmx[0] = ["2026-01-01","Open","Hard","A","Opponent","6-0 6-0","1","0.8","0.7","65","38","60","50","58","67","49","41","1.12","54"];',
+                'matchmx[1] = ["2026-01-02","Open","Hard","Opponent B","Iga Swiatek","6-2 6-2","1","0.8","0.7","65","","60","50","58","67","49","41","1.12","54"];',
+            ]),
+            encoding="utf-8",
+        )
+
+        cmd = [
+            sys.executable,
+            str(SCRIPTS_DIR / "check_ta_parity.py"),
+            "--input",
+            str(fixture),
+            "--min-rows",
+            "1",
+            "--min-unique-players",
+            "1",
+        ]
+        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1)
+        summary = json.loads(result.stdout)
+        self.assertEqual(summary["reason_code"], "ta_matchmx_unusable_payload")
+        self.assertIn("break_pct_non_null_coverage", summary["threshold_failure_keys"])
+
+    def test_check_ta_parity_reason_code_threshold_only_failure(self):
+        fixture = ROOT / "tmp" / "test_ta_parity_threshold_only_failure.body"
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_text(
+            'matchmx[0] = ["2026-01-01","Open","Hard","Opponent A","Iga Swiatek","6-0 6-0","1","0.8","0.7","","38","60","50","58","67","49","41","1.12","54"];',
+            encoding="utf-8",
+        )
+
+        cmd = [
+            sys.executable,
+            str(SCRIPTS_DIR / "check_ta_parity.py"),
+            "--input",
+            str(fixture),
+            "--min-rows",
+            "1",
+            "--min-unique-players",
+            "1",
+        ]
+        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1)
+        summary = json.loads(result.stdout)
+        self.assertEqual(summary["reason_code"], "ta_matchmx_threshold_failure")
+        self.assertEqual(summary["matchmx_unusable_rows"], 0)
+        self.assertIn("hold_pct_non_null_coverage", summary["threshold_failure_keys"])
+
+    def test_check_ta_parity_success_case_has_no_failure_reason(self):
+        cmd = [
+            sys.executable,
+            str(SCRIPTS_DIR / "check_ta_parity.py"),
+            "--input",
+            str(self.fixture_path),
+            "--sample-size",
+            "1",
+        ]
+        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=True)
+        summary = json.loads(result.stdout)
+        self.assertNotIn("reason_code", summary)
+        self.assertEqual(summary["threshold_errors"], [])
+        self.assertEqual(summary["threshold_failure_keys"], [])
+
+
     def test_parse_matchmx_first_20_rows_resolve_to_canonical_names_with_row_diagnostics(self):
         canonical_names = [
             "Amanda Anisimova",

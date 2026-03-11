@@ -181,16 +181,25 @@ def main() -> int:
         "min_unique_players": max(1, int(args.min_unique_players)),
     }
     threshold_errors: list[str] = []
+    threshold_failure_keys: list[str] = []
+
+    def record_threshold_failure(key: str, detail: str) -> None:
+        threshold_failure_keys.append(key)
+        threshold_errors.append(detail)
+
     if len(rows) < thresholds["min_rows"]:
-        threshold_errors.append(f"rows={len(rows)} < {thresholds['min_rows']}")
+        record_threshold_failure("min_rows", f"rows={len(rows)} < {thresholds['min_rows']}")
     if len(normalized_rows) < thresholds["min_unique_players"]:
-        threshold_errors.append(f"unique_players={len(normalized_rows)} < {thresholds['min_unique_players']}")
+        record_threshold_failure(
+            "min_unique_players",
+            f"unique_players={len(normalized_rows)} < {thresholds['min_unique_players']}",
+        )
     if row_rank_count <= 0:
-        threshold_errors.append("ranking_non_null_coverage=0")
+        record_threshold_failure("ranking_non_null_coverage", "ranking_non_null_coverage=0")
     if row_hold_count <= 0:
-        threshold_errors.append("hold_pct_non_null_coverage=0")
+        record_threshold_failure("hold_pct_non_null_coverage", "hold_pct_non_null_coverage=0")
     if row_break_count <= 0:
-        threshold_errors.append("break_pct_non_null_coverage=0")
+        record_threshold_failure("break_pct_non_null_coverage", "break_pct_non_null_coverage=0")
 
     name_check_rows = max(1, int(args.name_check_rows))
     bad_name_rows = []
@@ -199,7 +208,7 @@ def main() -> int:
         if not _is_alphabetic_full_name(name):
             bad_name_rows.append({"row": idx, "player_name": name})
     if bad_name_rows:
-        threshold_errors.append("first_n_rows_non_alphabetic_full_name")
+        record_threshold_failure("name_check", "first_n_rows_non_alphabetic_full_name")
 
     summary = {
         "input": str(path),
@@ -220,6 +229,7 @@ def main() -> int:
         "sample_normalized_records": sorted(normalized_rows, key=lambda r: str(r["player"]))[: max(0, args.sample_size)],
         "thresholds": thresholds,
         "threshold_errors": threshold_errors,
+        "threshold_failure_keys": threshold_failure_keys,
         "name_check": {
             "rows_checked": min(len(rows), name_check_rows),
             "requested_rows": name_check_rows,
@@ -230,7 +240,11 @@ def main() -> int:
 
     if threshold_errors:
         summary["status"] = "fail"
-        summary["reason_code"] = "ta_matchmx_unusable_payload"
+        summary["reason_code"] = (
+            "ta_matchmx_unusable_payload"
+            if unusable_payload_rows > 0
+            else "ta_matchmx_threshold_failure"
+        )
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 1
 
