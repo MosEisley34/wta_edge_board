@@ -190,6 +190,31 @@ DEFAULT_SHORT_NAME_WHITELIST = set()
 ROW_START_REGEX = re.compile(r"matchmx\s*(?:\[\s*\d+\s*\])?\s*=\s*\[")
 NAME_LIKE_REGEX = re.compile(r"^[A-Za-z][A-Za-z .'-]*[A-Za-z]$")
 PLAYER_NAME_DRIFT_SENTINELS = {"i", "p"}
+EXPECTED_NON_MODEL_ROW_KEYWORDS = {
+    "doubles",
+    "double",
+    "team",
+    "teams",
+    "billie jean king cup",
+    "fed cup",
+    "united cup",
+    "hopman cup",
+}
+ROUND_OR_PHASE_MARKERS = {
+    "q",
+    "q1",
+    "q2",
+    "q3",
+    "r128",
+    "r64",
+    "r32",
+    "r16",
+    "qf",
+    "sf",
+    "f",
+    "rr",
+    "rubber",
+}
 
 
 @dataclass
@@ -440,6 +465,28 @@ def _is_score_like(value: object) -> bool:
 
 def _is_round_label(value: object) -> bool:
     return str(value).strip().upper() in {"R16", "QF", "SF", "F"}
+
+
+def classify_expected_non_model_row(tokens: list[str]) -> str | None:
+    lowered_tokens = [str(token or "").strip().lower() for token in tokens]
+    joined = " | ".join(token for token in lowered_tokens if token)
+
+    if any(keyword in joined for keyword in EXPECTED_NON_MODEL_ROW_KEYWORDS):
+        return "team_or_doubles_marker"
+
+    slash_like_tokens = [
+        token
+        for token in lowered_tokens[:8]
+        if "/" in token and not re.search(r"\d\s*/\s*\d", token)
+    ]
+    if slash_like_tokens:
+        return "team_or_doubles_player_token"
+
+    phase_markers = [token for token in lowered_tokens[:10] if token in ROUND_OR_PHASE_MARKERS]
+    if phase_markers and not any(re.search(r"\d\s*-\s*\d", token) for token in lowered_tokens):
+        return "tournament_or_round_marker"
+
+    return None
 
 
 def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None = None) -> dict[str, int]:
