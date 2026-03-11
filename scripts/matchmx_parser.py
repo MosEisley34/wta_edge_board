@@ -75,10 +75,58 @@ MATCHMX_NEW_WITH_SEED_ROW_IDX = {
     "TOTAL_POINTS_WON_PCT": 20,
 }
 
+MATCHMX_LONG_ROW_IDX = {
+    "DATE": 0,
+    "EVENT": 1,
+    "SURFACE": 2,
+    "OPPONENT": 3,
+    "RESULT_FLAG": 4,
+    "PLAYER_NAME": 5,
+    "ROUND": 6,
+    "DRAW_SIZE": 7,
+    "COURT": 8,
+    "BEST_OF": 9,
+    "MATCH_MINUTES": 10,
+    "MATCH_ID": 11,
+    "COUNTRY": 12,
+    "LEVEL": 13,
+    "TOUR": 14,
+    "SEASON": 15,
+    "SEED": 16,
+    "ENTRY": 17,
+    "AGE": 18,
+    "HAND": 19,
+    "ACES": 20,
+    "DOUBLE_FAULTS": 21,
+    "FIRST_SERVE_IN_RAW": 22,
+    "SCORE": 23,
+    "RANKING": 24,
+    "RECENT_FORM": 25,
+    "SURFACE_WIN_RATE": 26,
+    "HOLD_PCT": 27,
+    "BREAK_PCT": 28,
+    "BP_SAVED_PCT": 29,
+    "BP_CONV_PCT": 30,
+    "FIRST_SERVE_IN_PCT": 31,
+    "FIRST_SERVE_POINTS_WON_PCT": 32,
+    "SECOND_SERVE_POINTS_WON_PCT": 33,
+    "RETURN_POINTS_WON_PCT": 34,
+    "DOMINANCE_RATIO": 35,
+    "TOTAL_POINTS_WON_PCT": 36,
+    "SERVICE_GAMES": 37,
+    "RETURN_GAMES": 38,
+    "POINTS_PLAYED": 39,
+    "TB_RECORD": 40,
+    "OPENER_ODDS": 41,
+    "CLOSING_ODDS": 42,
+    "NOTES": 43,
+}
+
 MATCHMX_SCHEMA_INDEX_MAPS = {
     "old": MATCHMX_OLD_ROW_IDX,
     "new": MATCHMX_NEW_ROW_IDX,
     "new_with_seed": MATCHMX_NEW_WITH_SEED_ROW_IDX,
+    "long": MATCHMX_LONG_ROW_IDX,
 }
 
 # Backwards-compatible alias used in existing callers/tests.
@@ -332,6 +380,15 @@ def _is_full_name_like(value: object) -> bool:
     return " " in candidate or "-" in candidate
 
 
+def _is_score_like(value: object) -> bool:
+    candidate = str(value).strip()
+    if not candidate:
+        return False
+    if re.search(r"\b(?:ret|wo)\b", candidate, flags=re.IGNORECASE):
+        return True
+    return bool(re.search(r"\d\s*-\s*\d", candidate))
+
+
 def get_matchmx_row_idx(tokens: list[str]) -> dict[str, int]:
     def _plausible_pct(value: float | None, low: float, high: float) -> bool:
         return value is not None and low <= value <= high
@@ -357,6 +414,15 @@ def get_matchmx_row_idx(tokens: list[str]) -> dict[str, int]:
         if ranking is not None and 0.0 <= ranking <= 2000.0:
             quality += 1
         return quality, -max(idx_map.values())
+
+    if (
+        len(tokens) >= 40
+        and len(tokens) > MATCHMX_LONG_ROW_IDX["SCORE"]
+        and _is_result_flag(tokens[MATCHMX_LONG_ROW_IDX["RESULT_FLAG"]])
+        and _is_full_name_like(tokens[MATCHMX_LONG_ROW_IDX["PLAYER_NAME"]])
+        and _is_score_like(tokens[MATCHMX_LONG_ROW_IDX["SCORE"]])
+    ):
+        return MATCHMX_LONG_ROW_IDX
 
     if len(tokens) > MATCHMX_OLD_ROW_IDX["PLAYER_NAME"] and _is_full_name_like(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]]):
         return MATCHMX_OLD_ROW_IDX

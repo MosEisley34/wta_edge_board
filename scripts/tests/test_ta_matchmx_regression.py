@@ -11,6 +11,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from extract_player_features import _parse_matchmx_rows  # noqa: E402
 from matchmx_parser import (  # noqa: E402
+    MATCHMX_LONG_ROW_IDX,
     MATCHMX_NEW_ROW_IDX,
     MATCHMX_OLD_ROW_IDX,
     iter_matchmx_rows,
@@ -179,6 +180,76 @@ class TaMatchMxRegressionTest(unittest.TestCase):
 
         self._assert_schema_metric_window(MATCHMX_OLD_ROW_IDX, old_tokens, expected_hold=74.2, expected_break=31.9)
         self._assert_schema_metric_window(MATCHMX_NEW_ROW_IDX, new_tokens, expected_hold=69.4, expected_break=28.6)
+
+
+    def test_parse_matchmx_long_schema_row_uses_long_index_map_for_hold_and_break(self):
+        long_tokens = [
+            "2026-01-06",
+            "Auckland",
+            "Hard",
+            "Opponent Z",
+            "W",
+            "Emma Navarro",
+            "R32",
+            "32",
+            "Outdoor",
+            "3",
+            "97",
+            "M123",
+            "USA",
+            "WTA250",
+            "WTA",
+            "2026",
+            "6",
+            "",
+            "23.1",
+            "R",
+            "5",
+            "2",
+            "61",
+            "6-4 6-2",
+            "12",
+            "0.83",
+            "0.76",
+            "68.5",
+            "37.9",
+            "59.2",
+            "46.8",
+            "62.7",
+            "69.4",
+            "49.5",
+            "40.6",
+            "1.14",
+            "53.2",
+            "12",
+            "11",
+            "129",
+            "1-0",
+            "-130",
+            "-145",
+            "Auckland-style long row",
+        ]
+
+        self.assertEqual(float(long_tokens[MATCHMX_LONG_ROW_IDX["HOLD_PCT"]]), 68.5)
+        self.assertEqual(float(long_tokens[MATCHMX_LONG_ROW_IDX["BREAK_PCT"]]), 37.9)
+
+        parsed, error = parse_matchmx_player_row(long_tokens)
+        self.assertIsNone(error)
+        assert parsed is not None
+        self.assertEqual(parsed.ranking, 12.0)
+        self.assertEqual(parsed.hold_pct, 68.5)
+        self.assertEqual(parsed.break_pct, 37.9)
+
+        self.assertIsNotNone(parsed.hold_pct)
+        self.assertIsNotNone(parsed.break_pct)
+        self.assertNotEqual(parsed.hold_pct, parsed.ranking)
+        self.assertNotEqual(parsed.break_pct, parsed.ranking)
+        self.assertNotEqual(parsed.hold_pct, 6.0)
+        self.assertNotEqual(parsed.break_pct, 6.0)
+        self.assertNotEqual(parsed.hold_pct, 32.0)
+        self.assertNotEqual(parsed.break_pct, 32.0)
+        self.assertNotEqual(parsed.hold_pct, float(long_tokens[MATCHMX_LONG_ROW_IDX["SEED"]]))
+        self.assertNotEqual(parsed.break_pct, float(long_tokens[MATCHMX_LONG_ROW_IDX["SEED"]]))
 
     def test_realistic_new_schema_rows_keep_hold_non_null_and_break_non_constant_and_distinct_from_ranking(self):
         payload = '\n'.join([
