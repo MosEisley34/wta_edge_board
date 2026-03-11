@@ -13,6 +13,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from extract_player_features import _parse_matchmx_rows  # noqa: E402
 from matchmx_parser import (  # noqa: E402
     MATCHMX_LONG_LIVE_ROW_IDX,
+    MATCHMX_LONG_MIXED_LIVE_ROW_IDX,
     MATCHMX_LONG_ROW_IDX,
     MATCHMX_NEW_ROW_IDX,
     MATCHMX_OLD_ROW_IDX,
@@ -477,6 +478,60 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertTrue(all(float(h) not in set(float(r) for r in ranking_values if r is not None) for h in hold_values if h is not None))
         self.assertTrue(all(float(b) not in set(float(r) for r in ranking_values if r is not None) for b in break_values if b is not None))
 
+
+    @staticmethod
+    def _probe_schema_diagnostics(rows, limit: int = 5):
+        candidate_maps = {
+            "old": MATCHMX_OLD_ROW_IDX,
+            "new": MATCHMX_NEW_ROW_IDX,
+            "long": MATCHMX_LONG_ROW_IDX,
+            "long_live": MATCHMX_LONG_LIVE_ROW_IDX,
+            "long_mixed_live": MATCHMX_LONG_MIXED_LIVE_ROW_IDX,
+        }
+
+        def _is_numeric(token: str) -> bool:
+            try:
+                float(str(token).strip())
+                return True
+            except (TypeError, ValueError):
+                return False
+
+        def _is_result(value: str) -> bool:
+            return str(value).strip().upper() in {"W", "L"}
+
+        def _is_score(value: str) -> bool:
+            return bool(re.search(r"\d\s*-\s*\d", str(value).strip()))
+
+        diagnostics = []
+        probe_rows = rows[:limit]
+        for name, idx_map in candidate_maps.items():
+            max_idx = max(idx_map.values())
+            usable_rows = [row for row in probe_rows if len(row) > max_idx]
+            failures = {"PLAYER_NAME": 0, "RESULT_FLAG": 0, "TOURNAMENT_PHASE": 0, "HOLD_PCT": 0, "BREAK_PCT": 0}
+            for row in usable_rows:
+                player = str(row[idx_map["PLAYER_NAME"]]).strip()
+                if not re.fullmatch(r"[A-Za-z][A-Za-z .'-]*[A-Za-z]", player):
+                    failures["PLAYER_NAME"] += 1
+                if "RESULT_FLAG" in idx_map and not _is_result(str(row[idx_map["RESULT_FLAG"]])):
+                    failures["RESULT_FLAG"] += 1
+                if "TOURNAMENT_PHASE" in idx_map:
+                    phase = str(row[idx_map["TOURNAMENT_PHASE"]]).strip()
+                    if not phase or _is_result(phase) or _is_score(phase):
+                        failures["TOURNAMENT_PHASE"] += 1
+                hold = str(row[idx_map["HOLD_PCT"]]).strip()
+                brk = str(row[idx_map["BREAK_PCT"]]).strip()
+                if not _is_numeric(hold):
+                    failures["HOLD_PCT"] += 1
+                if not _is_numeric(brk):
+                    failures["BREAK_PCT"] += 1
+            top_conflicts = sorted(((k, v) for k, v in failures.items() if v), key=lambda kv: kv[1], reverse=True)[:3]
+            diagnostics.append({
+                "schema": name,
+                "token_count": len(rows[0]) if rows else 0,
+                "usable_rows": len(usable_rows),
+                "top_conflicts": top_conflicts,
+            })
+        return diagnostics
     def test_probe_rows_have_plausible_hold_band_and_non_constant_break_values(self):
         if not self._has_probe_payload():
             self.skipTest("probe artifact not present")
@@ -492,7 +547,12 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertGreaterEqual(len(probe_token_rows), 5)
 
         selected_idx = get_matchmx_row_idx(probe_token_rows[0], sample_rows=probe_token_rows)
-        self.assertEqual(selected_idx, MATCHMX_LONG_LIVE_ROW_IDX)
+        schema_diagnostics = self._probe_schema_diagnostics(probe_token_rows)
+        self.assertEqual(
+            selected_idx,
+            MATCHMX_LONG_MIXED_LIVE_ROW_IDX,
+            f"schema diagnostics (first probe rows): {schema_diagnostics}",
+        )
 
         name_like_token = re.compile(r"^[A-Za-z][A-Za-z .'-]*[A-Za-z]$")
         score_like_token = re.compile(r"\d\s*-\s*\d")
