@@ -43,7 +43,7 @@ function stagePersist(runId, payload) {
 
   upsertSheetRows_(SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
-    'odds_updated_epoch_ms', 'provider_odds_updated_time', 'ingestion_timestamp', 'commence_time',
+    'odds_updated_epoch_ms', 'provider_odds_updated_time', 'open_timestamp', 'open_timestamp_epoch_ms', 'opening_lag_minutes', 'opening_lag_evaluated_at', 'is_actionable', 'reason_code', 'ingestion_timestamp', 'commence_time',
     'commence_epoch_ms', 'competition', 'player_1', 'player_2',
     'player_1_hold_pct', 'player_2_hold_pct', 'player_1_break_pct', 'player_2_break_pct',
     'player_1_form_score', 'player_2_form_score',
@@ -99,6 +99,33 @@ function stagePersist(runId, payload) {
   });
 
   return { summary };
+}
+
+
+function writeOpeningLagSkipState_(runId, payload) {
+  const nowTs = localAndUtcTimestamps_(new Date());
+  const statePayload = {
+    run_id: runId,
+    updated_at: nowTs.local,
+    updated_at_utc: nowTs.utc,
+    max_opening_lag_minutes: Number(payload.max_opening_lag_minutes || 0),
+    require_opening_line_proximity: !!payload.require_opening_line_proximity,
+    evaluated_count: Number(payload.evaluated_count || 0),
+    actionable_count: Number(payload.actionable_count || 0),
+    missing_open_timestamp: Number(payload.missing_open_timestamp || 0),
+    opening_lag_exceeded: Number(payload.opening_lag_exceeded || 0),
+  };
+
+  setStateValue_('ODDS_OPENING_LAG_GATING_STATE', JSON.stringify(statePayload));
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: runId,
+    stage: 'odds_opening_lag_gate',
+    status: 'success',
+    reason_code: statePayload.opening_lag_exceeded > 0 ? 'opening_lag_exceeded' : (statePayload.missing_open_timestamp > 0 ? 'missing_open_timestamp' : 'opening_lag_within_limit'),
+    message: JSON.stringify(statePayload),
+  });
 }
 
 function appendStageLog_(runId, summary) {

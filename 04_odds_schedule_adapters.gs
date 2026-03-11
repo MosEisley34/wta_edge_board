@@ -100,6 +100,12 @@ function stageFetchOdds(runId, config, fetchWindow) {
     odds_updated_time: event.odds_updated_time.toISOString(),
     odds_updated_epoch_ms: event.odds_updated_time.getTime(),
     provider_odds_updated_time: event.provider_odds_updated_time ? event.provider_odds_updated_time.toISOString() : '',
+    open_timestamp: event.open_timestamp ? event.open_timestamp.toISOString() : (event.provider_odds_updated_time ? event.provider_odds_updated_time.toISOString() : ''),
+    open_timestamp_epoch_ms: event.open_timestamp ? event.open_timestamp.getTime() : (event.provider_odds_updated_time ? event.provider_odds_updated_time.getTime() : ''),
+    opening_lag_minutes: Number.isFinite(Number(event.opening_lag_minutes)) ? Number(event.opening_lag_minutes) : '',
+    opening_lag_evaluated_at: event.opening_lag_evaluated_at ? event.opening_lag_evaluated_at.toISOString() : '',
+    is_actionable: event.is_actionable !== false,
+    reason_code: event.reason_code || '',
     ingestion_timestamp: event.ingestion_timestamp.toISOString(),
     commence_time: event.commence_time.toISOString(),
     commence_epoch_ms: event.commence_time.getTime(),
@@ -1573,11 +1579,20 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
         const providerOddsTimestamp = parsedProviderOddsUpdatedTime && !Number.isNaN(parsedProviderOddsUpdatedTime.getTime())
           ? parsedProviderOddsUpdatedTime
           : null;
+        const openingLagEvaluatedAt = new Date();
+        const openingLagMinutes = providerOddsTimestamp
+          ? Math.max(0, Math.round((openingLagEvaluatedAt.getTime() - providerOddsTimestamp.getTime()) / 60000))
+          : null;
 
         const candidate = {
           bookmaker: bookmaker.key || '',
           price,
           provider_odds_updated_time: providerOddsTimestamp,
+          open_timestamp: providerOddsTimestamp,
+          opening_lag_minutes: openingLagMinutes,
+          opening_lag_evaluated_at: openingLagEvaluatedAt,
+          is_actionable: true,
+          reason_code: '',
         };
 
         if (!bestByOutcome[side]) {
@@ -1614,6 +1629,11 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
         outcome: side,
         price: best.price,
         provider_odds_updated_time: best.provider_odds_updated_time,
+        open_timestamp: best.open_timestamp || null,
+        opening_lag_minutes: Number.isFinite(Number(best.opening_lag_minutes)) ? Number(best.opening_lag_minutes) : null,
+        opening_lag_evaluated_at: best.opening_lag_evaluated_at || null,
+        is_actionable: best.is_actionable !== false,
+        reason_code: best.reason_code || '',
         ingestion_timestamp: ingestionTimestamp,
         odds_updated_time: best.provider_odds_updated_time || ingestionTimestamp,
         commence_time: new Date(event.commence_time),
@@ -2822,6 +2842,12 @@ function serializeOddsEvent_(event) {
     odds_timestamp: event.odds_updated_time.toISOString(),
     odds_updated_time: event.odds_updated_time.toISOString(),
     provider_odds_updated_time: event.provider_odds_updated_time ? event.provider_odds_updated_time.toISOString() : '',
+    open_timestamp: event.open_timestamp ? event.open_timestamp.toISOString() : (event.provider_odds_updated_time ? event.provider_odds_updated_time.toISOString() : ''),
+    open_timestamp_epoch_ms: event.open_timestamp ? event.open_timestamp.getTime() : (event.provider_odds_updated_time ? event.provider_odds_updated_time.getTime() : ''),
+    opening_lag_minutes: Number.isFinite(Number(event.opening_lag_minutes)) ? Number(event.opening_lag_minutes) : '',
+    opening_lag_evaluated_at: event.opening_lag_evaluated_at ? event.opening_lag_evaluated_at.toISOString() : '',
+    is_actionable: event.is_actionable !== false,
+    reason_code: event.reason_code || '',
     ingestion_timestamp: event.ingestion_timestamp.toISOString(),
     commence_time: event.commence_time.toISOString(),
     competition: event.competition,
@@ -2849,6 +2875,7 @@ function serializeOddsEvent_(event) {
 }
 
 function deserializeOddsEvent_(event) {
+  const openingLagEvaluatedAt = event.opening_lag_evaluated_at ? new Date(event.opening_lag_evaluated_at) : null;
   return {
     event_id: event.event_id,
     bookmaker: event.bookmaker,
@@ -2860,6 +2887,12 @@ function deserializeOddsEvent_(event) {
     ingestion_timestamp: new Date(event.ingestion_timestamp || event.odds_updated_time || event.odds_timestamp || event.commence_time),
     odds_updated_time: new Date(event.odds_updated_time || event.odds_timestamp || event.ingestion_timestamp || event.commence_time),
     odds_timestamp: new Date(event.odds_updated_time || event.odds_timestamp || event.ingestion_timestamp || event.commence_time),
+    open_timestamp: event.open_timestamp ? new Date(event.open_timestamp) : (event.provider_odds_updated_time ? new Date(event.provider_odds_updated_time) : null),
+    open_timestamp_epoch_ms: Number(event.open_timestamp_epoch_ms || ''),
+    opening_lag_minutes: Number.isFinite(Number(event.opening_lag_minutes)) ? Number(event.opening_lag_minutes) : null,
+    opening_lag_evaluated_at: openingLagEvaluatedAt && !Number.isNaN(openingLagEvaluatedAt.getTime()) ? openingLagEvaluatedAt : null,
+    is_actionable: event.is_actionable !== false,
+    reason_code: event.reason_code || '',
     commence_time: new Date(event.commence_time),
     competition: event.competition,
     tournament: event.tournament || '',
