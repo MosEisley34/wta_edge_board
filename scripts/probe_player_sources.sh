@@ -226,6 +226,58 @@ source_requires_sofascore_tennis_domain() {
     *) return 1 ;;
   esac
 }
+
+is_sofascore_player_probe_enabled() {
+  is_provider_allowed "sofascore_player_detail" || is_provider_allowed "sofascore_player_recent"
+}
+
+ensure_sofascore_player_probe_prerequisites() {
+  if ! is_sofascore_player_probe_enabled; then
+    return 0
+  fi
+
+  local resolved_id=""
+  if ! resolved_id="$(resolve_sofascore_probe_tennis_player_id)"; then
+    local configured_override=""
+    configured_override="$(trim "$SOFASCORE_PROBE_TENNIS_PLAYER_ID")"
+    if [[ -n "$configured_override" ]]; then
+      RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID="$configured_override"
+      RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON="configured_override_without_validation"
+      echo "WARN: could not auto-resolve a verified tennis player id; forcing configured SOFASCORE_PROBE_TENNIS_PLAYER_ID=$configured_override" >&2
+      return 0
+    fi
+    echo "ERROR: failed to resolve required Sofascore tennis player id for enabled providers (sofascore_player_detail/sofascore_player_recent). Reason=${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON:-resolver_failure}" >&2
+    exit 1
+  fi
+
+  if [[ -z "$resolved_id" ]]; then
+    echo "ERROR: resolve_sofascore_probe_tennis_player_id returned an empty id for enabled providers" >&2
+    exit 1
+  fi
+}
+
+assert_required_sofascore_raw_files() {
+  local required_sources=(sofascore_player_detail sofascore_player_recent)
+  local source_key=""
+  local missing=()
+
+  for source_key in "${required_sources[@]}"; do
+    if ! is_provider_allowed "$source_key"; then
+      continue
+    fi
+
+    local raw_path="$RAW_DIR/$source_key.body"
+    if [[ ! -f "$raw_path" ]]; then
+      missing+=("$raw_path")
+    fi
+  done
+
+  if (( ${#missing[@]} > 0 )); then
+    printf 'ERROR: required Sofascore raw payload file(s) missing for enabled providers: %s\n' "$(IFS=', '; echo "${missing[*]}")" >&2
+    exit 1
+  fi
+}
+
 record_allowlist_skip() {
   local source_key="$1"
   local reason="not_in_provider_allowlist"
@@ -650,15 +702,7 @@ iterate_tsv_catalog() {
 
     if [[ "$url" == *"{tennis_player_id}"* ]]; then
       local tennis_player_id
-      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id || true)"
-      if [[ -z "$tennis_player_id" ]]; then
-        if source_requires_sofascore_tennis_domain "$source_key"; then
-          echo "INFO: skipping '$source_key' due to unmet tennis domain prerequisite (${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON:-player_detail_domain_mismatch})" >&2
-        else
-          echo "INFO: skipping '$source_key' because no resolver-selected tennis player id is available (${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON:-resolver_no_tennis_player_id_from_live_or_scheduled_events})" >&2
-        fi
-        continue
-      fi
+      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id)"
       url="${url//\{tennis_player_id\}/$tennis_player_id}"
     fi
 
@@ -708,15 +752,7 @@ PY
     fi
 
     if [[ "$url" == *"{tennis_player_id}"* ]]; then
-      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id || true)"
-      if [[ -z "$tennis_player_id" ]]; then
-        if source_requires_sofascore_tennis_domain "$source_key"; then
-          echo "INFO: skipping '$source_key' due to unmet tennis domain prerequisite (${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON:-player_detail_domain_mismatch})" >&2
-        else
-          echo "INFO: skipping '$source_key' because no resolver-selected tennis player id is available (${RESOLVED_SOFASCORE_PROBE_TENNIS_PLAYER_ID_REASON:-resolver_no_tennis_player_id_from_live_or_scheduled_events})" >&2
-        fi
-        continue
-      fi
+      tennis_player_id="$(resolve_sofascore_probe_tennis_player_id)"
       url="${url//\{tennis_player_id\}/$tennis_player_id}"
     fi
 
@@ -739,6 +775,8 @@ if [[ ! -f "$CATALOG_PATH" ]]; then
   exit 1
 fi
 
+ensure_sofascore_player_probe_prerequisites
+
 case "$CATALOG_PATH" in
   *.tsv) iterate_tsv_catalog ;;
   *.json) iterate_json_catalog ;;
@@ -747,6 +785,8 @@ case "$CATALOG_PATH" in
     exit 1
     ;;
 esac
+
+assert_required_sofascore_raw_files
 
 python3 - "$SUMMARY_TSV" "$SKIPPED_ALLOWLIST_TSV" "$PARSED_DIR" "$OUT_DIR/summary.json" <<'PY'
 import glob
