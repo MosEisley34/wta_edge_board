@@ -122,11 +122,60 @@ MATCHMX_LONG_ROW_IDX = {
     "NOTES": 43,
 }
 
+MATCHMX_LONG_LIVE_ROW_IDX = {
+    "DATE": 0,
+    "EVENT": 1,
+    "SURFACE": 2,
+    "OPPONENT": 3,
+    "TOURNAMENT_PHASE": 4,
+    "RESULT_FLAG": 5,
+    "PLAYER_NAME": 6,
+    "ROUND": 7,
+    "DRAW_SIZE": 8,
+    "COURT": 9,
+    "BEST_OF": 10,
+    "MATCH_MINUTES": 11,
+    "MATCH_ID": 12,
+    "COUNTRY": 13,
+    "LEVEL": 14,
+    "TOUR": 15,
+    "SEASON": 16,
+    "SEED": 17,
+    "ENTRY": 18,
+    "AGE": 19,
+    "HAND": 20,
+    "ACES": 21,
+    "DOUBLE_FAULTS": 22,
+    "FIRST_SERVE_IN_RAW": 23,
+    "SCORE": 24,
+    "RANKING": 25,
+    "RECENT_FORM": 26,
+    "SURFACE_WIN_RATE": 27,
+    "HOLD_PCT": 28,
+    "BREAK_PCT": 29,
+    "BP_SAVED_PCT": 30,
+    "BP_CONV_PCT": 31,
+    "FIRST_SERVE_IN_PCT": 32,
+    "FIRST_SERVE_POINTS_WON_PCT": 33,
+    "SECOND_SERVE_POINTS_WON_PCT": 34,
+    "RETURN_POINTS_WON_PCT": 35,
+    "DOMINANCE_RATIO": 36,
+    "TOTAL_POINTS_WON_PCT": 37,
+    "SERVICE_GAMES": 38,
+    "RETURN_GAMES": 39,
+    "POINTS_PLAYED": 40,
+    "TB_RECORD": 41,
+    "OPENER_ODDS": 42,
+    "CLOSING_ODDS": 43,
+    "NOTES": 44,
+}
+
 MATCHMX_SCHEMA_INDEX_MAPS = {
     "old": MATCHMX_OLD_ROW_IDX,
     "new": MATCHMX_NEW_ROW_IDX,
     "new_with_seed": MATCHMX_NEW_WITH_SEED_ROW_IDX,
     "long": MATCHMX_LONG_ROW_IDX,
+    "long_live": MATCHMX_LONG_LIVE_ROW_IDX,
 }
 
 # Backwards-compatible alias used in existing callers/tests.
@@ -415,16 +464,48 @@ def get_matchmx_row_idx(tokens: list[str]) -> dict[str, int]:
             quality += 1
         return quality, -max(idx_map.values())
 
+    def _matches_long_variant(idx_map: dict[str, int], require_phase: bool = False) -> bool:
+        required = ("RESULT_FLAG", "PLAYER_NAME", "SCORE", "RANKING", "HOLD_PCT", "BREAK_PCT")
+        if any(idx_map[key] >= len(tokens) for key in required):
+            return False
+        if not _is_result_flag(tokens[idx_map["RESULT_FLAG"]]):
+            return False
+        if not _is_full_name_like(tokens[idx_map["PLAYER_NAME"]]):
+            return False
+        if not _is_score_like(tokens[idx_map["SCORE"]]):
+            return False
+
+        ranking = _to_number(tokens, idx_map["RANKING"])
+        hold = _to_number(tokens, idx_map["HOLD_PCT"])
+        brk = _to_number(tokens, idx_map["BREAK_PCT"])
+        if ranking is None or not (0.0 <= ranking <= 2000.0):
+            return False
+        if not _plausible_pct(hold, 35.0, 95.0):
+            return False
+        if not _plausible_pct(brk, 5.0, 70.0):
+            return False
+
+        if require_phase:
+            phase = str(tokens[idx_map["TOURNAMENT_PHASE"]]).strip()
+            if not phase or _is_result_flag(phase) or _is_score_like(phase):
+                return False
+
+        return True
+
+    if len(tokens) >= 45 and _matches_long_variant(MATCHMX_LONG_LIVE_ROW_IDX, require_phase=True):
+        return MATCHMX_LONG_LIVE_ROW_IDX
+
     if (
         len(tokens) >= 40
-        and len(tokens) > MATCHMX_LONG_ROW_IDX["SCORE"]
-        and _is_result_flag(tokens[MATCHMX_LONG_ROW_IDX["RESULT_FLAG"]])
-        and _is_full_name_like(tokens[MATCHMX_LONG_ROW_IDX["PLAYER_NAME"]])
-        and _is_score_like(tokens[MATCHMX_LONG_ROW_IDX["SCORE"]])
+        and _matches_long_variant(MATCHMX_LONG_ROW_IDX)
     ):
         return MATCHMX_LONG_ROW_IDX
 
-    if len(tokens) > MATCHMX_OLD_ROW_IDX["PLAYER_NAME"] and _is_full_name_like(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]]):
+    if (
+        len(tokens) > MATCHMX_OLD_ROW_IDX["SCORE"]
+        and _is_full_name_like(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]])
+        and _is_score_like(tokens[MATCHMX_OLD_ROW_IDX["SCORE"]])
+    ):
         return MATCHMX_OLD_ROW_IDX
 
     if len(tokens) > MATCHMX_NEW_ROW_IDX["PLAYER_NAME"] and _is_result_flag(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]]):
