@@ -180,6 +180,29 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self._assert_schema_metric_window(MATCHMX_OLD_ROW_IDX, old_tokens, expected_hold=74.2, expected_break=31.9)
         self._assert_schema_metric_window(MATCHMX_NEW_ROW_IDX, new_tokens, expected_hold=69.4, expected_break=28.6)
 
+    def test_realistic_new_schema_rows_keep_hold_non_null_and_break_non_constant_and_distinct_from_ranking(self):
+        payload = '\n'.join([
+            'matchmx[0] = ["2026-03-20","Miami","Hard","Opponent A","W","Iga Swiatek","6-2 6-3","2","0.88","0.82","73.6","41.1","66.5","51.2","62.1","70.3","53.4","43.0","1.20","54.8"];',
+            'matchmx[1] = ["2026-03-21","Miami","Hard","Opponent B","L","Coco Gauff","4-6 6-3 4-6","3","0.81","0.77","69.2","36.4","61.1","48.6","59.4","67.0","50.8","40.2","1.09","52.6"];',
+            'matchmx[2] = ["2026-03-22","Miami","Hard","Opponent C","W","Jessica Pegula","7-5 6-4","5","0.79","0.74","67.8","33.7","60.4","47.3","58.6","65.2","49.1","38.4","1.04","51.1"];',
+        ])
+        rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+        self.assertEqual(len(ok_rows), 3)
+
+        hold_values = [row.hold_pct for row in ok_rows]
+        break_values = [row.break_pct for row in ok_rows]
+        ranking_values = [row.ranking for row in ok_rows]
+
+        self.assertTrue(all(value is not None for value in hold_values))
+        self.assertTrue(all(value is not None for value in break_values))
+        self.assertGreater(len(set(break_values)), 1)
+
+        self.assertTrue(all(35.0 <= float(v) <= 95.0 for v in hold_values if v is not None))
+        self.assertTrue(all(5.0 <= float(v) <= 70.0 for v in break_values if v is not None))
+        self.assertTrue(all(float(h) not in set(float(r) for r in ranking_values if r is not None) for h in hold_values if h is not None))
+        self.assertTrue(all(float(b) not in set(float(r) for r in ranking_values if r is not None) for b in break_values if b is not None))
+
     def test_probe_rows_have_plausible_hold_band_and_non_constant_break_values(self):
         rows = self._collect_probe_rows(max_rows=25)
         self.assertGreaterEqual(len(rows), 5)
