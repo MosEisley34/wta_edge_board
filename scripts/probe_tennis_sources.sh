@@ -72,9 +72,9 @@ validate_sofascore_tennis_player_id() {
   local body
   body="$(curl -sS -L --max-time 20 --retry 1 --retry-delay 1 -H "User-Agent: $UA" "$detail_url" 2>/dev/null || true)"
   [[ -z "$body" ]] && return 1
-  PLAYER_DETAIL_JSON="$body" python3 - <<'PYT'
+  printf '%s' "$body" | python3 - <<'PYT'
 import json, os, sys
-raw = os.environ.get('PLAYER_DETAIL_JSON', '')
+raw = sys.stdin.read()
 try:
     payload = json.loads(raw)
 except Exception:
@@ -93,9 +93,9 @@ sample_sofascore_tennis_player_id_from_schedule() {
   local body
   body="$(curl -sS -L --max-time 20 --retry 1 --retry-delay 1 -H "User-Agent: $UA" "$scheduled_url" 2>/dev/null || true)"
   [[ -z "$body" ]] && return 1
-  SCHEDULED_JSON="$body" python3 - <<'PYT'
+  printf '%s' "$body" | python3 - <<'PYT'
 import json, os, sys
-raw = os.environ.get('SCHEDULED_JSON', '')
+raw = sys.stdin.read()
 try:
     payload = json.loads(raw)
 except Exception:
