@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import re
+import logging
 from dataclasses import dataclass
+
+LOGGER = logging.getLogger(__name__)
 
 MATCHMX_OLD_ROW_IDX = {
     "DATE": 0,
@@ -170,12 +173,61 @@ MATCHMX_LONG_LIVE_ROW_IDX = {
     "NOTES": 44,
 }
 
+MATCHMX_LONG_MIXED_LIVE_ROW_IDX = {
+    "DATE": 0,
+    "EVENT": 1,
+    "SURFACE": 2,
+    "OPPONENT": 3,
+    "TOURNAMENT_PHASE": 4,
+    "RESULT_FLAG": 5,
+    "PLAYER_NAME": 6,
+    "ROUND": 7,
+    "DRAW_SIZE": 8,
+    "COURT": 9,
+    "BEST_OF": 10,
+    "MATCH_MINUTES": 11,
+    "MATCH_ID": 12,
+    "COUNTRY": 13,
+    "LEVEL": 14,
+    "TOUR": 15,
+    "SEASON": 16,
+    "SEED": 17,
+    "ENTRY": 18,
+    "AGE": 19,
+    "HAND": 20,
+    "ACES": 21,
+    "DOUBLE_FAULTS": 22,
+    "FIRST_SERVE_IN_RAW": 23,
+    "SCORE": 24,
+    "RANKING": 25,
+    "RECENT_FORM": 26,
+    "SURFACE_WIN_RATE": 27,
+    "HOLD_PCT": 28,
+    "BREAK_PCT": 29,
+    "BP_SAVED_PCT": 30,
+    "BP_CONV_PCT": 31,
+    "FIRST_SERVE_IN_PCT": 32,
+    "FIRST_SERVE_POINTS_WON_PCT": 33,
+    "SECOND_SERVE_POINTS_WON_PCT": 34,
+    "RETURN_POINTS_WON_PCT": 35,
+    "DOMINANCE_RATIO": 36,
+    "TOTAL_POINTS_WON_PCT": 37,
+    "SERVICE_GAMES": 38,
+    "RETURN_GAMES": 39,
+    "POINTS_PLAYED": 40,
+    "TB_RECORD": 41,
+    "OPENER_ODDS": 42,
+    "CLOSING_ODDS": 43,
+    "NOTES": 44,
+}
+
 MATCHMX_SCHEMA_INDEX_MAPS = {
     "old": MATCHMX_OLD_ROW_IDX,
     "new": MATCHMX_NEW_ROW_IDX,
     "new_with_seed": MATCHMX_NEW_WITH_SEED_ROW_IDX,
     "long": MATCHMX_LONG_ROW_IDX,
     "long_live": MATCHMX_LONG_LIVE_ROW_IDX,
+    "long_mixed_live": MATCHMX_LONG_MIXED_LIVE_ROW_IDX,
 }
 
 # Backwards-compatible alias used in existing callers/tests.
@@ -671,6 +723,112 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
 
         return True
 
+    def _select_probe_rows(min_required_len: int, limit: int = 5) -> list[list[str]]:
+        rows = [tokens]
+        if not sample_rows:
+            return rows
+        for row_tokens in sample_rows:
+            if row_tokens is tokens:
+                continue
+            if row_tokens and len(row_tokens) >= min_required_len:
+                rows.append(row_tokens)
+            if len(rows) >= limit:
+                break
+        return rows
+
+    def _long_candidate_diagnostics(schema_name: str, idx_map: dict[str, int], rows: list[list[str]]) -> dict[str, object]:
+        failures: dict[str, int] = {
+            "RESULT_FLAG": 0,
+            "TOURNAMENT_PHASE": 0,
+            "HOLD_PCT": 0,
+            "BREAK_PCT": 0,
+        }
+        usable = 0
+        result_ok = 0
+        phase_ok = 0
+        hold_num_ok = 0
+        break_num_ok = 0
+        hold_plausible_ok = 0
+        break_plausible_ok = 0
+
+        for row_tokens in rows:
+            if len(row_tokens) <= max(idx_map.values()):
+                continue
+            usable += 1
+
+            result_token = row_tokens[idx_map["RESULT_FLAG"]]
+            if _is_result_flag(result_token):
+                result_ok += 1
+            else:
+                failures["RESULT_FLAG"] += 1
+
+            phase_idx = idx_map.get("TOURNAMENT_PHASE")
+            if phase_idx is None:
+                phase_ok += 1
+            else:
+                phase_token = str(row_tokens[phase_idx]).strip()
+                phase_valid = bool(phase_token and not _is_result_flag(phase_token) and not _is_score_like(phase_token))
+                if phase_valid:
+                    phase_ok += 1
+                else:
+                    failures["TOURNAMENT_PHASE"] += 1
+
+            hold_token = str(row_tokens[idx_map["HOLD_PCT"]]).strip()
+            break_token = str(row_tokens[idx_map["BREAK_PCT"]]).strip()
+            hold_num = _is_numeric_token(hold_token)
+            break_num = _is_numeric_token(break_token)
+            if hold_num:
+                hold_num_ok += 1
+            else:
+                failures["HOLD_PCT"] += 1
+            if break_num:
+                break_num_ok += 1
+            else:
+                failures["BREAK_PCT"] += 1
+
+            hold = _to_number(row_tokens, idx_map["HOLD_PCT"])
+            brk = _to_number(row_tokens, idx_map["BREAK_PCT"])
+            if _plausible_pct(hold, 35.0, 95.0):
+                hold_plausible_ok += 1
+            elif hold_num:
+                failures["HOLD_PCT"] += 1
+            if _plausible_pct(brk, 5.0, 70.0):
+                break_plausible_ok += 1
+            elif break_num:
+                failures["BREAK_PCT"] += 1
+
+        top_conflicts = sorted(
+            ((field, count) for field, count in failures.items() if count > 0),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )[:3]
+        return {
+            "schema": schema_name,
+            "usable": usable,
+            "result_ok": result_ok,
+            "phase_ok": phase_ok,
+            "hold_num_ok": hold_num_ok,
+            "break_num_ok": break_num_ok,
+            "hold_plausible_ok": hold_plausible_ok,
+            "break_plausible_ok": break_plausible_ok,
+            "top_conflicts": top_conflicts,
+        }
+
+    def _long_schema_passes(diag: dict[str, object], require_phase: bool) -> bool:
+        usable = int(diag["usable"])
+        if usable == 0:
+            return False
+        min_required = max(1, (usable + 1) // 2)
+        if int(diag["result_ok"]) < min_required:
+            return False
+        if require_phase and int(diag["phase_ok"]) < min_required:
+            return False
+        if int(diag["hold_num_ok"]) < min_required or int(diag["break_num_ok"]) < min_required:
+            return False
+        if int(diag["hold_plausible_ok"]) < min_required or int(diag["break_plausible_ok"]) < min_required:
+            return False
+        return True
+
     def _old_map_hard_rejected() -> bool:
         if len(tokens) <= MATCHMX_OLD_ROW_IDX["BREAK_PCT"]:
             return False
@@ -690,17 +848,44 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
 
     old_map_rejected = _old_map_hard_rejected()
 
-    if _matches_live_45_shape():
-        return MATCHMX_LONG_LIVE_ROW_IDX
+    long_candidates: list[tuple[str, dict[str, int], bool]] = []
+    if len(tokens) == 45 and _matches_live_45_shape():
+        long_candidates.append(("long_live", MATCHMX_LONG_LIVE_ROW_IDX, True))
+    elif len(tokens) >= 45 and _matches_long_variant(MATCHMX_LONG_LIVE_ROW_IDX, require_phase=True):
+        long_candidates.append(("long_live", MATCHMX_LONG_LIVE_ROW_IDX, True))
 
-    if len(tokens) >= 45 and _matches_long_variant(MATCHMX_LONG_LIVE_ROW_IDX, require_phase=True):
-        return MATCHMX_LONG_LIVE_ROW_IDX
+    if len(tokens) >= 45 and _matches_long_variant(MATCHMX_LONG_MIXED_LIVE_ROW_IDX, require_phase=True):
+        long_candidates.append(("long_mixed_live", MATCHMX_LONG_MIXED_LIVE_ROW_IDX, True))
 
-    if (
-        len(tokens) >= 40
-        and _matches_long_variant(MATCHMX_LONG_ROW_IDX)
-    ):
-        return MATCHMX_LONG_ROW_IDX
+    if len(tokens) >= 40 and _matches_long_variant(MATCHMX_LONG_ROW_IDX):
+        long_candidates.append(("long", MATCHMX_LONG_ROW_IDX, False))
+
+    if long_candidates:
+        probe_rows = _select_probe_rows(min_required_len=min(max(m.values()) + 1 for _, m, _ in long_candidates))
+        ranked: list[tuple[tuple[int, int, int], str, dict[str, int], dict[str, object], bool]] = []
+        for schema_name, idx_map, require_phase in long_candidates:
+            diag = _long_candidate_diagnostics(schema_name, idx_map, probe_rows)
+            LOGGER.debug(
+                "matchmx schema probe schema=%s token_count=%s top_conflicts=%s",
+                schema_name,
+                len(tokens),
+                diag["top_conflicts"],
+            )
+            if not _long_schema_passes(diag, require_phase=require_phase):
+                continue
+            schema_priority = 1 if schema_name in {"long_live", "long_mixed_live"} else 0
+            rank = (
+                int(diag["hold_plausible_ok"]) + int(diag["break_plausible_ok"]),
+                int(diag["phase_ok"]),
+                schema_priority,
+                -max(idx_map.values()),
+            )
+            ranked.append((rank, schema_name, idx_map, diag, require_phase))
+
+        if ranked:
+            ranked.sort(key=lambda item: item[0], reverse=True)
+            best = ranked[0]
+            return best[2]
 
     if (
         not old_map_rejected
