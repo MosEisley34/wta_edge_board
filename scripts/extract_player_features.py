@@ -662,32 +662,94 @@ def _split_sofascore_team_name(value: str) -> list[str]:
 
 
 def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[str], bool]:
-    candidates: list[str] = []
     has_supported_name_paths = False
 
-    name_keys = (
-        "name",
-        "shortName",
-        "slug",
-        "displayName",
-        "fullName",
-        "teamName",
-        "participantName",
-    )
+    def _normalize_string(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        return normalize_name(value)
 
-    def _collect_name_fields(node: dict[str, object]) -> None:
-        nonlocal has_supported_name_paths
-        if any(key in node for key in name_keys):
+    def _dedupe_non_generic(values: list[str]) -> list[str]:
+        normalized_unique: list[str] = []
+        seen: set[str] = set()
+        for candidate in values:
+            normalized = _normalize_string(candidate)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_unique.append(normalized)
+
+        non_generic = [name for name in normalized_unique if not name.casefold().endswith(" team")]
+        if non_generic:
+            return non_generic
+        return normalized_unique
+
+    def _collect_from_path(node: dict[str, object], path: tuple[str, ...]) -> list[str]:
+        cursor: object = node
+        for token in path:
+            if not isinstance(cursor, dict):
+                return []
+            cursor = cursor.get(token)
+        normalized = _normalize_string(cursor)
+        if not normalized:
+            return []
+        return _split_sofascore_team_name(normalized)
+
+    direct_field_fallback_order: tuple[tuple[str, ...], ...] = (
+        ("name",),
+        ("teamName",),
+        ("displayName",),
+        ("fullName",),
+        ("participantName",),
+        ("shortName",),
+        ("slug",),
+    )
+    deferred_generic_direct_names: list[str] = []
+    for path in direct_field_fallback_order:
+        if path[0] in team:
             has_supported_name_paths = True
-        name = normalize_name(_pick(node, *name_keys))
-        if not name:
-            return
-        candidates.extend(_split_sofascore_team_name(name))
+        names = _collect_from_path(team, path)
+        if not names:
+            continue
+        cleaned = _dedupe_non_generic(names)
+        if cleaned and all(name.casefold().endswith(" team") for name in cleaned):
+            deferred_generic_direct_names.extend(cleaned)
+            continue
+        return cleaned, has_supported_name_paths
+
+    nested_field_fallback_order: tuple[tuple[str, ...], ...] = (
+        ("player", "name"),
+        ("player", "displayName"),
+        ("player", "fullName"),
+        ("player1", "name"),
+        ("player1", "displayName"),
+        ("player2", "name"),
+        ("player2", "displayName"),
+        ("team", "name"),
+        ("team", "displayName"),
+        ("team", "fullName"),
+        ("homeTeam", "name"),
+        ("awayTeam", "name"),
+    )
+    for path in nested_field_fallback_order:
+        if path[0] in team:
+            has_supported_name_paths = True
+        names = _collect_from_path(team, path)
+        if names:
+            return _dedupe_non_generic(names), has_supported_name_paths
+
+    candidates: list[str] = []
 
     def _collect_entity(value: object) -> None:
         nonlocal has_supported_name_paths
         if isinstance(value, dict):
-            _collect_name_fields(value)
+            for key in ("name", "displayName", "fullName", "participantName", "shortName", "slug"):
+                if key in value:
+                    has_supported_name_paths = True
+                normalized = _normalize_string(value.get(key))
+                if normalized:
+                    candidates.extend(_split_sofascore_team_name(normalized))
+                    break
             for nested_key in (
                 "player",
                 "players",
@@ -711,15 +773,8 @@ def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[
             if value:
                 has_supported_name_paths = True
             for item in value:
-                if isinstance(item, dict):
-                    if "player" in item:
-                        has_supported_name_paths = True
-                    _collect_name_fields(item)
-                    _collect_entity(item.get("player"))
-                    _collect_entity(item.get("team"))
+                _collect_entity(item)
 
-    _collect_name_fields(team)
-    _collect_entity(team.get("player"))
     for key in (
         "players",
         "player1",
@@ -733,30 +788,45 @@ def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[
         "homeTeam",
         "awayTeam",
         "nameTranslations",
+        "player",
     ):
         if key in team:
             has_supported_name_paths = True
         _collect_entity(team.get(key))
 
-    normalized_unique: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        normalized = normalize_name(candidate)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        normalized_unique.append(normalized)
-
-    non_generic = [name for name in normalized_unique if not name.casefold().endswith(" team")]
-    if non_generic:
-        normalized_unique = non_generic
-
-    return normalized_unique, has_supported_name_paths
+    deduped_candidates = _dedupe_non_generic(candidates)
+    if deduped_candidates:
+        return deduped_candidates, has_supported_name_paths
+    if deferred_generic_direct_names:
+        return _dedupe_non_generic(deferred_generic_direct_names), has_supported_name_paths
+    return [], has_supported_name_paths
 
 
 def _normalize_sofascore_team_player_name(team: dict[str, object]) -> str | None:
     names, _ = _extract_sofascore_team_player_names(team)
     return names[0] if names else None
+
+
+def _extract_sofascore_event_team_names(event: dict[str, object], side: str) -> tuple[list[str], bool]:
+    side_key = "home" if side == "homeTeam" else "away"
+    candidates: list[str] = []
+    has_supported_name_paths = False
+    ordered_keys = (
+        f"{side_key}TeamName",
+        f"{side_key}Team",
+        f"{side_key}Name",
+        f"{side_key}ParticipantName",
+    )
+    for key in ordered_keys:
+        value = event.get(key)
+        if value is None:
+            continue
+        has_supported_name_paths = True
+        if isinstance(value, str):
+            normalized = normalize_name(value)
+            if normalized:
+                candidates.extend(_split_sofascore_team_name(normalized))
+    return candidates, has_supported_name_paths
 
 
 def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of: str) -> list[PlayerFeature]:
@@ -776,6 +846,11 @@ def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of:
         for side in ("homeTeam", "awayTeam"):
             team = _as_dict(event.get(side))
             player_names, has_participant_fields = _extract_sofascore_team_player_names(team)
+            if not player_names:
+                event_level_names, event_has_fields = _extract_sofascore_event_team_names(event, side)
+                if event_level_names:
+                    player_names = event_level_names
+                has_participant_fields = has_participant_fields or event_has_fields
             participant_fields_seen = participant_fields_seen or has_participant_fields
             for player_name in player_names:
                 rows.append(
