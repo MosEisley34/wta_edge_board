@@ -438,6 +438,10 @@ def _is_score_like(value: object) -> bool:
     return bool(re.search(r"\d\s*-\s*\d", candidate))
 
 
+def _is_round_label(value: object) -> bool:
+    return str(value).strip().upper() in {"R16", "QF", "SF", "F"}
+
+
 def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None = None) -> dict[str, int]:
     def _plausible_pct(value: float | None, low: float, high: float) -> bool:
         return value is not None and low <= value <= high
@@ -620,6 +624,25 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
 
         return True
 
+    def _old_map_hard_rejected() -> bool:
+        if len(tokens) <= MATCHMX_OLD_ROW_IDX["BREAK_PCT"]:
+            return False
+
+        old_player_token = str(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]]).strip()
+        old_hold_token = str(tokens[MATCHMX_OLD_ROW_IDX["HOLD_PCT"]]).strip()
+        old_break_token = str(tokens[MATCHMX_OLD_ROW_IDX["BREAK_PCT"]]).strip()
+
+        if _is_result_flag(old_player_token):
+            return True
+        if _is_round_label(old_hold_token):
+            return True
+        if _is_score_like(old_break_token):
+            return True
+
+        return False
+
+    old_map_rejected = _old_map_hard_rejected()
+
     if _matches_live_45_shape():
         return MATCHMX_LONG_LIVE_ROW_IDX
 
@@ -633,7 +656,8 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
         return MATCHMX_LONG_ROW_IDX
 
     if (
-        len(tokens) > MATCHMX_OLD_ROW_IDX["SCORE"]
+        not old_map_rejected
+        and len(tokens) > MATCHMX_OLD_ROW_IDX["SCORE"]
         and _is_full_name_like(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]])
         and _is_score_like(tokens[MATCHMX_OLD_ROW_IDX["SCORE"]])
     ):
@@ -682,6 +706,9 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
 
             if ranked_candidates:
                 return max(ranked_candidates, key=lambda pair: pair[0])[1]
+
+    if old_map_rejected and len(tokens) in {45, 65}:
+        return MATCHMX_LONG_LIVE_ROW_IDX
 
     return MATCHMX_OLD_ROW_IDX
 
