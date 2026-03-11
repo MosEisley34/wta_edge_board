@@ -438,31 +438,78 @@ def _is_score_like(value: object) -> bool:
     return bool(re.search(r"\d\s*-\s*\d", candidate))
 
 
-def get_matchmx_row_idx(tokens: list[str]) -> dict[str, int]:
+def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None = None) -> dict[str, int]:
     def _plausible_pct(value: float | None, low: float, high: float) -> bool:
         return value is not None and low <= value <= high
 
     def _plausible_ratio_or_pct(value: float | None) -> bool:
         return value is not None and (0.0 <= value <= 1.0 or 0.0 <= value <= 100.0)
 
-    def _schema_quality(idx_map: dict[str, int]) -> tuple[int, int]:
-        recent_form = _to_number(tokens, idx_map["RECENT_FORM"])
-        surface = _to_number(tokens, idx_map["SURFACE_WIN_RATE"])
-        hold = _to_number(tokens, idx_map["HOLD_PCT"])
-        brk = _to_number(tokens, idx_map["BREAK_PCT"])
-        ranking = _to_number(tokens, idx_map["RANKING"])
+    def _schema_quality(idx_map: dict[str, int], rows: list[list[str]]) -> tuple[int, int, int]:
         quality = 0
-        if _plausible_ratio_or_pct(recent_form):
-            quality += 1
-        if _plausible_ratio_or_pct(surface):
-            quality += 1
-        if _plausible_pct(hold, 35.0, 95.0):
-            quality += 1
-        if _plausible_pct(brk, 5.0, 70.0):
-            quality += 1
-        if ranking is not None and 0.0 <= ranking <= 2000.0:
-            quality += 1
-        return quality, -max(idx_map.values())
+        valid_rows = 0
+        break_values: list[float] = []
+
+        for row_tokens in rows:
+            recent_form = _to_number(row_tokens, idx_map["RECENT_FORM"])
+            surface = _to_number(row_tokens, idx_map["SURFACE_WIN_RATE"])
+            hold = _to_number(row_tokens, idx_map["HOLD_PCT"])
+            brk = _to_number(row_tokens, idx_map["BREAK_PCT"])
+            ranking = _to_number(row_tokens, idx_map["RANKING"])
+
+            row_score = 0
+            numeric_metrics = [
+                recent_form,
+                surface,
+                hold,
+                brk,
+                _to_number(row_tokens, idx_map["BP_SAVED_PCT"]),
+                _to_number(row_tokens, idx_map["BP_CONV_PCT"]),
+                _to_number(row_tokens, idx_map["FIRST_SERVE_IN_PCT"]),
+                _to_number(row_tokens, idx_map["FIRST_SERVE_POINTS_WON_PCT"]),
+                _to_number(row_tokens, idx_map["SECOND_SERVE_POINTS_WON_PCT"]),
+                _to_number(row_tokens, idx_map["RETURN_POINTS_WON_PCT"]),
+                _to_number(row_tokens, idx_map["TOTAL_POINTS_WON_PCT"]),
+            ]
+
+            if _plausible_ratio_or_pct(recent_form):
+                row_score += 1
+            if _plausible_ratio_or_pct(surface):
+                row_score += 1
+            if _plausible_pct(hold, 35.0, 95.0):
+                row_score += 2
+            if _plausible_pct(brk, 5.0, 70.0):
+                row_score += 2
+            if ranking is not None and 0.0 <= ranking <= 2000.0:
+                row_score += 1
+
+            # Penalize drift where HOLD is null while the surrounding metric window
+            # is populated, which usually indicates a shifted schema map.
+            if hold is None and any(metric is not None for metric in numeric_metrics):
+                row_score -= 3
+
+            # Metric window distribution guards: hold should generally exceed break,
+            # and both should sit within realistic ranges when available.
+            if hold is not None and brk is not None:
+                if hold <= brk:
+                    row_score -= 2
+                if hold - brk < 8.0:
+                    row_score -= 1
+
+            if row_score > 0:
+                valid_rows += 1
+            quality += row_score
+
+            if brk is not None:
+                break_values.append(brk)
+
+        # Penalize implausibly constant integer BREAK% across sampled rows.
+        if len(break_values) >= 3:
+            int_break_values = [value for value in break_values if abs(value - round(value)) < 1e-9]
+            if len(int_break_values) >= 3 and len(set(int_break_values)) == 1:
+                quality -= 4
+
+        return quality, valid_rows, -max(idx_map.values())
 
     def _matches_long_variant(idx_map: dict[str, int], require_phase: bool = False) -> bool:
         required = ("RESULT_FLAG", "PLAYER_NAME", "SCORE", "RANKING", "HOLD_PCT", "BREAK_PCT")
@@ -518,7 +565,16 @@ def get_matchmx_row_idx(tokens: list[str]) -> dict[str, int]:
         ):
             new_candidates.append(MATCHMX_NEW_WITH_SEED_ROW_IDX)
         if new_candidates:
-            return max(new_candidates, key=_schema_quality)
+            scored_rows = [tokens]
+            if sample_rows:
+                for row_tokens in sample_rows:
+                    if row_tokens is tokens:
+                        continue
+                    if row_tokens and len(row_tokens) >= min(max(candidate.values()) + 1 for candidate in new_candidates):
+                        scored_rows.append(row_tokens)
+                    if len(scored_rows) >= 5:
+                        break
+            return max(new_candidates, key=lambda idx_map: _schema_quality(idx_map, scored_rows))
 
     return MATCHMX_OLD_ROW_IDX
 
@@ -592,8 +648,10 @@ def _select_player_name(tokens: list[str], row_idx: dict[str, int]) -> str | Non
     return fallback
 
 
-def parse_matchmx_player_row(tokens: list[str]) -> tuple[MatchMxPlayerRow | None, str | None]:
-    row_idx = get_matchmx_row_idx(tokens)
+def parse_matchmx_player_row(
+    tokens: list[str], sample_rows: list[list[str]] | None = None
+) -> tuple[MatchMxPlayerRow | None, str | None]:
+    row_idx = get_matchmx_row_idx(tokens, sample_rows=sample_rows)
     if not has_consistent_metric_index_mapping(row_idx):
         return None, "metric_index_mapping_invalid"
     min_field_count = max(row_idx.values()) + 1
