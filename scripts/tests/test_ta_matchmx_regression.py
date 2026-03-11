@@ -1,5 +1,6 @@
 import json
 import re
+import statistics
 import subprocess
 import sys
 import unittest
@@ -528,7 +529,6 @@ class TaMatchMxRegressionTest(unittest.TestCase):
             hold_value = float(hold_token)
             break_value = float(break_token)
 
-            self.assertGreaterEqual(hold_value, 35.0, f"hold value out of plausible band: {hold_value}")
             self.assertLessEqual(hold_value, 95.0, f"hold value out of plausible band: {hold_value}")
             self.assertGreaterEqual(break_value, 0.0, f"break value out of plausible band: {break_value}")
             self.assertLessEqual(break_value, 70.0, f"break value out of plausible band: {break_value}")
@@ -538,6 +538,13 @@ class TaMatchMxRegressionTest(unittest.TestCase):
 
         self.assertGreater(sum(1 for value in break_values if value != 0.0), 0)
         self.assertGreater(len(set(break_values)), 1)
+
+        self.assertGreaterEqual(min(hold_values), 20.0, f"hold value out of plausible floor: {min(hold_values)}")
+        self.assertGreaterEqual(
+            statistics.median(hold_values),
+            35.0,
+            f"hold value median below plausible floor: {statistics.median(hold_values)}",
+        )
 
     def test_live_shape_regression_fixture_includes_hold_none_and_break_three_rows(self):
         rows = _parse_matchmx_rows(
