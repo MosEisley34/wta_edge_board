@@ -318,9 +318,10 @@ function runEdgeBoard() {
       }),
     });
 
-    const oddsStage = oddsWindowDecision.should_fetch_odds
+    const initialOddsStage = oddsWindowDecision.should_fetch_odds
       ? stageFetchOdds(runId, config, oddsWindowDecision.odds_fetch_window)
       : buildSkippedOddsStage_(runId, oddsWindowDecision.decision_reason_code, oddsWindowDecision.decision_message);
+    const oddsStage = applyOpeningLagActionabilityGate_(runId, config, initialOddsStage);
     appendStageLog_(runId, oddsStage.summary);
 
     const selectedOddsSource = (oddsWindowDecision.selected_source === 'fallback_static_window' || oddsWindowDecision.selected_source === 'bootstrap_static_window')
@@ -668,6 +669,102 @@ function derivePlayerStatsSkipReason_(oddsStage, matchStage) {
   }
 
   return '';
+}
+
+
+function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
+  const stage = oddsStage || { events: [], rows: [], summary: { reason_codes: {}, reason_metadata: {} } };
+  const originalEvents = Array.isArray(stage.events) ? stage.events : [];
+  const originalRows = Array.isArray(stage.rows) ? stage.rows : [];
+  const maxOpeningLagMinutes = Math.max(0, Number(config.MAX_OPENING_LAG_MINUTES || 0));
+  const requireOpeningLineProximity = !!config.REQUIRE_OPENING_LINE_PROXIMITY;
+  const now = new Date();
+  const nowMs = now.getTime();
+
+  let missingOpenTimestamp = 0;
+  let openingLagExceeded = 0;
+  let openingLagWithinLimit = 0;
+
+  const enrichedEvents = originalEvents.map(function (event) {
+    const openTimestamp = event && event.provider_odds_updated_time instanceof Date && !Number.isNaN(event.provider_odds_updated_time.getTime())
+      ? event.provider_odds_updated_time
+      : null;
+    const openingLagMinutes = openTimestamp ? Math.max(0, Math.round((nowMs - openTimestamp.getTime()) / 60000)) : null;
+    const evaluated = Object.assign({}, event || {});
+    evaluated.open_timestamp = openTimestamp;
+    evaluated.opening_lag_minutes = openingLagMinutes;
+    evaluated.opening_lag_evaluated_at = now;
+    evaluated.is_actionable = true;
+    evaluated.reason_code = '';
+
+    if (!openTimestamp) {
+      missingOpenTimestamp += 1;
+      evaluated.is_actionable = false;
+      evaluated.reason_code = 'missing_open_timestamp';
+      return evaluated;
+    }
+
+    if (requireOpeningLineProximity && maxOpeningLagMinutes > 0 && openingLagMinutes > maxOpeningLagMinutes) {
+      openingLagExceeded += 1;
+      evaluated.is_actionable = false;
+      evaluated.reason_code = 'opening_lag_exceeded';
+      return evaluated;
+    }
+
+    openingLagWithinLimit += 1;
+    return evaluated;
+  });
+
+  const rowByKey = {};
+  originalRows.forEach(function (row) { rowByKey[row.key] = row; });
+
+  const enrichedRows = enrichedEvents.map(function (event) {
+    const key = [event.event_id, event.market, event.outcome].join('|');
+    const baseRow = rowByKey[key] || {};
+    return Object.assign({}, baseRow, {
+      open_timestamp: event.open_timestamp ? event.open_timestamp.toISOString() : '',
+      open_timestamp_epoch_ms: event.open_timestamp ? event.open_timestamp.getTime() : '',
+      opening_lag_minutes: Number.isFinite(Number(event.opening_lag_minutes)) ? Number(event.opening_lag_minutes) : '',
+      opening_lag_evaluated_at: event.opening_lag_evaluated_at ? event.opening_lag_evaluated_at.toISOString() : '',
+      is_actionable: event.is_actionable !== false,
+      reason_code: event.reason_code || '',
+    });
+  });
+
+  const actionableEvents = enrichedEvents.filter(function (event) { return event.is_actionable !== false; });
+
+  stage.events = actionableEvents;
+  stage.rows = enrichedRows;
+  stage.non_actionable_rows = enrichedRows.filter(function (row) { return row.is_actionable === false; });
+  stage.skipped_reason_codes = {
+    missing_open_timestamp: missingOpenTimestamp,
+    opening_lag_exceeded: openingLagExceeded,
+  };
+
+  const reasonCodes = stage.summary && stage.summary.reason_codes ? stage.summary.reason_codes : {};
+  reasonCodes.opening_lag_within_limit = openingLagWithinLimit;
+  reasonCodes.missing_open_timestamp = missingOpenTimestamp;
+  reasonCodes.opening_lag_exceeded = openingLagExceeded;
+  reasonCodes.odds_actionable = actionableEvents.length;
+  reasonCodes.odds_non_actionable = enrichedRows.length - actionableEvents.length;
+  if (stage.summary) stage.summary.reason_codes = reasonCodes;
+  if (stage.summary) {
+    stage.summary.output_count = actionableEvents.length;
+    stage.summary.reason_metadata = stage.summary.reason_metadata || {};
+    stage.summary.reason_metadata.max_opening_lag_minutes = maxOpeningLagMinutes;
+    stage.summary.reason_metadata.require_opening_line_proximity = requireOpeningLineProximity;
+  }
+
+  writeOpeningLagSkipState_(runId, {
+    max_opening_lag_minutes: maxOpeningLagMinutes,
+    require_opening_line_proximity: requireOpeningLineProximity,
+    evaluated_count: enrichedRows.length,
+    actionable_count: actionableEvents.length,
+    missing_open_timestamp: missingOpenTimestamp,
+    opening_lag_exceeded: openingLagExceeded,
+  });
+
+  return stage;
 }
 
 function deriveSignalUpstreamGateReason_(oddsStage, matchStage, playerStatsStage) {
