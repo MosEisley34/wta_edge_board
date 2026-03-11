@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-MATCHMX_ROW_IDX = {
+MATCHMX_OLD_ROW_IDX = {
     "DATE": 0,
     "EVENT": 1,
     "SURFACE": 2,
@@ -51,7 +51,15 @@ MATCHMX_NEW_ROW_IDX = {
     "TOTAL_POINTS_WON_PCT": 19,
 }
 
-MATCHMX_MIN_FIELD_COUNT = max(MATCHMX_ROW_IDX.values()) + 1
+MATCHMX_SCHEMA_INDEX_MAPS = {
+    "old": MATCHMX_OLD_ROW_IDX,
+    "new": MATCHMX_NEW_ROW_IDX,
+}
+
+# Backwards-compatible alias used in existing callers/tests.
+MATCHMX_ROW_IDX = MATCHMX_OLD_ROW_IDX
+
+MATCHMX_MIN_FIELD_COUNT = max(MATCHMX_OLD_ROW_IDX.values()) + 1
 MATCHMX_NEW_MIN_FIELD_COUNT = max(MATCHMX_NEW_ROW_IDX.values()) + 1
 MATCHMX_REQUIRED_KEYS = ("DATE", "PLAYER_NAME", "SCORE")
 MATCHMX_KEY_METRIC_KEYS = ("RANKING", "RECENT_FORM", "SURFACE_WIN_RATE", "HOLD_PCT", "BREAK_PCT")
@@ -295,15 +303,15 @@ def _is_full_name_like(value: object) -> bool:
 
 
 def get_matchmx_row_idx(tokens: list[str]) -> dict[str, int]:
-    if len(tokens) > MATCHMX_ROW_IDX["PLAYER_NAME"] and _is_full_name_like(tokens[MATCHMX_ROW_IDX["PLAYER_NAME"]]):
-        return MATCHMX_ROW_IDX
+    if len(tokens) > MATCHMX_OLD_ROW_IDX["PLAYER_NAME"] and _is_full_name_like(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]]):
+        return MATCHMX_OLD_ROW_IDX
     if (
         len(tokens) > MATCHMX_NEW_ROW_IDX["PLAYER_NAME"]
-        and _is_result_flag(tokens[MATCHMX_ROW_IDX["PLAYER_NAME"]])
+        and _is_result_flag(tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]])
         and _is_full_name_like(tokens[MATCHMX_NEW_ROW_IDX["PLAYER_NAME"]])
     ):
         return MATCHMX_NEW_ROW_IDX
-    return MATCHMX_ROW_IDX
+    return MATCHMX_OLD_ROW_IDX
 
 
 def required_indices_present(tokens: list[str], row_idx: dict[str, int]) -> bool:
