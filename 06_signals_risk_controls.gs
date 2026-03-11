@@ -527,6 +527,11 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         side: event && event.outcome ? event.outcome : '',
         bookmaker: event && event.bookmaker ? event.bookmaker : '',
         price: event && event.price,
+        opening_price: resolveOpeningPrice_(event),
+        evaluation_price: resolveEvaluationPrice_(event),
+        price_delta_bps: resolvePriceDeltaBps_(event),
+        opening_lag_minutes: resolveOpeningLagMinutes_(event, nowMs),
+        decision_gate_status: resolveDecisionGateStatus_({ notification_outcome: decisionReasonCode }),
         detail: detailWithH2h,
       });
     }
@@ -790,6 +795,11 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       market_implied_probability: row.market_implied_probability,
       edge_value: row.edge_value,
       edge_tier: row.edge_tier,
+      opening_price: row.opening_price,
+      evaluation_price: row.evaluation_price,
+      price_delta_bps: row.price_delta_bps,
+      opening_lag_minutes: row.opening_lag_minutes,
+      decision_gate_status: row.decision_gate_status,
       timestamp: row.created_at,
       timestamp_utc: row.created_at_utc || '',
       commence_time: row.commence_time,
@@ -1034,6 +1044,11 @@ function buildSignalRow_(runId, config, event, match, detail) {
     edge_value: detail.edge_value,
     edge_tier: detail.edge_tier,
     stake_units: detail.stake_units,
+    opening_price: resolveOpeningPrice_(event),
+    evaluation_price: resolveEvaluationPrice_(event),
+    price_delta_bps: resolvePriceDeltaBps_(event),
+    opening_lag_minutes: resolveOpeningLagMinutes_(event, Date.now()),
+    decision_gate_status: resolveDecisionGateStatus_(detail),
     stats_confidence: Number.isFinite(Number(detail.stats_confidence)) ? Number(detail.stats_confidence) : null,
     signal_hash: detail.signal_hash,
     notification_outcome: detail.notification_outcome,
@@ -1047,6 +1062,52 @@ function buildSignalRow_(runId, config, event, match, detail) {
     created_at_utc: new Date().toISOString(),
     notification_metadata: detail.notification_metadata || null,
   };
+}
+
+
+function resolveOpeningPrice_(event) {
+  const candidates = [
+    Number(event && event.opening_price),
+    Number(event && event.open_price),
+    Number(event && event.open_odds_price),
+  ];
+  const value = candidates.find(function (candidate) { return Number.isFinite(candidate); });
+  return Number.isFinite(value) ? value : null;
+}
+
+function resolveEvaluationPrice_(event) {
+  const candidates = [
+    Number(event && event.evaluation_price),
+    Number(event && event.price),
+  ];
+  const value = candidates.find(function (candidate) { return Number.isFinite(candidate); });
+  return Number.isFinite(value) ? value : null;
+}
+
+function resolvePriceDeltaBps_(event) {
+  const direct = Number(event && event.price_delta_bps);
+  if (Number.isFinite(direct)) return direct;
+
+  const openingPrice = resolveOpeningPrice_(event);
+  const evaluationPrice = resolveEvaluationPrice_(event);
+  const openingImplied = oddsPriceToImpliedProbability_(openingPrice);
+  const evaluationImplied = oddsPriceToImpliedProbability_(evaluationPrice);
+  if (!Number.isFinite(openingImplied) || !Number.isFinite(evaluationImplied)) return null;
+  return roundNumber_((evaluationImplied - openingImplied) * 10000, 2);
+}
+
+function resolveOpeningLagMinutes_(event, nowMs) {
+  const explicit = Number(event && event.opening_lag_minutes);
+  if (Number.isFinite(explicit)) return explicit;
+  const referenceMs = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  return resolveMinutesSinceOpenSnapshot_(event, referenceMs);
+}
+
+function resolveDecisionGateStatus_(detail) {
+  const explicit = String(detail && detail.decision_gate_status || '');
+  if (explicit) return explicit;
+  const outcome = String(detail && detail.notification_outcome || '');
+  return outcome || 'unknown';
 }
 
 function getSignalState_() {
