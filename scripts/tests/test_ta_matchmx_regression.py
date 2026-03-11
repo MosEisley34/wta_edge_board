@@ -77,6 +77,22 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertEqual(ok_rows[0].player_canonical_name, "Coco Gauff")
         self.assertFalse(any(row.reason_code == "canonical_name_rejected" for row in rows))
 
+    def test_parse_matchmx_new_schema_row_uses_shifted_metric_indices(self):
+        payload = 'matchmx[0] = ["2026-03-03","Open","Hard","Opponent C","L","Jessica Pegula","6-4 4-6 6-3","6","0.91","0.83","67","42","61","48","59","70","51","43","1.17","55"];'
+        rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
+        ok_rows = [row for row in rows if row.reason_code == "ok"]
+        self.assertEqual(len(ok_rows), 1)
+
+        row = ok_rows[0]
+        self.assertIsNotNone(row.hold_pct)
+        self.assertEqual(row.hold_pct, 67.0)
+        self.assertIsNotNone(row.break_pct)
+        self.assertEqual(row.break_pct, 42.0)
+
+        self.assertNotEqual(row.hold_pct, 0.83)
+        self.assertNotEqual(row.break_pct, 67.0)
+        self.assertEqual(row.ranking, 6.0)
+
     def test_parse_matchmx_parses_each_row_independently_from_array_assignment(self):
         payload = 'matchmx = [["2026-01-01","Open","Hard","Opponent A","Iga Swiatek","6-1 6-1","1","0.9","0.8","70","40","60","50","58","67","49","41","1.12","54"],["2026-01-02","Open","Hard","Opponent B","Coco Gauff","6-2 6-2","3","0.8","0.7","68","39","59","49","57","66","48","40","1.08","52"]];'
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", payload, "2026-01-01T00:00:00+00:00")
