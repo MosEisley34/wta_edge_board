@@ -54,6 +54,56 @@ class TaMatchMxRegressionTest(unittest.TestCase):
                 break
         return rows
 
+    @staticmethod
+    def _live_long_tokens_template() -> list[str]:
+        return [
+            "2026-04-01",  # DATE
+            "Madrid",      # EVENT
+            "Clay",        # SURFACE
+            "Main Draw",   # TOURNAMENT_PHASE
+            "W",           # RESULT_FLAG
+            "Iga Swiatek", # PLAYER_NAME
+            "2",           # RANKING
+            "1",           # SEED
+            "",            # ENTRY
+            "R16",         # ROUND
+            "6-2 6-4",     # SCORE
+            "3",           # BEST_OF
+            "Opponent Q",  # OPPONENT
+            "98",          # MATCH_MINUTES
+            "WTA1000",     # LEVEL
+            "WTA",         # HAND
+            "R",           # TOUR
+            "2026",        # SEASON
+            "23.5",        # AGE
+            "POL",         # COUNTRY
+            "POL",         # COURT
+            "3",           # ACES
+            "2",           # DOUBLE_FAULTS
+            "63",          # FIRST_SERVE_IN_RAW
+            "64",          # DRAW_SIZE
+            "132",         # RECENT_FORM (aux numeric)
+            "0.88",        # RECENT_FORM
+            "0.81",        # SURFACE_WIN_RATE
+            "64.2",        # BP_SAVED_PCT
+            "48.5",        # BP_CONV_PCT
+            "71.4",        # HOLD_PCT
+            "39.6",        # BREAK_PCT
+            "62.1",        # FIRST_SERVE_IN_PCT
+            "69.3",        # FIRST_SERVE_POINTS_WON_PCT
+            "51.0",        # SECOND_SERVE_POINTS_WON_PCT
+            "41.4",        # RETURN_POINTS_WON_PCT
+            "1.18",        # DOMINANCE_RATIO
+            "54.1",        # TOTAL_POINTS_WON_PCT
+            "10",          # SERVICE_GAMES
+            "10",          # RETURN_GAMES
+            "132",         # POINTS_PLAYED
+            "2-0",         # TB_RECORD
+            "-120",        # OPENER_ODDS
+            "-135",        # CLOSING_ODDS
+            "phase-shifted live row",  # NOTES
+        ]
+
     def test_extract_player_features_fixture_has_players_coverage_and_name_quality(self):
         rows = _parse_matchmx_rows("tennisabstract_leadersource_wta", self.payload, "2026-01-01T00:00:00+00:00")
         valid_rows = [r for r in rows if r.player_canonical_name and r.reason_code == "ok"]
@@ -264,53 +314,7 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertNotEqual(parsed.break_pct, float(long_tokens[MATCHMX_LONG_ROW_IDX["SEED"]]))
 
     def test_parse_matchmx_live_long_schema_phase_prefixed_row_uses_live_long_index_map(self):
-        live_long_tokens = [
-            "2026-04-01",
-            "Madrid",
-            "Clay",
-            "Opponent Q",
-            "Main Draw",
-            "W",
-            "Iga Swiatek",
-            "R16",
-            "64",
-            "Outdoor",
-            "3",
-            "98",
-            "M555",
-            "POL",
-            "WTA1000",
-            "WTA",
-            "2026",
-            "1",
-            "",
-            "23.5",
-            "R",
-            "3",
-            "2",
-            "63",
-            "6-2 6-4",
-            "2",
-            "0.88",
-            "0.81",
-            "71.4",
-            "39.6",
-            "64.2",
-            "48.5",
-            "62.1",
-            "69.3",
-            "51.0",
-            "41.4",
-            "1.18",
-            "54.1",
-            "10",
-            "10",
-            "132",
-            "2-0",
-            "-120",
-            "-135",
-            "phase-shifted live row",
-        ]
+        live_long_tokens = self._live_long_tokens_template()
 
         self.assertEqual(float(live_long_tokens[MATCHMX_LONG_LIVE_ROW_IDX["RANKING"]]), 2.0)
         self.assertEqual(float(live_long_tokens[MATCHMX_LONG_LIVE_ROW_IDX["HOLD_PCT"]]), 71.4)
@@ -421,34 +425,20 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertEqual(idx, MATCHMX_OLD_ROW_IDX)
 
     def test_get_matchmx_row_idx_uses_live_45_shape_only_with_plausible_numeric_hold_break(self):
-        tokens = [
-            "2026-04-01", "Madrid", "Clay", "Opponent Q", "Main Draw", "W", "Iga Swiatek", "R16", "64", "Outdoor",
-            "3", "98", "M555", "POL", "WTA1000", "WTA", "2026", "1", "", "23.5", "R", "3", "2", "63",
-            "6-2 6-4", "2", "0.88", "0.81", "71.4", "39.6", "64.2", "48.5", "62.1", "69.3", "51.0", "41.4",
-            "1.18", "54.1", "10", "10", "132", "2-0", "-120", "-135", "phase-shifted live row",
-        ]
+        tokens = self._live_long_tokens_template()
 
         idx = get_matchmx_row_idx(tokens)
         self.assertEqual(idx, MATCHMX_LONG_LIVE_ROW_IDX)
 
     def test_get_matchmx_row_idx_rejects_old_map_when_old_player_name_is_result_flag(self):
-        tokens = [
-            "2026-04-01", "Madrid", "Clay", "Opponent Q", "R16", "W", "Iga Swiatek", "R16", "64", "Outdoor",
-            "3", "98", "M555", "POL", "WTA1000", "WTA", "2026", "1", "", "23.5", "R", "3", "2", "63",
-            "6-2 6-4", "2", "0.88", "0.81", "71.4", "39.6", "64.2", "48.5", "62.1", "69.3", "51.0", "41.4",
-            "1.18", "54.1", "10", "10", "132", "2-0", "-120", "-135", "phase-shifted live row",
-        ]
+        tokens = self._live_long_tokens_template()
+        tokens[MATCHMX_OLD_ROW_IDX["PLAYER_NAME"]] = "W"
 
         idx = get_matchmx_row_idx(tokens)
         self.assertEqual(idx, MATCHMX_LONG_LIVE_ROW_IDX)
 
     def test_get_matchmx_row_idx_rejects_old_map_when_old_hold_pct_is_round_label(self):
-        tokens = [
-            "2026-04-01", "Madrid", "Clay", "Opponent Q", "Main Draw", "W", "Iga Swiatek", "R16", "64", "Outdoor",
-            "3", "98", "M555", "POL", "WTA1000", "WTA", "2026", "1", "", "23.5", "R", "3", "2", "63",
-            "6-2 6-4", "2", "0.88", "0.81", "71.4", "39.6", "64.2", "48.5", "62.1", "69.3", "51.0", "41.4",
-            "1.18", "54.1", "10", "10", "132", "2-0", "-120", "-135", "phase-shifted live row",
-        ]
+        tokens = self._live_long_tokens_template()
 
         tokens[MATCHMX_OLD_ROW_IDX["HOLD_PCT"]] = "QF"
 
@@ -456,12 +446,7 @@ class TaMatchMxRegressionTest(unittest.TestCase):
         self.assertEqual(idx, MATCHMX_LONG_LIVE_ROW_IDX)
 
     def test_get_matchmx_row_idx_rejects_old_map_when_old_break_pct_is_score_like(self):
-        tokens = [
-            "2026-04-01", "Madrid", "Clay", "Opponent Q", "Main Draw", "W", "Iga Swiatek", "R16", "64", "Outdoor",
-            "3", "98", "M555", "POL", "WTA1000", "WTA", "2026", "1", "", "23.5", "R", "3", "2", "63",
-            "6-2 6-4", "2", "0.88", "0.81", "71.4", "39.6", "64.2", "48.5", "62.1", "69.3", "51.0", "41.4",
-            "1.18", "54.1", "10", "10", "132", "2-0", "-120", "-135", "phase-shifted live row",
-        ]
+        tokens = self._live_long_tokens_template()
 
         tokens[MATCHMX_OLD_ROW_IDX["BREAK_PCT"]] = "6-3 6-1"
 
