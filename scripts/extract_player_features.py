@@ -56,6 +56,11 @@ DIAGNOSTIC_COLUMNS = [
 
 CATALOG_PATH = Path(__file__).resolve().parents[1] / "config" / "probe_sources.tsv"
 
+SOFASCORE_MIN_PARTICIPANTS_BY_SOURCE: dict[str, int] = {
+    "sofascore_events_live": 2,
+    "sofascore_scheduled_events": 2,
+}
+
 
 @dataclass(frozen=True)
 class ParserContract:
@@ -644,11 +649,21 @@ def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[
     candidates: list[str] = []
     has_supported_name_paths = False
 
+    name_keys = (
+        "name",
+        "shortName",
+        "slug",
+        "displayName",
+        "fullName",
+        "teamName",
+        "participantName",
+    )
+
     def _collect_name_fields(node: dict[str, object]) -> None:
         nonlocal has_supported_name_paths
-        if any(key in node for key in ("name", "shortName", "slug")):
+        if any(key in node for key in name_keys):
             has_supported_name_paths = True
-        name = normalize_name(_pick(node, "name", "shortName", "slug"))
+        name = normalize_name(_pick(node, *name_keys))
         if not name:
             return
         candidates.extend(_split_sofascore_team_name(name))
@@ -660,13 +675,17 @@ def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[
             for nested_key in (
                 "player",
                 "players",
+                "player1",
+                "player2",
                 "participants",
                 "participant",
                 "members",
                 "athletes",
                 "team",
+                "teams",
                 "homeTeam",
                 "awayTeam",
+                "nameTranslations",
             ):
                 if nested_key in value:
                     has_supported_name_paths = True
@@ -687,13 +706,17 @@ def _extract_sofascore_team_player_names(team: dict[str, object]) -> tuple[list[
     _collect_entity(team.get("player"))
     for key in (
         "players",
+        "player1",
+        "player2",
         "participants",
         "participant",
         "members",
         "athletes",
         "team",
+        "teams",
         "homeTeam",
         "awayTeam",
+        "nameTranslations",
     ):
         if key in team:
             has_supported_name_paths = True
@@ -757,10 +780,31 @@ def _parse_sofascore_events_records(data: dict[str, object], source: str, as_of:
                     )
                 )
 
-    if rows:
+    min_participants = SOFASCORE_MIN_PARTICIPANTS_BY_SOURCE.get(source, 1)
+    if len(rows) >= min_participants:
         for row in rows:
             row.has_stats = _has_stats(row)
         return rows
+
+    if len(rows) < min_participants:
+        return [
+            PlayerFeature(
+                player_canonical_name=None,
+                source=source,
+                as_of=as_of,
+                ranking=None,
+                recent_form=None,
+                surface_win_rate=None,
+                hold_pct=None,
+                break_pct=None,
+                h2h_wins=None,
+                h2h_losses=None,
+                has_stats=False,
+                reason_code="sofascore_events_participant_floor_unmet",
+                reason_code_detail=f"participants_extracted:{len(rows)}_min_required:{min_participants}",
+            )
+        ]
+
     if participant_fields_seen:
         return []
     return [

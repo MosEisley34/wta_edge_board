@@ -4,8 +4,18 @@
       "id": 1,
       "sport": {"slug": "tennis", "name": "Tennis"},
       "category": {"name": "WTA", "slug": "wta"},
-      "homeTeam": {"name": "Iga Swiatek", "ranking": 1},
-      "awayTeam": {"name": "Aryna Sabalenka", "ranking": 2}
+      "homeTeam": {
+        "id": 9001,
+        "name": "Coco Gauff / Jessica Pegula",
+        "shortName": "Gauff/Pegula"
+      },
+      "awayTeam": {
+        "id": 9002,
+        "team": {
+          "name": "Gabriela Dabrowski & Erin Routliffe",
+          "slug": "gabriela-dabrowski-erin-routliffe"
+        }
+      }
     }
   ]
 }

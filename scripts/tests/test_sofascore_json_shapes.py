@@ -17,7 +17,26 @@ class SofascoreJsonShapeTests(unittest.TestCase):
 
         self.assertTrue(rows)
         self.assertTrue(all(row.reason_code != "source_parse_error" for row in rows))
-        self.assertEqual(["Iga Swiatek", "Aryna Sabalenka"], [row.player_canonical_name for row in rows])
+        self.assertEqual(
+            [
+                "Coco Gauff",
+                "Jessica Pegula",
+                "Gabriela Dabrowski",
+                "Erin Routliffe",
+            ],
+            [row.player_canonical_name for row in rows],
+        )
+
+    def test_scheduled_events_fixture_normalizes_player_rows_without_parse_error(self):
+        path = ROOT / "scripts" / "fixtures" / "sofascore_scheduled_events.json"
+        rows = _extract_from_file(path, selected_sources=set())
+
+        self.assertTrue(rows)
+        self.assertTrue(all(row.reason_code != "source_parse_error" for row in rows))
+        self.assertEqual(
+            ["Belinda Bencic", "Lulu Sun", "Donna Vekic", "Petra Martic"],
+            [row.player_canonical_name for row in rows],
+        )
 
     def test_player_payload_normalizes_single_player_without_parse_error(self):
         path = ROOT / "scripts" / "fixtures" / "sofascore_player_detail.json"
@@ -102,6 +121,22 @@ class SofascoreJsonShapeTests(unittest.TestCase):
             rows = _extract_from_file(path, selected_sources=set())
 
         self.assertEqual(["Belinda Bencic", "Lulu Sun", "Donna Vekic", "Petra Martic"], [row.player_canonical_name for row in rows])
+
+    def test_events_payload_emits_diagnostics_only_row_when_participant_floor_unmet(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "sofascore_events_live.json"
+            path.write_text(
+                '{"events": ['
+                '{"sport": {"slug": "tennis"}, "category": {"name": "WTA"}, "homeTeam": {"name": "Iga Swiatek"}, "awayTeam": {"name": ""}}'
+                ']}' ,
+                encoding="utf-8",
+            )
+
+            rows = _extract_from_file(path, selected_sources=set())
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual("sofascore_events_participant_floor_unmet", rows[0].reason_code)
+        self.assertIsNone(rows[0].player_canonical_name)
 
     def test_statistics_payload_emits_diagnostic_record_without_parse_error(self):
         path = ROOT / "scripts" / "fixtures" / "sofascore_player_stats_overall.json"
