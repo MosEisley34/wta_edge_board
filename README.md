@@ -89,7 +89,7 @@ scripts/run_triage_bundle.sh ./runtime
 scripts/run_triage_bundle.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
 ```
 
-The wrapper runs `scripts/export_runtime_artifacts.sh` and then invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`) so diagnostics inputs are consistently prepared before scanning.
+The wrapper runs `scripts/prepare_runtime_exports.sh` and then invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`) so diagnostics inputs are consistently prepared before scanning.
 
 Manual 3-step flow is still available when needed:
 
@@ -97,20 +97,28 @@ Manual 3-step flow is still available when needed:
 2. **Run diagnostics scan/triage** against that export directory.
 3. **Interpret grouped counts + row previews** to identify the dominant failure mode.
 
-### 1) Export Run_Log/State artifacts
+### 1) Repeatable pre-step: export + validate expected files
 
 ```bash
-scripts/export_runtime_artifacts.sh [--out-dir ./exports] <file-or-directory> [more paths...]
+scripts/prepare_runtime_exports.sh [--out-dir ./exports] <file-or-directory> [more paths...]
 ```
 
 Examples:
 
 ```bash
-scripts/export_runtime_artifacts.sh ./runtime
-scripts/export_runtime_artifacts.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
+scripts/prepare_runtime_exports.sh ./runtime
+scripts/prepare_runtime_exports.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
 ```
 
-This command copies matching `Run_Log`/`State` CSV/JSON files into `./exports` and fails with a clear error when no exportable artifacts are found.
+This pre-step copies matching `Run_Log`/`State` CSV/JSON files into `./exports` and then validates exports before scanning.
+
+Expected files (at least one must exist):
+- `./exports/*Run_Log*.csv`
+- `./exports/*Run_Log*.json`
+- `./exports/*State*.csv`
+- `./exports/*State*.json`
+
+If these are missing, the script fails early with remediation instructions to rerun export with paths containing Run_Log/State artifacts before invoking the scanner.
 
 ### 2) Run scanner/triage
 
