@@ -47,8 +47,8 @@ if [[ "${#inputs[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-echo "[1/2] Exporting Run_Log/State artifacts to ${out_dir}"
-scripts/export_runtime_artifacts.sh --out-dir "$out_dir" "${inputs[@]}"
+echo "[1/2] Preparing Run_Log/State exports in ${out_dir}"
+scripts/prepare_runtime_exports.sh --out-dir "$out_dir" "${inputs[@]}"
 
 echo
 echo "[2/2] Scanning runtime diagnostics from ${out_dir}"

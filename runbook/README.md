@@ -9,16 +9,24 @@ scripts/run_triage_bundle.sh [--out-dir ./exports] <file-or-directory> [more pat
 ```
 
 What it does:
-1. Exports `Run_Log`/`State` CSV/JSON into `./exports` (default) via `scripts/export_runtime_artifacts.sh`.
+1. Runs `scripts/prepare_runtime_exports.sh` to export `Run_Log`/`State` CSV/JSON into `./exports` (default).
 2. Immediately invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`).
 
 ## Manual usage flow (optional)
 
-1. Export runtime artifacts (`Run_Log`/`State` CSV or JSON) into the known export directory (`./exports` by default):
+1. Run the repeatable export pre-step into the known export directory (`./exports` by default):
 
 ```bash
-scripts/export_runtime_artifacts.sh [--out-dir ./exports] <file-or-directory> [more paths...]
+scripts/prepare_runtime_exports.sh [--out-dir ./exports] <file-or-directory> [more paths...]
 ```
+
+Expected files (at least one required before scanning):
+- `./exports/*Run_Log*.csv`
+- `./exports/*Run_Log*.json`
+- `./exports/*State*.csv`
+- `./exports/*State*.json`
+
+If none are present, the pre-step fails early with a remediation message.
 
 2. Run diagnostics triage:
 
