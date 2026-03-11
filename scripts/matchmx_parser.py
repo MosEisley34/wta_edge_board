@@ -452,10 +452,17 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
         except (TypeError, ValueError):
             return False
 
-    def _schema_quality(idx_map: dict[str, int], rows: list[list[str]]) -> tuple[int, int, int]:
+    def _schema_quality(idx_map: dict[str, int], rows: list[list[str]]) -> tuple[int, int, int, int, int]:
         quality = 0
         valid_rows = 0
+        hold_valid_count = 0
+        break_valid_count = 0
+        hard_reject = False
+        hold_values: list[float] = []
         break_values: list[float] = []
+
+        def _is_missing_metric_token(raw: str) -> bool:
+            return not raw or raw.lower() in {"null", "undefined", "nan"}
 
         for row_tokens in rows:
             recent_form = _to_number(row_tokens, idx_map["RECENT_FORM"])
@@ -463,6 +470,8 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
             hold = _to_number(row_tokens, idx_map["HOLD_PCT"])
             brk = _to_number(row_tokens, idx_map["BREAK_PCT"])
             ranking = _to_number(row_tokens, idx_map["RANKING"])
+            hold_token = str(row_tokens[idx_map["HOLD_PCT"]]).strip() if idx_map["HOLD_PCT"] < len(row_tokens) else ""
+            break_token = str(row_tokens[idx_map["BREAK_PCT"]]).strip() if idx_map["BREAK_PCT"] < len(row_tokens) else ""
 
             row_score = 0
             numeric_metrics = [
@@ -485,10 +494,21 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
                 row_score += 1
             if _plausible_pct(hold, 35.0, 95.0):
                 row_score += 2
+                hold_valid_count += 1
             if _plausible_pct(brk, 5.0, 70.0):
                 row_score += 2
+                break_valid_count += 1
             if ranking is not None and 0.0 <= ranking <= 2000.0:
                 row_score += 1
+
+            # Hard rejects: HOLD/BREAK should be numeric when populated, and BREAK
+            # should not resolve into identity/name text.
+            if not _is_missing_metric_token(hold_token) and not _is_numeric_token(hold_token):
+                hard_reject = True
+            if not _is_missing_metric_token(break_token) and not _is_numeric_token(break_token):
+                hard_reject = True
+            if not _is_missing_metric_token(break_token) and _is_full_name_like(break_token):
+                hard_reject = True
 
             # Penalize drift where HOLD is null while the surrounding metric window
             # is populated, which usually indicates a shifted schema map.
@@ -509,14 +529,28 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
 
             if brk is not None:
                 break_values.append(brk)
+            if hold is not None:
+                hold_values.append(hold)
 
-        # Penalize implausibly constant integer BREAK% across sampled rows.
-        if len(break_values) >= 3:
-            int_break_values = [value for value in break_values if abs(value - round(value)) < 1e-9]
-            if len(int_break_values) >= 3 and len(set(int_break_values)) == 1:
-                quality -= 4
+        def _constant_tiny_integer(values: list[float]) -> bool:
+            if len(values) < 3:
+                return False
+            int_values = [value for value in values if abs(value - round(value)) < 1e-9]
+            if len(int_values) < 3:
+                return False
+            if len(set(int_values)) != 1:
+                return False
+            return abs(int_values[0]) <= 10
 
-        return quality, valid_rows, -max(idx_map.values())
+        # Hard reject implausibly constant tiny integer HOLD/BREAK values across
+        # sampled rows (e.g., always "3" due to shifted columns).
+        if _constant_tiny_integer(hold_values) or _constant_tiny_integer(break_values):
+            hard_reject = True
+
+        if hard_reject:
+            quality -= 10_000
+
+        return quality, valid_rows, hold_valid_count, break_valid_count, -max(idx_map.values())
 
     def _matches_long_variant(idx_map: dict[str, int], require_phase: bool = False) -> bool:
         required = ("RESULT_FLAG", "PLAYER_NAME", "SCORE", "RANKING", "HOLD_PCT", "BREAK_PCT")
@@ -627,14 +661,27 @@ def get_matchmx_row_idx(tokens: list[str], sample_rows: list[list[str]] | None =
         if new_candidates:
             scored_rows = [tokens]
             if sample_rows:
+                min_required_len = min(max(candidate.values()) + 1 for candidate in new_candidates)
                 for row_tokens in sample_rows:
                     if row_tokens is tokens:
                         continue
-                    if row_tokens and len(row_tokens) >= min(max(candidate.values()) + 1 for candidate in new_candidates):
+                    if row_tokens and len(row_tokens) >= min_required_len:
                         scored_rows.append(row_tokens)
                     if len(scored_rows) >= 5:
                         break
-            return max(new_candidates, key=lambda idx_map: _schema_quality(idx_map, scored_rows))
+
+            minimum_valid_metrics = 2 if len(scored_rows) >= 2 else 1
+            ranked_candidates: list[tuple[tuple[int, int, int, int, int], dict[str, int]]] = []
+            for idx_map in new_candidates:
+                score = _schema_quality(idx_map, scored_rows)
+                hold_valid = score[2]
+                break_valid = score[3]
+                if hold_valid < minimum_valid_metrics or break_valid < minimum_valid_metrics:
+                    continue
+                ranked_candidates.append((score, idx_map))
+
+            if ranked_candidates:
+                return max(ranked_candidates, key=lambda pair: pair[0])[1]
 
     return MATCHMX_OLD_ROW_IDX
 
