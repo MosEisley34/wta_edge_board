@@ -475,6 +475,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const h2hDecisionCounts = { h2h_applied: 0, h2h_low_sample: 0, h2h_unavailable: 0 };
   const sampledDecisionLimit = Number(config.SIGNAL_DECISION_SAMPLE_LIMIT || 50);
   let processedCandidateCount = 0;
+  let scoredCandidateCount = 0;
   const reasonCounts = {
     sent: 0,
     missing_match: 0,
@@ -512,6 +513,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
 
   function captureDecision_(event, match, decisionReasonCode, detail) {
     processedCandidateCount += 1;
+    if (detail && detail.scored) scoredCandidateCount += 1;
     reasonCounts[decisionReasonCode] = (reasonCounts[decisionReasonCode] || 0) + 1;
     const legacyDecisionReasonCode = legacyReasonCodeMap[decisionReasonCode] || null;
     if (legacyDecisionReasonCode) {
@@ -884,8 +886,21 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     throw new Error('stageGenerateSignals invariant violated: sent + all_drop_reasons must equal input_count');
   }
 
+  const signalDecisionSummary = buildSignalDecisionRunSummary_({
+    run_id: runId,
+    input_count: oddsEvents.length,
+    processed_count: processedCandidateCount,
+    scored_count: scoredCandidateCount,
+    sent_count: Number(reasonCounts.sent || 0),
+    reason_counts: reasonCounts,
+    sampled_decisions: sampledDecisions,
+  });
+  setStateValue_('LAST_SIGNAL_DECISION_SUMMARY', JSON.stringify(signalDecisionSummary));
+
   const summaryReasonCodes = Object.assign({}, reasonCounts);
-  const summaryReasonMetadata = {};
+  const summaryReasonMetadata = {
+    signal_decision_summary: JSON.stringify(signalDecisionSummary),
+  };
   if (oddsEvents.length === 0) {
     summaryReasonMetadata.upstream_gate_reason = normalizedUpstreamGateReason;
     summaryReasonMetadata.upstream_gate_inputs = JSON.stringify(upstreamGateInputs);
@@ -906,6 +921,90 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     sentCount: reasonCounts.sent || 0,
     cooldownSuppressedCount: reasonCounts.cooldown_suppressed || 0,
     duplicateSuppressedCount: reasonCounts.duplicate_suppressed || 0,
+    scoredCount: scoredCandidateCount,
+    signalDecisionSummary: signalDecisionSummary,
+  };
+}
+
+function buildSignalDecisionRunSummary_(payload) {
+  const safe = payload || {};
+  const reasonCounts = Object.assign({}, safe.reason_counts || {});
+  const sampledDecisions = Array.isArray(safe.sampled_decisions) ? safe.sampled_decisions : [];
+  const suppressionReasonGroups = {
+    cooldown: ['cooldown_suppressed'],
+    edge: ['edge_below_threshold'],
+    stale: ['stale_odds_skip'],
+    timing: ['too_close_to_start_skip'],
+    config: ['notify_disabled', 'notify_missing_config'],
+  };
+
+  const suppressionSummary = Object.keys(suppressionReasonGroups).reduce(function (acc, groupName) {
+    const reasons = suppressionReasonGroups[groupName];
+    const byReason = {};
+    let total = 0;
+    reasons.forEach(function (reasonCode) {
+      const count = Number(reasonCounts[reasonCode] || 0);
+      byReason[reasonCode] = count;
+      total += count;
+    });
+    acc[groupName] = {
+      total: total,
+      by_reason: byReason,
+    };
+    return acc;
+  }, {});
+
+  const topSuppressionReasons = Object.keys(reasonCounts)
+    .map(function (reasonCode) {
+      return { reason_code: reasonCode, count: Number(reasonCounts[reasonCode] || 0) };
+    })
+    .filter(function (entry) {
+      return entry.count > 0 && /(?:_suppressed|_skip$|edge_below_threshold|notify_missing_config|notify_disabled)/.test(entry.reason_code);
+    })
+    .sort(function (a, b) { return b.count - a.count; })
+    .slice(0, 3);
+
+  const sampledSuppressionExamples = topSuppressionReasons.map(function (entry) {
+    const examples = sampledDecisions
+      .filter(function (decision) { return String(decision && decision.decision_reason_code || '') === entry.reason_code; })
+      .slice(0, 2)
+      .map(function (decision) {
+        const safeDecision = decision || {};
+        return {
+          odds_event_id: safeDecision.odds_event_id || '',
+          side: safeDecision.side || '',
+          market: safeDecision.market || '',
+          edge_value: Number(safeDecision.detail && safeDecision.detail.edge_value),
+          minutes_to_start: Number(safeDecision.detail && safeDecision.detail.minutes_to_start),
+        };
+      });
+    return {
+      reason_code: entry.reason_code,
+      count: entry.count,
+      examples: examples,
+    };
+  });
+
+  const sentCount = Number(safe.sent_count || 0);
+  const scoredCount = Number(safe.scored_count || 0);
+
+  return {
+    run_id: String(safe.run_id || ''),
+    input_count: Number(safe.input_count || 0),
+    processed_count: Number(safe.processed_count || 0),
+    scored_count: scoredCount,
+    sent_count: sentCount,
+    suppression_counts: suppressionSummary,
+    sampled_top_suppressions: sampledSuppressionExamples,
+    alignment_checks: {
+      sent_matches_reason_counts: sentCount === Number(reasonCounts.sent || 0),
+      cooldown_matches_reason_counts: Number((suppressionSummary.cooldown && suppressionSummary.cooldown.by_reason && suppressionSummary.cooldown.by_reason.cooldown_suppressed) || 0) === Number(reasonCounts.cooldown_suppressed || 0),
+      edge_matches_reason_counts: Number((suppressionSummary.edge && suppressionSummary.edge.by_reason && suppressionSummary.edge.by_reason.edge_below_threshold) || 0) === Number(reasonCounts.edge_below_threshold || 0),
+      stale_matches_reason_counts: Number((suppressionSummary.stale && suppressionSummary.stale.by_reason && suppressionSummary.stale.by_reason.stale_odds_skip) || 0) === Number(reasonCounts.stale_odds_skip || 0),
+      timing_matches_reason_counts: Number((suppressionSummary.timing && suppressionSummary.timing.by_reason && suppressionSummary.timing.by_reason.too_close_to_start_skip) || 0) === Number(reasonCounts.too_close_to_start_skip || 0),
+      config_matches_reason_counts: Number((suppressionSummary.config && suppressionSummary.config.total) || 0) === Number(reasonCounts.notify_disabled || 0) + Number(reasonCounts.notify_missing_config || 0),
+      scored_not_less_than_sent: scoredCount >= sentCount,
+    },
   };
 }
 
