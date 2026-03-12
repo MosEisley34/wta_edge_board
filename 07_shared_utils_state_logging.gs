@@ -2,6 +2,8 @@
 const STATE_VALUE_SAFE_CHAR_THRESHOLD = 45000;
 const STATE_VALUE_GUARD_REASON = 'state_value_summarized_size_guard';
 
+let REASON_ALIAS_DICTIONARY_EMITTED_FOR_PROCESS = false;
+
 const SECRET_REDACTION_MAP = {
   exact_keys: [
     'ODDS_API_KEY',
@@ -139,6 +141,7 @@ function appendStageLog_(runId, summary) {
     status: 'success',
     reason_code: 'stage_completed',
     message: JSON.stringify({
+      reason_code_alias_schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
       input_count: summary.input_count,
       output_count: summary.output_count,
       provider: summary.provider,
@@ -601,22 +604,76 @@ function mergeReasonCounts_(reasonMaps) {
   return merged;
 }
 
+
+function maybeEmitReasonAliasDictionary_(config) {
+  if (REASON_ALIAS_DICTIONARY_EMITTED_FOR_PROCESS) return;
+  const dictionary = getReasonCodeAliasDictionary_();
+  invertReasonCodeAliasDictionary_(dictionary);
+  REASON_ALIAS_DICTIONARY_EMITTED_FOR_PROCESS = true;
+  logDiagnosticEvent_(config || null, 'reason_code_alias_dictionary', {
+    schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+    aliases: dictionary,
+  }, 1);
+}
+
+function getReasonCodeAliasDictionary_() {
+  return REASON_CODE_ALIAS_DICTIONARY || {};
+}
+
+function invertReasonCodeAliasDictionary_(aliasDictionary) {
+  const inverted = {};
+  Object.keys(aliasDictionary || {}).forEach((reasonCode) => {
+    const alias = String((aliasDictionary || {})[reasonCode] || '').trim();
+    if (!alias) return;
+    if (Object.prototype.hasOwnProperty.call(inverted, alias) && inverted[alias] !== reasonCode) {
+      throw new Error('reason_alias_dictionary_collision_' + alias);
+    }
+    inverted[alias] = reasonCode;
+  });
+  return inverted;
+}
+
+function getReasonCodeAliasSchema_() {
+  return {
+    schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+    aliases: getReasonCodeAliasDictionary_(),
+  };
+}
+
+function reasonCodeToAlias_(reasonCode) {
+  const text = String(reasonCode || '').trim();
+  if (!text) return '';
+  const dictionary = getReasonCodeAliasDictionary_();
+  return String(dictionary[text] || text);
+}
+
+function reasonCodeAliasToCode_(reasonAlias) {
+  const text = String(reasonAlias || '').trim();
+  if (!text) return '';
+  const inverted = invertReasonCodeAliasDictionary_(getReasonCodeAliasDictionary_());
+  return String(inverted[text] || text);
+}
+
 function compactReasonCodeMapForLog_(reasonMap) {
   const compacted = {};
   Object.keys(reasonMap || {}).forEach((reasonCode) => {
     const value = Number((reasonMap || {})[reasonCode]);
     if (!Number.isFinite(value) || value === 0) return;
-    compacted[reasonCode] = value;
+    const alias = reasonCodeToAlias_(reasonCode);
+    compacted[alias] = value;
   });
   return compacted;
 }
 
 function compactStageSummariesForLog_(stageSummaries) {
-  return (stageSummaries || []).map((summary) => {
-    const cloned = Object.assign({}, summary || {});
-    cloned.reason_codes = compactReasonCodeMapForLog_((summary || {}).reason_codes || {});
-    return cloned;
-  });
+  return {
+    schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+    stage_summaries: (stageSummaries || []).map((summary) => {
+      const cloned = Object.assign({}, summary || {});
+      cloned.reason_codes = compactReasonCodeMapForLog_((summary || {}).reason_codes || {});
+      return cloned;
+    }),
+  };
 }
 
 function normalizeUpstreamGateReason_(value) {

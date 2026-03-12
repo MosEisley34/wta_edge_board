@@ -143,6 +143,27 @@ const TIMESTAMP_TIMEZONE = {
   OFFSET: '-07:00',
 };
 
+const REASON_CODE_ALIAS_SCHEMA_ID = 'reason_code_alias_v1';
+const REASON_CODE_ALIAS_DICTIONARY = {
+  odds_refresh_skipped_outside_window: 'or_out_win',
+  odds_refresh_cache_hit_within_window: 'or_hit_win',
+  odds_refresh_cache_hit_outside_window: 'or_hit_out',
+  odds_refresh_skipped_credits_soft_limit: 'or_skip_soft',
+  odds_refresh_skipped_credits_hard_limit: 'or_skip_hard',
+  odds_refresh_no_eligible_matches: 'or_no_elig',
+  odds_refresh_fetched_success: 'or_fetch_ok',
+  productive_output_empty_streak_detected: 'po_empty_stk',
+  schedule_only_streak_detected: 'sched_only_stk',
+  bootstrap_empty_cycle_detected: 'boot_empty_stk',
+  opening_lag_within_limit: 'open_lag_ok',
+  opening_lag_exceeded: 'open_lag_hi',
+  missing_open_timestamp: 'open_ts_miss',
+  run_health_no_matches_from_odds: 'rh_no_match',
+  source_entity_domain_mismatch_non_tennis_sport_slug_football: 'src_dm_foot',
+  source_entity_domain_mismatch: 'src_dm',
+  match_map_diagnostic_records_written: 'mm_diag_wr',
+};
+
 function getConfig_() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
   const values = sh.getDataRange().getValues();
