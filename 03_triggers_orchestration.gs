@@ -1138,6 +1138,22 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   const requireOpeningLineProximity = !!config.REQUIRE_OPENING_LINE_PROXIMITY;
   const fallbackExemptionMaxAgeMinutes = Math.max(0, Number(config.OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES || 0));
   const fallbackExemptionMaxRowsPerRun = Math.max(0, Number(config.OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN || 0));
+  const fallbackExemptionCapMode = String(config.OPENING_LAG_FALLBACK_EXEMPTION_CAP_MODE || 'unlimited_when_zero').toLowerCase();
+  const fallbackExemptionAllowedSources = parseOpeningLagPolicySources_(
+    config.OPENING_LAG_FALLBACK_EXEMPTION_ALLOWED_SOURCES_JSON,
+    ['fallback_cached_stale']
+  );
+  const fallbackExemptionDeniedSources = parseOpeningLagPolicySources_(
+    config.OPENING_LAG_FALLBACK_EXEMPTION_DENIED_SOURCES_JSON,
+    ['strict_gate', 'fallback_cached_fresh']
+  );
+  const fallbackExemptionConfigValidation = validateOpeningLagFallbackExemptionConfig_({
+    cap_mode: fallbackExemptionCapMode,
+    max_rows_per_run: fallbackExemptionMaxRowsPerRun,
+    allowed_sources: fallbackExemptionAllowedSources,
+    denied_sources: fallbackExemptionDeniedSources,
+  });
+  const denyAllWhenCapZero = fallbackExemptionConfigValidation.cap_zero_blocks_all;
   const now = new Date();
   const nowMs = now.getTime();
 
@@ -1149,6 +1165,13 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   let fallbackExemptionDeniedAge = 0;
   let fallbackExemptionDeniedCap = 0;
   const fallbackExemptionAgeBuckets = {};
+  const fallbackExemptionEvidenceSampleLimit = 3;
+  const fallbackExemptionEvidence = {
+    blocked_by_source: [],
+    blocked_by_age: [],
+    blocked_by_cap: [],
+    exempted: [],
+  };
 
   const enrichedEvents = originalEvents.map(function (event) {
     const timestampType = String((event && event.open_timestamp_type) || '');
@@ -1186,22 +1209,32 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
 
     if (!strictGate) {
       let exemptionDecision = 'opening_lag_fallback_exemption_allowed';
+      const eventEvidence = {
+        event_id: String((event && event.event_id) || ''),
+        policy_tier: policyTier,
+        opening_lag_minutes: Number.isFinite(Number(openingLagMinutes)) ? Number(openingLagMinutes) : null,
+      };
 
-      if (policyTier !== 'fallback_cached_stale') {
+      if (fallbackExemptionDeniedSources[policyTier] || !fallbackExemptionAllowedSources[policyTier]) {
         exemptionDecision = 'opening_lag_fallback_exemption_denied_source';
         fallbackExemptionDeniedSource += 1;
+        pushOpeningLagFallbackEvidence_(fallbackExemptionEvidence.blocked_by_source, eventEvidence, fallbackExemptionEvidenceSampleLimit);
       } else if (fallbackExemptionMaxAgeMinutes > 0 && openingLagMinutes > fallbackExemptionMaxAgeMinutes) {
         exemptionDecision = 'opening_lag_fallback_exemption_denied_age';
         fallbackExemptionDeniedAge += 1;
-      } else if (fallbackExemptionMaxRowsPerRun > 0 && fallbackCachedExempted >= fallbackExemptionMaxRowsPerRun) {
+        pushOpeningLagFallbackEvidence_(fallbackExemptionEvidence.blocked_by_age, eventEvidence, fallbackExemptionEvidenceSampleLimit);
+      } else if ((denyAllWhenCapZero && fallbackExemptionMaxRowsPerRun === 0)
+        || (fallbackExemptionMaxRowsPerRun > 0 && fallbackCachedExempted >= fallbackExemptionMaxRowsPerRun)) {
         exemptionDecision = 'opening_lag_fallback_exemption_denied_cap';
         fallbackExemptionDeniedCap += 1;
+        pushOpeningLagFallbackEvidence_(fallbackExemptionEvidence.blocked_by_cap, eventEvidence, fallbackExemptionEvidenceSampleLimit);
       }
 
       evaluated.fallback_exemption_reason_code = exemptionDecision;
 
       if (exemptionDecision === 'opening_lag_fallback_exemption_allowed') {
         fallbackCachedExempted += 1;
+        pushOpeningLagFallbackEvidence_(fallbackExemptionEvidence.exempted, eventEvidence, fallbackExemptionEvidenceSampleLimit);
         evaluated.reason_code = exemptionDecision;
         return evaluated;
       }
@@ -1270,7 +1303,17 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     stage.summary.reason_metadata.require_opening_line_proximity = requireOpeningLineProximity;
     stage.summary.reason_metadata.fallback_exemption_max_age_minutes = fallbackExemptionMaxAgeMinutes;
     stage.summary.reason_metadata.fallback_exemption_max_rows_per_run = fallbackExemptionMaxRowsPerRun;
+    stage.summary.reason_metadata.fallback_exemption_cap_mode = fallbackExemptionCapMode;
+    stage.summary.reason_metadata.fallback_exemption_allowed_sources = Object.keys(fallbackExemptionAllowedSources);
+    stage.summary.reason_metadata.fallback_exemption_denied_sources = Object.keys(fallbackExemptionDeniedSources);
+    stage.summary.reason_metadata.fallback_exemption_config_validation = fallbackExemptionConfigValidation;
     stage.summary.reason_metadata.fallback_exemption_age_buckets = fallbackExemptionAgeBuckets;
+    stage.summary.reason_metadata.fallback_exemption_diagnostics = buildOpeningLagFallbackDiagnostics_(fallbackExemptionEvidence, {
+      exempted: fallbackCachedExempted,
+      blocked_by_source: fallbackExemptionDeniedSource,
+      blocked_by_age: fallbackExemptionDeniedAge,
+      blocked_by_cap: fallbackExemptionDeniedCap,
+    });
   }
 
   writeOpeningLagSkipState_(runId, {
@@ -1284,9 +1327,88 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     opening_lag_fallback_exemption_denied_source: fallbackExemptionDeniedSource,
     opening_lag_fallback_exemption_denied_age: fallbackExemptionDeniedAge,
     opening_lag_fallback_exemption_denied_cap: fallbackExemptionDeniedCap,
+    opening_lag_fallback_exemption_cap_mode: fallbackExemptionCapMode,
+    opening_lag_fallback_exemption_allowed_sources: Object.keys(fallbackExemptionAllowedSources),
+    opening_lag_fallback_exemption_denied_sources: Object.keys(fallbackExemptionDeniedSources),
+    opening_lag_fallback_exemption_config_validation: fallbackExemptionConfigValidation,
+    opening_lag_fallback_exemption_diagnostics: buildOpeningLagFallbackDiagnostics_(fallbackExemptionEvidence, {
+      exempted: fallbackCachedExempted,
+      blocked_by_source: fallbackExemptionDeniedSource,
+      blocked_by_age: fallbackExemptionDeniedAge,
+      blocked_by_cap: fallbackExemptionDeniedCap,
+    }),
   });
 
   return stage;
+}
+
+function parseOpeningLagPolicySources_(value, fallbackList) {
+  let parsed = null;
+  if (Array.isArray(value)) {
+    parsed = value;
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed) {
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch (error) {
+        parsed = null;
+      }
+    }
+  }
+
+  if (!Array.isArray(parsed)) {
+    parsed = Array.isArray(fallbackList) ? fallbackList : [];
+  }
+
+  return parsed.reduce(function (acc, raw) {
+    const key = String(raw || '').trim();
+    if (!key) return acc;
+    acc[key] = true;
+    return acc;
+  }, {});
+}
+
+function validateOpeningLagFallbackExemptionConfig_(config) {
+  const safe = config || {};
+  const capMode = String(safe.cap_mode || 'unlimited_when_zero').toLowerCase();
+  const maxRowsPerRun = Math.max(0, Number(safe.max_rows_per_run || 0));
+  const allowedSources = safe.allowed_sources || {};
+  const deniedSources = safe.denied_sources || {};
+  const capZeroBlocksAll = capMode === 'deny_all_when_zero' && maxRowsPerRun === 0;
+  const overlap = Object.keys(allowedSources).filter(function (source) { return !!deniedSources[source]; });
+
+  return {
+    cap_mode: capMode,
+    cap_zero_blocks_all: capZeroBlocksAll,
+    has_unsafe_cap_zero: capZeroBlocksAll,
+    has_allow_deny_overlap: overlap.length > 0,
+    allow_deny_overlap_sources: overlap,
+    allow_list_empty: Object.keys(allowedSources).length === 0,
+  };
+}
+
+function pushOpeningLagFallbackEvidence_(bucket, evidence, limit) {
+  const target = Array.isArray(bucket) ? bucket : [];
+  if (target.length >= Math.max(1, Number(limit || 1))) return;
+  target.push(Object.assign({}, evidence || {}));
+}
+
+function buildOpeningLagFallbackDiagnostics_(evidence, counts) {
+  const safeEvidence = evidence || {};
+  const safeCounts = counts || {};
+  return {
+    exempted: Number(safeCounts.exempted || 0),
+    blocked_by_source: Number(safeCounts.blocked_by_source || 0),
+    blocked_by_age: Number(safeCounts.blocked_by_age || 0),
+    blocked_by_cap: Number(safeCounts.blocked_by_cap || 0),
+    samples: {
+      exempted: Array.isArray(safeEvidence.exempted) ? safeEvidence.exempted.slice() : [],
+      blocked_by_source: Array.isArray(safeEvidence.blocked_by_source) ? safeEvidence.blocked_by_source.slice() : [],
+      blocked_by_age: Array.isArray(safeEvidence.blocked_by_age) ? safeEvidence.blocked_by_age.slice() : [],
+      blocked_by_cap: Array.isArray(safeEvidence.blocked_by_cap) ? safeEvidence.blocked_by_cap.slice() : [],
+    },
+  };
 }
 
 function openingLagAgeBucket_(openingLagMinutes) {

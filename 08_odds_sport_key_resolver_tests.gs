@@ -2351,6 +2351,135 @@ function testApplyOpeningLagActionabilityGate_deniesCachedStaleFallbackExemption
 }
 
 
+
+function testApplyOpeningLagActionabilityGate_productiveFallbackExemptionsWithAllowDenySourceRules_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const config = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES: 180,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN: 5,
+      OPENING_LAG_FALLBACK_EXEMPTION_ALLOWED_SOURCES_JSON: '["fallback_cached_stale"]',
+      OPENING_LAG_FALLBACK_EXEMPTION_DENIED_SOURCES_JSON: '["strict_gate","fallback_cached_fresh"]',
+      OPENING_LAG_FALLBACK_EXEMPTION_CAP_MODE: 'unlimited_when_zero',
+    };
+
+    const stage = {
+      events: [{
+        event_id: 'evt_productive_1',
+        market: 'h2h',
+        outcome: 'Player A',
+        provider_odds_updated_time: new Date(now - (45 * 60000)),
+        open_timestamp: new Date(now - (45 * 60000)),
+        opening_lag_policy_tier: 'fallback_cached_stale',
+      }],
+      rows: [{ key: 'evt_productive_1|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const gated = applyOpeningLagActionabilityGate_('run_opening_lag_productive', config, stage);
+    assertEquals_(1, gated.events.length);
+    assertEquals_('opening_lag_fallback_exemption_allowed', gated.rows[0].reason_code);
+    assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.exempted || 0));
+    assertEquals_(0, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_age || 0));
+    assertEquals_(0, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_cap || 0));
+  });
+}
+
+function testApplyOpeningLagActionabilityGate_partiallyBlockedFallbackExemptionsEmitDiagnostics_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const config = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES: 60,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN: 1,
+      OPENING_LAG_FALLBACK_EXEMPTION_ALLOWED_SOURCES_JSON: '["fallback_cached_stale"]',
+      OPENING_LAG_FALLBACK_EXEMPTION_DENIED_SOURCES_JSON: '["fallback_cached_fresh"]',
+      OPENING_LAG_FALLBACK_EXEMPTION_CAP_MODE: 'unlimited_when_zero',
+    };
+
+    const stage = {
+      events: [
+        {
+          event_id: 'evt_partial_allowed',
+          market: 'h2h',
+          outcome: 'Player A',
+          provider_odds_updated_time: new Date(now - (30 * 60000)),
+          open_timestamp: new Date(now - (30 * 60000)),
+          opening_lag_policy_tier: 'fallback_cached_stale',
+        },
+        {
+          event_id: 'evt_partial_age',
+          market: 'h2h',
+          outcome: 'Player B',
+          provider_odds_updated_time: new Date(now - (75 * 60000)),
+          open_timestamp: new Date(now - (75 * 60000)),
+          opening_lag_policy_tier: 'fallback_cached_stale',
+        },
+        {
+          event_id: 'evt_partial_cap',
+          market: 'h2h',
+          outcome: 'Player C',
+          provider_odds_updated_time: new Date(now - (40 * 60000)),
+          open_timestamp: new Date(now - (40 * 60000)),
+          opening_lag_policy_tier: 'fallback_cached_stale',
+        },
+      ],
+      rows: [
+        { key: 'evt_partial_allowed|h2h|Player A' },
+        { key: 'evt_partial_age|h2h|Player B' },
+        { key: 'evt_partial_cap|h2h|Player C' },
+      ],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const gated = applyOpeningLagActionabilityGate_('run_opening_lag_partial_blocked', config, stage);
+    assertEquals_(1, gated.events.length);
+    assertEquals_(1, Number(gated.summary.reason_codes.opening_lag_fallback_exemption_allowed || 0));
+    assertEquals_(1, Number(gated.summary.reason_codes.opening_lag_fallback_exemption_denied_age || 0));
+    assertEquals_(1, Number(gated.summary.reason_codes.opening_lag_fallback_exemption_denied_cap || 0));
+    assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_age || 0));
+    assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_cap || 0));
+    assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.exempted || 0));
+  });
+}
+
+function testApplyOpeningLagActionabilityGate_fullyBlockedWhenCapZeroRequiresExplicitMode_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const config = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES: 180,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN: 0,
+      OPENING_LAG_FALLBACK_EXEMPTION_ALLOWED_SOURCES_JSON: '["fallback_cached_stale"]',
+      OPENING_LAG_FALLBACK_EXEMPTION_DENIED_SOURCES_JSON: '["fallback_cached_fresh"]',
+      OPENING_LAG_FALLBACK_EXEMPTION_CAP_MODE: 'deny_all_when_zero',
+    };
+
+    const stage = {
+      events: [{
+        event_id: 'evt_full_block_1',
+        market: 'h2h',
+        outcome: 'Player A',
+        provider_odds_updated_time: new Date(now - (45 * 60000)),
+        open_timestamp: new Date(now - (45 * 60000)),
+        opening_lag_policy_tier: 'fallback_cached_stale',
+      }],
+      rows: [{ key: 'evt_full_block_1|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const gated = applyOpeningLagActionabilityGate_('run_opening_lag_fully_blocked', config, stage);
+    assertEquals_(0, gated.events.length);
+    assertEquals_('opening_lag_fallback_exemption_denied_cap', gated.rows[0].fallback_exemption_reason_code);
+    assertEquals_(true, !!gated.summary.reason_metadata.fallback_exemption_config_validation.has_unsafe_cap_zero);
+    assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_cap || 0));
+  });
+}
+
 function createRunEdgeBoardTestHarness_(options) {
   const opts = options || {};
   const originalDateNow = Date.now;

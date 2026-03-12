@@ -109,6 +109,7 @@ function stagePersist(runId, payload) {
 
 function writeOpeningLagSkipState_(runId, payload) {
   const nowTs = localAndUtcTimestamps_(new Date());
+  const fallbackDiagnostics = payload.opening_lag_fallback_exemption_diagnostics || {};
   const statePayload = {
     run_id: runId,
     updated_at: nowTs.local,
@@ -123,6 +124,21 @@ function writeOpeningLagSkipState_(runId, payload) {
     opening_lag_fallback_exemption_denied_source: Number(payload.opening_lag_fallback_exemption_denied_source || 0),
     opening_lag_fallback_exemption_denied_age: Number(payload.opening_lag_fallback_exemption_denied_age || 0),
     opening_lag_fallback_exemption_denied_cap: Number(payload.opening_lag_fallback_exemption_denied_cap || 0),
+    opening_lag_fallback_exemption_cap_mode: String(payload.opening_lag_fallback_exemption_cap_mode || 'unlimited_when_zero'),
+    opening_lag_fallback_exemption_allowed_sources: Array.isArray(payload.opening_lag_fallback_exemption_allowed_sources)
+      ? payload.opening_lag_fallback_exemption_allowed_sources.slice()
+      : [],
+    opening_lag_fallback_exemption_denied_sources: Array.isArray(payload.opening_lag_fallback_exemption_denied_sources)
+      ? payload.opening_lag_fallback_exemption_denied_sources.slice()
+      : [],
+    opening_lag_fallback_exemption_config_validation: payload.opening_lag_fallback_exemption_config_validation || {},
+    opening_lag_fallback_exemption_diagnostics: fallbackDiagnostics,
+    opening_lag_gate_diagnostics_summary: [
+      'blocked_by_age=' + Number(fallbackDiagnostics.blocked_by_age || 0),
+      'blocked_by_cap=' + Number(fallbackDiagnostics.blocked_by_cap || 0),
+      'blocked_by_source=' + Number(fallbackDiagnostics.blocked_by_source || 0),
+      'exempted=' + Number(fallbackDiagnostics.exempted || 0),
+    ].join(';'),
   };
 
   setStateValue_('ODDS_OPENING_LAG_GATING_STATE', JSON.stringify(statePayload));
