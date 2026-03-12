@@ -609,6 +609,41 @@ function runEdgeBoard() {
       schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
       reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes),
     };
+    const rollupEmission = maybeEmitRunRollup_(config, {
+      fetched_odds: fetchedOddsCount,
+      fetched_schedule: scheduleStage.events.length,
+      matched: matchedCount,
+      unmatched: matchStage.unmatchedCount,
+      signals_found: signalsFoundCount,
+      run_health_reason_code: runHealthDiagnostics.reason_code,
+      reason_codes: compactCombinedReasonCodes.reason_codes,
+      stage_summaries: [
+        oddsStage.summary,
+        scheduleStage.summary,
+        matchStage.summary,
+        playerStatsStage.summary,
+        signalStage.summary,
+        persistStage.summary,
+      ],
+      watchdog: {
+        bootstrap_empty_cycles: emptyCycleState.consecutive_empty_cycles,
+        bootstrap_threshold: emptyCycleState.threshold,
+        productive_empty_cycles: productiveOutputState.consecutive_count,
+        productive_threshold: productiveOutputState.threshold,
+        schedule_only_cycles: productiveOutputState.schedule_only_consecutive_count,
+        schedule_only_threshold: productiveOutputState.schedule_only_threshold,
+      },
+    });
+    if (rollupEmission.emitted && rollupEmission.rollup) {
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'run_rollup',
+        status: 'success',
+        reason_code: 'run_rollup_emitted',
+        message: JSON.stringify(rollupEmission.rollup),
+      });
+    }
     const compactStageSummaries = compactStageSummariesForLog_([
       oddsStage.summary,
       scheduleStage.summary,

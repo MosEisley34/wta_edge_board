@@ -372,6 +372,137 @@ function updateEmptyProductiveOutputState_(runId, metrics, config) {
 }
 
 
+
+function maybeEmitRunRollup_(config, payload) {
+  const cfg = config || getConfig_();
+  const cadence = Math.max(1, Number(cfg.ROLLUP_EVERY_N_RUNS || 10));
+  const prior = getStateJson_('RUN_ROLLUP_STATE') || {};
+  const runCount = Number(prior.run_count || 0) + 1;
+  const nextState = {
+    run_count: runCount,
+    last_rollup_at_count: Number(prior.last_rollup_at_count || 0),
+    last_rollup_snapshot: prior.last_rollup_snapshot || null,
+  };
+
+  if (runCount % cadence !== 0) {
+    setStateValue_('RUN_ROLLUP_STATE', JSON.stringify(nextState));
+    return {
+      emitted: false,
+      run_count: runCount,
+      cadence: cadence,
+      runs_until_next: cadence - (runCount % cadence),
+    };
+  }
+
+  const stageDurations = computeStageDurationRollup_((payload && payload.stage_summaries) || []);
+  const reasonCodes = compactReasonCodeMapForLog_((payload && payload.reason_codes) || {});
+  const topReasonCodes = getTopReasonCodes_(reasonCodes, 5).filter(function (entry) {
+    return Number(entry && entry.count || 0) > 0;
+  });
+
+  const currentSnapshot = {
+    fetched_odds: Number(payload && payload.fetched_odds || 0),
+    fetched_schedule: Number(payload && payload.fetched_schedule || 0),
+    matched: Number(payload && payload.matched || 0),
+    unmatched: Number(payload && payload.unmatched || 0),
+    signals_found: Number(payload && payload.signals_found || 0),
+    run_health_reason_code: String(payload && payload.run_health_reason_code || ''),
+    watchdog_bootstrap_empty_cycles: Number(payload && payload.watchdog && payload.watchdog.bootstrap_empty_cycles || 0),
+    watchdog_productive_empty_cycles: Number(payload && payload.watchdog && payload.watchdog.productive_empty_cycles || 0),
+    watchdog_schedule_only_cycles: Number(payload && payload.watchdog && payload.watchdog.schedule_only_cycles || 0),
+  };
+
+  const previousSnapshot = (prior && prior.last_rollup_snapshot) || null;
+  const delta = computeRollupDelta_(currentSnapshot, previousSnapshot);
+  const rollup = {
+    rollup_schema: 'run_rollup_v1',
+    run_count: runCount,
+    rollup_every_n_runs: cadence,
+    top_reason_codes: topReasonCodes,
+    stage_duration_ms: stageDurations,
+    key_deltas_vs_previous_rollup: delta,
+    watchdog_progression: {
+      bootstrap_empty_cycle: formatWatchdogProgress_(payload && payload.watchdog && payload.watchdog.bootstrap_empty_cycles, payload && payload.watchdog && payload.watchdog.bootstrap_threshold),
+      productive_output_empty_cycle: formatWatchdogProgress_(payload && payload.watchdog && payload.watchdog.productive_empty_cycles, payload && payload.watchdog && payload.watchdog.productive_threshold),
+      schedule_only_cycle: formatWatchdogProgress_(payload && payload.watchdog && payload.watchdog.schedule_only_cycles, payload && payload.watchdog && payload.watchdog.schedule_only_threshold),
+    },
+  };
+
+  nextState.last_rollup_at_count = runCount;
+  nextState.last_rollup_snapshot = currentSnapshot;
+  setStateValue_('RUN_ROLLUP_STATE', JSON.stringify(nextState));
+  setStateValue_('LAST_RUN_ROLLUP_JSON', JSON.stringify(rollup, null, 2));
+
+  return {
+    emitted: true,
+    run_count: runCount,
+    cadence: cadence,
+    rollup: rollup,
+  };
+}
+
+function computeRollupDelta_(current, previous) {
+  const keys = ['fetched_odds', 'fetched_schedule', 'matched', 'unmatched', 'signals_found'];
+  const delta = {};
+  if (!previous) {
+    keys.forEach(function (key) {
+      delta[key] = Number(current && current[key] || 0);
+    });
+    delta.run_health_reason_code = String(current && current.run_health_reason_code || '');
+    return delta;
+  }
+  keys.forEach(function (key) {
+    delta[key] = Number(current && current[key] || 0) - Number(previous && previous[key] || 0);
+  });
+  const previousReason = String(previous && previous.run_health_reason_code || '');
+  const currentReason = String(current && current.run_health_reason_code || '');
+  delta.run_health_reason_code = previousReason === currentReason
+    ? currentReason
+    : (previousReason || '(none)') + '→' + (currentReason || '(none)');
+  return delta;
+}
+
+function computeStageDurationRollup_(summaries) {
+  const byStage = {};
+  (summaries || []).forEach(function (summary) {
+    if (!summary || !summary.stage) return;
+    const duration = Number(summary.duration_ms || 0);
+    if (!Number.isFinite(duration) || duration < 0) return;
+    if (!byStage[summary.stage]) byStage[summary.stage] = [];
+    byStage[summary.stage].push(duration);
+  });
+
+  const out = {};
+  Object.keys(byStage).forEach(function (stage) {
+    const values = byStage[stage].slice().sort(function (a, b) { return a - b; });
+    const sum = values.reduce(function (acc, value) { return acc + value; }, 0);
+    out[stage] = {
+      min: values.length ? values[0] : 0,
+      avg: values.length ? roundNumber_(sum / values.length, 2) : 0,
+      p95: values.length ? percentileFromSorted_(values, 0.95) : 0,
+    };
+  });
+
+  return out;
+}
+
+function percentileFromSorted_(values, p) {
+  if (!values || !values.length) return 0;
+  const rank = Math.ceil(Math.max(0, Math.min(1, Number(p || 0))) * values.length) - 1;
+  const index = Math.max(0, Math.min(values.length - 1, rank));
+  return Number(values[index] || 0);
+}
+
+function formatWatchdogProgress_(countValue, thresholdValue) {
+  const count = Math.max(0, Number(countValue || 0));
+  const threshold = Math.max(1, Number(thresholdValue || 1));
+  return {
+    count: count,
+    threshold: threshold,
+    status: String(count) + '/' + String(threshold),
+  };
+}
+
 function maybeNotifyCreditBurnRate_(config, runId, burnRateSummary) {
   const summary = burnRateSummary || {};
   if (!summary.warning_lt_7d) {
