@@ -441,6 +441,14 @@ function maybeNotifyCreditBurnRate_(config, runId, burnRateSummary) {
 
 function getLogVerbosityLevel_(config) {
   const runtimeConfig = config || {};
+  const logProfile = normalizeLogProfile_(runtimeConfig.LOG_PROFILE || DEFAULT_CONFIG.LOG_PROFILE);
+  if (logProfile === 'compact') {
+    const compactLevel = Number.isFinite(Number(runtimeConfig.LOG_VERBOSITY_LEVEL))
+      ? Number(runtimeConfig.LOG_VERBOSITY_LEVEL)
+      : 1;
+    return Math.max(0, Math.min(1, compactLevel));
+  }
+
   if (Number.isFinite(Number(runtimeConfig.LOG_VERBOSITY_LEVEL))) {
     return Math.max(0, Math.min(3, Number(runtimeConfig.LOG_VERBOSITY_LEVEL)));
   }

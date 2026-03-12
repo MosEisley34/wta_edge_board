@@ -515,3 +515,17 @@ function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_(
     PropertiesService.getScriptProperties = originalGetScriptProperties;
   }
 }
+
+
+function testNormalizeLogProfile_defaultsToCompactOnInvalidValue_() {
+  assertEquals_('compact', normalizeLogProfile_(''));
+  assertEquals_('compact', normalizeLogProfile_('noise'));
+  assertEquals_('verbose', normalizeLogProfile_('VERBOSE'));
+}
+
+function testGetLogVerbosityLevel_compactProfileCapsVerbosityAtOne_() {
+  assertEquals_(1, getLogVerbosityLevel_({ LOG_PROFILE: 'compact', LOG_VERBOSITY_LEVEL: 3 }));
+  assertEquals_(0, getLogVerbosityLevel_({ LOG_PROFILE: 'compact', LOG_VERBOSITY_LEVEL: 0 }));
+  assertEquals_(1, getLogVerbosityLevel_({ LOG_PROFILE: 'compact' }));
+  assertEquals_(3, getLogVerbosityLevel_({ LOG_PROFILE: 'verbose', LOG_VERBOSITY_LEVEL: 3 }));
+}

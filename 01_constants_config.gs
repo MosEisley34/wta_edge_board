@@ -54,6 +54,7 @@ const DEFAULT_CONFIG = {
   WTA_500_ALIAS_MAP_JSON: '{}',
   WTA_1000_ALIAS_MAP_JSON: '{"WTA_1000":["wta indian wells","indian wells","wta-1000","wta 1000","masters 1000"]}',
   COMPETITION_DENY_ALIAS_MAP_JSON: '{"WTA_125":["wta 125","wta125"],"WTA_250":["wta 250","wta250"],"ITF":["itf"]}',
+  LOG_PROFILE: 'compact',
   VERBOSE_LOGGING: 'true',
   LOG_VERBOSITY_LEVEL: '2',
   DUPLICATE_DEBOUNCE_MS: '90000',
@@ -172,6 +173,11 @@ function getConfig_() {
     context: 'getConfig_',
   });
   const config = parsed.config;
+  const resolvedLogProfile = normalizeLogProfile_(config.LOG_PROFILE || DEFAULT_CONFIG.LOG_PROFILE);
+  const resolvedVerboseLogging = toBoolean_(config.VERBOSE_LOGGING, resolvedLogProfile === 'verbose');
+  const defaultLogVerbosityLevel = resolvedLogProfile === 'verbose'
+    ? (resolvedVerboseLogging ? 2 : 1)
+    : 1;
 
   return {
     RUN_ENABLED: toBoolean_(config.RUN_ENABLED, true),
@@ -218,8 +224,9 @@ function getConfig_() {
     WTA_500_ALIAS_MAP_JSON: String(config.WTA_500_ALIAS_MAP_JSON || DEFAULT_CONFIG.WTA_500_ALIAS_MAP_JSON),
     WTA_1000_ALIAS_MAP_JSON: String(config.WTA_1000_ALIAS_MAP_JSON || DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON),
     COMPETITION_DENY_ALIAS_MAP_JSON: String(config.COMPETITION_DENY_ALIAS_MAP_JSON || DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON),
-    VERBOSE_LOGGING: toBoolean_(config.VERBOSE_LOGGING, true),
-    LOG_VERBOSITY_LEVEL: Math.max(0, Math.min(3, toNumber_(config.LOG_VERBOSITY_LEVEL, toBoolean_(config.VERBOSE_LOGGING, true) ? 2 : 1))),
+    LOG_PROFILE: resolvedLogProfile,
+    VERBOSE_LOGGING: resolvedVerboseLogging,
+    LOG_VERBOSITY_LEVEL: Math.max(0, Math.min(3, toNumber_(config.LOG_VERBOSITY_LEVEL, defaultLogVerbosityLevel))),
     DUPLICATE_DEBOUNCE_MS: toNumber_(config.DUPLICATE_DEBOUNCE_MS, 90000),
     PIPELINE_TRIGGER_EVERY_MIN: Math.max(1, toNumber_(config.PIPELINE_TRIGGER_EVERY_MIN, 15)),
     PLAYER_ALIAS_MAP_JSON: String(config.PLAYER_ALIAS_MAP_JSON || '{}'),
@@ -360,4 +367,10 @@ function formatDuplicateConfigKeysError_(context, duplicateRowsByKey, firstRowBy
     + ' (' + duplicateKeyCount + ' duplicate key(s)): ' + details + '. '
     + 'Why this fails: duplicate keys make runtime config resolution ambiguous. '
     + 'How to fix safely: run dedupeConfigSheet_() exactly once from the menu or Apps Script editor.';
+}
+
+
+function normalizeLogProfile_(value) {
+  const normalized = String(value || DEFAULT_CONFIG.LOG_PROFILE || 'compact').toLowerCase();
+  return normalized === 'verbose' ? 'verbose' : 'compact';
 }
