@@ -52,4 +52,5 @@ scripts/prepare_runtime_exports.sh --out-dir "$out_dir" "${inputs[@]}"
 
 echo
 echo "[2/2] Scanning runtime diagnostics from ${out_dir}"
+echo "[triage] First pass: prioritize the Run-health degraded contract section."
 scripts/scan_runtime_diagnostics.sh "$out_dir"

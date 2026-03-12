@@ -223,7 +223,8 @@ Tuning flags:
 ### 3) Interpret expected output
 
 Start with **Run-health degraded contract (first-pass triage)**:
-- confirm degraded records all report the same `run_health_contract_version`,
+- confirm degraded records all report the same `run_health_contract_version` (current fixed schema: `v2`),
+- confirm **contract field gaps** is `none` so every degraded run includes the same first-pass contract fields (`blocker_counts`, `dominant_blocker_categories`, `sampled_blocked_records`, `stage_skipped_reason_counts`, plus run-level metadata),
 - review aggregate blocker counts to identify the largest suppression/failure bucket,
 - inspect dominant blocker categories to identify where losses concentrate,
 - use sampled blocked records to quickly anchor investigation in real event IDs,

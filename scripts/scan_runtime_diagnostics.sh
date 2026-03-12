@@ -44,6 +44,15 @@ KEYS = [
 ]
 MAX_EXAMPLES_PER_KEY = 5
 RUN_HEALTH_SAMPLE_LIMIT = 5
+RUN_HEALTH_REQUIRED_FIELDS = [
+    "run_health_contract_version",
+    "reason_code",
+    "blocker_counts",
+    "stage_skipped_reason_counts",
+    "dominant_blocker_categories",
+    "sampled_blocked_records",
+    "sample_unmatched_events",
+]
 
 
 def is_supported_file(path: str) -> bool:
@@ -145,6 +154,7 @@ def main():
     run_health_blocker_totals = defaultdict(float)
     run_health_dominant = defaultdict(float)
     run_health_samples = []
+    run_health_missing_fields = defaultdict(int)
     scanned_records = 0
 
     for path in files:
@@ -178,6 +188,14 @@ def main():
                     contract_version = int(payload.get('run_health_contract_version') or 0)
                     run_health_contract_counts[contract_version] += 1
 
+                    for field in RUN_HEALTH_REQUIRED_FIELDS:
+                        if field not in payload:
+                            run_health_missing_fields[field] += 1
+                            continue
+                        value = payload.get(field)
+                        if value is None:
+                            run_health_missing_fields[field] += 1
+
                     for key, value in (payload.get('stage_skipped_reason_counts') or {}).items():
                         try:
                             numeric = float(value)
@@ -186,6 +204,7 @@ def main():
                         if numeric > 0:
                             run_health_stage_skipped_totals[str(key)] += numeric
 
+                    blocker_counts_payload = payload.get('blocker_counts') or {}
                     for key in (
                         'opening_lag_blocked_count',
                         'schedule_only_seed_count',
@@ -195,8 +214,9 @@ def main():
                         'cooldown_suppressed_count',
                         'stats_zero_coverage_count',
                     ):
+                        raw_value = blocker_counts_payload.get(key, payload.get(key))
                         try:
-                            numeric = float(payload.get(key) or 0)
+                            numeric = float(raw_value or 0)
                         except (TypeError, ValueError):
                             numeric = 0
                         if numeric > 0:
@@ -220,7 +240,7 @@ def main():
                             'path': path,
                             'row': row_num,
                             'reason_code': str(payload.get('reason_code') or ''),
-                            'sampled_blocked_odds': payload.get('sampled_blocked_odds') or [],
+                            'sampled_blocked_records': payload.get('sampled_blocked_records') or payload.get('sampled_blocked_odds') or [],
                             'sample_unmatched_events': payload.get('sample_unmatched_events') or [],
                         })
         except Exception as exc:
@@ -239,6 +259,14 @@ def main():
             f"v{version}:{count}" for version, count in sorted(run_health_contract_counts.items())
         )
         print(f"- contract versions: {versions}")
+
+        if run_health_missing_fields:
+            missing_part = "; ".join(
+                f"{field}:{count}" for field, count in sorted(run_health_missing_fields.items(), key=lambda item: (-item[1], item[0]))
+            )
+        else:
+            missing_part = "none"
+        print(f"- contract field gaps: {missing_part}")
 
         if run_health_blocker_totals:
             blockers = sorted(run_health_blocker_totals.items(), key=lambda item: (-item[1], item[0]))
@@ -269,7 +297,7 @@ def main():
 
         print(f"- sampled blocked records (up to {RUN_HEALTH_SAMPLE_LIMIT})")
         for sample in run_health_samples:
-            blocked = sample['sampled_blocked_odds']
+            blocked = sample['sampled_blocked_records']
             unmatched = sample['sample_unmatched_events']
             blocked_preview = blocked[0] if blocked else {}
             unmatched_preview = unmatched[0] if unmatched else {}
