@@ -2085,6 +2085,164 @@ function testRunEdgeBoard_compactSummaryReasonMapsKeepVerboseReasonMaps_() {
   }
 }
 
+function testRunEdgeBoard_stageReasonCountsStayWithinStageInputCounts_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }, { event_id: 'odds_2' }],
+      oddsRows: [{ key: 'odds_1|h2h|p1' }, { key: 'odds_2|h2h|p2' }],
+      oddsReasonCodes: { opening_lag_within_limit: 2, odds_actionable: 2, odds_non_actionable: 0 },
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      scheduleReasonCodes: { schedule_present: 1 },
+      matchRows: [{ odds_event_id: 'odds_1', schedule_event_id: 'sch_1' }],
+      matchedCount: 1,
+      unmatchedCount: 1,
+      rejectedCount: 1,
+      diagnosticRecordsWritten: 0,
+      matchReasonCodes: { primary_match: 1, no_schedule_candidates: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+    const stageSummaries = verbose.stage_summaries || [];
+
+    const violations = validateStageReasonCodeMaxima_(stageSummaries);
+    assertEquals_(0, violations.length);
+
+    stageSummaries.forEach(function (stageSummary) {
+      const inputCount = Number(stageSummary.input_count || 0);
+      const reasonCodes = stageSummary.reason_codes || {};
+      Object.keys(reasonCodes).forEach(function (reasonCode) {
+        if (!/within|allowed/i.test(reasonCode)) return;
+        assertTrue_(
+          Number(reasonCodes[reasonCode] || 0) <= inputCount,
+          'expected bounded reason code count <= input_count for ' + stageSummary.stage + ':' + reasonCode
+        );
+      });
+    });
+  } finally {
+    harness.restore();
+  }
+}
+
+function testRunEdgeBoard_compactAndVerboseProfilesRemainSemanticallyEquivalent_() {
+  const scenario = {
+    oddsEvents: [{ event_id: 'odds_1' }],
+    oddsRows: [{ key: 'odds_1|h2h|p1' }],
+    oddsReasonCodes: { opening_lag_within_limit: 1, odds_actionable: 1 },
+    scheduleEvents: [{ event_id: 'sch_1' }],
+    scheduleRows: [{ event_id: 'sch_1' }],
+    scheduleReasonCodes: { schedule_present: 1 },
+    matchRows: [{ odds_event_id: 'odds_1', schedule_event_id: 'sch_1' }],
+    matchedCount: 1,
+    unmatchedCount: 0,
+    rejectedCount: 0,
+    diagnosticRecordsWritten: 0,
+    matchReasonCodes: { primary_match: 1, matched_count: 1 },
+    signalRows: [{ id: 'sig_1' }],
+    sentCount: 1,
+  };
+
+  let verboseSummary;
+  let verboseState;
+  const verboseHarness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    logProfile: 'verbose',
+    orchestrationScenario: scenario,
+  });
+
+  try {
+    runEdgeBoard();
+    verboseSummary = verboseHarness.logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
+    })[0];
+    verboseState = JSON.parse(verboseHarness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+  } finally {
+    verboseHarness.restore();
+  }
+
+  const compactHarness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    logProfile: 'compact',
+    orchestrationScenario: scenario,
+  });
+
+  try {
+    runEdgeBoard();
+    const compactSummary = compactHarness.logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
+    })[0];
+    const compactState = JSON.parse(compactHarness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+
+    assertEquals_(verboseSummary.status, compactSummary.status);
+    assertEquals_(verboseSummary.reason_code, compactSummary.reason_code);
+    assertEquals_(verboseSummary.fetched_odds, compactSummary.fetched_odds);
+    assertEquals_(verboseSummary.matched, compactSummary.matched);
+    assertEquals_(verboseSummary.sent, compactSummary.sent);
+    assertEquals_(Number((verboseState.reason_codes || {}).primary_match || 0), Number((compactState.reason_codes || {}).primary_match || 0));
+    assertEquals_(Number((verboseState.reason_codes || {}).opening_lag_within_limit || 0), Number((compactState.reason_codes || {}).opening_lag_within_limit || 0));
+    assertEquals_(Number(((verboseState.stage_summaries || [])[0] || {}).reason_codes ? (((verboseState.stage_summaries || [])[0] || {}).reason_codes.opening_lag_within_limit || 0) : 0), Number(((compactState.stage_summaries || [])[0] || {}).reason_codes ? (((compactState.stage_summaries || [])[0] || {}).reason_codes.opening_lag_within_limit || 0) : 0));
+    assertEquals_(Number(((verboseState.stage_summaries || [])[2] || {}).reason_codes ? (((verboseState.stage_summaries || [])[2] || {}).reason_codes.primary_match || 0) : 0), Number(((compactState.stage_summaries || [])[2] || {}).reason_codes ? (((compactState.stage_summaries || [])[2] || {}).reason_codes.primary_match || 0) : 0));
+  } finally {
+    compactHarness.restore();
+  }
+}
+
+function testApplyOpeningLagActionabilityGate_transitionsOnlyWhenTimestampConditionsChange_() {
+  const now = Date.now();
+  const commonConfig = {
+    MAX_OPENING_LAG_MINUTES: 5,
+    REQUIRE_OPENING_LINE_PROXIMITY: true,
+  };
+
+  const baseStage = {
+    events: [{
+      event_id: 'evt_1',
+      market: 'h2h',
+      outcome: 'Player A',
+      provider_odds_updated_time: new Date(now - (4 * 60000)),
+      open_timestamp: new Date(now - (4 * 60000)),
+      opening_lag_policy_tier: 'strict_gate',
+    }],
+    rows: [{ key: 'evt_1|h2h|Player A' }],
+    summary: { reason_codes: {}, reason_metadata: {} },
+  };
+
+  const actionableStage = {
+    events: [Object.assign({}, baseStage.events[0])],
+    rows: [{ key: 'evt_1|h2h|Player A' }],
+    summary: { reason_codes: {}, reason_metadata: {} },
+  };
+  const actionable = applyOpeningLagActionabilityGate_('run_opening_lag_actionable', commonConfig, actionableStage);
+  assertEquals_(1, actionable.events.length);
+  assertEquals_('opening_lag_within_limit', actionable.rows[0].reason_code);
+  assertEquals_(true, actionable.rows[0].is_actionable);
+
+  const exceededStage = {
+    events: [Object.assign({}, baseStage.events[0], {
+      provider_odds_updated_time: new Date(now - (7 * 60000)),
+      open_timestamp: new Date(now - (7 * 60000)),
+    })],
+    rows: [{ key: 'evt_1|h2h|Player A' }],
+    summary: { reason_codes: {}, reason_metadata: {} },
+  };
+  const nonActionable = applyOpeningLagActionabilityGate_('run_opening_lag_non_actionable', commonConfig, exceededStage);
+  assertEquals_(0, nonActionable.events.length);
+  assertEquals_('opening_lag_exceeded', nonActionable.rows[0].reason_code);
+  assertEquals_(false, nonActionable.rows[0].is_actionable);
+}
+
 function createRunEdgeBoardTestHarness_(options) {
   const opts = options || {};
   const originalDateNow = Date.now;
@@ -6248,6 +6406,117 @@ function testStageFetchOdds_bypassStaleFallback_returnsApiFailureSource_() {
     assertEquals_('fresh_api', result.selected_source);
     assertEquals_(1, result.summary.reason_codes.odds_api_failure_no_stale_fallback || 0);
     assertEquals_(1, result.summary.reason_codes.stale_fallback_bypassed || 0);
+  } finally {
+    fetchOddsWindowFromOddsApi_ = originalFetchOdds;
+    getCachedPayload_ = originalGetCachedPayload;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+    setCachedPayload_ = originalSetCachedPayload;
+    setStateValue_ = originalSetStateValue;
+    getStateJson_ = originalGetStateJson;
+    updateCreditStateFromHeaders_ = originalUpdateCreditState;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+    logDiagnosticEvent_ = originalLogDiagnosticEvent;
+  }
+}
+
+
+function testStageFetchOdds_staleFallbackFixtureScenarios_() {
+  const fixtures = [
+    {
+      name: 'stale_events_available_uses_cached_stale_fallback',
+      stalePayload: {
+        cached_at_ms: Date.parse('2025-01-01T00:00:00.000Z'),
+        event_count: 1,
+        has_games: true,
+        events: [{ event_id: 'evt_stale', commence_time: '2025-01-01T02:00:00.000Z' }],
+      },
+      bypassStaleFallback: false,
+      expectedSelectedSource: 'cached_stale_fallback',
+      expectedReasonCode: 'odds_stale_fallback',
+      expectedEventCount: 1,
+      expectedNoStaleFallbackReason: 0,
+    },
+    {
+      name: 'stale_payload_empty_keeps_fresh_api_failure',
+      stalePayload: {
+        cached_at_ms: Date.parse('2025-01-01T00:00:00.000Z'),
+        event_count: 0,
+        has_games: false,
+        events: [],
+      },
+      bypassStaleFallback: false,
+      expectedSelectedSource: 'fresh_api',
+      expectedReasonCode: 'odds_api_http_500',
+      expectedEventCount: 0,
+      expectedNoStaleFallbackReason: 1,
+    },
+    {
+      name: 'stale_events_but_bypass_enabled_keeps_fresh_api_failure',
+      stalePayload: {
+        cached_at_ms: Date.parse('2025-01-01T00:00:00.000Z'),
+        event_count: 1,
+        has_games: true,
+        events: [{ event_id: 'evt_stale', commence_time: '2025-01-01T02:00:00.000Z' }],
+      },
+      bypassStaleFallback: true,
+      expectedSelectedSource: 'fresh_api',
+      expectedReasonCode: 'odds_api_failure_no_stale_fallback',
+      expectedEventCount: 0,
+      expectedNoStaleFallbackReason: 1,
+    },
+  ];
+
+  fixtures.forEach(function (fixture) {
+    const result = runStageFetchOddsStaleFallbackFixtureScenario_(fixture);
+    assertEquals_(fixture.expectedSelectedSource, result.selected_source, fixture.name + ': selected source');
+    assertEquals_(fixture.expectedReasonCode, result.reason_code, fixture.name + ': reason code');
+    assertEquals_(fixture.expectedEventCount, Number((result.events || []).length || 0), fixture.name + ': event count');
+    assertEquals_(fixture.expectedNoStaleFallbackReason, Number(result.summary.reason_codes.odds_api_failure_no_stale_fallback || 0), fixture.name + ': no stale fallback reason count');
+  });
+}
+
+function runStageFetchOddsStaleFallbackFixtureScenario_(fixture) {
+  const originalFetchOdds = fetchOddsWindowFromOddsApi_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+  const originalSetCachedPayload = setCachedPayload_;
+  const originalSetStateValue = setStateValue_;
+  const originalGetStateJson = getStateJson_;
+  const originalUpdateCreditState = updateCreditStateFromHeaders_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const originalLogDiagnosticEvent = logDiagnosticEvent_;
+
+  fetchOddsWindowFromOddsApi_ = function () {
+    return {
+      events: [],
+      reason_code: 'odds_api_http_500',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  getCachedPayload_ = function () { return null; };
+  getCreditAwareRuntimeConfig_ = function () { return { odds_window_cache_ttl_min: 10, odds_window_refresh_min: 1, mode: 'normal' }; };
+  setCachedPayload_ = function () {};
+  setStateValue_ = function () {};
+  getStateJson_ = function (key) {
+    if (key === 'ODDS_WINDOW_STALE_PAYLOAD') return fixture.stalePayload || null;
+    return null;
+  };
+  updateCreditStateFromHeaders_ = function () { return { header_present: false }; };
+  localAndUtcTimestamps_ = function () { return { local: '2025-01-01T00:00:00-07:00', utc: '2025-01-01T07:00:00.000Z' }; };
+  logDiagnosticEvent_ = function () {};
+
+  try {
+    return stageFetchOdds('run_odds_stale_fixture_' + fixture.name, {
+      LOOKAHEAD_HOURS: 6,
+      ODDS_WINDOW_FORCE_REFRESH: true,
+    }, {
+      startMs: Date.parse('2025-01-01T00:00:00.000Z'),
+      endMs: Date.parse('2025-01-01T06:00:00.000Z'),
+    }, {
+      bypass_stale_fallback: !!fixture.bypassStaleFallback,
+    });
   } finally {
     fetchOddsWindowFromOddsApi_ = originalFetchOdds;
     getCachedPayload_ = originalGetCachedPayload;
