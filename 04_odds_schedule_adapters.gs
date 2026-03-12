@@ -65,30 +65,34 @@ function stageFetchOdds(runId, config, fetchWindow) {
   const filtered = raw.filter((event) => event.commence_time.getTime() >= windowStartMs && event.commence_time.getTime() <= windowEndMs);
 
   const selectedSource = adapter.selected_source || 'fresh_api';
-  const selectedMeta = adapter.window_meta || buildWindowMeta_(filtered, Date.now(), selectedSource, windowStartMs, windowEndMs);
+  const classifiedEvents = filtered.map(function (event) {
+    const classification = classifyOpeningTimestampPolicy_(selectedSource, event);
+    return Object.assign({}, event, classification);
+  });
+  const selectedMeta = adapter.window_meta || buildWindowMeta_(classifiedEvents, Date.now(), selectedSource, windowStartMs, windowEndMs);
   const actualWindowStartMs = Number.isFinite(adapter.window_request_start_ms) ? adapter.window_request_start_ms : windowStartMs;
   const actualWindowEndMs = Number.isFinite(adapter.window_request_end_ms) ? adapter.window_request_end_ms : windowEndMs;
 
   setStateValue_('ODDS_WINDOW_STALE_PAYLOAD', JSON.stringify({
     cached_at_ms: selectedMeta.cached_at_ms,
     source: selectedSource,
-    has_games: filtered.length > 0,
-    event_count: filtered.length,
+    has_games: classifiedEvents.length > 0,
+    event_count: classifiedEvents.length,
     window_start_ms: actualWindowStartMs,
     window_end_ms: actualWindowEndMs,
-    events: filtered.map(serializeOddsEvent_),
+    events: classifiedEvents.map(serializeOddsEvent_),
   }));
 
   setStateValue_('ODDS_WINDOW_LAST_FETCH_META', JSON.stringify({
     cached_at_ms: selectedMeta.cached_at_ms,
     source: selectedSource,
-    has_games: filtered.length > 0,
-    event_count: filtered.length,
+    has_games: classifiedEvents.length > 0,
+    event_count: classifiedEvents.length,
     window_start_ms: actualWindowStartMs,
     window_end_ms: actualWindowEndMs,
   }));
 
-  const rows = filtered.map((event) => ({
+  const rows = classifiedEvents.map((event) => ({
     key: [event.event_id, event.market, event.outcome].join('|'),
     event_id: event.event_id,
     bookmaker: event.bookmaker,
@@ -105,6 +109,9 @@ function stageFetchOdds(runId, config, fetchWindow) {
     price_delta_bps: Number.isFinite(Number(event.price_delta_bps)) ? Number(event.price_delta_bps) : '',
     open_timestamp: event.open_timestamp ? event.open_timestamp.toISOString() : (event.provider_odds_updated_time ? event.provider_odds_updated_time.toISOString() : ''),
     open_timestamp_epoch_ms: event.open_timestamp ? event.open_timestamp.getTime() : (event.provider_odds_updated_time ? event.provider_odds_updated_time.getTime() : ''),
+    open_timestamp_type: event.open_timestamp_type || '',
+    open_timestamp_source: event.open_timestamp_source || '',
+    opening_lag_policy_tier: event.opening_lag_policy_tier || '',
     opening_lag_minutes: Number.isFinite(Number(event.opening_lag_minutes)) ? Number(event.opening_lag_minutes) : '',
     opening_lag_evaluated_at: event.opening_lag_evaluated_at ? event.opening_lag_evaluated_at.toISOString() : '',
     decision_gate_status: event.decision_gate_status || '',
@@ -143,15 +150,15 @@ function stageFetchOdds(runId, config, fetchWindow) {
   const summary = buildStageSummary_(runId, 'stageFetchOdds', start, {
     config: config,
     input_count: raw.length,
-    output_count: filtered.length,
+    output_count: classifiedEvents.length,
     provider: source,
     api_credit_usage: adapter.api_credit_usage,
     reason_codes: {
       [adapter.reason_code]: 1,
       ['source_' + selectedSource]: 1,
-      within_window: filtered.length,
-      outside_window: raw.length - filtered.length,
-      odds_rows_emitted: filtered.length,
+      within_window: classifiedEvents.length,
+      outside_window: raw.length - classifiedEvents.length,
+      odds_rows_emitted: classifiedEvents.length,
       events_missing_h2h_outcomes: adapter.events_missing_h2h_outcomes || 0,
       bookmakers_without_h2h_market: adapter.bookmakers_without_h2h_market || 0,
       runtime_mode_soft_degraded: runtimeConfig.mode === 'soft' ? 1 : 0,
@@ -181,13 +188,41 @@ function stageFetchOdds(runId, config, fetchWindow) {
     actual_window_start: formatLocalIso_(new Date(actualWindowStartMs)),
     actual_window_end: formatLocalIso_(new Date(actualWindowEndMs)),
     raw_event_count: raw.length,
-    filtered_event_count: filtered.length,
-    dropped_outside_window_count: raw.length - filtered.length,
-    sample_event_ids: filtered.slice(0, 10).map((event) => event.event_id),
+    filtered_event_count: classifiedEvents.length,
+    dropped_outside_window_count: raw.length - classifiedEvents.length,
+    sample_event_ids: classifiedEvents.slice(0, 10).map((event) => event.event_id),
     credit_headers: normalizedOddsCreditHeaders,
   }, 2);
 
-  return { events: filtered, rows, summary, selected_source: selectedSource };
+  return { events: classifiedEvents, rows, summary, selected_source: selectedSource };
+}
+
+function classifyOpeningTimestampPolicy_(selectedSource, event) {
+  const source = String(selectedSource || 'fresh_api');
+  const hasProviderTs = event && event.provider_odds_updated_time instanceof Date && !Number.isNaN(event.provider_odds_updated_time.getTime());
+  const hasOpenTs = event && event.open_timestamp instanceof Date && !Number.isNaN(event.open_timestamp.getTime());
+
+  if (source === 'fresh_api') {
+    return {
+      open_timestamp_type: hasProviderTs || hasOpenTs ? 'provider_live' : 'missing',
+      open_timestamp_source: hasProviderTs ? 'provider_odds_updated_time' : (hasOpenTs ? 'open_timestamp' : 'missing'),
+      opening_lag_policy_tier: 'strict_gate',
+    };
+  }
+
+  if (source === 'cached_stale_fallback') {
+    return {
+      open_timestamp_type: hasProviderTs || hasOpenTs ? 'cached_stale' : 'missing_cached_stale',
+      open_timestamp_source: hasProviderTs ? 'cached_provider_odds_updated_time' : (hasOpenTs ? 'cached_open_timestamp' : 'missing'),
+      opening_lag_policy_tier: 'fallback_cached_stale',
+    };
+  }
+
+  return {
+    open_timestamp_type: hasProviderTs || hasOpenTs ? 'cached_fresh' : 'missing_cached_fresh',
+    open_timestamp_source: hasProviderTs ? 'cached_provider_odds_updated_time' : (hasOpenTs ? 'cached_open_timestamp' : 'missing'),
+    opening_lag_policy_tier: 'fallback_cached_fresh',
+  };
 }
 
 function stageFetchSchedule(runId, config, oddsEvents, opts) {
@@ -1732,6 +1767,9 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
           decision_gate_status: 'odds_snapshot_recorded',
           is_actionable: true,
           reason_code: '',
+          open_timestamp_type: 'provider_live',
+          open_timestamp_source: providerOddsTimestamp ? 'provider_odds_updated_time' : 'missing',
+          opening_lag_policy_tier: 'strict_gate',
         };
 
         if (!bestByOutcome[side]) {
@@ -1777,6 +1815,9 @@ function fetchOddsWindowFromOddsApi_(config, startMs, endMs) {
         decision_gate_status: best.decision_gate_status || 'odds_snapshot_recorded',
         is_actionable: best.is_actionable !== false,
         reason_code: best.reason_code || '',
+        open_timestamp_type: best.open_timestamp_type || 'provider_live',
+        open_timestamp_source: best.open_timestamp_source || (best.provider_odds_updated_time ? 'provider_odds_updated_time' : 'missing'),
+        opening_lag_policy_tier: best.opening_lag_policy_tier || 'strict_gate',
         ingestion_timestamp: ingestionTimestamp,
         odds_updated_time: best.provider_odds_updated_time || ingestionTimestamp,
         commence_time: new Date(event.commence_time),
@@ -3005,6 +3046,9 @@ function serializeOddsEvent_(event) {
     decision_gate_status: event.decision_gate_status || '',
     is_actionable: event.is_actionable !== false,
     reason_code: event.reason_code || '',
+    open_timestamp_type: event.open_timestamp_type || '',
+    open_timestamp_source: event.open_timestamp_source || '',
+    opening_lag_policy_tier: event.opening_lag_policy_tier || '',
     ingestion_timestamp: event.ingestion_timestamp.toISOString(),
     commence_time: event.commence_time.toISOString(),
     competition: event.competition,
@@ -3054,6 +3098,9 @@ function deserializeOddsEvent_(event) {
     decision_gate_status: event.decision_gate_status || '',
     is_actionable: event.is_actionable !== false,
     reason_code: event.reason_code || '',
+    open_timestamp_type: event.open_timestamp_type || '',
+    open_timestamp_source: event.open_timestamp_source || '',
+    opening_lag_policy_tier: event.opening_lag_policy_tier || '',
     commence_time: new Date(event.commence_time),
     competition: event.competition,
     tournament: event.tournament || '',

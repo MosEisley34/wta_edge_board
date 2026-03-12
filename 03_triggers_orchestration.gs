@@ -1030,23 +1030,38 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   let missingOpenTimestamp = 0;
   let openingLagExceeded = 0;
   let openingLagWithinLimit = 0;
+  let fallbackCachedExempted = 0;
 
   const enrichedEvents = originalEvents.map(function (event) {
+    const timestampType = String((event && event.open_timestamp_type) || '');
+    const timestampSource = String((event && event.open_timestamp_source) || '');
+    const policyTier = String((event && event.opening_lag_policy_tier) || 'strict_gate');
+    const strictGate = policyTier === 'strict_gate';
+
     const openTimestamp = event && event.provider_odds_updated_time instanceof Date && !Number.isNaN(event.provider_odds_updated_time.getTime())
       ? event.provider_odds_updated_time
-      : null;
+      : (event && event.open_timestamp instanceof Date && !Number.isNaN(event.open_timestamp.getTime()) ? event.open_timestamp : null);
     const openingLagMinutes = openTimestamp ? Math.max(0, Math.round((nowMs - openTimestamp.getTime()) / 60000)) : null;
     const evaluated = Object.assign({}, event || {});
     evaluated.open_timestamp = openTimestamp;
     evaluated.opening_lag_minutes = openingLagMinutes;
     evaluated.opening_lag_evaluated_at = now;
+    evaluated.open_timestamp_type = timestampType;
+    evaluated.open_timestamp_source = timestampSource;
+    evaluated.opening_lag_policy_tier = policyTier;
     evaluated.is_actionable = true;
     evaluated.reason_code = '';
 
     if (!openTimestamp) {
       missingOpenTimestamp += 1;
       evaluated.is_actionable = false;
-      evaluated.reason_code = 'missing_open_timestamp';
+      evaluated.reason_code = strictGate ? 'missing_open_timestamp' : 'missing_open_timestamp_fallback';
+      return evaluated;
+    }
+
+    if (!strictGate) {
+      fallbackCachedExempted += 1;
+      evaluated.reason_code = 'opening_lag_fallback_exempted';
       return evaluated;
     }
 
@@ -1058,6 +1073,7 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     }
 
     openingLagWithinLimit += 1;
+    evaluated.reason_code = 'opening_lag_within_limit';
     return evaluated;
   });
 
@@ -1070,6 +1086,9 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     return Object.assign({}, baseRow, {
       open_timestamp: event.open_timestamp ? event.open_timestamp.toISOString() : '',
       open_timestamp_epoch_ms: event.open_timestamp ? event.open_timestamp.getTime() : '',
+      open_timestamp_type: event.open_timestamp_type || '',
+      open_timestamp_source: event.open_timestamp_source || '',
+      opening_lag_policy_tier: event.opening_lag_policy_tier || '',
       opening_lag_minutes: Number.isFinite(Number(event.opening_lag_minutes)) ? Number(event.opening_lag_minutes) : '',
       opening_lag_evaluated_at: event.opening_lag_evaluated_at ? event.opening_lag_evaluated_at.toISOString() : '',
       is_actionable: event.is_actionable !== false,
@@ -1085,12 +1104,14 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   stage.skipped_reason_codes = {
     missing_open_timestamp: missingOpenTimestamp,
     opening_lag_exceeded: openingLagExceeded,
+    fallback_cached_exempted: fallbackCachedExempted,
   };
 
   const reasonCodes = stage.summary && stage.summary.reason_codes ? stage.summary.reason_codes : {};
   reasonCodes.opening_lag_within_limit = openingLagWithinLimit;
   reasonCodes.missing_open_timestamp = missingOpenTimestamp;
   reasonCodes.opening_lag_exceeded = openingLagExceeded;
+  reasonCodes.opening_lag_fallback_exempted = fallbackCachedExempted;
   reasonCodes.odds_actionable = actionableEvents.length;
   reasonCodes.odds_non_actionable = enrichedRows.length - actionableEvents.length;
   if (stage.summary) stage.summary.reason_codes = reasonCodes;
@@ -1108,6 +1129,7 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     actionable_count: actionableEvents.length,
     missing_open_timestamp: missingOpenTimestamp,
     opening_lag_exceeded: openingLagExceeded,
+    opening_lag_fallback_exempted: fallbackCachedExempted,
   });
 
   return stage;
