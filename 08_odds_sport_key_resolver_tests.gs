@@ -6087,3 +6087,60 @@ function testMaybeEmitRunRollup_tracksRunCountWhenCadenceNotReached_() {
     setStateValue_ = originalSetStateValue;
   }
 }
+
+function testAdaptRunLogRecordForLegacy_expandsAliasReasonMapsForLegacyRows_() {
+  const adapted = adaptRunLogRecordForLegacy_({
+    row_type: 'summary',
+    run_id: 'run-1',
+    stage: 'runEdgeBoard',
+    message: JSON.stringify({ reason_codes: { or_out_win: 2 } }),
+    rejection_codes: JSON.stringify({ schema_id: REASON_CODE_ALIAS_SCHEMA_ID, reason_codes: { open_lag_hi: 1 } }),
+    stage_summaries: JSON.stringify({
+      schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+      stage_summaries: [
+        { stage: 'stageFetchOdds', reason_codes: { mm_diag_wr: 3 } },
+      ],
+    }),
+  });
+
+  const message = JSON.parse(adapted.message || '{}');
+  const rejectionCodes = JSON.parse(adapted.rejection_codes || '{}');
+  const stageSummaries = JSON.parse(adapted.stage_summaries || '[]');
+
+  assertEquals_(2, Number((message.reason_codes || {}).odds_refresh_skipped_outside_window || 0));
+  assertEquals_(1, Number(rejectionCodes.opening_lag_exceeded || 0));
+  assertEquals_(3, Number((stageSummaries[0].reason_codes || {}).match_map_diagnostic_records_written || 0));
+}
+
+function testAdaptRunLogRecordForLegacy_reconstructsCompactV2Row_() {
+  const adapted = adaptRunLogRecordForLegacy_({
+    schema_version: 2,
+    et: 'stageFetchOdds',
+    rid: 'run-v2',
+    st: 'stageFetchOdds',
+    sa: '2026-03-12T12:00:00Z',
+    ea: '2026-03-12T12:00:02Z',
+    ss: 'success',
+    rcd: 'stage_completed',
+    ic: 10,
+    oc: 5,
+    pr: 'odds_api',
+    acu: 1,
+    rc: { or_out_win: 2 },
+    rm: { resolver: 'canonical' },
+    msg: { context: 'compact' },
+    rj: { open_lag_hi: 1 },
+    ssu: [{ stage: 'stageFetchOdds', reason_codes: { mm_diag_wr: 2 } }],
+  });
+
+  const message = JSON.parse(adapted.message || '{}');
+  const rejections = JSON.parse(adapted.rejection_codes || '{}');
+  const stageSummaries = JSON.parse(adapted.stage_summaries || '[]');
+
+  assertEquals_('stage', adapted.row_type);
+  assertEquals_('run-v2', adapted.run_id);
+  assertEquals_(2, Number((message.reason_codes || {}).odds_refresh_skipped_outside_window || 0));
+  assertEquals_('odds_api', message.provider);
+  assertEquals_(1, Number(rejections.opening_lag_exceeded || 0));
+  assertEquals_(2, Number((stageSummaries[0].reason_codes || {}).match_map_diagnostic_records_written || 0));
+}
