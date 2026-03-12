@@ -464,6 +464,10 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const start = Date.now();
   const nowMs = Date.now();
   const upstreamGateReason = stageMeta && stageMeta.upstream_gate_reason ? String(stageMeta.upstream_gate_reason) : '';
+  const upstreamGateInputs = stageMeta && stageMeta.upstream_gate_inputs
+    ? Object.assign({}, stageMeta.upstream_gate_inputs)
+    : {};
+  const normalizedUpstreamGateReason = normalizeUpstreamGateReason_(upstreamGateReason);
   const fallbackOnlyMode = upstreamGateReason === 'stats_zero_coverage';
   const rows = [];
   const sampledDecisions = [];
@@ -824,8 +828,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
 
   const signalDecisionsGeneratedAt = localAndUtcTimestamps_(new Date());
   const zeroInputExplanatory = oddsEvents.length === 0 ? {
-    upstream_gate_reason: upstreamGateReason || 'unspecified',
-    has_upstream_gate_reason: !!upstreamGateReason,
+    upstream_gate_reason: normalizedUpstreamGateReason,
+    has_upstream_gate_reason: normalizedUpstreamGateReason !== 'unspecified',
+    upstream_gate_inputs: upstreamGateInputs,
   } : null;
   const observedStatsConfidence = rows
     .map(function (row) { return Number(row.stats_confidence); })
@@ -856,7 +861,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     sampled_decisions: sampledDecisions,
     sampled_candidate_rows: sampledDecisions,
     input_count: oddsEvents.length,
-    upstream_gate_reason: upstreamGateReason,
+    upstream_gate_reason: normalizedUpstreamGateReason,
     explanatory_metadata: zeroInputExplanatory,
     processed_count: processedCandidateCount,
     all_drop_reasons: allDropReasons,
@@ -882,7 +887,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const summaryReasonCodes = Object.assign({}, reasonCounts);
   const summaryReasonMetadata = {};
   if (oddsEvents.length === 0) {
-    summaryReasonMetadata.upstream_gate_reason = normalizeUpstreamGateReason_(upstreamGateReason);
+    summaryReasonMetadata.upstream_gate_reason = normalizedUpstreamGateReason;
+    summaryReasonMetadata.upstream_gate_inputs = JSON.stringify(upstreamGateInputs);
   }
 
   const summary = buildStageSummary_(runId, 'stageGenerateSignals', start, {

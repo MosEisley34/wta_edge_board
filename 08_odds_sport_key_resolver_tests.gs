@@ -2747,19 +2747,22 @@ function testStageGenerateSignals_zeroInputIncludesUpstreamGateReason_() {
     };
     const upstreamGateReason = deriveSignalUpstreamGateReason_(
       { events: [], summary: { reason_codes: { odds_refresh_skipped_outside_window: 1 } } },
+      { summary: { reason_codes: {} } },
       { matchedCount: 0, summary: { reason_codes: { schedule_seed_no_odds: 1 } } }
     );
 
     const result = stageGenerateSignals('run_zero_input', config, [], [], {}, {
-      upstream_gate_reason: upstreamGateReason,
+      upstream_gate_reason: upstreamGateReason.reason,
+      upstream_gate_inputs: upstreamGateReason.inputs,
     });
     const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
 
     assertEquals_(0, result.rows.length);
     assertEquals_(0, result.summary.input_count || 0);
-    assertEquals_('schedule_seed_no_odds', (result.summary.reason_metadata || {}).upstream_gate_reason || '');
-    assertEquals_('schedule_seed_no_odds', decisionState.upstream_gate_reason || '');
-    assertEquals_('schedule_seed_no_odds', ((decisionState.explanatory_metadata || {}).upstream_gate_reason || ''));
+    assertEquals_('odds_refresh_skipped_outside_window', (result.summary.reason_metadata || {}).upstream_gate_reason || '');
+    assertEquals_('odds_refresh_skipped_outside_window', decisionState.upstream_gate_reason || '');
+    assertEquals_('odds_refresh_skipped_outside_window', ((decisionState.explanatory_metadata || {}).upstream_gate_reason || ''));
+    assertEquals_('odds_refresh_skipped_outside_window', (((decisionState.explanatory_metadata || {}).upstream_gate_inputs || {}).odds_stage_reason || ''));
     assertEquals_(true, !!(((decisionState.invariant || {}).zero_input_has_explanatory_metadata)));
   } finally {
     setSignalState_ = originalSetSignalState;
@@ -2767,6 +2770,21 @@ function testStageGenerateSignals_zeroInputIncludesUpstreamGateReason_() {
     setStateValue_ = originalSetStateValue;
     localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
   }
+}
+
+
+function testDeriveSignalUpstreamGateReason_prioritizesConcreteUpstreamStageReason_() {
+  const reason = deriveSignalUpstreamGateReason_(
+    { events: [], summary: { reason_codes: { source_credit_saver_skip: 1 } } },
+    { summary: { reason_codes: { schedule_fetch_skipped_outside_window_credit_saver: 1 } } },
+    { matchedCount: 0, summary: { reason_codes: { schedule_seed_no_odds: 1 } } },
+    { summary: { reason_metadata: { players_with_non_null_stats: 0 } } }
+  );
+
+  assertEquals_('source_credit_saver_skip', reason.reason || '');
+  assertEquals_('source_credit_saver_skip', (reason.inputs || {}).odds_stage_reason || '');
+  assertEquals_('schedule_fetch_skipped_outside_window_credit_saver', (reason.inputs || {}).schedule_stage_reason || '');
+  assertEquals_('schedule_seed_no_odds', (reason.inputs || {}).match_stage_reason || '');
 }
 
 function testStageGenerateSignals_thresholdRejectionIncludedInDecisionDiagnostics_() {
