@@ -138,6 +138,7 @@ function writeOpeningLagSkipState_(runId, payload) {
 }
 
 function appendStageLog_(runId, summary) {
+  const summaryReasonCodes = cloneReasonCodeMap_((summary && summary.reason_codes) || {});
   appendLogRow_({
     row_type: 'stage',
     run_id: runId,
@@ -151,9 +152,9 @@ function appendStageLog_(runId, summary) {
       input_count: summary.input_count,
       output_count: summary.output_count,
       provider: summary.provider,
-      reason_codes: summary.reason_codes || {},
+      reason_codes: cloneReasonCodeMap_(summaryReasonCodes),
     }),
-    reason_codes: summary.reason_codes || {},
+    reason_codes: cloneReasonCodeMap_(summaryReasonCodes),
   });
 }
 
@@ -200,25 +201,12 @@ function serializeCompactReasonCodesForLogEntry_(normalizedEntry, schemaId, opti
     ? Object.assign({}, messagePayload)
     : null;
 
-  let reasonCodeMap = {};
   const rowReasonCodeMap = toReasonCodeMapForLog_(normalized.reason_codes, schemaId);
-  if (Object.keys(rowReasonCodeMap).length > 0) {
-    reasonCodeMap = mergeReasonCounts_([reasonCodeMap, rowReasonCodeMap]);
-  }
   const messageReasonCodeMap = messageObject && messageObject.reason_codes
     ? toReasonCodeMapForLog_(messageObject.reason_codes, String(messageObject.schema_id || schemaId))
     : {};
-  if (Object.keys(messageReasonCodeMap).length > 0) {
-    const alreadyCounted = Object.keys(rowReasonCodeMap).length > 0
-      && areReasonCodeMapsEquivalent_(rowReasonCodeMap, messageReasonCodeMap);
-    if (!alreadyCounted) {
-      reasonCodeMap = mergeReasonCounts_([reasonCodeMap, messageReasonCodeMap]);
-    }
-  }
   const inferredReasonCode = String(normalized.reason_code || '').trim();
-  if (!Object.keys(reasonCodeMap).length && inferredReasonCode) {
-    reasonCodeMap[inferredReasonCode] = 1;
-  }
+  const reasonCodeMap = resolveSinglePassReasonCodeMap_(rowReasonCodeMap, messageReasonCodeMap, inferredReasonCode);
 
   if (messageObject && Object.keys(reasonCodeMap).length > 0) {
     const compactEnvelope = buildReasonCodeEnvelopeForLog_(reasonCodeMap, schemaId, compactOptions);
@@ -260,6 +248,20 @@ function serializeCompactReasonCodesForLogEntry_(normalizedEntry, schemaId, opti
   }
 
   return normalized;
+}
+
+function resolveSinglePassReasonCodeMap_(rowReasonCodeMap, messageReasonCodeMap, inferredReasonCode) {
+  const rowMap = cloneReasonCodeMap_(rowReasonCodeMap || {});
+  if (Object.keys(rowMap).length > 0) return rowMap;
+
+  const messageMap = cloneReasonCodeMap_(messageReasonCodeMap || {});
+  if (Object.keys(messageMap).length > 0) return messageMap;
+
+  const inferred = String(inferredReasonCode || '').trim();
+  if (!inferred) return {};
+  const inferredMap = {};
+  inferredMap[inferred] = 1;
+  return inferredMap;
 }
 
 function appendLogRow_(entry) {
@@ -727,8 +729,8 @@ function buildStageSummary_(runId, stage, startMs, opts) {
     output_count: opts.output_count,
     provider: opts.provider,
     api_credit_usage: opts.api_credit_usage,
-    reason_codes: opts.reason_codes || {},
-    reason_metadata: opts.reason_metadata || {},
+    reason_codes: cloneReasonCodeMap_(opts.reason_codes || {}),
+    reason_metadata: Object.assign({}, opts.reason_metadata || {}),
   };
   logDiagnosticEvent_(opts.config || null, "stage_summary", summary, 1);
   return summary;
@@ -910,6 +912,15 @@ function assertDebugBoundedStageCounters_(config, checks) {
   });
 
   return violations;
+}
+
+function assertBoundedStageCounterInvariants_(checks, contextLabel) {
+  const violations = assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, checks || []);
+  if (violations.length === 0) return [];
+  throw new Error('bounded_stage_counter_invariant_exceeded:' + JSON.stringify({
+    context: String(contextLabel || ''),
+    violations: violations,
+  }));
 }
 
 

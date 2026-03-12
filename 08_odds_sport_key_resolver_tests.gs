@@ -6742,3 +6742,40 @@ function testResolveProductiveOutputMitigationContext_activatesConfiguredFlags_(
     appendLogRow_ = originalAppendLogRow;
   }
 }
+
+function testResolveSinglePassReasonCodeMap_prefersRowMapWithoutDoubleCounting_() {
+  const rowMap = { matched_count: 2 };
+  const messageMap = { matched_count: 2, duplicate: 1 };
+  const result = resolveSinglePassReasonCodeMap_(rowMap, messageMap, 'fallback_reason');
+  assertEquals_(2, Number(result.matched_count || 0));
+  assertEquals_(undefined, result.duplicate);
+  assertEquals_(undefined, result.fallback_reason);
+}
+
+function testAppendStageLog_clonesReasonCodeMapAcrossEmitters_() {
+  const appended = [];
+  const originalAppend = appendLogRow_;
+  appendLogRow_ = function (entry) { appended.push(entry); };
+
+  try {
+    const summary = {
+      stage: 'stageMatchEvents',
+      started_at: '2026-03-12T00:00:00Z',
+      ended_at: '2026-03-12T00:00:01Z',
+      input_count: 3,
+      output_count: 2,
+      provider: 'internal',
+      reason_codes: { matched_count: 2 },
+    };
+    appendStageLog_('run_clone', summary);
+
+    const entry = appended[0] || {};
+    summary.reason_codes.matched_count = 99;
+
+    assertEquals_(2, Number((entry.reason_codes || {}).matched_count || 0));
+    const payload = JSON.parse(entry.message || '{}');
+    assertEquals_(2, Number((payload.reason_codes || {}).matched_count || 0));
+  } finally {
+    appendLogRow_ = originalAppend;
+  }
+}

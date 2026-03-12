@@ -142,6 +142,7 @@ def index_rows(rows):
             "gate_reasons": {
                 "summary_reason_code": summary.get("reason_code", ""),
                 "rejection_codes": rejection_codes,
+                "stage_summaries": stage_summaries if isinstance(stage_summaries, list) else [],
             },
             "summary_counters": summary_counters,
             "source_selection": source_selection,
@@ -219,6 +220,37 @@ def evaluate_counter_integrity(verbose_idx, compact_idx):
     }
 
 
+def evaluate_stage_counter_invariants(indexed_runs):
+    violations = []
+    for run_id, payload in (indexed_runs or {}).items():
+        gate_reasons = payload.get("gate_reasons", {}) or {}
+        stage_summaries = gate_reasons.get("stage_summaries", [])
+        if not isinstance(stage_summaries, list):
+            continue
+        for summary in stage_summaries:
+            if str((summary or {}).get("stage", "")) != "stageMatchEvents":
+                continue
+            reason_codes = (summary or {}).get("reason_codes", {}) or {}
+            output_count = int((summary or {}).get("output_count", 0) or 0)
+            matched_count = int(reason_codes.get("matched_count", 0) or 0)
+            if matched_count > output_count:
+                violations.append(
+                    {
+                        "run_id": run_id,
+                        "stage": "stageMatchEvents",
+                        "counter": "matched_count",
+                        "value": matched_count,
+                        "max_name": "output_count",
+                        "max_value": output_count,
+                    }
+                )
+    return {
+        "checked_run_count": len(indexed_runs or {}),
+        "violations": violations[:20],
+        "passed": len(violations) == 0,
+    }
+
+
 def build_summary(verbose_path, compact_path, target_reduction_pct, critical_parity_keys):
     verbose_rows = load_rows(verbose_path)
     compact_rows = load_rows(compact_path)
@@ -240,11 +272,18 @@ def build_summary(verbose_path, compact_path, target_reduction_pct, critical_par
     }
     failed_critical_parity = sorted([k for k, v in critical_mismatch_counts.items() if v > 0])
     counter_integrity = evaluate_counter_integrity(verbose_idx, compact_idx)
+    stage_counter_invariants_verbose = evaluate_stage_counter_invariants(verbose_idx)
+    stage_counter_invariants_compact = evaluate_stage_counter_invariants(compact_idx)
+    stage_counter_invariants_passed = (
+        stage_counter_invariants_verbose["passed"]
+        and stage_counter_invariants_compact["passed"]
+    )
 
     quality_gate_failed_reasons = (
         (["reduction_below_target"] if reduction_pct < target_reduction_pct else [])
         + (["critical_parity_failure"] if failed_critical_parity else [])
         + (["counter_integrity_failure"] if not counter_integrity["passed"] else [])
+        + (["stage_counter_invariant_failure"] if not stage_counter_invariants_passed else [])
     )
 
     return {
@@ -259,10 +298,16 @@ def build_summary(verbose_path, compact_path, target_reduction_pct, critical_par
         "critical_parity_passed": not failed_critical_parity,
         "counter_integrity": counter_integrity,
         "counter_integrity_passed": counter_integrity["passed"],
+        "stage_counter_invariants": {
+            "verbose": stage_counter_invariants_verbose,
+            "compact": stage_counter_invariants_compact,
+        },
+        "stage_counter_invariants_passed": stage_counter_invariants_passed,
         "pass_conditions": {
             "size_reduction_threshold_met": reduction_pct >= target_reduction_pct,
             "critical_parity_intact": not failed_critical_parity,
             "counter_integrity_invariants_passed": counter_integrity["passed"],
+            "stage_counter_invariants_passed": stage_counter_invariants_passed,
         },
         "quality_gate_failed_reasons": quality_gate_failed_reasons,
         "failed_critical_parity_keys": failed_critical_parity,

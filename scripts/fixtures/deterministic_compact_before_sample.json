@@ -1,0 +1,19 @@
+[
+  {
+    "row_type": "summary",
+    "run_id": "det-run-1",
+    "stage": "runEdgeBoard",
+    "reason_code": "ok",
+    "rejection_codes": "{\"matched_count\": 2}",
+    "stage_summaries": "[{\"stage\": \"stageMatchEvents\", \"provider\": \"internal\", \"started_at\": \"2026-03-12T12:00:00Z\", \"ended_at\": \"2026-03-12T12:00:01Z\", \"duration_ms\": 1000, \"input_count\": 3, \"output_count\": 2, \"reason_codes\": {\"matched_count\": 4, \"rejected_count\": 1}}]",
+    "fetched_odds": 3,
+    "fetched_schedule": 3,
+    "allowed_tournaments": 3,
+    "matched": 2,
+    "unmatched": 1,
+    "signals_found": 1,
+    "rejected": 1,
+    "cooldown_suppressed": 0,
+    "duplicate_suppressed": 0
+  }
+]

@@ -1,0 +1,98 @@
+{
+  "legacy_verbose_output_size_bytes": 593,
+  "compact_output_size_bytes": 593,
+  "percentage_reduction": 0.0,
+  "target_reduction_pct": 0.0,
+  "target_met": true,
+  "field_parity": {
+    "run_count_compared": 1,
+    "missing_in_verbose": [],
+    "missing_in_compact": [],
+    "mismatch_counts": {
+      "gate_reasons": 1,
+      "summary_counters": 0,
+      "source_selection": 0,
+      "watchdog": 0,
+      "stage_timing": 0,
+      "run_health_attribution": 0
+    },
+    "mismatch_samples": [
+      {
+        "run_id": "det-run-1",
+        "mismatches": [
+          "gate_reasons"
+        ]
+      }
+    ]
+  },
+  "critical_parity_keys": [
+    "gate_reasons"
+  ],
+  "critical_mismatch_counts": {
+    "gate_reasons": 1
+  },
+  "critical_parity_passed": false,
+  "counter_integrity": {
+    "bounded_counter_fields": [
+      "fetched_odds",
+      "fetched_schedule",
+      "allowed_tournaments",
+      "matched",
+      "unmatched",
+      "signals_found",
+      "rejected",
+      "cooldown_suppressed",
+      "duplicate_suppressed"
+    ],
+    "run_count_checked": 1,
+    "inflation_by_counter": {
+      "fetched_odds": 0,
+      "fetched_schedule": 0,
+      "allowed_tournaments": 0,
+      "matched": 0,
+      "unmatched": 0,
+      "signals_found": 0,
+      "rejected": 0,
+      "cooldown_suppressed": 0,
+      "duplicate_suppressed": 0
+    },
+    "inflation_samples": [],
+    "passed": true
+  },
+  "counter_integrity_passed": true,
+  "stage_counter_invariants": {
+    "verbose": {
+      "checked_run_count": 1,
+      "violations": [],
+      "passed": true
+    },
+    "compact": {
+      "checked_run_count": 1,
+      "violations": [
+        {
+          "run_id": "det-run-1",
+          "stage": "stageMatchEvents",
+          "counter": "matched_count",
+          "value": 4,
+          "max_name": "output_count",
+          "max_value": 2
+        }
+      ],
+      "passed": false
+    }
+  },
+  "stage_counter_invariants_passed": false,
+  "pass_conditions": {
+    "size_reduction_threshold_met": true,
+    "critical_parity_intact": false,
+    "counter_integrity_invariants_passed": true,
+    "stage_counter_invariants_passed": false
+  },
+  "quality_gate_failed_reasons": [
+    "critical_parity_failure",
+    "stage_counter_invariant_failure"
+  ],
+  "failed_critical_parity_keys": [
+    "gate_reasons"
+  ]
+}
