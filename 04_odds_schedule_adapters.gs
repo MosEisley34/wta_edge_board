@@ -1,4 +1,4 @@
-function stageFetchOdds(runId, config, fetchWindow) {
+function stageFetchOdds(runId, config, fetchWindow, opts) {
   const start = Date.now();
   const source = 'the_odds_api';
   const lookaheadMs = config.LOOKAHEAD_HOURS * 60 * 60 * 1000;
@@ -8,7 +8,9 @@ function stageFetchOdds(runId, config, fetchWindow) {
   const runtimeConfig = getCreditAwareRuntimeConfig_(config);
   const cacheTtlMs = Math.max(1, runtimeConfig.odds_window_cache_ttl_min) * 60000;
   const refreshMinMs = Math.max(1, runtimeConfig.odds_window_refresh_min) * 60000;
+  const options = opts || {};
   const forceRefresh = !!config.ODDS_WINDOW_FORCE_REFRESH;
+  const bypassStaleFallback = !!options.bypass_stale_fallback;
   const cacheResult = getCachedPayload_('ODDS_WINDOW_PAYLOAD');
   let adapter;
 
@@ -40,7 +42,7 @@ function stageFetchOdds(runId, config, fetchWindow) {
       setCachedPayload_('ODDS_WINDOW_PAYLOAD', adapter.events, buildWindowMeta_(adapter.events, now, 'fresh_api', windowStartMs, windowEndMs));
     } else {
       const stale = getStateJson_('ODDS_WINDOW_STALE_PAYLOAD');
-      if (stale && stale.events && stale.events.length) {
+      if (!bypassStaleFallback && stale && stale.events && stale.events.length) {
         adapter = {
           events: stale.events.map(deserializeOddsEvent_),
           reason_code: 'odds_stale_fallback',
@@ -57,6 +59,9 @@ function stageFetchOdds(runId, config, fetchWindow) {
             window_end_ms: Number(stale.window_end_ms || windowEndMs),
           },
         };
+      } else if (bypassStaleFallback) {
+        adapter.reason_code = 'odds_api_failure_no_stale_fallback';
+        adapter.events = Array.isArray(adapter.events) ? adapter.events : [];
       }
     }
   }
@@ -162,6 +167,7 @@ function stageFetchOdds(runId, config, fetchWindow) {
       events_missing_h2h_outcomes: adapter.events_missing_h2h_outcomes || 0,
       bookmakers_without_h2h_market: adapter.bookmakers_without_h2h_market || 0,
       runtime_mode_soft_degraded: runtimeConfig.mode === 'soft' ? 1 : 0,
+      stale_fallback_bypassed: bypassStaleFallback ? 1 : 0,
     },
   });
 
