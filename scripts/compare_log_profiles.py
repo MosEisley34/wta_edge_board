@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ WATCHDOG_STAGES = {
     "schedule_only_watchdog",
     "run_lifecycle",
 }
+DEFAULT_CRITICAL_PARITY_KEYS = ["gate_reasons", "source_selection", "watchdog"]
 
 
 def canonical_bytes(rows):
@@ -53,11 +55,13 @@ def index_rows(rows):
             if row.get("row_type") == "summary" and row.get("stage") == "runEdgeBoard":
                 summary = row
             if row.get("stage") in WATCHDOG_STAGES:
-                watchdog.append({
-                    "stage": row.get("stage", ""),
-                    "status": row.get("status", ""),
-                    "reason_code": row.get("reason_code", ""),
-                })
+                watchdog.append(
+                    {
+                        "stage": row.get("stage", ""),
+                        "status": row.get("status", ""),
+                        "reason_code": row.get("reason_code", ""),
+                    }
+                )
 
         summary = summary or {}
         stage_summaries = parse_json_field(summary.get("stage_summaries"), [])
@@ -125,12 +129,9 @@ def compare_index(verbose_idx, compact_idx):
     }
 
 
-def main(verbose_path, compact_path):
-    verbose_raw = json.loads(Path(verbose_path).read_text(encoding="utf-8"))
-    compact_raw = json.loads(Path(compact_path).read_text(encoding="utf-8"))
-
-    verbose_rows = [adapt_run_log_record_for_legacy(r) for r in verbose_raw]
-    compact_rows = [adapt_run_log_record_for_legacy(r) for r in compact_raw]
+def build_summary(verbose_path, compact_path, target_reduction_pct, critical_parity_keys):
+    verbose_rows = load_rows(verbose_path)
+    compact_rows = load_rows(compact_path)
 
     verbose_size = canonical_bytes(verbose_rows)
     compact_size = canonical_bytes(compact_rows)
@@ -139,19 +140,79 @@ def main(verbose_path, compact_path):
         reduction_pct = ((verbose_size - compact_size) / verbose_size) * 100.0
 
     parity = compare_index(index_rows(verbose_rows), index_rows(compact_rows))
+    mismatch_counts = parity.get("mismatch_counts", {})
+    critical_mismatch_counts = {
+        key: int(mismatch_counts.get(key, 0))
+        for key in critical_parity_keys
+    }
+    failed_critical_parity = sorted([k for k, v in critical_mismatch_counts.items() if v > 0])
 
-    print(json.dumps({
+    return {
         "legacy_verbose_output_size_bytes": verbose_size,
         "compact_output_size_bytes": compact_size,
         "percentage_reduction": round(reduction_pct, 2),
-        "target_reduction_pct": 60.0,
-        "target_met": reduction_pct >= 60.0,
+        "target_reduction_pct": target_reduction_pct,
+        "target_met": reduction_pct >= target_reduction_pct,
         "field_parity": parity,
-    }, indent=2))
+        "critical_parity_keys": critical_parity_keys,
+        "critical_mismatch_counts": critical_mismatch_counts,
+        "critical_parity_passed": not failed_critical_parity,
+        "quality_gate_failed_reasons": (
+            (["reduction_below_target"] if reduction_pct < target_reduction_pct else [])
+            + (["critical_parity_failure"] if failed_critical_parity else [])
+        ),
+        "failed_critical_parity_keys": failed_critical_parity,
+    }
+
+
+def parse_critical_keys(raw):
+    if not raw:
+        return list(DEFAULT_CRITICAL_PARITY_KEYS)
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    return keys or list(DEFAULT_CRITICAL_PARITY_KEYS)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Compare verbose vs compact pipeline logs and enforce deterministic CI quality gates."
+    )
+    parser.add_argument("verbose_sample", help="Path to verbose profile sample JSON")
+    parser.add_argument("compact_sample", help="Path to compact profile sample JSON")
+    parser.add_argument(
+        "--target-reduction-pct",
+        type=float,
+        default=60.0,
+        help="Minimum required compact size reduction percentage",
+    )
+    parser.add_argument(
+        "--critical-parity-keys",
+        default=",".join(DEFAULT_CRITICAL_PARITY_KEYS),
+        help="Comma-separated parity groups that must have zero mismatches",
+    )
+    parser.add_argument(
+        "--summary-json-out",
+        default="",
+        help="Optional output path for machine-readable summary JSON artifact",
+    )
+    args = parser.parse_args(argv)
+
+    critical_keys = parse_critical_keys(args.critical_parity_keys)
+    summary = build_summary(
+        args.verbose_sample,
+        args.compact_sample,
+        args.target_reduction_pct,
+        critical_keys,
+    )
+
+    print(json.dumps(summary, indent=2))
+
+    if args.summary_json_out:
+        out_path = Path(args.summary_json_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+    return 1 if summary["quality_gate_failed_reasons"] else 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: scripts/compare_log_profiles.py <verbose_sample.json> <compact_sample.json>")
-        raise SystemExit(1)
-    main(sys.argv[1], sys.argv[2])
+    raise SystemExit(main())
