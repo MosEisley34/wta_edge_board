@@ -41,6 +41,10 @@ const GROUPS = {
     'testRunEdgeBoard_statsStageExecutesForOddsDrivenRun_',
     'testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_',
   ],
+  reason_code_aggregation: [
+    'testResolveSinglePassReasonCodeMap_prefersRowMapWithoutDoubleCounting_',
+    'testAppendStageLog_clonesReasonCodeMapAcrossEmitters_',
+  ]
 };
 
 function loadContext() {

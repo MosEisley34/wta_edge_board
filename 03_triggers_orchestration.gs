@@ -549,7 +549,7 @@ function runEdgeBoard() {
     ]);
     const combinedReasonMetadata = mergeReasonMetadata_(reasonMetadataMaps);
     const stageReasonCodeMaximaViolations = validateStageReasonCodeMaxima_(stageSummarySnapshots);
-    const boundedCounterInvariantViolations = assertDebugBoundedStageCounters_(config, [
+    const boundedCounterInvariantChecks = [
       {
         stage: 'stageMatchEvents',
         max_name: 'output_count',
@@ -569,7 +569,9 @@ function runEdgeBoard() {
           diagnostic_records_written: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.diagnostic_records_written) || 0),
         },
       },
-    ]);
+    ];
+    const boundedCounterInvariantViolations = assertDebugBoundedStageCounters_(config, boundedCounterInvariantChecks);
+    assertBoundedStageCounterInvariants_(boundedCounterInvariantChecks, 'runEdgeBoard');
     if (stageReasonCodeMutationDiagnostics.mutated_stages.length > 0 || stageReasonCodeMaximaViolations.length > 0 || boundedCounterInvariantViolations.length > 0) {
       appendLogRow_({
         row_type: 'ops',
