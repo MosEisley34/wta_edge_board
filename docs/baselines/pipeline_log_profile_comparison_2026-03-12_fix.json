@@ -1,7 +1,10 @@
 {
-  "legacy_verbose_output_size_bytes": 351901,
-  "compact_output_size_bytes": 351901,
+  "legacy_verbose_output_size_bytes": 347005,
+  "compact_output_size_bytes": 347005,
   "percentage_reduction": 0.0,
+  "baseline_compact_output_size_bytes": 302725,
+  "incremental_compact_bytes_saved_vs_baseline": -44280,
+  "incremental_reduction_pct_vs_baseline": 0.0,
   "target_reduction_pct": 60.0,
   "target_met": false,
   "field_parity": {
@@ -29,6 +32,53 @@
     "watchdog": 0
   },
   "critical_parity_passed": true,
+  "counter_integrity": {
+    "bounded_counter_fields": [
+      "fetched_odds",
+      "fetched_schedule",
+      "allowed_tournaments",
+      "matched",
+      "unmatched",
+      "signals_found",
+      "rejected",
+      "cooldown_suppressed",
+      "duplicate_suppressed"
+    ],
+    "run_count_checked": 36,
+    "inflation_by_counter": {
+      "fetched_odds": 0,
+      "fetched_schedule": 0,
+      "allowed_tournaments": 0,
+      "matched": 0,
+      "unmatched": 0,
+      "signals_found": 0,
+      "rejected": 0,
+      "cooldown_suppressed": 0,
+      "duplicate_suppressed": 0
+    },
+    "inflation_samples": [],
+    "passed": true
+  },
+  "counter_integrity_passed": true,
+  "stage_counter_invariants": {
+    "verbose": {
+      "checked_run_count": 36,
+      "violations": [],
+      "passed": true
+    },
+    "compact": {
+      "checked_run_count": 36,
+      "violations": [],
+      "passed": true
+    }
+  },
+  "stage_counter_invariants_passed": true,
+  "pass_conditions": {
+    "size_reduction_threshold_met": false,
+    "critical_parity_intact": true,
+    "counter_integrity_invariants_passed": true,
+    "stage_counter_invariants_passed": true
+  },
   "quality_gate_failed_reasons": [
     "reduction_below_target"
   ],

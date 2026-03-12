@@ -43,6 +43,16 @@ class RuntimeDiagnosticsSummaryTests(unittest.TestCase):
             lines[2],
         )
 
+    def test_warning_rollup_collapses_alias_resolution_noise_to_run_level(self):
+        fixture = ROOT / "scripts" / "fixtures" / "runtime_rollup_warning_runs.json"
+        lines = build_summary([str(fixture)], top_n=3, max_stages=2, warning_limit=3)
+
+        self.assertEqual("runs total=2 status=success:1,warning:1", lines[0])
+        self.assertEqual(
+            "warnings non_success_runs:1;reason_alias_resolution_warning:runs=1;run_health_no_matches_from_odds:runs=1",
+            lines[4],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

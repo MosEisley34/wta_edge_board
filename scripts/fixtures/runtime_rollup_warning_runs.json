@@ -1,0 +1,27 @@
+[
+  {
+    "row_type": "ops",
+    "run_id": "run-warn-1",
+    "stage": "reason_alias_resolution",
+    "status": "warning",
+    "reason_code": "reason_code_alias_missing_fallback_emitted"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "run-warn-1",
+    "stage": "runEdgeBoard",
+    "status": "warning",
+    "reason_code": "run_health_no_matches_from_odds",
+    "rejection_codes": "{}",
+    "stage_summaries": "[]"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "run-ok-2",
+    "stage": "runEdgeBoard",
+    "status": "success",
+    "reason_code": "",
+    "rejection_codes": "{}",
+    "stage_summaries": "[]"
+  }
+]
