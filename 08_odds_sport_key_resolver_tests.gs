@@ -3660,6 +3660,7 @@ function runStageFetchScheduleScenario_(options) {
   getStateJson_ = function (key) {
     if (key === 'SCHEDULE_WINDOW_STALE_PAYLOAD') return opts.stalePayload || {};
     if (key === 'SCHEDULE_WINDOW_LAST_FETCH_META') return opts.lastFetchMeta || {};
+    if (opts.stateJson && Object.prototype.hasOwnProperty.call(opts.stateJson, key)) return opts.stateJson[key];
     return {};
   };
   fetchScheduleFromOddsApi_ = function () {
@@ -3692,8 +3693,13 @@ function runStageFetchScheduleScenario_(options) {
     };
   };
   updateCreditStateFromHeaders_ = function (runId, headers) {
-    creditHeadersCaptured.push(Object.assign({}, headers || {}));
-    return { header_present: Object.keys(headers || {}).length > 0 };
+    const normalized = Object.assign({}, headers || {});
+    const remaining = Number(normalized.requests_remaining || normalized.x_requests_remaining);
+    creditHeadersCaptured.push(normalized);
+    return {
+      header_present: Object.keys(normalized).length > 0,
+      remaining: Number.isFinite(remaining) ? remaining : null,
+    };
   };
   localAndUtcTimestamps_ = function () {
     return {
@@ -3732,6 +3738,7 @@ function runStageFetchScheduleScenario_(options) {
       fetchCalls: fetchCalls,
       lastMeta: JSON.parse(stateWrites.SCHEDULE_WINDOW_LAST_FETCH_META || '{}'),
       creditHeadersCaptured: creditHeadersCaptured,
+      stateWrites: stateWrites,
     };
   } finally {
     Date.now = originalDateNow;
@@ -5753,5 +5760,99 @@ function testStageGenerateSignals_preActionGuardSuppressesOnEdgeDecayAndLowBooks
     setStateValue_ = originalSetStateValue;
     appendLogRow_ = originalAppendLogRow;
     localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testStageFetchSchedule_updatesCreditBurnRateAndWarningCodes_() {
+  const result = runStageFetchScheduleScenario_({
+    stateJson: {
+      LAST_SCHEDULE_API_CREDITS: {
+        observed_at_utc: '2025-02-28T07:10:00.000Z',
+        credit_snapshot: {
+          remaining: 200,
+        },
+      },
+      ODDS_API_BURN_RATE_STATE: {
+        calls_per_day_rolling: 80,
+      },
+    },
+    fetchResponses: [{
+      events: [],
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: {
+        requests_remaining: '100',
+      },
+    }],
+  });
+
+  assertEquals_(1, result.stage.summary.reason_codes.credit_burn_projected_exhaustion_lt_7d || 0);
+  assertEquals_(1, result.stage.summary.reason_codes.credit_burn_projected_exhaustion_lt_3d || 0);
+
+  const burnState = JSON.parse(result.stateWrites.ODDS_API_BURN_RATE_STATE || '{}');
+  assertEquals_(true, !!burnState.warning_lt_7d);
+  assertEquals_(true, !!burnState.warning_lt_3d);
+  assertEquals_(100, Number(burnState.credits_remaining || 0));
+
+  const lastCredits = JSON.parse(result.stateWrites.LAST_SCHEDULE_API_CREDITS || '{}');
+  assertEquals_(true, !!lastCredits.burn_rate);
+  assertEquals_(true, !!lastCredits.credit_snapshot);
+}
+
+function testMaybeNotifyCreditBurnRate_oncePerDay_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const originalPostDiscordWebhook = postDiscordWebhook_;
+
+  const state = {};
+  let webhookCalls = 0;
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+  postDiscordWebhook_ = function () {
+    webhookCalls += 1;
+    return {
+      outcome: 'sent',
+      transport: 'discord_webhook',
+      http_status: 204,
+      test_mode: false,
+    };
+  };
+
+  try {
+    const config = {
+      ODDS_BURN_RATE_NOTIFY_ENABLED: true,
+      NOTIFY_ENABLED: true,
+      DISCORD_WEBHOOK: 'https://discord.example/webhook',
+      NOTIFY_TEST_MODE: false,
+    };
+    const burnRate = {
+      warning_lt_7d: true,
+      observed_at_utc: '2025-03-01T07:10:00.000Z',
+      projected_days_remaining: 2.5,
+      calls_per_day_rolling: 120,
+      credits_remaining: 300,
+    };
+
+    const first = maybeNotifyCreditBurnRate_(config, 'run_1', burnRate);
+    const second = maybeNotifyCreditBurnRate_(config, 'run_2', burnRate);
+
+    assertEquals_(true, first.notify_attempted);
+    assertEquals_('sent', first.outcome);
+    assertEquals_(false, second.notify_attempted);
+    assertEquals_('credit_burn_notify_already_sent_today', second.outcome);
+    assertEquals_(1, webhookCalls);
+
+    const notifyState = JSON.parse(state.ODDS_API_BURN_RATE_NOTIFY_STATE || '{}');
+    assertEquals_('2025-03-01', String(notifyState.last_notify_day_utc || ''));
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+    postDiscordWebhook_ = originalPostDiscordWebhook;
   }
 }

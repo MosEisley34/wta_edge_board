@@ -601,6 +601,8 @@ function runEdgeBoard() {
 
     const runStartedAt = localAndUtcTimestamps_(startedAt);
     const runEndedAt = localAndUtcTimestamps_(new Date());
+    const creditBurnRateState = getStateJson_('ODDS_API_BURN_RATE_STATE') || {};
+    const creditBurnRateNotification = maybeNotifyCreditBurnRate_(config, runId, creditBurnRateState);
     const verbosePayload = {
       run_id: runId,
       timezone: TIMESTAMP_TIMEZONE.ID,
@@ -658,6 +660,8 @@ function runEdgeBoard() {
         diagnostics: runHealthDiagnostics.warning_payload,
       },
       productive_output_watchdog: productiveOutputState,
+      credit_burn_rate: creditBurnRateState,
+      credit_burn_rate_notification: creditBurnRateNotification,
     };
 
     setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));

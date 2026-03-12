@@ -367,6 +367,74 @@ function updateEmptyProductiveOutputState_(runId, metrics, config) {
   };
 }
 
+
+function maybeNotifyCreditBurnRate_(config, runId, burnRateSummary) {
+  const summary = burnRateSummary || {};
+  if (!summary.warning_lt_7d) {
+    return {
+      notify_attempted: false,
+      outcome: 'credit_burn_warning_not_triggered',
+      day_key_utc: String(summary.observed_at_utc || '').slice(0, 10),
+    };
+  }
+
+  if (!config || !config.ODDS_BURN_RATE_NOTIFY_ENABLED) {
+    return {
+      notify_attempted: false,
+      outcome: 'credit_burn_notify_disabled',
+      day_key_utc: String(summary.observed_at_utc || '').slice(0, 10),
+    };
+  }
+
+  const dayKeyUtc = String(summary.observed_at_utc || new Date().toISOString()).slice(0, 10);
+  const notifyState = getStateJson_('ODDS_API_BURN_RATE_NOTIFY_STATE') || {};
+  const previousDayKey = String(notifyState.last_notify_day_utc || '');
+  if (previousDayKey && previousDayKey === dayKeyUtc) {
+    return {
+      notify_attempted: false,
+      outcome: 'credit_burn_notify_already_sent_today',
+      day_key_utc: dayKeyUtc,
+    };
+  }
+
+  if (!config.NOTIFY_ENABLED || !config.DISCORD_WEBHOOK) {
+    return {
+      notify_attempted: false,
+      outcome: !config.NOTIFY_ENABLED ? 'credit_burn_notify_disabled' : 'credit_burn_notify_missing_config',
+      day_key_utc: dayKeyUtc,
+    };
+  }
+
+  const projectedDays = Number(summary.projected_days_remaining);
+  const rollingCallsPerDay = Number(summary.calls_per_day_rolling);
+  const creditsRemaining = Number(summary.credits_remaining);
+  const message = [
+    '⚠️ **WTA Edge Odds API Burn Rate Warning**',
+    '🆔 Run: `' + String(runId || '') + '`',
+    '📉 Projected credits exhaustion: **' + (Number.isFinite(projectedDays) ? roundNumber_(projectedDays, 2) + ' days' : 'unknown') + '**',
+    '🔥 Rolling burn rate: **' + (Number.isFinite(rollingCallsPerDay) ? roundNumber_(rollingCallsPerDay, 2) + ' calls/day' : 'unknown') + '**',
+    '💳 Credits remaining: **' + (Number.isFinite(creditsRemaining) ? roundNumber_(creditsRemaining, 0) : 'unknown') + '**',
+  ].join('\n');
+  const notifyResult = postDiscordWebhook_(config.DISCORD_WEBHOOK, { content: message }, !!config.NOTIFY_TEST_MODE);
+  const outcome = String(notifyResult && notifyResult.outcome || 'notify_http_failed');
+  if (outcome === 'sent') {
+    setStateValue_('ODDS_API_BURN_RATE_NOTIFY_STATE', JSON.stringify({
+      run_id: runId,
+      last_notify_day_utc: dayKeyUtc,
+      updated_at_utc: new Date().toISOString(),
+    }));
+  }
+
+  return {
+    notify_attempted: true,
+    outcome: outcome,
+    day_key_utc: dayKeyUtc,
+    transport: notifyResult.transport,
+    http_status: notifyResult.http_status,
+    test_mode: !!notifyResult.test_mode,
+  };
+}
+
 function getLogVerbosityLevel_(config) {
   const runtimeConfig = config || {};
   if (Number.isFinite(Number(runtimeConfig.LOG_VERBOSITY_LEVEL))) {

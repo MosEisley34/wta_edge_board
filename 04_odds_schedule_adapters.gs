@@ -578,12 +578,28 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   }
 
   const scheduleCreditsObservedAt = localAndUtcTimestamps_(new Date());
+  const burnRateSummary = updateCreditBurnRateState_(
+    runId,
+    config,
+    scheduleResp.api_call_count,
+    scheduleCreditSnapshot,
+    scheduleCreditsObservedAt.utc
+  );
+  if (burnRateSummary.warning_lt_7d) {
+    summary.reason_codes.credit_burn_projected_exhaustion_lt_7d = (summary.reason_codes.credit_burn_projected_exhaustion_lt_7d || 0) + 1;
+  }
+  if (burnRateSummary.warning_lt_3d) {
+    summary.reason_codes.credit_burn_projected_exhaustion_lt_3d = (summary.reason_codes.credit_burn_projected_exhaustion_lt_3d || 0) + 1;
+  }
+
   setStateValue_('LAST_SCHEDULE_API_CREDITS', JSON.stringify({
     run_id: runId,
     observed_at: scheduleCreditsObservedAt.local,
     observed_at_utc: scheduleCreditsObservedAt.utc,
     api_call_count: scheduleResp.api_call_count || 0,
     credit_headers: normalizedScheduleCreditHeaders,
+    credit_snapshot: scheduleCreditSnapshot,
+    burn_rate: burnRateSummary,
   }));
 
   
@@ -1041,6 +1057,65 @@ function updateCreditStateFromHeaders_(runId, headers) {
 
   setStateValue_('ODDS_API_CREDIT_SNAPSHOT', JSON.stringify(snapshot));
   return snapshot;
+}
+
+function updateCreditBurnRateState_(runId, config, scheduleApiCallCount, creditSnapshot, observedAtUtc) {
+  const snapshot = creditSnapshot || {};
+  const previousScheduleCredits = getStateJson_('LAST_SCHEDULE_API_CREDITS') || {};
+  const previousBurnState = getStateJson_('ODDS_API_BURN_RATE_STATE') || {};
+  const nowUtc = String(observedAtUtc || new Date().toISOString());
+  const nowMs = Date.parse(nowUtc);
+
+  const previousObservedAtUtc = String(previousScheduleCredits.observed_at_utc || '');
+  const previousObservedMs = Date.parse(previousObservedAtUtc);
+  const elapsedDays = Number.isFinite(nowMs) && Number.isFinite(previousObservedMs) && nowMs > previousObservedMs
+    ? (nowMs - previousObservedMs) / 86400000
+    : 0;
+
+  const currentRemaining = Number(snapshot.remaining);
+  const previousRemaining = Number((previousScheduleCredits.credit_snapshot || {}).remaining);
+  let instantaneousCallsPerDay = null;
+
+  if (elapsedDays > 0 && Number.isFinite(currentRemaining) && Number.isFinite(previousRemaining)) {
+    const creditsSpent = Math.max(0, previousRemaining - currentRemaining);
+    if (creditsSpent > 0) {
+      instantaneousCallsPerDay = creditsSpent / elapsedDays;
+    }
+  }
+
+  if (!Number.isFinite(instantaneousCallsPerDay)) {
+    const callsThisRun = Number(scheduleApiCallCount || 0);
+    const configuredMinutes = Math.max(1, Number((config && config.PIPELINE_TRIGGER_EVERY_MIN) || 15));
+    instantaneousCallsPerDay = callsThisRun * (1440 / configuredMinutes);
+  }
+
+  const previousRolling = Number(previousBurnState.calls_per_day_rolling);
+  const hasPreviousRolling = Number.isFinite(previousRolling) && previousRolling >= 0;
+  const nextRolling = hasPreviousRolling
+    ? ((previousRolling * 0.7) + (instantaneousCallsPerDay * 0.3))
+    : instantaneousCallsPerDay;
+
+  const projectedDaysRemaining = Number.isFinite(currentRemaining) && Number.isFinite(nextRolling) && nextRolling > 0
+    ? (currentRemaining / nextRolling)
+    : null;
+
+  const burnState = {
+    run_id: runId,
+    observed_at_utc: nowUtc,
+    observed_at: formatLocalIso_(new Date(Number.isFinite(nowMs) ? nowMs : Date.now())),
+    calls_per_day_instantaneous: Number.isFinite(instantaneousCallsPerDay) ? instantaneousCallsPerDay : null,
+    calls_per_day_rolling: Number.isFinite(nextRolling) ? nextRolling : null,
+    projected_days_remaining: Number.isFinite(projectedDaysRemaining) ? projectedDaysRemaining : null,
+    warning_lt_7d: Number.isFinite(projectedDaysRemaining) && projectedDaysRemaining < 7,
+    warning_lt_3d: Number.isFinite(projectedDaysRemaining) && projectedDaysRemaining < 3,
+    credits_remaining: Number.isFinite(currentRemaining) ? currentRemaining : null,
+    previous_observed_at_utc: previousObservedAtUtc || '',
+    previous_remaining: Number.isFinite(previousRemaining) ? previousRemaining : null,
+    elapsed_days: elapsedDays > 0 ? elapsedDays : null,
+  };
+
+  setStateValue_('ODDS_API_BURN_RATE_STATE', JSON.stringify(burnState));
+  return burnState;
 }
 
 function buildSkippedOddsStage_(runId, reasonCode, message) {
