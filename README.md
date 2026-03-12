@@ -200,6 +200,24 @@ Direct scanner usage is still available:
 scripts/scan_runtime_diagnostics.sh ./exports
 ```
 
+Compact summary usage (paste-friendly for chat/incident updates):
+
+```bash
+scripts/runtime_diagnostics_summary.py ./exports
+```
+
+This emits exactly 5 deterministic lines:
+- run count + status breakdown,
+- top non-zero reason codes,
+- stage duration min/avg/p95,
+- watchdog start/end trend delta,
+- key operational warnings.
+
+Tuning flags:
+- `--top-n` (default `6`),
+- `--max-stages` (default `8`),
+- `--warning-limit` (default `4`).
+
 ### 3) Interpret expected output
 
 The scan reports:
