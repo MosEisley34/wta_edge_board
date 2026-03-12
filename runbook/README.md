@@ -50,6 +50,24 @@ scripts/triage_runtime_diagnostics_local.sh [./exports]
 
 (For CI, use `scripts/triage_runtime_diagnostics_ci.sh` and optionally set `RUNTIME_EXPORT_DIR`.)
 
+Optional compact incident summary (for chat handoff / ticket updates):
+
+```bash
+scripts/runtime_diagnostics_summary.py ./exports
+```
+
+Output is deterministic and intentionally small (5 lines) covering:
+- run count + status breakdown,
+- top non-zero reason codes,
+- stage duration min/avg/p95,
+- watchdog trend delta,
+- key operational warnings.
+
+Optional knobs:
+- `--top-n`
+- `--max-stages`
+- `--warning-limit`
+
 3. Interpret output:
 
 - `Grouped counts` shows frequency per diagnostic key.
