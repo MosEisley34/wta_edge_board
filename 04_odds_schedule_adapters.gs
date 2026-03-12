@@ -597,12 +597,12 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     summary.reason_codes[reasonKey] = (summary.reason_codes[reasonKey] || 0) + Number(h2hMissingReasonCodes[reasonCode] || 0);
   });
   const h2hMissingClassification = scheduleEnrichment.h2h_missing_classification || {};
-  summary.reason_codes.schedule_enrichment_h2h_missing_expected_source_coverage = (summary.reason_codes.schedule_enrichment_h2h_missing_expected_source_coverage || 0) + Number(h2hMissingClassification.expected_missing_source_coverage || 0);
-  summary.reason_codes.schedule_enrichment_h2h_missing_pipeline_failure = (summary.reason_codes.schedule_enrichment_h2h_missing_pipeline_failure || 0) + Number(h2hMissingClassification.pipeline_failure || 0);
   summary.reason_codes.schedule_enrichment_h2h_missing_source_partial_coverage = (summary.reason_codes.schedule_enrichment_h2h_missing_source_partial_coverage || 0) + Number(h2hMissingClassification.source_partial_coverage || 0);
+  summary.reason_codes.schedule_enrichment_h2h_missing_player_not_found = (summary.reason_codes.schedule_enrichment_h2h_missing_player_not_found || 0) + Number(h2hMissingClassification.player_not_found || 0);
+  summary.reason_codes.schedule_enrichment_h2h_missing_matrix_gap = (summary.reason_codes.schedule_enrichment_h2h_missing_matrix_gap || 0) + Number(h2hMissingClassification.matrix_gap || 0);
+  summary.reason_codes.schedule_enrichment_h2h_missing_parse_issues = (summary.reason_codes.schedule_enrichment_h2h_missing_parse_issues || 0) + Number(h2hMissingClassification.parse_issues || 0);
   summary.reason_codes.schedule_enrichment_h2h_missing_source_dataset_unavailable = (summary.reason_codes.schedule_enrichment_h2h_missing_source_dataset_unavailable || 0) + Number(h2hMissingClassification.source_dataset_unavailable || 0);
   summary.reason_codes.schedule_enrichment_h2h_missing_invalid_h2h_pair = (summary.reason_codes.schedule_enrichment_h2h_missing_invalid_h2h_pair || 0) + Number(h2hMissingClassification.invalid_h2h_pair || 0);
-  summary.reason_codes.schedule_enrichment_h2h_missing_generic_h2h_missing = (summary.reason_codes.schedule_enrichment_h2h_missing_generic_h2h_missing || 0) + Number(h2hMissingClassification.generic_h2h_missing || 0);
   summary.reason_codes.schedule_enrichment_h2h_missing_unclassified = (summary.reason_codes.schedule_enrichment_h2h_missing_unclassified || 0) + Number(h2hMissingClassification.unclassified || 0);
   if (!oddsEvents || !oddsEvents.length) {
     summary.reason_codes.schedule_window_fallback_no_odds = (summary.reason_codes.schedule_window_fallback_no_odds || 0) + 1;
@@ -720,12 +720,12 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       h2h_pairs_found: 0,
       h2h_missing_reason_codes: {},
       h2h_missing_classification: {
-        expected_missing_source_coverage: 0,
-        pipeline_failure: 0,
         source_partial_coverage: 0,
+        player_not_found: 0,
+        matrix_gap: 0,
+        parse_issues: 0,
         source_dataset_unavailable: 0,
         invalid_h2h_pair: 0,
-        generic_h2h_missing: 0,
         unclassified: 0,
       },
       h2h_lookup_debug_samples: [],
@@ -755,12 +755,12 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
         h2h_pairs_found: 0,
         h2h_missing_reason_codes: {},
         h2h_missing_classification: {
-          expected_missing_source_coverage: 0,
-          pipeline_failure: 0,
           source_partial_coverage: 0,
+          player_not_found: 0,
+          matrix_gap: 0,
+          parse_issues: 0,
           source_dataset_unavailable: 0,
           invalid_h2h_pair: 0,
-          generic_h2h_missing: 0,
           unclassified: 0,
         },
         h2h_lookup_debug_samples: [],
@@ -786,19 +786,28 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
     let h2hPairsFound = 0;
     const h2hMissingReasonCodes = {};
     const h2hMissingClassification = {
-      expected_missing_source_coverage: 0,
-      pipeline_failure: 0,
       source_partial_coverage: 0,
+      player_not_found: 0,
+      matrix_gap: 0,
+      parse_issues: 0,
       source_dataset_unavailable: 0,
       invalid_h2h_pair: 0,
-      generic_h2h_missing: 0,
       unclassified: 0,
     };
     const h2hLookupDebugSamples = [];
     const h2hDatasetMeta = getStateJson_('PLAYER_STATS_H2H_LAST_FETCH_META') || {};
     const h2hSummaryReasonCode = resolveScheduleEnrichmentH2hReasonCode_(h2hDatasetMeta);
     const h2hImpact = buildScheduleEnrichmentH2hImpact_(h2hSummaryReasonCode, h2hDatasetMeta);
-    const h2hDataset = getTaH2hDataset_(config || {}) || { by_pair: {} };
+    let h2hDataset = { by_pair: {} };
+    try {
+      h2hDataset = getTaH2hDataset_(config || {}) || { by_pair: {} };
+    } catch (datasetError) {
+      h2hDataset = { by_pair: {} };
+      logTaH2hLookupDiagnostic_('ta_h2h_schedule_dataset_snapshot_failed', {
+        reason_code: 'dataset_snapshot_failed_non_fatal',
+        error: String(datasetError && datasetError.message ? datasetError.message : datasetError),
+      });
+    }
     const datasetKeys = Object.keys((h2hDataset && h2hDataset.by_pair) || {});
     const scheduleNormalizedKeys = [];
     const scheduleSeen = {};
@@ -824,7 +833,8 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       const playerB = canonicalizePlayerName_(event.player_2, {});
       const statsA = playerA ? statsByPlayer[playerA] : null;
       const statsB = playerB ? statsByPlayer[playerB] : null;
-      const h2hCoverage = getTaH2hCoverageForCanonicalPair_(config, playerA, playerB);
+      const hasH2hRequestablePair = !!(playerA && playerB && playerA !== playerB);
+      const h2hCoverage = hasH2hRequestablePair ? getTaH2hCoverageForCanonicalPair_(config, playerA, playerB) : null;
       const h2hRow = h2hCoverage && h2hCoverage.row ? h2hCoverage.row : null;
 
       const merged = Object.assign({}, event);
@@ -837,7 +847,7 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       if (didApplyA) statsRowsApplied += 1;
       if (didApplyB) statsRowsApplied += 1;
 
-      if (playerA && playerB && playerA !== playerB) h2hPairsRequested += 1;
+      if (hasH2hRequestablePair) h2hPairsRequested += 1;
 
       const h2hPairVerified = !!(h2hCoverage && h2hCoverage.reason_metadata && h2hCoverage.reason_metadata.matched_pair_verified === true);
       if (h2hRow) {
@@ -847,7 +857,7 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
         merged.h2h_source = merged.h2h_source || 'ta_h2h_matrix';
         h2hRowsApplied += 1;
         if (h2hPairVerified) h2hPairsFound += 1;
-      } else {
+      } else if (hasH2hRequestablePair) {
         h2hMissing += 1;
         const missingReasonCode = String((h2hCoverage && h2hCoverage.reason_code) || 'h2h_missing');
         h2hMissingReasonCodes[missingReasonCode] = (h2hMissingReasonCodes[missingReasonCode] || 0) + 1;
@@ -905,12 +915,12 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       h2h_pairs_found: 0,
       h2h_missing_reason_codes: {},
       h2h_missing_classification: {
-        expected_missing_source_coverage: 0,
-        pipeline_failure: 0,
         source_partial_coverage: 0,
+        player_not_found: 0,
+        matrix_gap: 0,
+        parse_issues: 0,
         source_dataset_unavailable: 0,
         invalid_h2h_pair: 0,
-        generic_h2h_missing: 0,
         unclassified: 0,
       },
       h2h_lookup_debug_samples: [],
@@ -926,12 +936,12 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
 
 function classifyScheduleEnrichmentH2hMissingReason_(reasonCode) {
   const code = String(reasonCode || '').trim();
-  if (code === 'h2h_player_not_in_matrix') return 'expected_missing_source_coverage';
-  if (code === 'ta_h2h_fetch_failed' || code === 'ta_h2h_parse_failed') return 'pipeline_failure';
+  if (code === 'h2h_player_not_in_matrix') return 'player_not_found';
+  if (code === 'ta_h2h_parse_failed') return 'parse_issues';
+  if (code === 'h2h_missing') return 'matrix_gap';
   if (code === 'h2h_partial_coverage') return 'source_partial_coverage';
-  if (code === 'h2h_dataset_unavailable') return 'source_dataset_unavailable';
+  if (code === 'h2h_dataset_unavailable' || code === 'ta_h2h_fetch_failed') return 'source_dataset_unavailable';
   if (code === 'h2h_pair_invalid') return 'invalid_h2h_pair';
-  if (code === 'h2h_missing') return 'generic_h2h_missing';
   return 'unclassified';
 }
 
