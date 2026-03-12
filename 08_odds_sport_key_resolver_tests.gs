@@ -2389,6 +2389,8 @@ function testApplyOpeningLagActionabilityGate_productiveFallbackExemptionsWithAl
     assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.exempted || 0));
     assertEquals_(0, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_age || 0));
     assertEquals_(0, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_cap || 0));
+    assertEquals_('exempted=1 blocked_by_age=0 blocked_by_cap=0 sampled=1', gated.summary.reason_metadata.fallback_exemption_diagnostics.summary);
+    assertEquals_(1, Number((gated.summary.reason_metadata.fallback_exemption_diagnostics.samples.exempted || []).length || 0));
   });
 }
 
@@ -2448,6 +2450,9 @@ function testApplyOpeningLagActionabilityGate_partiallyBlockedFallbackExemptions
     assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_age || 0));
     assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_cap || 0));
     assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.exempted || 0));
+    assertEquals_('exempted=1 blocked_by_age=1 blocked_by_cap=1 sampled=3', gated.summary.reason_metadata.fallback_exemption_diagnostics.summary);
+    assertEquals_('evt_partial_age', gated.summary.reason_metadata.fallback_exemption_diagnostics.samples.blocked_by_age[0].event_id);
+    assertEquals_('evt_partial_cap', gated.summary.reason_metadata.fallback_exemption_diagnostics.samples.blocked_by_cap[0].event_id);
   });
 }
 
@@ -2482,6 +2487,42 @@ function testApplyOpeningLagActionabilityGate_fullyBlockedWhenCapZeroRequiresExp
     assertEquals_('opening_lag_fallback_exemption_denied_cap', gated.rows[0].fallback_exemption_reason_code);
     assertEquals_(true, !!gated.summary.reason_metadata.fallback_exemption_config_validation.has_unsafe_cap_zero);
     assertEquals_(1, Number(gated.summary.reason_metadata.fallback_exemption_diagnostics.blocked_by_cap || 0));
+    assertEquals_('exempted=0 blocked_by_age=0 blocked_by_cap=1 sampled=1', gated.summary.reason_metadata.fallback_exemption_diagnostics.summary);
+  });
+}
+
+function testApplyOpeningLagActionabilityGate_invalidCapModeAndEmptyAllowListSafelyFallback_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const config = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES: 180,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN: 0,
+      OPENING_LAG_FALLBACK_EXEMPTION_ALLOWED_SOURCES_JSON: '[]',
+      OPENING_LAG_FALLBACK_EXEMPTION_DENIED_SOURCES_JSON: '[]',
+      OPENING_LAG_FALLBACK_EXEMPTION_CAP_MODE: 'not_a_mode',
+    };
+
+    const stage = {
+      events: [{
+        event_id: 'evt_safe_defaults_1',
+        market: 'h2h',
+        outcome: 'Player A',
+        provider_odds_updated_time: new Date(now - (45 * 60000)),
+        open_timestamp: new Date(now - (45 * 60000)),
+        opening_lag_policy_tier: 'fallback_cached_stale',
+      }],
+      rows: [{ key: 'evt_safe_defaults_1|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const gated = applyOpeningLagActionabilityGate_('run_opening_lag_safe_defaults', config, stage);
+    assertEquals_(1, gated.events.length);
+    assertEquals_('opening_lag_fallback_exemption_allowed', gated.rows[0].fallback_exemption_reason_code);
+    assertEquals_(true, !!gated.summary.reason_metadata.fallback_exemption_config_validation.invalid_cap_mode);
+    assertEquals_(true, !!gated.summary.reason_metadata.fallback_exemption_config_validation.allow_list_defaulted);
+    assertEquals_('unlimited_when_zero', gated.summary.reason_metadata.fallback_exemption_config_validation.cap_mode);
   });
 }
 
