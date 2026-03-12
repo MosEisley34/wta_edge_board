@@ -2018,9 +2018,14 @@ function testRunEdgeBoard_compactSummaryReasonMapsKeepVerboseReasonMaps_() {
     const summary = harness.logs.filter(function (row) {
       return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
     })[0];
-    const compactReasonCodes = JSON.parse(summary.rejection_codes || '{}');
-    const compactStageSummaries = JSON.parse(summary.stage_summaries || '[]');
+    const compactReasonEnvelope = JSON.parse(summary.rejection_codes || '{}');
+    const compactStageSummaryEnvelope = JSON.parse(summary.stage_summaries || '{}');
+    const compactReasonCodes = compactReasonEnvelope.reason_codes || {};
+    const compactStageSummaries = compactStageSummaryEnvelope.stage_summaries || [];
     const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+
+    assertEquals_(REASON_CODE_ALIAS_SCHEMA_ID, compactReasonEnvelope.schema_id);
+    assertEquals_(REASON_CODE_ALIAS_SCHEMA_ID, compactStageSummaryEnvelope.schema_id);
 
     assertEquals_(1, compactReasonCodes.odds_present || 0);
     assertEquals_(undefined, compactReasonCodes.zeroed_reason);

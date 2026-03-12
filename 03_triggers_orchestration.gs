@@ -238,6 +238,7 @@ function runEdgeBoard() {
     }
 
     const config = getConfig_();
+    maybeEmitReasonAliasDictionary_(config);
     const maxRuntimeMs = resolvePipelineMaxRuntimeMs_(config);
     if (!config.RUN_ENABLED) {
       appendLogRow_({
@@ -604,7 +605,10 @@ function runEdgeBoard() {
     const runEndedAt = localAndUtcTimestamps_(new Date());
     const creditBurnRateState = getStateJson_('ODDS_API_BURN_RATE_STATE') || {};
     const creditBurnRateNotification = maybeNotifyCreditBurnRate_(config, runId, creditBurnRateState);
-    const compactCombinedReasonCodes = compactReasonCodeMapForLog_(combinedReasonCodes);
+    const compactCombinedReasonCodes = {
+      schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+      reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes),
+    };
     const compactStageSummaries = compactStageSummariesForLog_([
       oddsStage.summary,
       scheduleStage.summary,
