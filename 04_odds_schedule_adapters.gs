@@ -1037,11 +1037,15 @@ function getCreditAwareRuntimeConfig_(config) {
 
 function updateCreditStateFromHeaders_(runId, headers) {
   const creditHeaders = normalizeCreditHeaders_(headers || {});
-  const used = Number(creditHeaders.requests_used);
-  const remaining = Number(creditHeaders.requests_remaining);
-  const last = Number(creditHeaders.requests_last);
-  const hasHeaderValues = hasCreditHeaders_(creditHeaders);
+  const used = creditHeaders.requests_used;
+  const remaining = creditHeaders.requests_remaining;
+  const last = creditHeaders.requests_last;
+  const hasHeaderKeys = hasCreditHeaders_(creditHeaders);
+  const hasUsableHeaderValues = hasUsableCreditHeaders_(creditHeaders);
   const remainingIsNumeric = Number.isFinite(remaining);
+  const headerState = hasUsableHeaderValues
+    ? 'numeric'
+    : (hasHeaderKeys ? 'non_numeric' : 'absent');
 
   const snapshot = {
     run_id: runId,
@@ -1050,7 +1054,9 @@ function updateCreditStateFromHeaders_(runId, headers) {
     last: Number.isFinite(last) ? last : null,
     timestamp: formatLocalIso_(new Date()),
     timestamp_utc: new Date().toISOString(),
-    header_present: hasHeaderValues,
+    header_present: hasUsableHeaderValues,
+    header_state: headerState,
+    header_keys_present: hasHeaderKeys,
     remaining_is_numeric: remainingIsNumeric,
     limit_enforced: false,
   };
@@ -1072,8 +1078,8 @@ function updateCreditBurnRateState_(runId, config, scheduleApiCallCount, creditS
     ? (nowMs - previousObservedMs) / 86400000
     : 0;
 
-  const currentRemaining = Number(snapshot.remaining);
-  const previousRemaining = Number((previousScheduleCredits.credit_snapshot || {}).remaining);
+  const currentRemaining = toNullableNumber_(snapshot.remaining);
+  const previousRemaining = toNullableNumber_((previousScheduleCredits.credit_snapshot || {}).remaining);
   let instantaneousCallsPerDay = null;
 
   if (elapsedDays > 0 && Number.isFinite(currentRemaining) && Number.isFinite(previousRemaining)) {
@@ -2772,19 +2778,29 @@ function normalizeCreditHeaders_(headers) {
   const rawRemaining = hasRemainingHeader ? (normalized['x-requests-remaining'] !== undefined ? normalized['x-requests-remaining'] : normalized.requests_remaining) : null;
   const rawLast = hasLastHeader ? (normalized['x-requests-last'] !== undefined ? normalized['x-requests-last'] : normalized.requests_last) : null;
 
+  const parsedUsed = parseHeaderNumber_(rawUsed);
+  const parsedRemaining = parseHeaderNumber_(rawRemaining);
+  const parsedLast = parseHeaderNumber_(rawLast);
+  const anyNumericValue = Number.isFinite(parsedUsed) || Number.isFinite(parsedRemaining) || Number.isFinite(parsedLast);
+
   return {
-    requests_used: parseHeaderNumber_(rawUsed),
-    requests_remaining: parseHeaderNumber_(rawRemaining),
-    requests_last: parseHeaderNumber_(rawLast),
+    requests_used: parsedUsed,
+    requests_remaining: parsedRemaining,
+    requests_last: parsedLast,
     has_requests_used: hasUsedHeader,
     has_requests_remaining: hasRemainingHeader,
     has_requests_last: hasLastHeader,
     has_credit_headers: hasUsedHeader || hasRemainingHeader || hasLastHeader,
+    has_usable_values: anyNumericValue,
   };
 }
 
 function hasCreditHeaders_(creditHeaders) {
   return !!(creditHeaders && creditHeaders.has_credit_headers === true);
+}
+
+function hasUsableCreditHeaders_(creditHeaders) {
+  return !!(creditHeaders && creditHeaders.has_usable_values === true);
 }
 
 function buildOddsApiRequestPathForLog_(url) {
