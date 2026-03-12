@@ -210,6 +210,8 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
   const lastFetchMeta = getStateJson_('SCHEDULE_WINDOW_LAST_FETCH_META') || {};
   const staleEmptyForcedLiveAlreadyAttemptedThisRun = String(lastFetchMeta.run_id || '') === String(runId || '')
     && lastFetchMeta.stale_fallback_empty_forced_live === true;
+  const oddsRefreshSkippedOutsideWindow = !!options.odds_refresh_skipped_outside_window;
+  const oddsWindowBootstrapMode = !!options.odds_window_bootstrap_mode;
   let scheduleResp;
   let liveFetchHappened = false;
   let staleFallbackUsedWithEvents = 0;
@@ -222,7 +224,29 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
     odds_schedule_window_mismatch_high_severity: 0,
   };
 
-  if (!window) {
+  if (oddsRefreshSkippedOutsideWindow && !oddsWindowBootstrapMode) {
+    const hasFreshCache = !!(cacheResult && Number.isFinite(cacheResult.cached_at_ms) && (now - cacheResult.cached_at_ms <= cacheTtlMs));
+    if (hasFreshCache) {
+      scheduleResp = {
+        events: cacheResult.events,
+        reason_code: 'schedule_fetch_skipped_outside_window_credit_saver',
+        api_credit_usage: 0,
+        api_call_count: 0,
+        credit_headers: {},
+        selected_source: 'cached_fresh',
+        selected_cached_at_ms: cacheResult.cached_at_ms,
+      };
+    } else {
+      scheduleResp = {
+        events: [],
+        reason_code: 'schedule_fetch_skipped_outside_window_credit_saver_cache_expired',
+        api_credit_usage: 0,
+        api_call_count: 0,
+        credit_headers: {},
+        selected_source: 'credit_saver_skip',
+      };
+    }
+  } else if (!window) {
     scheduleResp = {
       events: [],
       reason_code: 'schedule_window_empty',

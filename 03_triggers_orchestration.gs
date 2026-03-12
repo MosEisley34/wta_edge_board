@@ -379,6 +379,8 @@ function runEdgeBoard() {
       assertPipelineRuntimeBudget_(lifecycleContext, runId);
       return stageFetchSchedule(runId, config, oddsStage.events, {
         bootstrap_empty_cycle_mitigation_active: !!oddsWindowDecision.bootstrap_empty_cycle_mitigation_active,
+        odds_refresh_skipped_outside_window: oddsWindowDecision.decision_reason_code === 'odds_refresh_skipped_outside_window',
+        odds_window_bootstrap_mode: !!oddsWindowDecision.bootstrap_mode,
       });
     });
     appendStageLog_(runId, scheduleStage.summary);
@@ -1046,9 +1048,11 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const scheduleReasonCodes = Object.assign({}, (metrics && metrics.schedule_reason_codes) || {});
   const matchReasonCodes = Object.assign({}, (metrics && metrics.match_reason_codes) || {});
 
+  const outsideWindowOddsSkipped = Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0) > 0;
+  const scheduleSkippedOutsideWindowCreditSaver = Number(scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver || 0) > 0;
   const scheduleOnlyIdle = fetchedOdds === 0
-    && fetchedSchedule > 0
-    && Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0) > 0;
+    && outsideWindowOddsSkipped
+    && (fetchedSchedule > 0 || scheduleSkippedOutsideWindowCreditSaver);
 
   if (scheduleOnlyIdle) {
     const idlePayload = {
@@ -1057,7 +1061,9 @@ function evaluateRunHealthDiagnostics_(metrics) {
       fetched_schedule: fetchedSchedule,
       matched: matched,
       signals_found: signalsFound,
-      message: 'Odds refresh was intentionally skipped outside the configured odds window; zero matches/signals are expected in this schedule-only run.',
+      message: scheduleSkippedOutsideWindowCreditSaver
+        ? 'Odds refresh was intentionally skipped outside the configured odds window, and schedule fetch was credit-saved; zero matches/signals are expected in this idle run.'
+        : 'Odds refresh was intentionally skipped outside the configured odds window; zero matches/signals are expected in this schedule-only run.',
     };
 
     return {
