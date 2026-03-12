@@ -17,15 +17,15 @@ class PipelineLogAdapterTests(unittest.TestCase):
                 "row_type": "summary",
                 "run_id": "run-1",
                 "stage": "runEdgeBoard",
-                "message": json.dumps({"reason_codes": {"or_out_win": 2}}),
+                "message": json.dumps({"reason_codes": {"OR_OUT_WIN": 2}}),
                 "rejection_codes": json.dumps(
-                    {"schema_id": "reason_code_alias_v1", "reason_codes": {"open_lag_hi": 1}}
+                    {"schema_id": "reason_code_alias_v1", "reason_codes": {"OPEN_LAG_HI": 1}}
                 ),
                 "stage_summaries": json.dumps(
                     {
                         "schema_id": "reason_code_alias_v1",
                         "stage_summaries": [
-                            {"stage": "stageFetchOdds", "reason_codes": {"mm_diag_wr": 3}},
+                            {"stage": "stageFetchOdds", "reason_codes": {"MM_DIAG_WR": 3}},
                         ],
                     }
                 ),
@@ -55,11 +55,11 @@ class PipelineLogAdapterTests(unittest.TestCase):
                 "oc": 5,
                 "pr": "odds_api",
                 "acu": 1,
-                "rc": {"or_out_win": 2},
+                "rc": {"OR_OUT_WIN": 2},
                 "rm": {"resolver": "canonical"},
                 "msg": {"context": "compact"},
-                "rj": {"open_lag_hi": 1},
-                "ssu": [{"stage": "stageFetchOdds", "reason_codes": {"mm_diag_wr": 2}}],
+                "rj": {"OPEN_LAG_HI": 1},
+                "ssu": [{"stage": "stageFetchOdds", "reason_codes": {"MM_DIAG_WR": 2}}],
             }
         )
 

@@ -607,7 +607,7 @@ function runEdgeBoard() {
     const creditBurnRateNotification = maybeNotifyCreditBurnRate_(config, runId, creditBurnRateState);
     const compactCombinedReasonCodes = {
       schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
-      reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes),
+      reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes, REASON_CODE_ALIAS_SCHEMA_ID),
     };
     const rollupEmission = maybeEmitRunRollup_(config, {
       fetched_odds: fetchedOddsCount,
@@ -651,7 +651,7 @@ function runEdgeBoard() {
       playerStatsStage.summary,
       signalStage.summary,
       persistStage.summary,
-    ]);
+    ], REASON_CODE_ALIAS_SCHEMA_ID);
 
     const verbosePayload = {
       run_id: runId,
@@ -721,7 +721,7 @@ function runEdgeBoard() {
         run_id: runId,
         log_profile: 'compact',
         note: 'Set LOG_PROFILE=verbose to capture full LAST_RUN_VERBOSE_JSON diagnostics payload.',
-        reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes),
+        reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes, REASON_CODE_ALIAS_SCHEMA_ID),
         stage_count: compactStageSummaries.length,
       }));
     }
