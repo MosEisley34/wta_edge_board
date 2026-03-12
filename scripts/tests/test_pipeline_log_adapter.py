@@ -90,6 +90,39 @@ class PipelineLogAdapterTests(unittest.TestCase):
         self.assertEqual(1, rejection_codes["opening_lag_exceeded"])
         self.assertEqual(2, stage_summaries[0]["reason_codes"]["match_map_diagnostic_records_written"])
 
+    def test_compact_v2_fallback_alias_map_round_trips_to_canonical(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "schema_version": 2,
+                "et": "stageFetchOdds",
+                "rid": "run-v2-fallback",
+                "st": "stageFetchOdds",
+                "rm": {"fallback_aliases": {"UNK_1ABC": "long_unknown_reason_code"}},
+                "rc": {"UNK_1ABC": 3},
+                "msg": {
+                    "schema_id": "reason_code_alias_v1",
+                    "reason_codes": {"UNK_1ABC": 3},
+                    "fallback_aliases": {"UNK_1ABC": "long_unknown_reason_code"},
+                },
+            }
+        )
+
+        message = json.loads(adapted["message"])
+        self.assertEqual(3, message["reason_codes"]["long_unknown_reason_code"])
+
+    def test_compact_v2_supports_new_alias_entries(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "schema_version": 2,
+                "et": "summary",
+                "rid": "run-v2-new-alias",
+                "st": "runEdgeBoard",
+                "msg": {"schema_id": "reason_code_alias_v1", "reason_codes": {"PO_MIT_ON": 1}},
+            }
+        )
+        message = json.loads(adapted["message"])
+        self.assertEqual(1, message["reason_codes"]["productive_output_mitigation_activated"])
+
 
 if __name__ == "__main__":
     unittest.main()

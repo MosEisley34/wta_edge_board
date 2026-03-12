@@ -6363,6 +6363,36 @@ function testSerializeCompactReasonCodesForLogEntry_dedupesEquivalentRowAndMessa
   assertEquals_(2, Number((message.reason_codes || {}).no_player_match || 0));
 }
 
+function testSerializeCompactReasonCodesForLogEntry_unknownReasonsUseDeterministicFallbackAliasesByDefault_() {
+  const normalized = serializeCompactReasonCodesForLogEntry_({
+    reason_codes: { very_long_reason_code_key_player_stats_incomplete_profile: 2 },
+    message: JSON.stringify({ reason_codes: { very_long_reason_code_key_player_stats_incomplete_profile: 2 } }),
+  }, REASON_CODE_ALIAS_SCHEMA_ID, { allow_canonical_passthrough: false });
+
+  const message = JSON.parse(normalized.message || '{}');
+  const aliases = Object.keys((message.reason_codes || {}));
+  const fallbackAlias = aliases[0] || '';
+
+  assertTrue_(fallbackAlias.indexOf('UNK_') === 0);
+  assertEquals_(undefined, (message.reason_codes || {}).very_long_reason_code_key_player_stats_incomplete_profile);
+  assertEquals_(
+    'very_long_reason_code_key_player_stats_incomplete_profile',
+    (message.fallback_aliases || {})[fallbackAlias]
+  );
+}
+
+function testSerializeCompactReasonCodesForLogEntry_canAllowExplicitCanonicalPassthrough_() {
+  const normalized = serializeCompactReasonCodesForLogEntry_({
+    reason_codes: { very_long_reason_code_key_player_stats_incomplete_profile: 1 },
+    message: JSON.stringify({ reason_codes: { very_long_reason_code_key_player_stats_incomplete_profile: 1 } }),
+  }, REASON_CODE_ALIAS_SCHEMA_ID, { allow_canonical_passthrough: true });
+
+  const message = JSON.parse(normalized.message || '{}');
+
+  assertEquals_(1, Number((message.reason_codes || {}).very_long_reason_code_key_player_stats_incomplete_profile || 0));
+  assertEquals_(undefined, message.fallback_aliases);
+}
+
 function testAssertDebugBoundedStageCounters_onlyChecksVerboseLogProfile_() {
   const compactViolations = assertDebugBoundedStageCounters_({ LOG_PROFILE: 'compact' }, [{
     stage: 'stageMatchEvents',
