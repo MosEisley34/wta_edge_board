@@ -1,0 +1,36 @@
+{
+  "legacy_verbose_output_size_bytes": 351901,
+  "compact_output_size_bytes": 351901,
+  "percentage_reduction": 0.0,
+  "target_reduction_pct": 60.0,
+  "target_met": false,
+  "field_parity": {
+    "run_count_compared": 36,
+    "missing_in_verbose": [],
+    "missing_in_compact": [],
+    "mismatch_counts": {
+      "gate_reasons": 0,
+      "summary_counters": 0,
+      "source_selection": 0,
+      "watchdog": 0,
+      "stage_timing": 0,
+      "run_health_attribution": 0
+    },
+    "mismatch_samples": []
+  },
+  "critical_parity_keys": [
+    "gate_reasons",
+    "source_selection",
+    "watchdog"
+  ],
+  "critical_mismatch_counts": {
+    "gate_reasons": 0,
+    "source_selection": 0,
+    "watchdog": 0
+  },
+  "critical_parity_passed": true,
+  "quality_gate_failed_reasons": [
+    "reduction_below_target"
+  ],
+  "failed_critical_parity_keys": []
+}
