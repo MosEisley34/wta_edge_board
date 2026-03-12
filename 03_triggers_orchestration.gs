@@ -605,10 +605,6 @@ function runEdgeBoard() {
     const runEndedAt = localAndUtcTimestamps_(new Date());
     const creditBurnRateState = getStateJson_('ODDS_API_BURN_RATE_STATE') || {};
     const creditBurnRateNotification = maybeNotifyCreditBurnRate_(config, runId, creditBurnRateState);
-    const compactCombinedReasonCodes = {
-      schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
-      reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes, REASON_CODE_ALIAS_SCHEMA_ID),
-    };
     const rollupEmission = maybeEmitRunRollup_(config, {
       fetched_odds: fetchedOddsCount,
       fetched_schedule: scheduleStage.events.length,
@@ -616,7 +612,7 @@ function runEdgeBoard() {
       unmatched: matchStage.unmatchedCount,
       signals_found: signalsFoundCount,
       run_health_reason_code: runHealthDiagnostics.reason_code,
-      reason_codes: compactCombinedReasonCodes.reason_codes,
+      reason_codes: combinedReasonCodes,
       stage_summaries: [
         oddsStage.summary,
         scheduleStage.summary,
@@ -754,8 +750,16 @@ function runEdgeBoard() {
       unmatched: matchStage.unmatchedCount,
       rejected: matchStage.rejectedCount,
       signals_found: signalStage.sentCount,
-      rejection_codes: JSON.stringify(compactCombinedReasonCodes),
-      stage_summaries: JSON.stringify(compactStageSummaries),
+      reason_codes: combinedReasonCodes,
+      rejection_codes: combinedReasonCodes,
+      stage_summaries: JSON.stringify([
+        oddsStage.summary,
+        scheduleStage.summary,
+        matchStage.summary,
+        playerStatsStage.summary,
+        signalStage.summary,
+        persistStage.summary,
+      ]),
       cooldown_suppressed: signalStage.cooldownSuppressedCount,
       duplicate_suppressed: signalStage.duplicateSuppressedCount,
     });

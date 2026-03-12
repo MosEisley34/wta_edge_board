@@ -131,7 +131,6 @@ function writeOpeningLagSkipState_(runId, payload) {
 }
 
 function appendStageLog_(runId, summary) {
-  const compactReasonCodes = compactReasonCodeMapForLog_(summary.reason_codes || {}, REASON_CODE_ALIAS_SCHEMA_ID);
   appendLogRow_({
     row_type: 'stage',
     run_id: runId,
@@ -145,12 +144,72 @@ function appendStageLog_(runId, summary) {
       input_count: summary.input_count,
       output_count: summary.output_count,
       provider: summary.provider,
-      reason_codes: compactReasonCodes,
+      reason_codes: summary.reason_codes || {},
     }),
+    reason_codes: summary.reason_codes || {},
   });
 }
 
+function buildReasonCodeEnvelopeForLog_(reasonMap, schemaId) {
+  const resolvedSchemaId = String(schemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+  return {
+    schema_id: resolvedSchemaId,
+    reason_codes: compactReasonCodeMapForLog_(reasonMap || {}, resolvedSchemaId),
+  };
+}
+
+function toReasonCodeMapForLog_(value, schemaId) {
+  const parsed = parseLogJsonLike_(value, value);
+  if (!parsed || typeof parsed !== 'object') return {};
+  if (Object.prototype.hasOwnProperty.call(parsed, 'reason_codes')) {
+    const envelopeSchemaId = String(parsed.schema_id || schemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+    return expandReasonCodeMapForLegacy_(parsed.reason_codes || {}, envelopeSchemaId);
+  }
+  return expandReasonCodeMapForLegacy_(parsed, String(schemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim());
+}
+
+function normalizeLogEntryForAppend_(entry) {
+  const normalized = Object.assign({}, entry || {});
+  const schemaId = String(REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+  const messagePayload = parseLogJsonLike_(normalized.message, null);
+  const messageObject = messagePayload && typeof messagePayload === 'object' && !Array.isArray(messagePayload)
+    ? Object.assign({}, messagePayload)
+    : null;
+
+  let reasonCodeMap = {};
+  if (normalized.reason_codes) {
+    reasonCodeMap = mergeReasonCounts_([reasonCodeMap, toReasonCodeMapForLog_(normalized.reason_codes, schemaId)]);
+  }
+  if (messageObject && messageObject.reason_codes) {
+    reasonCodeMap = mergeReasonCounts_([reasonCodeMap, toReasonCodeMapForLog_(messageObject.reason_codes, String(messageObject.schema_id || schemaId))]);
+  }
+  const inferredReasonCode = String(normalized.reason_code || '').trim();
+  if (!Object.keys(reasonCodeMap).length && inferredReasonCode) {
+    reasonCodeMap[inferredReasonCode] = 1;
+  }
+
+  if (messageObject && Object.keys(reasonCodeMap).length > 0) {
+    const compactEnvelope = buildReasonCodeEnvelopeForLog_(reasonCodeMap, schemaId);
+    messageObject.schema_id = compactEnvelope.schema_id;
+    messageObject.reason_codes = compactEnvelope.reason_codes;
+    normalized.message = JSON.stringify(messageObject);
+  }
+
+  const rejectionReasonCodes = toReasonCodeMapForLog_(normalized.rejection_codes, schemaId);
+  normalized.rejection_codes = JSON.stringify(buildReasonCodeEnvelopeForLog_(rejectionReasonCodes, schemaId));
+
+  const stageSummaryPayload = parseLogJsonLike_(normalized.stage_summaries, normalized.stage_summaries);
+  if (Array.isArray(stageSummaryPayload)) {
+    normalized.stage_summaries = JSON.stringify(compactStageSummariesForLog_(stageSummaryPayload, schemaId));
+  } else if (stageSummaryPayload && typeof stageSummaryPayload === 'object' && stageSummaryPayload.stage_summaries) {
+    normalized.stage_summaries = JSON.stringify(compactStageSummariesForLog_(stageSummaryPayload.stage_summaries || [], String(stageSummaryPayload.schema_id || schemaId)));
+  }
+
+  return normalized;
+}
+
 function appendLogRow_(entry) {
+  const normalized = normalizeLogEntryForAppend_(entry || {});
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sh = ss.getSheetByName(SHEETS.RUN_LOG);
 
@@ -160,29 +219,29 @@ function appendLogRow_(entry) {
   }
 
   sh.appendRow([
-    entry.row_type || 'summary',
-    entry.run_id || '',
-    entry.stage || '',
-    toIso_(entry.started_at),
-    toIso_(entry.ended_at),
-    entry.status || '',
-    entry.reason_code || '',
-    sanitizeForLog_(entry.message || ''),
-    entry.fetched_odds || 0,
-    entry.fetched_schedule || 0,
-    entry.allowed_tournaments || 0,
-    entry.matched || 0,
-    entry.unmatched || 0,
-    entry.signals_found || 0,
-    sanitizeForLog_(entry.rejection_codes || '{}'),
-    entry.cooldown_suppressed || 0,
-    entry.duplicate_suppressed || 0,
-    entry.lock_event || '',
-    entry.debounce_event || '',
-    entry.trigger_event || '',
-    sanitizeForLog_(entry.exception || ''),
-    sanitizeForLog_(entry.stack || ''),
-    sanitizeForLog_(entry.stage_summaries || '[]'),
+    normalized.row_type || 'summary',
+    normalized.run_id || '',
+    normalized.stage || '',
+    toIso_(normalized.started_at),
+    toIso_(normalized.ended_at),
+    normalized.status || '',
+    normalized.reason_code || '',
+    sanitizeForLog_(normalized.message || ''),
+    normalized.fetched_odds || 0,
+    normalized.fetched_schedule || 0,
+    normalized.allowed_tournaments || 0,
+    normalized.matched || 0,
+    normalized.unmatched || 0,
+    normalized.signals_found || 0,
+    sanitizeForLog_(normalized.rejection_codes || '{}'),
+    normalized.cooldown_suppressed || 0,
+    normalized.duplicate_suppressed || 0,
+    normalized.lock_event || '',
+    normalized.debounce_event || '',
+    normalized.trigger_event || '',
+    sanitizeForLog_(normalized.exception || ''),
+    sanitizeForLog_(normalized.stack || ''),
+    sanitizeForLog_(normalized.stage_summaries || '[]'),
   ]);
 }
 
