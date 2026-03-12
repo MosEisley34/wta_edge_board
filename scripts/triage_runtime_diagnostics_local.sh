@@ -15,4 +15,5 @@ if ! find "$EXPORT_DIR" -maxdepth 1 -type f \( -iname '*run*log*.csv' -o -iname 
   exit 1
 fi
 
+echo "[triage] First pass: prioritize the Run-health degraded contract section."
 scripts/scan_runtime_diagnostics.sh "$EXPORT_DIR"

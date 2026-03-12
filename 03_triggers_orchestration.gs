@@ -1515,6 +1515,7 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const scheduleReasonCodes = Object.assign({}, (metrics && metrics.schedule_reason_codes) || {});
   const matchReasonCodes = Object.assign({}, (metrics && metrics.match_reason_codes) || {});
   const signalReasonCodes = Object.assign({}, (metrics && metrics.signal_reason_codes) || {});
+  const playerStatsReasonCodes = Object.assign({}, (metrics && metrics.player_stats_reason_codes) || {});
   const openingLagBlockedCount = Number(metrics && metrics.opening_lag_blocked_count || 0);
   const scheduleOnlySeedCount = Number(metrics && metrics.schedule_only_seed_count || 0);
   const noOddsStageCount = Number(metrics && metrics.no_odds_stage_count || 0);
@@ -1522,11 +1523,6 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const lowEdgeSuppressedCount = Number(metrics && metrics.low_edge_suppressed_count || 0);
   const cooldownSuppressedCount = Number(metrics && metrics.cooldown_suppressed_count || 0);
   const sampledBlockedOdds = sanitizeBlockedOddsSamples_((metrics && metrics.sample_blocked_odds_cases) || []);
-  const sampledBlockedOddsIds = sampledBlockedOdds
-    .map(function (entry) { return sanitizeRunHealthText_(entry && entry.odds_event_id, 72); })
-    .filter(function (value) { return !!value; })
-    .slice(0, 3);
-
   const outsideWindowOddsSkipped = Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0) > 0;
   const scheduleSkippedOutsideWindowCreditSaver = Number(scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver || 0) > 0;
   const sourceCreditSaverSkip = Number(oddsReasonCodes.source_credit_saver_skip || 0) > 0
@@ -1565,7 +1561,23 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const degraded = fetchedOdds > 0 && matched === 0;
   const statsZeroCoverageDegraded = matched > 0 && playersWithNonNullStats === 0;
   if (statsZeroCoverageDegraded) {
-    const statsCoveragePayload = {
+    const statsCoveragePayload = Object.assign(buildRunHealthDegradedContract_({
+      reason_code: 'stats_zero_coverage',
+      odds_reason_codes: oddsReasonCodes,
+      schedule_reason_codes: scheduleReasonCodes,
+      match_reason_codes: matchReasonCodes,
+      signal_reason_codes: signalReasonCodes,
+      player_stats_reason_codes: playerStatsReasonCodes,
+      opening_lag_blocked_count: openingLagBlockedCount,
+      schedule_only_seed_count: scheduleOnlySeedCount,
+      no_odds_stage_count: noOddsStageCount,
+      stale_odds_skip_count: staleOddsSkipCount,
+      low_edge_suppressed_count: lowEdgeSuppressedCount,
+      cooldown_suppressed_count: cooldownSuppressedCount,
+      stats_zero_coverage_count: 1,
+      sampled_blocked_odds: sampledBlockedOdds,
+      sample_unmatched_cases: sampleUnmatchedCases,
+    }), {
       reason_code: 'stats_zero_coverage',
       fetched_odds: fetchedOdds,
       fetched_schedule: fetchedSchedule,
@@ -1573,7 +1585,7 @@ function evaluateRunHealthDiagnostics_(metrics) {
       signals_found: signalsFound,
       players_with_non_null_stats: playersWithNonNullStats,
       message: 'Matched events found but player stats coverage is zero; running in fallback-only mode.',
-    };
+    });
 
     return {
       is_degraded: true,
@@ -1602,48 +1614,28 @@ function evaluateRunHealthDiagnostics_(metrics) {
     };
   }
 
-  const warningPayload = {
+  const warningPayload = Object.assign(buildRunHealthDegradedContract_({
     reason_code: 'run_health_no_matches_from_odds',
-    fetched_odds: fetchedOdds,
-    fetched_schedule: fetchedSchedule,
-    matched: matched,
-    signals_found: signalsFound,
+    odds_reason_codes: oddsReasonCodes,
+    schedule_reason_codes: scheduleReasonCodes,
+    match_reason_codes: matchReasonCodes,
+    signal_reason_codes: signalReasonCodes,
+    player_stats_reason_codes: playerStatsReasonCodes,
     opening_lag_blocked_count: openingLagBlockedCount,
     schedule_only_seed_count: scheduleOnlySeedCount,
     no_odds_stage_count: noOddsStageCount,
     stale_odds_skip_count: staleOddsSkipCount,
     low_edge_suppressed_count: lowEdgeSuppressedCount,
     cooldown_suppressed_count: cooldownSuppressedCount,
-    failure_reasons: buildRunHealthFailureReasons_({
-      opening_lag_blocked_count: openingLagBlockedCount,
-      schedule_only_seed_count: scheduleOnlySeedCount,
-      no_odds_stage_count: noOddsStageCount,
-      stale_odds_skip_count: staleOddsSkipCount,
-      low_edge_suppressed_count: lowEdgeSuppressedCount,
-      cooldown_suppressed_count: cooldownSuppressedCount,
-      sampled_blocked_odds_ids: sampledBlockedOddsIds,
-    }),
-    stage_skipped_reason_counts: deriveStageSkippedReasonCounts_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes),
-    dominant_blocker_categories: resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes, signalReasonCodes, {
-      opening_lag_blocked: openingLagBlockedCount,
-      schedule_only_seed: scheduleOnlySeedCount,
-      no_odds_stage: noOddsStageCount,
-      stale_odds_skip: staleOddsSkipCount,
-      low_edge_suppressed: lowEdgeSuppressedCount,
-      cooldown_suppressed: cooldownSuppressedCount,
-    }),
     sampled_blocked_odds: sampledBlockedOdds,
-    sample_unmatched_events: sampleUnmatchedCases.slice(0, 5).map(function (entry) {
-      return {
-        odds_event_id: entry.odds_event_id,
-        competition: entry.competition,
-        player_1: entry.player_1,
-        player_2: entry.player_2,
-        commence_time: entry.commence_time,
-        rejection_code: entry.rejection_code,
-      };
-    }),
-  };
+    sample_unmatched_cases: sampleUnmatchedCases,
+  }), {
+    reason_code: 'run_health_no_matches_from_odds',
+    fetched_odds: fetchedOdds,
+    fetched_schedule: fetchedSchedule,
+    matched: matched,
+    signals_found: signalsFound,
+  });
 
   return {
     is_degraded: true,
@@ -1658,12 +1650,79 @@ function evaluateRunHealthDiagnostics_(metrics) {
   };
 }
 
-function deriveStageSkippedReasonCounts_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes) {
-  const merged = mergeReasonCounts_([
-    oddsReasonCodes || {},
-    scheduleReasonCodes || {},
-    matchReasonCodes || {},
-  ]);
+function buildRunHealthDegradedContract_(metrics) {
+  const safe = metrics || {};
+  const sampledBlockedOdds = (safe.sampled_blocked_odds || []).slice(0, 5);
+  const sampledBlockedOddsIds = sampledBlockedOdds
+    .map(function (entry) { return sanitizeRunHealthText_(entry && entry.odds_event_id, 72); })
+    .filter(function (value) { return !!value; })
+    .slice(0, 3);
+  const openingLagBlockedCount = Number(safe.opening_lag_blocked_count || 0);
+  const scheduleOnlySeedCount = Number(safe.schedule_only_seed_count || 0);
+  const noOddsStageCount = Number(safe.no_odds_stage_count || 0);
+  const staleOddsSkipCount = Number(safe.stale_odds_skip_count || 0);
+  const lowEdgeSuppressedCount = Number(safe.low_edge_suppressed_count || 0);
+  const cooldownSuppressedCount = Number(safe.cooldown_suppressed_count || 0);
+  const statsZeroCoverageCount = Number(safe.stats_zero_coverage_count || 0);
+
+  return {
+    run_health_contract_version: 1,
+    reason_code: sanitizeRunHealthText_(safe.reason_code, 72),
+    opening_lag_blocked_count: openingLagBlockedCount,
+    schedule_only_seed_count: scheduleOnlySeedCount,
+    no_odds_stage_count: noOddsStageCount,
+    stale_odds_skip_count: staleOddsSkipCount,
+    low_edge_suppressed_count: lowEdgeSuppressedCount,
+    cooldown_suppressed_count: cooldownSuppressedCount,
+    stats_zero_coverage_count: statsZeroCoverageCount,
+    failure_reasons: buildRunHealthFailureReasons_({
+      opening_lag_blocked_count: openingLagBlockedCount,
+      schedule_only_seed_count: scheduleOnlySeedCount,
+      no_odds_stage_count: noOddsStageCount,
+      stale_odds_skip_count: staleOddsSkipCount,
+      low_edge_suppressed_count: lowEdgeSuppressedCount,
+      cooldown_suppressed_count: cooldownSuppressedCount,
+      stats_zero_coverage_count: statsZeroCoverageCount,
+      sampled_blocked_odds_ids: sampledBlockedOddsIds,
+    }),
+    stage_skipped_reason_counts: deriveStageSkippedReasonCounts_([
+      safe.odds_reason_codes || {},
+      safe.schedule_reason_codes || {},
+      safe.match_reason_codes || {},
+      safe.signal_reason_codes || {},
+      safe.player_stats_reason_codes || {},
+    ]),
+    dominant_blocker_categories: resolveDominantRunHealthBlockers_(
+      safe.odds_reason_codes || {},
+      safe.schedule_reason_codes || {},
+      safe.match_reason_codes || {},
+      safe.signal_reason_codes || {},
+      {
+        opening_lag_blocked: openingLagBlockedCount,
+        schedule_only_seed: scheduleOnlySeedCount,
+        no_odds_stage: noOddsStageCount,
+        stale_odds_skip: staleOddsSkipCount,
+        low_edge_suppressed: lowEdgeSuppressedCount,
+        cooldown_suppressed: cooldownSuppressedCount,
+        stats_zero_coverage: statsZeroCoverageCount,
+      }
+    ),
+    sampled_blocked_odds: sampledBlockedOdds,
+    sample_unmatched_events: (safe.sample_unmatched_cases || []).slice(0, 5).map(function (entry) {
+      return {
+        odds_event_id: entry.odds_event_id,
+        competition: entry.competition,
+        player_1: entry.player_1,
+        player_2: entry.player_2,
+        commence_time: entry.commence_time,
+        rejection_code: entry.rejection_code,
+      };
+    }),
+  };
+}
+
+function deriveStageSkippedReasonCounts_(reasonCodeMaps) {
+  const merged = mergeReasonCounts_(reasonCodeMaps || []);
   const counts = {};
   Object.keys(merged).forEach(function (code) {
     const value = Number(merged[code] || 0);
@@ -1708,6 +1767,10 @@ function buildRunHealthFailureReasons_(counts) {
       reason_code: 'cooldown_suppressed',
       count: Number(safeCounts.cooldown_suppressed_count || 0),
     },
+    {
+      reason_code: 'stats_zero_coverage',
+      count: Number(safeCounts.stats_zero_coverage_count || 0),
+    },
   ];
 
   return blockerSpecs.filter(function (entry) {
@@ -1723,6 +1786,7 @@ function resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes,
     stale_odds_skip: 0,
     low_edge_suppressed: 0,
     cooldown_suppressed: 0,
+    stats_zero_coverage: 0,
     no_player_match: 0,
     schedule_unavailable: 0,
     no_schedule_candidates: 0,
