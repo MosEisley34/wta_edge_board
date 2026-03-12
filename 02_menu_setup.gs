@@ -124,34 +124,91 @@ function warnConfigDuplicatesBeforeMenuMutation_(context) {
 }
 
 function menuInstallTriggers() {
-  installOrUpdateTriggers();
-  SpreadsheetApp.getUi().alert('Trigger install/update completed. Check Run_Log.');
+  const result = installOrUpdateTriggers();
+  const actionLabel = result.action === 'install_noop' ? 'Trigger unchanged' : 'Triggers installed/reinstalled';
+  SpreadsheetApp.getUi().alert(
+    actionLabel,
+    formatMenuActionStatusMessage_(result)
+      + '\n\nCheck Run_Log for the install + verification rows.',
+    SpreadsheetApp.getUi().ButtonSet.OK,
+  );
 }
 
 function menuRemoveTriggers() {
-  removePipelineTriggers();
-  SpreadsheetApp.getUi().alert('Pipeline triggers removed.');
+  const result = removePipelineTriggers();
+  SpreadsheetApp.getUi().alert(
+    'Pipeline triggers removed',
+    'Removed trigger(s): ' + result.removed_count
+      + '\n' + formatMenuActionStatusMessage_(result)
+      + '\n\nCheck Run_Log for the removal entry.',
+    SpreadsheetApp.getUi().ButtonSet.OK,
+  );
 }
 
 function menuDiagnosticsHealthCheck() {
   const report = diagnosticsHealthCheck();
-  SpreadsheetApp.getUi().alert('Diagnostics complete', JSON.stringify(report, null, 2), SpreadsheetApp.getUi().ButtonSet.OK);
+  SpreadsheetApp.getUi().alert(
+    'Diagnostics complete',
+    'Trigger/debounce/lock snapshot:\n' + formatMenuActionStatusMessage_(report)
+      + '\n\nDuplicate prevented count: ' + report.duplicate_prevented_count
+      + '\nTimezone: ' + report.timezone + ' (' + report.timezone_offset + ')\n\n'
+      + 'Check ProviderHealth/Run_Log for deeper diagnostics context.',
+    SpreadsheetApp.getUi().ButtonSet.OK,
+  );
 }
 
 
 function menuValidateTennisAbstractSources() {
   const report = runProviderHealthCheck_({ forceH2hRefresh: false, includeMappingPreview: true });
-  SpreadsheetApp.getUi().alert('TennisAbstract source validation complete. Status: ' + report.status + '. Check ProviderHealth tab.');
+  SpreadsheetApp.getUi().alert(
+    'TennisAbstract validation complete',
+    buildProviderHealthMenuMessage_('validate_sources', report),
+    SpreadsheetApp.getUi().ButtonSet.OK,
+  );
 }
 
 function menuRefreshH2hCache() {
   const report = runProviderHealthCheck_({ forceH2hRefresh: true, includeMappingPreview: false });
-  SpreadsheetApp.getUi().alert('H2H cache refresh complete. Status: ' + report.status + '. Check ProviderHealth tab.');
+  SpreadsheetApp.getUi().alert(
+    'H2H cache refresh complete',
+    buildProviderHealthMenuMessage_('refresh_h2h_cache', report),
+    SpreadsheetApp.getUi().ButtonSet.OK,
+  );
 }
 
 function menuPreviewPlayerStatsMapping() {
   const report = runProviderHealthCheck_({ forceH2hRefresh: false, includeMappingPreview: true });
-  SpreadsheetApp.getUi().alert('Player stats mapping preview complete. Status: ' + report.status + '. Check ProviderHealth tab.');
+  SpreadsheetApp.getUi().alert(
+    'Player stats mapping preview complete',
+    buildProviderHealthMenuMessage_('preview_mapping', report),
+    SpreadsheetApp.getUi().ButtonSet.OK,
+  );
+}
+
+
+function formatMenuActionStatusMessage_(result) {
+  const safe = result || {};
+  const nextRun = safe.next_run_estimate || 'n/a';
+  const debounceClear = !!safe.debounce_clear;
+  const debounceRemaining = Number(safe.debounce_wait_ms_remaining || 0);
+  const lockClear = !!safe.lock_clear;
+  const lockError = safe.lock_check_error || '';
+
+  return 'Trigger count: ' + Number(safe.trigger_count || 0)
+    + '\nNext run estimate: ' + nextRun
+    + '\nDebounce clear: ' + debounceClear + (debounceClear ? '' : ' (wait ms remaining: ' + debounceRemaining + ')')
+    + '\nLock clear: ' + lockClear + (lockError ? ' (lock check error: ' + lockError + ')' : '');
+}
+
+function buildProviderHealthMenuMessage_(action, report) {
+  const safe = report || {};
+  return 'Action: ' + action
+    + '\nStatus: ' + String(safe.status || 'unknown')
+    + '\nMatchMX row count: ' + Number(safe.matchmx_row_count || 0)
+    + '\nH2H pair count: ' + Number(safe.h2h_pair_count || 0)
+    + '\nSample parsed players: ' + Number((safe.sample_parsed_players || []).length)
+    + '\nChecked at: ' + String(safe.checked_at || '')
+    + '\n\nCheck ProviderHealth for detailed rows.';
 }
 
 function diagnosticsHealthCheck() {
@@ -164,13 +221,23 @@ function diagnosticsHealthCheck() {
     tabStatus[SHEETS[key]] = !!ss.getSheetByName(SHEETS[key]);
   });
 
+  const config = getConfig_();
   const triggerCount = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === 'runEdgeBoard').length;
+  const lockState = checkScriptLockClear_();
+  const debounceState = checkDebounceState_();
   const checkedAt = localAndUtcTimestamps_(new Date());
   const report = {
+    action: 'diagnostics_health_check',
     checked_at: checkedAt.local,
     checked_at_utc: checkedAt.utc,
     tabs_present: tabStatus,
+    trigger_count: triggerCount,
     run_edgeboard_triggers: triggerCount,
+    next_run_estimate: estimateNextRunIso_(Math.max(1, Number(config.PIPELINE_TRIGGER_EVERY_MIN || 15))),
+    lock_clear: lockState.lock_clear,
+    lock_check_error: lockState.lock_check_error,
+    debounce_clear: debounceState.debounce_clear,
+    debounce_wait_ms_remaining: debounceState.debounce_wait_ms_remaining,
     trigger_signature: scriptProps.getProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE) || '',
     duplicate_prevented_count: Number(scriptProps.getProperty(PROPS.DUPLICATE_PREVENTED_COUNT) || 0),
     timezone: TIMESTAMP_TIMEZONE.ID,

@@ -16,17 +16,24 @@ function installOrUpdateTriggers() {
   const runId = buildRunId_();
 
   if (existingSignature === signature && existingPipelineTriggers.length > 0) {
+    const verification = verifyTriggerInstallation_(spec, signature, runId, 'trigger_noop');
+
     appendLogRow_({
       row_type: 'ops',
       run_id: runId,
       stage: 'installOrUpdateTriggers',
       status: 'success',
       reason_code: 'trigger_noop',
-      message: 'Trigger signature unchanged and trigger already exists.',
+      message: JSON.stringify({
+        action: 'install_noop',
+        trigger_count: verification.trigger_count,
+        next_run_estimate: verification.next_run_estimate,
+        lock_clear: verification.lock_clear,
+        debounce_clear: verification.debounce_clear,
+      }),
       trigger_event: 'trigger_noop',
     });
-    verifyTriggerInstallation_(spec, signature, runId, 'trigger_noop');
-    return;
+    return buildMenuTriggerActionResult_('install_noop', verification);
   }
 
   existingPipelineTriggers.forEach((trigger) => ScriptApp.deleteTrigger(trigger));
@@ -34,6 +41,8 @@ function installOrUpdateTriggers() {
   scriptProps.setProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE, signature);
 
   const currentTriggerCount = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === spec.functionName).length;
+
+  const verification = verifyTriggerInstallation_(spec, signature, runId, 'trigger_reinstalled');
 
   appendLogRow_({
     row_type: 'ops',
@@ -43,13 +52,16 @@ function installOrUpdateTriggers() {
     reason_code: 'trigger_reinstalled',
     message: JSON.stringify({
       action: 'install_or_refresh',
-      trigger_count: currentTriggerCount,
+      trigger_count: verification.trigger_count || currentTriggerCount,
       schedule_minutes: spec.everyMinutes,
+      next_run_estimate: verification.next_run_estimate,
+      lock_clear: verification.lock_clear,
+      debounce_clear: verification.debounce_clear,
     }),
     trigger_event: 'trigger_reinstalled',
   });
 
-  verifyTriggerInstallation_(spec, signature, runId, 'trigger_reinstalled');
+  return buildMenuTriggerActionResult_('trigger_reinstalled', verification);
 }
 
 function installAndVerifyRunEdgeBoardTrigger() {
@@ -169,19 +181,64 @@ function estimateNextRunIso_(everyMinutes) {
 }
 
 function removePipelineTriggers() {
+  const runId = buildRunId_();
+  let removedCount = 0;
+
   ScriptApp.getProjectTriggers().forEach((trigger) => {
-    if (trigger.getHandlerFunction() === 'runEdgeBoard') ScriptApp.deleteTrigger(trigger);
+    if (trigger.getHandlerFunction() === 'runEdgeBoard') {
+      ScriptApp.deleteTrigger(trigger);
+      removedCount += 1;
+    }
   });
+
+  const lockState = checkScriptLockClear_();
+  const debounceState = checkDebounceState_();
+  const remainingTriggers = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === 'runEdgeBoard').length;
 
   appendLogRow_({
     row_type: 'ops',
-    run_id: buildRunId_(),
+    run_id: runId,
     stage: 'removePipelineTriggers',
     status: 'success',
     reason_code: 'trigger_removed',
-    message: 'Removed runEdgeBoard triggers.',
+    message: JSON.stringify({
+      action: 'trigger_removed',
+      removed_count: removedCount,
+      trigger_count: remainingTriggers,
+      next_run_estimate: '',
+      lock_clear: lockState.lock_clear,
+      debounce_clear: debounceState.debounce_clear,
+    }),
     trigger_event: 'trigger_removed',
   });
+
+  return {
+    action: 'trigger_removed',
+    run_id: runId,
+    removed_count: removedCount,
+    trigger_count: remainingTriggers,
+    next_run_estimate: '',
+    debounce_clear: debounceState.debounce_clear,
+    debounce_wait_ms_remaining: debounceState.debounce_wait_ms_remaining,
+    lock_clear: lockState.lock_clear,
+    lock_check_error: lockState.lock_check_error,
+    verification_passed: remainingTriggers === 0,
+  };
+}
+
+function buildMenuTriggerActionResult_(action, verification) {
+  const safe = verification || {};
+  return {
+    action: String(action || ''),
+    run_id: String(safe.run_id || ''),
+    trigger_count: Number(safe.trigger_count || 0),
+    next_run_estimate: String(safe.next_run_estimate || ''),
+    debounce_clear: !!safe.debounce_clear,
+    debounce_wait_ms_remaining: Number(safe.debounce_wait_ms_remaining || 0),
+    lock_clear: !!safe.lock_clear,
+    lock_check_error: String(safe.lock_check_error || ''),
+    verification_passed: !!safe.verification_passed,
+  };
 }
 
 function runEdgeBoard() {

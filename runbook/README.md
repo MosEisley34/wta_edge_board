@@ -24,6 +24,30 @@ What it does:
 2. Immediately invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`).
 3. Prioritize the scanner's **Run-health degraded contract (first-pass triage)** section before any key-specific deep dive.
 
+
+## Quick operational checks (copy/paste)
+
+Use this short flow when validating trigger health and recent runtime diagnostics artifacts:
+
+```bash
+# 1) Prepare deterministic exports in ./exports from local files/dirs.
+scripts/prepare_runtime_exports.sh --out-dir ./exports <file-or-directory>
+
+# 2) Run local triage scanner (first-pass contract + grouped counts + row samples).
+scripts/triage_runtime_diagnostics_local.sh ./exports
+
+# 3) Emit 5-line compact incident summary for chat/ticket updates.
+scripts/runtime_diagnostics_summary.py ./exports
+
+# 4) Optional: run the wrapper that does steps (1)+(2) in one command.
+scripts/run_triage_bundle.sh --out-dir ./exports <file-or-directory>
+```
+
+Operational expectation:
+- `prepare_runtime_exports.sh` must produce `runtime_export_manifest.json` plus at least one Run_Log/State artifact.
+- `triage_runtime_diagnostics_local.sh` should show `Run-health degraded contract (first-pass triage)` near the top.
+- `runtime_diagnostics_summary.py` should print deterministic five-line summary output.
+
 ## Manual usage flow (optional)
 
 1. Run the repeatable export pre-step into the known export directory (`./exports` by default):
