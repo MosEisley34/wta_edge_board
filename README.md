@@ -63,6 +63,43 @@ Use the `Config` tab to tune logging detail:
 
 All logs continue to pass through secret redaction before being persisted.
 
+## Config preset: Free-tier conservation
+
+Use this preset when you want to stay inside lower Odds API daily budgets with graceful degradation as credits run down.
+
+You can apply it from the spreadsheet menu:
+
+- `WTA Pipeline Ops` → `Apply Preset: Free-Tier Conservation`
+
+Preset values written to the `Config` tab:
+
+- `PIPELINE_TRIGGER_EVERY_MIN=30` (optionally raise to `60` for stricter conservation)
+- `ODDS_REFRESH_TIER_HIGH_INTERVAL_MIN=15`
+- `ODDS_REFRESH_TIER_MED_INTERVAL_MIN=30`
+- `ODDS_REFRESH_TIER_LOW_INTERVAL_MIN=60`
+- `ODDS_WINDOW_PRE_FIRST_MIN=60`
+- `ODDS_WINDOW_POST_LAST_MIN=60`
+- `ODDS_BOOTSTRAP_LOOKAHEAD_HOURS=6`
+- `ODDS_MIN_CREDITS_SOFT_LIMIT=150`
+- `ODDS_MIN_CREDITS_HARD_LIMIT=75`
+
+Expected daily call budget target (typical):
+
+- `PIPELINE_TRIGGER_EVERY_MIN=30`: target roughly **60–120 calls/day**.
+- `PIPELINE_TRIGGER_EVERY_MIN=60`: target roughly **30–80 calls/day**.
+
+These ranges assume typical WTA slate density and that runtime caching/window logic suppresses unnecessary refreshes.
+
+Credit fallback behavior:
+
+- **Above soft limit** (`remaining > ODDS_MIN_CREDITS_SOFT_LIMIT`): normal cadence.
+- **Soft-limit mode** (`remaining <= ODDS_MIN_CREDITS_SOFT_LIMIT`): degraded polling to conserve credits.
+  - doubles odds cache/refresh windows,
+  - doubles tier refresh intervals,
+  - disables non-critical schedule refresh,
+  - disables match-time fallback expansion.
+- **Hard-limit mode** (`remaining <= ODDS_MIN_CREDITS_HARD_LIMIT`): odds calls are skipped for the run (`credit_hard_limit_skip_odds`) until credits recover.
+
 
 ### Matcher counters in logs and dashboards
 

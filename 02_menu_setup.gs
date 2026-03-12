@@ -6,6 +6,8 @@ function onOpen() {
     .addItem('Repair Config (dedupe)', 'menuRepairConfig')
     .addItem('Run Pipeline Now', 'menuRunPipelineNow')
     .addSeparator()
+    .addItem('Apply Preset: Free-Tier Conservation', 'menuApplyPresetFreeTierConservation')
+    .addSeparator()
     .addItem('Re-create / Reset Workbook', 'menuRecreateWorkbook')
     .addSeparator()
     .addItem('Install Triggers', 'menuInstallTriggers')
@@ -57,6 +59,19 @@ function menuRunPipelineNow() {
 
   runEdgeBoard();
   SpreadsheetApp.getUi().alert('Pipeline run complete. Check Run_Log and State.');
+}
+
+function menuApplyPresetFreeTierConservation() {
+  warnConfigDuplicatesBeforeMenuMutation_('menuApplyPresetFreeTierConservation');
+  ensureTabsAndConfig_();
+
+  const applied = applyConfigPreset_(CONFIG_PRESETS.FREE_TIER_CONSERVATION || {});
+  SpreadsheetApp.getUi().alert(
+    'Preset applied: Free-Tier Conservation',
+    'Updated keys (' + applied.updated_count + '):\n' + applied.keys.join('\n')
+      + '\n\nNote: PIPELINE_TRIGGER_EVERY_MIN is set to 30 by default in this preset; set it to 60 for stricter conservation.',
+    SpreadsheetApp.getUi().ButtonSet.OK,
+  );
 }
 
 
@@ -461,6 +476,29 @@ function upsertConfigDefaults_(sheet, keyValueMap) {
     const startRow = Math.max(2, sheet.getLastRow() + 1);
     sheet.getRange(startRow, 1, appends.length, 2).setValues(appends);
   }
+}
+
+function applyConfigPreset_(keyValueMap) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
+  const keys = Object.keys(keyValueMap || {});
+  upsertConfigDefaults_(sh, keyValueMap || {});
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: buildRunId_(),
+    stage: 'applyConfigPreset',
+    status: 'ok',
+    reason_code: 'config_preset_applied',
+    message: JSON.stringify({
+      preset: 'FREE_TIER_CONSERVATION',
+      keys,
+    }),
+  });
+
+  return {
+    updated_count: keys.length,
+    keys,
+  };
 }
 
 function dedupeConfigSheet_(sheet, options) {
