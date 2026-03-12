@@ -5969,3 +5969,121 @@ function testMaybeNotifyCreditBurnRate_oncePerDay_() {
     postDiscordWebhook_ = originalPostDiscordWebhook;
   }
 }
+
+function testMaybeEmitRunRollup_emitsOnConfiguredCadenceWithIndependentPayload_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const originalGetTopReasonCodes = getTopReasonCodes_;
+
+  const state = {
+    RUN_ROLLUP_STATE: JSON.stringify({
+      run_count: 1,
+      last_rollup_at_count: 0,
+      last_rollup_snapshot: {
+        fetched_odds: 2,
+        fetched_schedule: 1,
+        matched: 1,
+        unmatched: 1,
+        signals_found: 0,
+        run_health_reason_code: 'old_reason',
+      },
+    }),
+  };
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+  getTopReasonCodes_ = function (codes) {
+    return Object.keys(codes || {}).map(function (key) {
+      return { reason_code: key, count: Number(codes[key] || 0) };
+    }).sort(function (a, b) { return b.count - a.count; });
+  };
+
+  try {
+    const emitted = maybeEmitRunRollup_({ ROLLUP_EVERY_N_RUNS: 2 }, {
+      fetched_odds: 3,
+      fetched_schedule: 2,
+      matched: 2,
+      unmatched: 1,
+      signals_found: 1,
+      run_health_reason_code: 'new_reason',
+      reason_codes: {
+        no_player_match: 2,
+        matched_count: 0,
+      },
+      stage_summaries: [
+        { stage: 'stageFetchOdds', duration_ms: 100 },
+        { stage: 'stageFetchOdds', duration_ms: 300 },
+        { stage: 'stageFetchOdds', duration_ms: 400 },
+      ],
+      watchdog: {
+        bootstrap_empty_cycles: 2,
+        bootstrap_threshold: 3,
+        productive_empty_cycles: 1,
+        productive_threshold: 4,
+        schedule_only_cycles: 0,
+        schedule_only_threshold: 3,
+      },
+    });
+
+    assertEquals_(true, emitted.emitted);
+    assertEquals_(2, Number(emitted.run_count || 0));
+    assertEquals_(2, Number(emitted.rollup.run_count || 0));
+    assertEquals_(2, Number(emitted.rollup.top_reason_codes[0].count || 0));
+    assertEquals_('no_player_match', emitted.rollup.top_reason_codes[0].reason_code);
+    assertEquals_(100, Number(emitted.rollup.stage_duration_ms.stageFetchOdds.min || 0));
+    assertEquals_(266.67, Number(emitted.rollup.stage_duration_ms.stageFetchOdds.avg || 0));
+    assertEquals_(400, Number(emitted.rollup.stage_duration_ms.stageFetchOdds.p95 || 0));
+    assertEquals_(1, Number(emitted.rollup.key_deltas_vs_previous_rollup.fetched_odds || 0));
+    assertEquals_('old_reason→new_reason', emitted.rollup.key_deltas_vs_previous_rollup.run_health_reason_code);
+    assertEquals_('2/3', emitted.rollup.watchdog_progression.bootstrap_empty_cycle.status);
+
+    const standalone = JSON.parse(state.LAST_RUN_ROLLUP_JSON || '{}');
+    assertEquals_('run_rollup_v1', standalone.rollup_schema);
+    assertEquals_(2, Number(standalone.run_count || 0));
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+    getTopReasonCodes_ = originalGetTopReasonCodes;
+  }
+}
+
+function testMaybeEmitRunRollup_tracksRunCountWhenCadenceNotReached_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+
+  const state = {
+    RUN_ROLLUP_STATE: JSON.stringify({ run_count: 4, last_rollup_at_count: 3 }),
+  };
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+
+  try {
+    const emitted = maybeEmitRunRollup_({ ROLLUP_EVERY_N_RUNS: 3 }, {
+      fetched_odds: 0,
+      reason_codes: {},
+      stage_summaries: [],
+      watchdog: {},
+    });
+
+    assertEquals_(false, emitted.emitted);
+    assertEquals_(5, Number(emitted.run_count || 0));
+    assertEquals_(1, Number(emitted.runs_until_next || 0));
+    assertEquals_(undefined, state.LAST_RUN_ROLLUP_JSON);
+
+    const persisted = JSON.parse(state.RUN_ROLLUP_STATE || '{}');
+    assertEquals_(5, Number(persisted.run_count || 0));
+    assertEquals_(3, Number(persisted.last_rollup_at_count || 0));
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+  }
+}
