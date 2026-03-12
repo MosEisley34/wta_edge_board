@@ -679,7 +679,17 @@ function runEdgeBoard() {
       credit_burn_rate_notification: creditBurnRateNotification,
     };
 
-    setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
+    if (normalizeLogProfile_(config.LOG_PROFILE || DEFAULT_CONFIG.LOG_PROFILE) === 'verbose') {
+      setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
+    } else {
+      setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify({
+        run_id: runId,
+        log_profile: 'compact',
+        note: 'Set LOG_PROFILE=verbose to capture full LAST_RUN_VERBOSE_JSON diagnostics payload.',
+        reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes),
+        stage_count: compactStageSummaries.length,
+      }));
+    }
     const competitionDiagnosticsGeneratedAt = localAndUtcTimestamps_(new Date());
     setStateValue_('LAST_RUN_COMPETITION_DIAGNOSTICS_JSON', JSON.stringify({
       run_id: runId,

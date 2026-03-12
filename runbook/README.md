@@ -1,5 +1,16 @@
 # Runtime diagnostics runbook
 
+## Logging profile guidance
+
+Runtime logging now supports `LOG_PROFILE=compact|verbose` (set in the `Config` sheet).
+
+- `compact` (default): optimized for smaller diagnostic artifacts and faster runs. It keeps only low-verbosity diagnostics and writes a compact `LAST_RUN_VERBOSE_JSON` summary.
+- `verbose`: preserves previous full-fidelity diagnostics, including full `LAST_RUN_VERBOSE_JSON` payloads and high-detail logging.
+
+Expected size/performance tradeoff:
+- `compact`: reduced `Run_Log`/`State` payload size and less serialization/write overhead.
+- `verbose`: larger runtime artifacts and higher write cost, but better for deep incident triage.
+
 ## Standard triage bundle (recommended)
 
 Run this wrapper each triage cycle so runtime diagnostics inputs are prepared consistently before analysis:

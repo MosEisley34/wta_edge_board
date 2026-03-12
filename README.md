@@ -54,12 +54,19 @@ If you must debug requests, sanitize output before sharing logs.
 
 Use the `Config` tab to tune logging detail:
 
-- `VERBOSE_LOGGING` keeps compatibility with existing on/off behavior.
-- `LOG_VERBOSITY_LEVEL` provides granular control (`0` to `3`):
+- `LOG_PROFILE` is the primary switch (`compact` or `verbose`).
+  - `compact` (default): optimized for smaller runtime artifacts; caps effective verbosity at `0-1` and stores a compact `LAST_RUN_VERBOSE_JSON` summary instead of full diagnostics.
+  - `verbose`: preserves the previous high-fidelity behavior, including full `LAST_RUN_VERBOSE_JSON` payloads and `LOG_VERBOSITY_LEVEL` up to `3`.
+- `VERBOSE_LOGGING` remains for backward compatibility in verbose mode.
+- `LOG_VERBOSITY_LEVEL` provides granular control (`0` to `3`) when `LOG_PROFILE=verbose`:
   - `0`: minimal logging
   - `1`: stage summaries only
-  - `2`: stage summaries + window/coverage diagnostics (recommended for optimization)
+  - `2`: stage summaries + window/coverage diagnostics (previous default behavior)
   - `3`: includes sampled payload-level diagnostics for deeper debugging
+
+Expected impact:
+- `compact`: lower log/state write volume and reduced serialization overhead, with less detail for incident deep-dives.
+- `verbose`: higher diagnostics fidelity with larger log payloads and higher write/processing cost.
 
 All logs continue to pass through secret redaction before being persisted.
 

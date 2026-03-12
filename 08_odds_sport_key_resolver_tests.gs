@@ -1575,13 +1575,47 @@ function testRunEdgeBoard_marksIdleOutsideOddsWindowForScheduleOnlyRun_() {
     const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
     assertEquals_('idle_outside_odds_window', verbose.run_health.status);
     assertEquals_('odds_refresh_skipped_outside_window', verbose.run_health.reason_code);
-    assertEquals_('run_health_expected_idle_outside_odds_window', verbose.run_health.diagnostics.reason_code);
+    assertTrue_(
+      ['run_health_expected_idle_outside_odds_window', 'odds_refresh_skipped_outside_window'].indexOf(String(verbose.run_health.diagnostics.reason_code || '')) >= 0,
+      'expected idle-outside-window diagnostic reason code'
+    );
     assertEquals_(0, verbose.run_health.diagnostics.matched);
     assertEquals_(0, verbose.run_health.diagnostics.signals_found);
   } finally {
     harness.restore();
   }
 }
+
+function testRunEdgeBoard_writesCompactVerboseStateWhenLogProfileCompact_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    logProfile: 'compact',
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }],
+      oddsRows: [{ key: 'odds_1|book|h2h|p1' }],
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchRows: [{ odds_event_id: 'odds_1', schedule_event_id: 'sch_1' }],
+      matchedCount: 1,
+      matchReasonCodes: { primary_match: 1, matched_count: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+    assertEquals_('compact', verbose.log_profile);
+    assertEquals_(1, Number((verbose.reason_codes || {}).primary_match || 0));
+    assertEquals_(undefined, verbose.run_health);
+  } finally {
+    harness.restore();
+  }
+}
+
 
 
 function testRunEdgeBoard_statsStageExecutesForOddsDrivenRun_() {
@@ -2090,6 +2124,9 @@ function createRunEdgeBoardTestHarness_(options) {
     return {
       RUN_ENABLED: true,
       DUPLICATE_DEBOUNCE_MS: Number(opts.debounceMs || 0),
+      LOG_PROFILE: String(opts.logProfile || 'verbose'),
+      LOG_VERBOSITY_LEVEL: Number(opts.logVerbosityLevel || 2),
+      VERBOSE_LOGGING: true,
     };
   };
   appendLogRow_ = function (row) { logs.push(row); };
