@@ -9,6 +9,22 @@ from typing import Any
 REASON_CODE_ALIAS_SCHEMA_ID = "reason_code_alias_v1"
 REASON_CODE_ALIAS_DICTIONARIES: dict[str, dict[str, str]] = {
     REASON_CODE_ALIAS_SCHEMA_ID: {
+        "competition_allowed": "CMP_ALLOW",
+        "long_reason_code_key_for_schedule_enrichment_h2h_missing": "SCH_H2H_MISS",
+        "market_h2h": "MKT_H2H",
+        "matched_count": "MATCH_CT",
+        "matched_exact": "MATCH_EXACT",
+        "odds_actionable": "ODDS_ACT",
+        "odds_fetched": "ODDS_FETCH",
+        "odds_non_actionable": "ODDS_NACT",
+        "opening_lag_fallback_exempted": "OPEN_EXEMPT",
+        "provider_returned_null_features": "PROV_NULL",
+        "rejected_count": "REJ_CT",
+        "schedule_fetched": "SCH_FETCH",
+        "signal_edge_above_threshold": "SIG_EDGE",
+        "signals_generated": "SIG_GEN",
+        "stats_loaded": "STATS_LOAD",
+        "very_long_reason_code_key_player_stats_incomplete_profile": "STATS_INCOMP",
         "odds_refresh_skipped_outside_window": "OR_OUT_WIN",
         "odds_refresh_cache_hit_within_window": "OR_HIT_WIN",
         "odds_refresh_cache_hit_outside_window": "OR_HIT_OUT",

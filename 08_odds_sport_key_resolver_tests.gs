@@ -6602,8 +6602,8 @@ function testSerializeCompactReasonCodesForLogEntry_dedupesEquivalentRowAndMessa
 
 function testSerializeCompactReasonCodesForLogEntry_unknownReasonsUseDeterministicFallbackAliasesByDefault_() {
   const normalized = serializeCompactReasonCodesForLogEntry_({
-    reason_codes: { very_long_reason_code_key_player_stats_incomplete_profile: 2 },
-    message: JSON.stringify({ reason_codes: { very_long_reason_code_key_player_stats_incomplete_profile: 2 } }),
+    reason_codes: { totally_new_runtime_reason_code_xyz: 2 },
+    message: JSON.stringify({ reason_codes: { totally_new_runtime_reason_code_xyz: 2 } }),
   }, REASON_CODE_ALIAS_SCHEMA_ID, { allow_canonical_passthrough: false });
 
   const message = JSON.parse(normalized.message || '{}');
@@ -6611,23 +6611,79 @@ function testSerializeCompactReasonCodesForLogEntry_unknownReasonsUseDeterminist
   const fallbackAlias = aliases[0] || '';
 
   assertTrue_(fallbackAlias.indexOf('UNK_') === 0);
-  assertEquals_(undefined, (message.reason_codes || {}).very_long_reason_code_key_player_stats_incomplete_profile);
+  assertEquals_(undefined, (message.reason_codes || {}).totally_new_runtime_reason_code_xyz);
   assertEquals_(
-    'very_long_reason_code_key_player_stats_incomplete_profile',
+    'totally_new_runtime_reason_code_xyz',
     (message.fallback_aliases || {})[fallbackAlias]
   );
 }
 
 function testSerializeCompactReasonCodesForLogEntry_canAllowExplicitCanonicalPassthrough_() {
   const normalized = serializeCompactReasonCodesForLogEntry_({
-    reason_codes: { very_long_reason_code_key_player_stats_incomplete_profile: 1 },
-    message: JSON.stringify({ reason_codes: { very_long_reason_code_key_player_stats_incomplete_profile: 1 } }),
+    reason_codes: { totally_new_runtime_reason_code_xyz: 1 },
+    message: JSON.stringify({ reason_codes: { totally_new_runtime_reason_code_xyz: 1 } }),
   }, REASON_CODE_ALIAS_SCHEMA_ID, { allow_canonical_passthrough: true });
 
   const message = JSON.parse(normalized.message || '{}');
 
-  assertEquals_(1, Number((message.reason_codes || {}).very_long_reason_code_key_player_stats_incomplete_profile || 0));
+  assertEquals_(1, Number((message.reason_codes || {}).totally_new_runtime_reason_code_xyz || 0));
   assertEquals_(undefined, message.fallback_aliases);
+}
+
+function testMaybeEmitReasonAliasFallbackWarningOpsLog_groupsWarningsPerRunSummary_() {
+  const originalGetActiveSpreadsheet = SpreadsheetApp.getActiveSpreadsheet;
+  const originalFallbackState = REASON_ALIAS_FALLBACK_WARNING_EMITTED;
+  const appended = [];
+
+  REASON_ALIAS_FALLBACK_WARNING_EMITTED = {};
+  SpreadsheetApp.getActiveSpreadsheet = function () {
+    return {
+      getSheetByName: function () {
+        return {
+          appendRow: function (row) {
+            appended.push(row);
+          },
+        };
+      },
+    };
+  };
+
+  try {
+    maybeEmitReasonAliasFallbackWarningOpsLog_({
+      row_type: 'stage',
+      run_id: 'run-1',
+      stage: 'stageFetchOdds',
+      __reason_alias_fallback_warning: {
+        schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+        aliases: ['UNK_A'],
+      },
+    });
+    assertEquals_(0, appended.length);
+
+    maybeEmitReasonAliasFallbackWarningOpsLog_({
+      row_type: 'summary',
+      run_id: 'run-1',
+      stage: 'runEdgeBoard',
+      __reason_alias_fallback_warning: {
+        schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+        aliases: ['UNK_A'],
+      },
+    });
+    maybeEmitReasonAliasFallbackWarningOpsLog_({
+      row_type: 'summary',
+      run_id: 'run-1',
+      stage: 'runEdgeBoard',
+      __reason_alias_fallback_warning: {
+        schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+        aliases: ['UNK_B'],
+      },
+    });
+
+    assertEquals_(1, appended.length);
+  } finally {
+    SpreadsheetApp.getActiveSpreadsheet = originalGetActiveSpreadsheet;
+    REASON_ALIAS_FALLBACK_WARNING_EMITTED = originalFallbackState;
+  }
 }
 
 function testAssertDebugBoundedStageCounters_onlyChecksVerboseLogProfile_() {

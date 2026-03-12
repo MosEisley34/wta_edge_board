@@ -1002,7 +1002,11 @@ function buildReasonCodeFallbackAlias_(reasonCode) {
 function maybeEmitReasonAliasFallbackWarningOpsLog_(entry) {
   const warning = entry && entry.__reason_alias_fallback_warning;
   if (!warning || !warning.aliases || !warning.aliases.length) return;
-  const key = String(warning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '') + '::' + warning.aliases.join(',');
+  const rowType = String(entry && entry.row_type || '');
+  const stage = String(entry && entry.stage || '');
+  const isRunSummaryRow = rowType === 'summary' || stage === 'runEdgeBoard';
+  if (!isRunSummaryRow) return;
+  const key = String(entry && entry.run_id || '') + '::' + String(warning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '');
   if (REASON_ALIAS_FALLBACK_WARNING_EMITTED[key]) return;
   REASON_ALIAS_FALLBACK_WARNING_EMITTED[key] = true;
 
