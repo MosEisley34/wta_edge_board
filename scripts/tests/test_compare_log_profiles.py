@@ -51,6 +51,50 @@ class CompareLogProfilesTests(unittest.TestCase):
             "duplicate_suppressed": 0,
         }
 
+
+    def test_reports_incremental_savings_against_baseline_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            verbose = tmp / "verbose.json"
+            compact = tmp / "compact.json"
+            baseline = tmp / "baseline.json"
+
+            rows = [self._summary_row("run-1")]
+            self._write_json(verbose, rows)
+            self._write_json(compact, rows)
+            self._write_json(
+                baseline,
+                {
+                    "compact_output_size_bytes": 999,
+                    "percentage_reduction": -12.5,
+                },
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE_SCRIPT),
+                    str(verbose),
+                    str(compact),
+                    "--target-reduction-pct",
+                    "0",
+                    "--critical-parity-keys",
+                    "gate_reasons",
+                    "--baseline-summary",
+                    str(baseline),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(0, result.returncode)
+            report = json.loads(result.stdout)
+            self.assertEqual(999, report["baseline_compact_output_size_bytes"])
+            self.assertEqual(999 - report["compact_output_size_bytes"], report["incremental_compact_bytes_saved_vs_baseline"])
+            self.assertEqual(12.5, report["incremental_reduction_pct_vs_baseline"])
+
     def test_fails_when_counter_integrity_is_violated(self):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)

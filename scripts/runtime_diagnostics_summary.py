@@ -152,6 +152,7 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
     run_stage_duration_from_stage_rows: defaultdict[str, dict[str, int]] = defaultdict(dict)
     watchdog_points: list[tuple[int, int, str]] = []
     warning_reasons: Counter[str] = Counter()
+    run_warning_reason_sets: defaultdict[str, set[str]] = defaultdict(set)
 
     row_idx = 0
     for path in files:
@@ -242,7 +243,12 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
                                 break
 
             if status.lower() in NON_SUCCESS_STATUSES:
-                warning_reasons[reason_code or "unknown_reason"] += 1
+                reason_bucket = reason_code or "unknown_reason"
+                if reason_bucket == "reason_code_alias_missing_fallback_emitted":
+                    reason_bucket = "reason_alias_resolution_warning"
+                warning_reasons[reason_bucket] += 1
+                if run_id:
+                    run_warning_reason_sets[run_id].add(reason_bucket)
 
     run_status_source = run_summary_status if run_summary_status else run_last_status
     for _, status in sorted(run_status_source.values(), key=lambda item: item[0]):
@@ -282,13 +288,19 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
     else:
         watchdog_part = "none"
 
+
+    run_warning_reasons: Counter[str] = Counter()
+    for run_id in run_status_source:
+        for reason in sorted(run_warning_reason_sets.get(run_id, set())):
+            run_warning_reasons[reason] += 1
+
     warning_bits = []
     if status_counts:
         non_success_total = sum(v for k, v in status_counts.items() if k.lower() in NON_SUCCESS_STATUSES)
         if non_success_total:
             warning_bits.append(f"non_success_runs:{non_success_total}")
-    for code, count in sorted(warning_reasons.items(), key=lambda item: (-item[1], item[0]))[:warning_limit]:
-        warning_bits.append(f"{code}:{count}")
+    for code, count in sorted(run_warning_reasons.items(), key=lambda item: (-item[1], item[0]))[:warning_limit]:
+        warning_bits.append(f"{code}:runs={count}")
     if watchdog_points:
         points = sorted(watchdog_points, key=lambda item: item[0])
         if points[-1][1] - points[0][1] > 0:

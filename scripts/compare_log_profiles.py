@@ -85,9 +85,13 @@ def parse_json_field(value, fallback):
     return fallback
 
 
-def load_rows(path):
+def load_raw_rows(path):
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    return [adapt_run_log_record_for_legacy(r) for r in raw]
+    return raw if isinstance(raw, list) else [raw]
+
+
+def load_rows_for_parity(path):
+    return [adapt_run_log_record_for_legacy(r) for r in load_raw_rows(path)]
 
 
 def index_rows(rows):
@@ -251,12 +255,15 @@ def evaluate_stage_counter_invariants(indexed_runs):
     }
 
 
-def build_summary(verbose_path, compact_path, target_reduction_pct, critical_parity_keys):
-    verbose_rows = load_rows(verbose_path)
-    compact_rows = load_rows(compact_path)
+def build_summary(verbose_path, compact_path, target_reduction_pct, critical_parity_keys, baseline_summary_path=None):
+    verbose_rows_raw = load_raw_rows(verbose_path)
+    compact_rows_raw = load_raw_rows(compact_path)
 
-    verbose_size = canonical_bytes(verbose_rows)
-    compact_size = canonical_bytes(compact_rows)
+    verbose_rows = [adapt_run_log_record_for_legacy(r) for r in verbose_rows_raw]
+    compact_rows = [adapt_run_log_record_for_legacy(r) for r in compact_rows_raw]
+
+    verbose_size = canonical_bytes(verbose_rows_raw)
+    compact_size = canonical_bytes(compact_rows_raw)
     reduction_pct = 0.0
     if verbose_size > 0:
         reduction_pct = ((verbose_size - compact_size) / verbose_size) * 100.0
@@ -286,10 +293,20 @@ def build_summary(verbose_path, compact_path, target_reduction_pct, critical_par
         + (["stage_counter_invariant_failure"] if not stage_counter_invariants_passed else [])
     )
 
+    baseline = {}
+    if baseline_summary_path:
+        baseline = json.loads(Path(baseline_summary_path).read_text(encoding="utf-8"))
+
+    baseline_compact = int(baseline.get("compact_output_size_bytes", compact_size) or compact_size)
+    baseline_reduction = float(baseline.get("percentage_reduction", reduction_pct) or reduction_pct)
+
     return {
         "legacy_verbose_output_size_bytes": verbose_size,
         "compact_output_size_bytes": compact_size,
         "percentage_reduction": round(reduction_pct, 2),
+        "baseline_compact_output_size_bytes": baseline_compact,
+        "incremental_compact_bytes_saved_vs_baseline": baseline_compact - compact_size,
+        "incremental_reduction_pct_vs_baseline": round(reduction_pct - baseline_reduction, 2),
         "target_reduction_pct": target_reduction_pct,
         "target_met": reduction_pct >= target_reduction_pct,
         "field_parity": parity,
@@ -334,6 +351,11 @@ def main(argv=None):
         help="Minimum required compact size reduction percentage",
     )
     parser.add_argument(
+        "--baseline-summary",
+        default="",
+        help="Optional prior comparison summary JSON for incremental savings deltas.",
+    )
+    parser.add_argument(
         "--critical-parity-keys",
         default=",".join(DEFAULT_CRITICAL_PARITY_KEYS),
         help="Comma-separated parity groups that must have zero mismatches",
@@ -351,6 +373,7 @@ def main(argv=None):
         args.compact_sample,
         args.target_reduction_pct,
         critical_keys,
+        args.baseline_summary or None,
     )
 
     print(json.dumps(summary, indent=2))
