@@ -123,6 +123,26 @@ class PipelineLogAdapterTests(unittest.TestCase):
         message = json.loads(adapted["message"])
         self.assertEqual(1, message["reason_codes"]["productive_output_mitigation_activated"])
 
+    def test_compact_v2_supports_stage_persist_alias_entries(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "schema_version": 2,
+                "et": "stagePersist",
+                "rid": "run-v2-persist-aliases",
+                "st": "stagePersist",
+                "msg": {
+                    "schema_id": "reason_code_alias_v1",
+                    "reason_codes": {"ODDS_UPS": 2, "SCH_UPS": 1, "PSTATS_UPS": 1, "MM_UPS": 1, "SIG_UPS": 1},
+                },
+            }
+        )
+        message = json.loads(adapted["message"])
+        self.assertEqual(2, message["reason_codes"]["raw_odds_upserts"])
+        self.assertEqual(1, message["reason_codes"]["raw_schedule_upserts"])
+        self.assertEqual(1, message["reason_codes"]["raw_player_stats_upserts"])
+        self.assertEqual(1, message["reason_codes"]["match_map_upserts"])
+        self.assertEqual(1, message["reason_codes"]["signals_upserts"])
+
 
 if __name__ == "__main__":
     unittest.main()
