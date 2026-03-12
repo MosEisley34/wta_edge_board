@@ -444,6 +444,30 @@ function runEdgeBoard() {
     });
     appendStageLog_(runId, persistStage.summary);
 
+    const signalDecisionSummary = Object.assign({
+      run_id: runId,
+      sent_count: Number(signalStage.sentCount || 0),
+      scored_count: Number(signalStage.scoredCount || 0),
+      suppression_counts: {
+        cooldown: { total: Number(signalStage.cooldownSuppressedCount || 0), by_reason: { cooldown_suppressed: Number(signalStage.cooldownSuppressedCount || 0) } },
+        edge: { total: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.edge_below_threshold) || 0), by_reason: { edge_below_threshold: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.edge_below_threshold) || 0) } },
+        stale: { total: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.stale_odds_skip) || 0), by_reason: { stale_odds_skip: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.stale_odds_skip) || 0) } },
+        timing: { total: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.too_close_to_start_skip) || 0), by_reason: { too_close_to_start_skip: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.too_close_to_start_skip) || 0) } },
+        config: {
+          total: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.notify_disabled) || 0)
+            + Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.notify_missing_config) || 0),
+          by_reason: {
+            notify_disabled: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.notify_disabled) || 0),
+            notify_missing_config: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.notify_missing_config) || 0),
+          },
+        },
+      },
+      sampled_top_suppressions: [],
+      alignment_checks: {
+        sent_matches_reason_counts: Number(signalStage.sentCount || 0) === Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.sent) || 0),
+      },
+    }, signalStage.signalDecisionSummary || {});
+
     logDiagnosticEvent_(config, 'pipeline_stage_counts', {
       run_id: runId,
       fetched_odds: oddsStage.events.length,
@@ -453,9 +477,12 @@ function runEdgeBoard() {
       rejected: matchStage.rejectedCount,
       player_stats_rows: playerStatsStage.rows.length,
       signals_found: signalStage.rows.length,
+      signals_scored: Number(signalStage.scoredCount || 0),
       signals_sent: signalStage.sentCount,
       cooldown_suppressed: signalStage.cooldownSuppressedCount,
       duplicate_suppressed: signalStage.duplicateSuppressedCount,
+      suppression_counts: signalDecisionSummary.suppression_counts,
+      sampled_top_suppressions: signalDecisionSummary.sampled_top_suppressions,
       persist_total_rows: oddsStage.rows.length + scheduleStage.rows.length + playerStatsStage.rows.length + matchStage.rows.length + signalStage.rows.length,
     }, 2);
 
@@ -780,6 +807,7 @@ function runEdgeBoard() {
       productive_output_watchdog: productiveOutputState,
       credit_burn_rate: creditBurnRateState,
       credit_burn_rate_notification: creditBurnRateNotification,
+      signal_decision_summary: signalDecisionSummary,
     };
 
     const forceVerboseCapture = !!productiveMitigation.verbose_diagnostics_capture_active;
@@ -823,6 +851,8 @@ function runEdgeBoard() {
       unmatched: matchStage.unmatchedCount,
       rejected: matchStage.rejectedCount,
       signals_found: signalStage.sentCount,
+      signals_scored: Number(signalStage.scoredCount || 0),
+      signal_decision_summary: JSON.stringify(signalDecisionSummary),
       reason_codes: combinedReasonCodes,
       rejection_codes: combinedReasonCodes,
       stage_summaries: JSON.stringify([

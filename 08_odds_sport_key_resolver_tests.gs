@@ -3401,6 +3401,7 @@ function testStageGenerateSignals_thresholdRejectionIncludedInDecisionDiagnostic
 
     const result = stageGenerateSignals('run_threshold_reject', config, [event], [match], stats);
     const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+    const decisionSummaryState = JSON.parse(stateWrites.LAST_SIGNAL_DECISION_SUMMARY || '{}');
     const decisionRow = (decisionState.sampled_decisions || [])[0] || {};
 
     assertEquals_(1, result.rows.length);
@@ -3408,6 +3409,10 @@ function testStageGenerateSignals_thresholdRejectionIncludedInDecisionDiagnostic
     assertEquals_(1, result.summary.reason_codes.edge_below_threshold || 0);
     assertEquals_(1, decisionState.processed_count || 0);
     assertEquals_(1, (decisionState.reason_counts && decisionState.reason_counts.edge_below_threshold) || 0);
+    assertEquals_(1, result.scoredCount || 0);
+    assertEquals_(1, (decisionSummaryState.scored_count || 0));
+    assertEquals_(1, (((decisionSummaryState.suppression_counts || {}).edge || {}).total || 0));
+    assertEquals_(true, !!((decisionSummaryState.alignment_checks || {}).edge_matches_reason_counts));
     assertEquals_('edge_below_threshold', decisionRow.decision_reason_code || '');
     assertEquals_(true, !!(decisionRow.detail && decisionRow.detail.scored));
   } finally {
