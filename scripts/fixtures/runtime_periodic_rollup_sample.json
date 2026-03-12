@@ -1,0 +1,82 @@
+[
+  {
+    "row_type": "ops",
+    "run_id": "run-20260310-a",
+    "stage": "run_health_guard",
+    "started_at": "2026-03-10T12:00:01Z",
+    "ended_at": "2026-03-10T12:00:02Z",
+    "message": {
+      "blocker_counts": {
+        "opening_lag_blocked_count": 4,
+        "no_odds_stage_count": 1
+      }
+    }
+  },
+  {
+    "row_type": "summary",
+    "run_id": "run-20260310-a",
+    "stage": "runEdgeBoard",
+    "status": "success",
+    "started_at": "2026-03-10T12:00:00Z",
+    "ended_at": "2026-03-10T12:00:03Z",
+    "matched": 8,
+    "unmatched": 2,
+    "stage_summaries": [
+      {
+        "stage": "stageFetchOdds",
+        "duration_ms": 500
+      },
+      {
+        "stage": "stageFetchSchedule",
+        "duration_ms": 750
+      }
+    ]
+  },
+  {
+    "row_type": "ops",
+    "run_id": "run-20260310-b",
+    "stage": "run_health_guard",
+    "started_at": "2026-03-10T18:00:01Z",
+    "ended_at": "2026-03-10T18:00:02Z",
+    "message": {
+      "blocker_counts": {
+        "opening_lag_blocked_count": 2,
+        "no_odds_stage_count": 3
+      }
+    }
+  },
+  {
+    "row_type": "summary",
+    "run_id": "run-20260310-b",
+    "stage": "runEdgeBoard",
+    "status": "warning",
+    "started_at": "2026-03-10T18:00:00Z",
+    "ended_at": "2026-03-10T18:00:03Z",
+    "matched": 1,
+    "unmatched": 1,
+    "stage_summaries": [
+      {
+        "stage": "stageFetchOdds",
+        "duration_ms": 700
+      },
+      {
+        "stage": "stageFetchSchedule",
+        "duration_ms": 900
+      }
+    ]
+  },
+  {
+    "row_type": "summary",
+    "run_id": "run-20260311-a",
+    "stage": "runEdgeBoard",
+    "status": "success",
+    "started_at": "2026-03-11T08:00:00Z",
+    "ended_at": "2026-03-11T08:00:03Z",
+    "stage_summaries": [
+      {
+        "stage": "stageFetchOdds",
+        "duration_ms": 650
+      }
+    ]
+  }
+]

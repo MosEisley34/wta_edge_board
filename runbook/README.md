@@ -93,6 +93,24 @@ Optional knobs:
 - `--max-stages`
 - `--warning-limit`
 
+### Periodic historical rollups (for planning/postmortems)
+
+Generate dated aggregate snapshots (blocker mix, productivity ratio, stage latency trends) into a dedicated historical folder so raw runtime logs stay separate and do not bloat long-term artifacts:
+
+```bash
+scripts/runtime_periodic_aggregates.py ./exports --snapshot-dir ./docs/baselines/runtime_rollups
+```
+
+Optional deterministic date labeling (useful for backfills/re-runs):
+
+```bash
+scripts/runtime_periodic_aggregates.py ./exports --snapshot-dir ./docs/baselines/runtime_rollups --snapshot-date 2026-03-12
+```
+
+Snapshot output pattern:
+- `docs/baselines/runtime_rollups/runtime_periodic_rollup_YYYY-MM-DD.json`
+
+
 3. Interpret output:
 
 - Start with `Run-health degraded contract (first-pass triage)` to validate contract version consistency, blocker totals, dominant blocker categories, sampled blocked records, and stage-skipped reason rollups.
