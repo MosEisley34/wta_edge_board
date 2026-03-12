@@ -2199,49 +2199,157 @@ function testRunEdgeBoard_compactAndVerboseProfilesRemainSemanticallyEquivalent_
   }
 }
 
-function testApplyOpeningLagActionabilityGate_transitionsOnlyWhenTimestampConditionsChange_() {
-  const now = Date.now();
-  const commonConfig = {
-    MAX_OPENING_LAG_MINUTES: 5,
-    REQUIRE_OPENING_LINE_PROXIMITY: true,
-  };
-
-  const baseStage = {
-    events: [{
-      event_id: 'evt_1',
-      market: 'h2h',
-      outcome: 'Player A',
-      provider_odds_updated_time: new Date(now - (4 * 60000)),
-      open_timestamp: new Date(now - (4 * 60000)),
-      opening_lag_policy_tier: 'strict_gate',
-    }],
-    rows: [{ key: 'evt_1|h2h|Player A' }],
-    summary: { reason_codes: {}, reason_metadata: {} },
-  };
-
-  const actionableStage = {
-    events: [Object.assign({}, baseStage.events[0])],
-    rows: [{ key: 'evt_1|h2h|Player A' }],
-    summary: { reason_codes: {}, reason_metadata: {} },
-  };
-  const actionable = applyOpeningLagActionabilityGate_('run_opening_lag_actionable', commonConfig, actionableStage);
-  assertEquals_(1, actionable.events.length);
-  assertEquals_('opening_lag_within_limit', actionable.rows[0].reason_code);
-  assertEquals_(true, actionable.rows[0].is_actionable);
-
-  const exceededStage = {
-    events: [Object.assign({}, baseStage.events[0], {
-      provider_odds_updated_time: new Date(now - (7 * 60000)),
-      open_timestamp: new Date(now - (7 * 60000)),
-    })],
-    rows: [{ key: 'evt_1|h2h|Player A' }],
-    summary: { reason_codes: {}, reason_metadata: {} },
-  };
-  const nonActionable = applyOpeningLagActionabilityGate_('run_opening_lag_non_actionable', commonConfig, exceededStage);
-  assertEquals_(0, nonActionable.events.length);
-  assertEquals_('opening_lag_exceeded', nonActionable.rows[0].reason_code);
-  assertEquals_(false, nonActionable.rows[0].is_actionable);
+function withOpeningLagStateWritesStub_(fn) {
+  const originalWriteOpeningLagSkipState = writeOpeningLagSkipState_;
+  writeOpeningLagSkipState_ = function () {};
+  try {
+    fn();
+  } finally {
+    writeOpeningLagSkipState_ = originalWriteOpeningLagSkipState;
+  }
 }
+
+function testApplyOpeningLagActionabilityGate_transitionsOnlyWhenTimestampConditionsChange_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const commonConfig = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+    };
+
+    const baseStage = {
+      events: [{
+        event_id: 'evt_1',
+        market: 'h2h',
+        outcome: 'Player A',
+        provider_odds_updated_time: new Date(now - (4 * 60000)),
+        open_timestamp: new Date(now - (4 * 60000)),
+        opening_lag_policy_tier: 'strict_gate',
+      }],
+      rows: [{ key: 'evt_1|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const actionableStage = {
+      events: [Object.assign({}, baseStage.events[0])],
+      rows: [{ key: 'evt_1|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+    const actionable = applyOpeningLagActionabilityGate_('run_opening_lag_actionable', commonConfig, actionableStage);
+    assertEquals_(1, actionable.events.length);
+    assertEquals_('opening_lag_within_limit', actionable.rows[0].reason_code);
+    assertEquals_(true, actionable.rows[0].is_actionable);
+
+    const exceededStage = {
+      events: [Object.assign({}, baseStage.events[0], {
+        provider_odds_updated_time: new Date(now - (7 * 60000)),
+        open_timestamp: new Date(now - (7 * 60000)),
+      })],
+      rows: [{ key: 'evt_1|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+    const nonActionable = applyOpeningLagActionabilityGate_('run_opening_lag_non_actionable', commonConfig, exceededStage);
+    assertEquals_(0, nonActionable.events.length);
+    assertEquals_('opening_lag_exceeded', nonActionable.rows[0].reason_code);
+    assertEquals_(false, nonActionable.rows[0].is_actionable);
+  });
+}
+
+function testApplyOpeningLagActionabilityGate_strictBlockDeniesCachedFreshFallbackExemption_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const config = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES: 180,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN: 0,
+    };
+
+    const stage = {
+      events: [{
+        event_id: 'evt_strict',
+        market: 'h2h',
+        outcome: 'Player A',
+        provider_odds_updated_time: new Date(now - (9 * 60000)),
+        open_timestamp: new Date(now - (9 * 60000)),
+        opening_lag_policy_tier: 'fallback_cached_fresh',
+      }],
+      rows: [{ key: 'evt_strict|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const gated = applyOpeningLagActionabilityGate_('run_opening_lag_strict_block', config, stage);
+    assertEquals_(0, gated.events.length);
+    assertEquals_('opening_lag_exceeded', gated.rows[0].reason_code);
+    assertEquals_('opening_lag_fallback_exemption_denied_source', gated.rows[0].fallback_exemption_reason_code);
+    assertEquals_(1, Number(gated.summary.reason_codes.opening_lag_fallback_exemption_denied_source || 0));
+  });
+}
+
+function testApplyOpeningLagActionabilityGate_allowsCachedStaleFallbackExemptionWithinAgeWindow_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const config = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES: 180,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN: 0,
+    };
+
+    const stage = {
+      events: [{
+        event_id: 'evt_exempt_allowed',
+        market: 'h2h',
+        outcome: 'Player A',
+        provider_odds_updated_time: new Date(now - (45 * 60000)),
+        open_timestamp: new Date(now - (45 * 60000)),
+        opening_lag_policy_tier: 'fallback_cached_stale',
+      }],
+      rows: [{ key: 'evt_exempt_allowed|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const gated = applyOpeningLagActionabilityGate_('run_opening_lag_fallback_allowed', config, stage);
+    assertEquals_(1, gated.events.length);
+    assertEquals_('opening_lag_fallback_exemption_allowed', gated.rows[0].reason_code);
+    assertEquals_('opening_lag_fallback_exemption_allowed', gated.rows[0].fallback_exemption_reason_code);
+    assertEquals_('31_60m', gated.rows[0].opening_lag_fallback_age_bucket);
+    assertEquals_(1, Number(gated.summary.reason_codes.opening_lag_fallback_exemption_allowed || 0));
+  });
+}
+
+function testApplyOpeningLagActionabilityGate_deniesCachedStaleFallbackExemptionWhenOverAge_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const config = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES: 30,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN: 0,
+    };
+
+    const stage = {
+      events: [{
+        event_id: 'evt_exempt_denied_age',
+        market: 'h2h',
+        outcome: 'Player A',
+        provider_odds_updated_time: new Date(now - (75 * 60000)),
+        open_timestamp: new Date(now - (75 * 60000)),
+        opening_lag_policy_tier: 'fallback_cached_stale',
+      }],
+      rows: [{ key: 'evt_exempt_denied_age|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const gated = applyOpeningLagActionabilityGate_('run_opening_lag_fallback_denied_age', config, stage);
+    assertEquals_(0, gated.events.length);
+    assertEquals_('opening_lag_exceeded', gated.rows[0].reason_code);
+    assertEquals_('opening_lag_fallback_exemption_denied_age', gated.rows[0].fallback_exemption_reason_code);
+    assertEquals_(1, Number(gated.summary.reason_codes.opening_lag_fallback_exemption_denied_age || 0));
+    assertEquals_(1, Number((gated.summary.reason_metadata.fallback_exemption_age_buckets || {})['61_120m'] || 0));
+  });
+}
+
 
 function createRunEdgeBoardTestHarness_(options) {
   const opts = options || {};

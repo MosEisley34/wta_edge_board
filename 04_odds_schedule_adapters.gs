@@ -227,7 +227,7 @@ function classifyOpeningTimestampPolicy_(selectedSource, event) {
   return {
     open_timestamp_type: hasProviderTs || hasOpenTs ? 'cached_fresh' : 'missing_cached_fresh',
     open_timestamp_source: hasProviderTs ? 'cached_provider_odds_updated_time' : (hasOpenTs ? 'cached_open_timestamp' : 'missing'),
-    opening_lag_policy_tier: 'fallback_cached_fresh',
+    opening_lag_policy_tier: 'strict_gate',
   };
 }
 

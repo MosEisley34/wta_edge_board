@@ -1134,6 +1134,8 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   const originalRows = Array.isArray(stage.rows) ? stage.rows : [];
   const maxOpeningLagMinutes = Math.max(0, Number(config.MAX_OPENING_LAG_MINUTES || 0));
   const requireOpeningLineProximity = !!config.REQUIRE_OPENING_LINE_PROXIMITY;
+  const fallbackExemptionMaxAgeMinutes = Math.max(0, Number(config.OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES || 0));
+  const fallbackExemptionMaxRowsPerRun = Math.max(0, Number(config.OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN || 0));
   const now = new Date();
   const nowMs = now.getTime();
 
@@ -1141,6 +1143,10 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   let openingLagExceeded = 0;
   let openingLagWithinLimit = 0;
   let fallbackCachedExempted = 0;
+  let fallbackExemptionDeniedSource = 0;
+  let fallbackExemptionDeniedAge = 0;
+  let fallbackExemptionDeniedCap = 0;
+  const fallbackExemptionAgeBuckets = {};
 
   const enrichedEvents = originalEvents.map(function (event) {
     const timestampType = String((event && event.open_timestamp_type) || '');
@@ -1152,6 +1158,11 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
       ? event.provider_odds_updated_time
       : (event && event.open_timestamp instanceof Date && !Number.isNaN(event.open_timestamp.getTime()) ? event.open_timestamp : null);
     const openingLagMinutes = openTimestamp ? Math.max(0, Math.round((nowMs - openTimestamp.getTime()) / 60000)) : null;
+    const fallbackAgeBucket = openingLagAgeBucket_(openingLagMinutes);
+    if (fallbackAgeBucket) {
+      fallbackExemptionAgeBuckets[fallbackAgeBucket] = (fallbackExemptionAgeBuckets[fallbackAgeBucket] || 0) + 1;
+    }
+
     const evaluated = Object.assign({}, event || {});
     evaluated.open_timestamp = openTimestamp;
     evaluated.opening_lag_minutes = openingLagMinutes;
@@ -1159,8 +1170,10 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     evaluated.open_timestamp_type = timestampType;
     evaluated.open_timestamp_source = timestampSource;
     evaluated.opening_lag_policy_tier = policyTier;
+    evaluated.opening_lag_fallback_age_bucket = fallbackAgeBucket || '';
     evaluated.is_actionable = true;
     evaluated.reason_code = '';
+    evaluated.fallback_exemption_reason_code = '';
 
     if (!openTimestamp) {
       missingOpenTimestamp += 1;
@@ -1170,9 +1183,26 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     }
 
     if (!strictGate) {
-      fallbackCachedExempted += 1;
-      evaluated.reason_code = 'opening_lag_fallback_exempted';
-      return evaluated;
+      let exemptionDecision = 'opening_lag_fallback_exemption_allowed';
+
+      if (policyTier !== 'fallback_cached_stale') {
+        exemptionDecision = 'opening_lag_fallback_exemption_denied_source';
+        fallbackExemptionDeniedSource += 1;
+      } else if (fallbackExemptionMaxAgeMinutes > 0 && openingLagMinutes > fallbackExemptionMaxAgeMinutes) {
+        exemptionDecision = 'opening_lag_fallback_exemption_denied_age';
+        fallbackExemptionDeniedAge += 1;
+      } else if (fallbackExemptionMaxRowsPerRun > 0 && fallbackCachedExempted >= fallbackExemptionMaxRowsPerRun) {
+        exemptionDecision = 'opening_lag_fallback_exemption_denied_cap';
+        fallbackExemptionDeniedCap += 1;
+      }
+
+      evaluated.fallback_exemption_reason_code = exemptionDecision;
+
+      if (exemptionDecision === 'opening_lag_fallback_exemption_allowed') {
+        fallbackCachedExempted += 1;
+        evaluated.reason_code = exemptionDecision;
+        return evaluated;
+      }
     }
 
     if (requireOpeningLineProximity && maxOpeningLagMinutes > 0 && openingLagMinutes > maxOpeningLagMinutes) {
@@ -1200,8 +1230,10 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
       open_timestamp_source: event.open_timestamp_source || '',
       opening_lag_policy_tier: event.opening_lag_policy_tier || '',
       opening_lag_minutes: Number.isFinite(Number(event.opening_lag_minutes)) ? Number(event.opening_lag_minutes) : '',
+      opening_lag_fallback_age_bucket: event.opening_lag_fallback_age_bucket || '',
       opening_lag_evaluated_at: event.opening_lag_evaluated_at ? event.opening_lag_evaluated_at.toISOString() : '',
       is_actionable: event.is_actionable !== false,
+      fallback_exemption_reason_code: event.fallback_exemption_reason_code || '',
       reason_code: event.reason_code || '',
     });
   });
@@ -1222,6 +1254,10 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   reasonCodes.missing_open_timestamp = missingOpenTimestamp;
   reasonCodes.opening_lag_exceeded = openingLagExceeded;
   reasonCodes.opening_lag_fallback_exempted = fallbackCachedExempted;
+  reasonCodes.opening_lag_fallback_exemption_allowed = fallbackCachedExempted;
+  reasonCodes.opening_lag_fallback_exemption_denied_source = fallbackExemptionDeniedSource;
+  reasonCodes.opening_lag_fallback_exemption_denied_age = fallbackExemptionDeniedAge;
+  reasonCodes.opening_lag_fallback_exemption_denied_cap = fallbackExemptionDeniedCap;
   reasonCodes.odds_actionable = actionableEvents.length;
   reasonCodes.odds_non_actionable = enrichedRows.length - actionableEvents.length;
   if (stage.summary) stage.summary.reason_codes = reasonCodes;
@@ -1230,6 +1266,9 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     stage.summary.reason_metadata = stage.summary.reason_metadata || {};
     stage.summary.reason_metadata.max_opening_lag_minutes = maxOpeningLagMinutes;
     stage.summary.reason_metadata.require_opening_line_proximity = requireOpeningLineProximity;
+    stage.summary.reason_metadata.fallback_exemption_max_age_minutes = fallbackExemptionMaxAgeMinutes;
+    stage.summary.reason_metadata.fallback_exemption_max_rows_per_run = fallbackExemptionMaxRowsPerRun;
+    stage.summary.reason_metadata.fallback_exemption_age_buckets = fallbackExemptionAgeBuckets;
   }
 
   writeOpeningLagSkipState_(runId, {
@@ -1240,9 +1279,22 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     missing_open_timestamp: missingOpenTimestamp,
     opening_lag_exceeded: openingLagExceeded,
     opening_lag_fallback_exempted: fallbackCachedExempted,
+    opening_lag_fallback_exemption_denied_source: fallbackExemptionDeniedSource,
+    opening_lag_fallback_exemption_denied_age: fallbackExemptionDeniedAge,
+    opening_lag_fallback_exemption_denied_cap: fallbackExemptionDeniedCap,
   });
 
   return stage;
+}
+
+function openingLagAgeBucket_(openingLagMinutes) {
+  const lag = Number(openingLagMinutes);
+  if (!Number.isFinite(lag) || lag < 0) return '';
+  if (lag <= 30) return '0_30m';
+  if (lag <= 60) return '31_60m';
+  if (lag <= 120) return '61_120m';
+  if (lag <= 180) return '121_180m';
+  return '181m_plus';
 }
 
 function deriveSignalUpstreamGateReason_(oddsStage, scheduleStage, matchStage, playerStatsStage) {

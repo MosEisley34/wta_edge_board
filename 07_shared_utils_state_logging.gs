@@ -37,6 +37,8 @@ function appendRunStartConfigAuditLog_(runId, config, startedAt) {
       disable_sofascore: !!cfg.DISABLE_SOFASCORE,
       require_opening_line_proximity: !!cfg.REQUIRE_OPENING_LINE_PROXIMITY,
       max_opening_lag_minutes: Math.max(0, Number(cfg.MAX_OPENING_LAG_MINUTES || 0)),
+      opening_lag_fallback_exemption_max_age_minutes: Math.max(0, Number(cfg.OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES || 0)),
+      opening_lag_fallback_exemption_max_rows_per_run: Math.max(0, Number(cfg.OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN || 0)),
     }),
   });
 }
@@ -117,6 +119,10 @@ function writeOpeningLagSkipState_(runId, payload) {
     actionable_count: Number(payload.actionable_count || 0),
     missing_open_timestamp: Number(payload.missing_open_timestamp || 0),
     opening_lag_exceeded: Number(payload.opening_lag_exceeded || 0),
+    opening_lag_fallback_exempted: Number(payload.opening_lag_fallback_exempted || 0),
+    opening_lag_fallback_exemption_denied_source: Number(payload.opening_lag_fallback_exemption_denied_source || 0),
+    opening_lag_fallback_exemption_denied_age: Number(payload.opening_lag_fallback_exemption_denied_age || 0),
+    opening_lag_fallback_exemption_denied_cap: Number(payload.opening_lag_fallback_exemption_denied_cap || 0),
   };
 
   setStateValue_('ODDS_OPENING_LAG_GATING_STATE', JSON.stringify(statePayload));
