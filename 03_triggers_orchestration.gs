@@ -240,6 +240,15 @@ function runEdgeBoard() {
     const config = getConfig_();
     maybeEmitReasonAliasDictionary_(config);
     const maxRuntimeMs = resolvePipelineMaxRuntimeMs_(config);
+    const productiveMitigation = resolveProductiveOutputMitigationContext_(runId, config);
+    const effectiveConfig = productiveMitigation.opening_lag_active
+      ? Object.assign({}, config, {
+        MAX_OPENING_LAG_MINUTES: config.MAX_OPENING_LAG_MINUTES + productiveMitigation.opening_lag_extra_minutes,
+      })
+      : config;
+    if (productiveMitigation.force_fresh_odds_probe_active) {
+      effectiveConfig.ODDS_WINDOW_FORCE_REFRESH = true;
+    }
     if (!config.RUN_ENABLED) {
       appendLogRow_({
         row_type: 'summary',
@@ -354,13 +363,15 @@ function runEdgeBoard() {
     const initialOddsStage = runCheckpointedStage_(lifecycleContext, 'odds_fetch', function () {
       assertPipelineRuntimeBudget_(lifecycleContext, runId);
       return oddsWindowDecision.should_fetch_odds
-        ? stageFetchOdds(runId, config, oddsWindowDecision.odds_fetch_window)
+        ? stageFetchOdds(runId, effectiveConfig, oddsWindowDecision.odds_fetch_window, {
+          bypass_stale_fallback: productiveMitigation.force_fresh_odds_probe_active,
+        })
         : buildSkippedOddsStage_(runId, oddsWindowDecision.decision_reason_code, oddsWindowDecision.decision_message);
     });
     const fetchedOddsCountBeforeGate = Number((initialOddsStage && initialOddsStage.events && initialOddsStage.events.length) || 0);
     const oddsStage = runCheckpointedStage_(lifecycleContext, 'odds_gate', function () {
       assertPipelineRuntimeBudget_(lifecycleContext, runId);
-      return applyOpeningLagActionabilityGate_(runId, config, initialOddsStage);
+      return applyOpeningLagActionabilityGate_(runId, effectiveConfig, initialOddsStage);
     });
     appendStageLog_(runId, oddsStage.summary);
 
@@ -606,6 +617,7 @@ function runEdgeBoard() {
       });
       logDiagnosticEvent_(config, 'productive_output_watchdog_warning', productiveWarningPayload, 1);
     }
+    finalizeProductiveOutputMitigationState_(runId, config, productiveMitigation, productiveOutputState);
 
     if (productiveOutputState.schedule_only_notice_needed) {
       const expectedIdleOutsideOddsWindow = runHealthDiagnostics.status === 'idle_outside_odds_window'
@@ -743,12 +755,14 @@ function runEdgeBoard() {
         reason_code: runHealthDiagnostics.reason_code,
         diagnostics: runHealthDiagnostics.warning_payload,
       },
+      productive_output_mitigation: productiveMitigation,
       productive_output_watchdog: productiveOutputState,
       credit_burn_rate: creditBurnRateState,
       credit_burn_rate_notification: creditBurnRateNotification,
     };
 
-    if (normalizeLogProfile_(config.LOG_PROFILE || DEFAULT_CONFIG.LOG_PROFILE) === 'verbose') {
+    const forceVerboseCapture = !!productiveMitigation.verbose_diagnostics_capture_active;
+    if (normalizeLogProfile_(config.LOG_PROFILE || DEFAULT_CONFIG.LOG_PROFILE) === 'verbose' || forceVerboseCapture) {
       setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
     } else {
       setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify({
@@ -1008,6 +1022,80 @@ function appendRunLifecycleStatus_(runId, status, payload) {
   });
 }
 
+
+
+function resolveProductiveOutputMitigationContext_(runId, config) {
+  const mitigationState = getStateJson_('PRODUCTIVE_OUTPUT_MITIGATION_STATE') || {};
+  const productiveState = getStateJson_('EMPTY_PRODUCTIVE_OUTPUT_STATE') || {};
+  const threshold = Math.max(1, Number(config.EMPTY_PRODUCTIVE_OUTPUT_THRESHOLD || 3));
+  const streak = Math.max(0, Number(productiveState.consecutive_count || 0));
+  const globallyEnabled = !!config.PRODUCTIVE_OUTPUT_MITIGATION_ENABLED;
+  const thresholdReached = streak >= threshold;
+  const openingLagExtraMinutes = Math.max(0, Number(config.PRODUCTIVE_OUTPUT_MITIGATION_OPENING_LAG_EXTRA_MINUTES || 0));
+
+  const openingLagActive = globallyEnabled
+    && thresholdReached
+    && !!config.PRODUCTIVE_OUTPUT_MITIGATION_OPENING_LAG_WIDEN_ENABLED
+    && openingLagExtraMinutes > 0;
+  const forceFreshOddsProbeActive = globallyEnabled
+    && !!config.PRODUCTIVE_OUTPUT_MITIGATION_FORCE_FRESH_ODDS_PROBE_ENABLED
+    && !!mitigationState.force_fresh_odds_probe_pending;
+  const verboseCaptureActive = globallyEnabled
+    && !!config.PRODUCTIVE_OUTPUT_MITIGATION_VERBOSE_DIAGNOSTICS_ENABLED
+    && !!mitigationState.verbose_diagnostics_capture_pending;
+
+  const context = {
+    enabled: globallyEnabled,
+    threshold_reached: thresholdReached,
+    streak: streak,
+    threshold: threshold,
+    opening_lag_active: openingLagActive,
+    opening_lag_extra_minutes: openingLagExtraMinutes,
+    force_fresh_odds_probe_active: forceFreshOddsProbeActive,
+    verbose_diagnostics_capture_active: verboseCaptureActive,
+  };
+
+  if (openingLagActive || forceFreshOddsProbeActive || verboseCaptureActive) {
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: runId,
+      stage: 'productive_output_mitigation',
+      status: 'notice',
+      reason_code: 'productive_output_mitigation_activated',
+      message: JSON.stringify(context),
+    });
+  }
+
+  return context;
+}
+
+function finalizeProductiveOutputMitigationState_(runId, config, mitigationContext, productiveOutputState) {
+  const previous = getStateJson_('PRODUCTIVE_OUTPUT_MITIGATION_STATE') || {};
+  const globalEnabled = !!config.PRODUCTIVE_OUTPUT_MITIGATION_ENABLED;
+  const warningNeeded = !!(productiveOutputState && productiveOutputState.warning_needed);
+  const canForceFresh = globalEnabled && !!config.PRODUCTIVE_OUTPUT_MITIGATION_FORCE_FRESH_ODDS_PROBE_ENABLED;
+  const canVerboseCapture = globalEnabled && !!config.PRODUCTIVE_OUTPUT_MITIGATION_VERBOSE_DIAGNOSTICS_ENABLED;
+
+  const next = {
+    run_id: runId,
+    updated_at: formatLocalIso_(new Date()),
+    force_fresh_odds_probe_pending: warningNeeded ? canForceFresh : false,
+    verbose_diagnostics_capture_pending: warningNeeded ? canVerboseCapture : false,
+    last_activation: {
+      opening_lag_active: !!(mitigationContext && mitigationContext.opening_lag_active),
+      force_fresh_odds_probe_active: !!(mitigationContext && mitigationContext.force_fresh_odds_probe_active),
+      verbose_diagnostics_capture_active: !!(mitigationContext && mitigationContext.verbose_diagnostics_capture_active),
+      streak: Number(mitigationContext && mitigationContext.streak || 0),
+      threshold: Number(mitigationContext && mitigationContext.threshold || 0),
+    },
+    previous: {
+      force_fresh_odds_probe_pending: !!previous.force_fresh_odds_probe_pending,
+      verbose_diagnostics_capture_pending: !!previous.verbose_diagnostics_capture_pending,
+    },
+  };
+
+  setStateValue_('PRODUCTIVE_OUTPUT_MITIGATION_STATE', JSON.stringify(next));
+}
 
 function derivePlayerStatsSkipReason_(oddsStage, matchStage) {
   const oddsCount = Number((oddsStage && oddsStage.events && oddsStage.events.length) || 0);

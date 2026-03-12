@@ -6177,3 +6177,111 @@ function testAdaptRunLogRecordForLegacy_reconstructsCompactV2Row_() {
   assertEquals_(1, Number(rejections.opening_lag_exceeded || 0));
   assertEquals_(2, Number((stageSummaries[0].reason_codes || {}).match_map_diagnostic_records_written || 0));
 }
+
+function testStageFetchOdds_bypassStaleFallback_returnsApiFailureSource_() {
+  const originalFetchOdds = fetchOddsWindowFromOddsApi_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+  const originalSetCachedPayload = setCachedPayload_;
+  const originalSetStateValue = setStateValue_;
+  const originalGetStateJson = getStateJson_;
+  const originalUpdateCreditState = updateCreditStateFromHeaders_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const originalLogDiagnosticEvent = logDiagnosticEvent_;
+
+  fetchOddsWindowFromOddsApi_ = function () {
+    return {
+      events: [],
+      reason_code: 'odds_api_http_500',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: {},
+    };
+  };
+  getCachedPayload_ = function () { return null; };
+  getCreditAwareRuntimeConfig_ = function () { return { odds_window_cache_ttl_min: 10, odds_window_refresh_min: 1, mode: 'normal' }; };
+  setCachedPayload_ = function () {};
+  setStateValue_ = function () {};
+  getStateJson_ = function (key) {
+    if (key === 'ODDS_WINDOW_STALE_PAYLOAD') {
+      return {
+        cached_at_ms: Date.parse('2025-01-01T00:00:00.000Z'),
+        events: [{
+          event_id: 'evt_stale',
+          commence_time: '2025-01-01T02:00:00.000Z',
+        }],
+      };
+    }
+    return null;
+  };
+  updateCreditStateFromHeaders_ = function () { return { header_present: false }; };
+  localAndUtcTimestamps_ = function () { return { local: '2025-01-01T00:00:00-07:00', utc: '2025-01-01T07:00:00.000Z' }; };
+  logDiagnosticEvent_ = function () {};
+
+  try {
+    const result = stageFetchOdds('run_odds_bypass_stale', {
+      LOOKAHEAD_HOURS: 6,
+      ODDS_WINDOW_FORCE_REFRESH: true,
+    }, {
+      startMs: Date.parse('2025-01-01T00:00:00.000Z'),
+      endMs: Date.parse('2025-01-01T06:00:00.000Z'),
+    }, {
+      bypass_stale_fallback: true,
+    });
+
+    assertEquals_('fresh_api', result.selected_source);
+    assertEquals_(1, result.summary.reason_codes.odds_api_failure_no_stale_fallback || 0);
+    assertEquals_(1, result.summary.reason_codes.stale_fallback_bypassed || 0);
+  } finally {
+    fetchOddsWindowFromOddsApi_ = originalFetchOdds;
+    getCachedPayload_ = originalGetCachedPayload;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+    setCachedPayload_ = originalSetCachedPayload;
+    setStateValue_ = originalSetStateValue;
+    getStateJson_ = originalGetStateJson;
+    updateCreditStateFromHeaders_ = originalUpdateCreditState;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+    logDiagnosticEvent_ = originalLogDiagnosticEvent;
+  }
+}
+
+function testResolveProductiveOutputMitigationContext_activatesConfiguredFlags_() {
+  const originalGetStateJson = getStateJson_;
+  const originalAppendLogRow = appendLogRow_;
+  const logs = [];
+
+  getStateJson_ = function (key) {
+    if (key === 'EMPTY_PRODUCTIVE_OUTPUT_STATE') {
+      return { consecutive_count: 3 };
+    }
+    if (key === 'PRODUCTIVE_OUTPUT_MITIGATION_STATE') {
+      return {
+        force_fresh_odds_probe_pending: true,
+        verbose_diagnostics_capture_pending: true,
+      };
+    }
+    return {};
+  };
+  appendLogRow_ = function (row) { logs.push(row); };
+
+  try {
+    const result = resolveProductiveOutputMitigationContext_('run_mitigation', {
+      EMPTY_PRODUCTIVE_OUTPUT_THRESHOLD: 3,
+      PRODUCTIVE_OUTPUT_MITIGATION_ENABLED: true,
+      PRODUCTIVE_OUTPUT_MITIGATION_OPENING_LAG_WIDEN_ENABLED: true,
+      PRODUCTIVE_OUTPUT_MITIGATION_OPENING_LAG_EXTRA_MINUTES: 20,
+      PRODUCTIVE_OUTPUT_MITIGATION_FORCE_FRESH_ODDS_PROBE_ENABLED: true,
+      PRODUCTIVE_OUTPUT_MITIGATION_VERBOSE_DIAGNOSTICS_ENABLED: true,
+    });
+
+    assertEquals_(true, result.opening_lag_active);
+    assertEquals_(true, result.force_fresh_odds_probe_active);
+    assertEquals_(true, result.verbose_diagnostics_capture_active);
+    assertEquals_(1, logs.length);
+    assertEquals_('productive_output_mitigation', logs[0].stage);
+    assertEquals_('productive_output_mitigation_activated', logs[0].reason_code);
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    appendLogRow_ = originalAppendLogRow;
+  }
+}
