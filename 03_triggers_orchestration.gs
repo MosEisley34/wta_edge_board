@@ -604,6 +604,16 @@ function runEdgeBoard() {
     const runEndedAt = localAndUtcTimestamps_(new Date());
     const creditBurnRateState = getStateJson_('ODDS_API_BURN_RATE_STATE') || {};
     const creditBurnRateNotification = maybeNotifyCreditBurnRate_(config, runId, creditBurnRateState);
+    const compactCombinedReasonCodes = compactReasonCodeMapForLog_(combinedReasonCodes);
+    const compactStageSummaries = compactStageSummariesForLog_([
+      oddsStage.summary,
+      scheduleStage.summary,
+      matchStage.summary,
+      playerStatsStage.summary,
+      signalStage.summary,
+      persistStage.summary,
+    ]);
+
     const verbosePayload = {
       run_id: runId,
       timezone: TIMESTAMP_TIMEZONE.ID,
@@ -695,8 +705,8 @@ function runEdgeBoard() {
       unmatched: matchStage.unmatchedCount,
       rejected: matchStage.rejectedCount,
       signals_found: signalStage.sentCount,
-      rejection_codes: JSON.stringify(combinedReasonCodes),
-      stage_summaries: JSON.stringify(verbosePayload.stage_summaries),
+      rejection_codes: JSON.stringify(compactCombinedReasonCodes),
+      stage_summaries: JSON.stringify(compactStageSummaries),
       cooldown_suppressed: signalStage.cooldownSuppressedCount,
       duplicate_suppressed: signalStage.duplicateSuppressedCount,
     });
