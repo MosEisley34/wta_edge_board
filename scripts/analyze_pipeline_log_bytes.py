@@ -3,6 +3,8 @@ import json
 import sys
 from collections import Counter
 
+from pipeline_log_adapter import adapt_run_log_record_for_legacy
+
 
 def usage():
     print("Usage: scripts/analyze_pipeline_log_bytes.py <sample.json>")
@@ -35,7 +37,8 @@ def main(path):
     long_key_threshold = 24
     static_fields = {"row_type", "stage", "status", "provider", "reason_code"}
 
-    for row in rows:
+    for raw_row in rows:
+        row = adapt_run_log_record_for_legacy(raw_row)
         row_size = json_bytes(row)
         total_bytes += row_size
         bytes_by_event_type[row.get("row_type", "summary")] += row_size

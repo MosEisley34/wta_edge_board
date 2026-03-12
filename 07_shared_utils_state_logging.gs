@@ -815,6 +815,143 @@ function compactStageSummariesForLog_(stageSummaries) {
   };
 }
 
+function expandReasonCodeMapForLegacy_(reasonMap) {
+  const expanded = {};
+  Object.keys(reasonMap || {}).forEach((aliasOrCode) => {
+    const reasonCode = reasonCodeAliasToCode_(aliasOrCode);
+    const value = Number((reasonMap || {})[aliasOrCode]);
+    if (!reasonCode || !Number.isFinite(value)) return;
+    expanded[reasonCode] = value;
+  });
+  return expanded;
+}
+
+function expandStageSummariesForLegacy_(stageSummaries) {
+  return (stageSummaries || []).map((summary) => {
+    const cloned = Object.assign({}, summary || {});
+    cloned.reason_codes = expandReasonCodeMapForLegacy_((summary || {}).reason_codes || {});
+    return cloned;
+  });
+}
+
+function parseLogJsonLike_(value, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return fallback;
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function adaptRunLogRecordForLegacy_(record) {
+  const row = Object.assign({}, record || {});
+  const schemaVersion = Number(row.schema_version || 0);
+
+  if (schemaVersion !== 2) {
+    const legacyMessage = parseLogJsonLike_(row.message, null);
+    if (legacyMessage && typeof legacyMessage === 'object' && legacyMessage.reason_codes) {
+      legacyMessage.reason_codes = expandReasonCodeMapForLegacy_(legacyMessage.reason_codes || {});
+      row.message = JSON.stringify(legacyMessage);
+    }
+    const rejectionEnvelope = parseLogJsonLike_(row.rejection_codes, null);
+    if (rejectionEnvelope && rejectionEnvelope.reason_codes) {
+      rejectionEnvelope.reason_codes = expandReasonCodeMapForLegacy_(rejectionEnvelope.reason_codes || {});
+      row.rejection_codes = JSON.stringify(rejectionEnvelope.reason_codes);
+    }
+    const stageSummaryEnvelope = parseLogJsonLike_(row.stage_summaries, null);
+    if (stageSummaryEnvelope && stageSummaryEnvelope.stage_summaries) {
+      const expandedSummaries = expandStageSummariesForLegacy_(stageSummaryEnvelope.stage_summaries || []);
+      row.stage_summaries = JSON.stringify(expandedSummaries);
+    }
+    return row;
+  }
+
+  const eventType = String(row.et || '');
+  const stage = String(row.st || eventType || '');
+  const rowType = eventType === 'summary'
+    ? 'summary'
+    : ((eventType === 'watchdog' || stage === 'run_start_config_audit' || stage.indexOf('watchdog') >= 0 || stage === 'run_lifecycle') ? 'ops' : 'stage');
+
+  const legacyMessageObj = parseLogJsonLike_(row.msg, null);
+  const legacyMessage = legacyMessageObj && typeof legacyMessageObj === 'object'
+    ? JSON.stringify((function () {
+      const messagePayload = Object.assign({}, legacyMessageObj || {});
+      if (messagePayload.reason_codes) {
+        messagePayload.reason_codes = expandReasonCodeMapForLegacy_(messagePayload.reason_codes || {});
+      }
+      return messagePayload;
+    })())
+    : String(row.msg || '');
+
+  const expandedReasonCodes = expandReasonCodeMapForLegacy_(row.rc || {});
+  const expandedRejections = expandReasonCodeMapForLegacy_(row.rj || {});
+  const expandedStageSummaries = expandStageSummariesForLegacy_(row.ssu || []);
+
+  if (legacyMessageObj && typeof legacyMessageObj === 'object' && Object.keys(expandedReasonCodes).length > 0) {
+    const mergedMessage = Object.assign({}, legacyMessageObj, {
+      reason_codes: Object.assign({}, expandedReasonCodes),
+    });
+    if (!Object.prototype.hasOwnProperty.call(mergedMessage, 'input_count')) mergedMessage.input_count = Number(row.ic || 0);
+    if (!Object.prototype.hasOwnProperty.call(mergedMessage, 'output_count')) mergedMessage.output_count = Number(row.oc || 0);
+    if (!Object.prototype.hasOwnProperty.call(mergedMessage, 'provider')) mergedMessage.provider = String(row.pr || '');
+    if (!Object.prototype.hasOwnProperty.call(mergedMessage, 'api_credit_usage')) mergedMessage.api_credit_usage = Number(row.acu || 0);
+    if (row.rm && typeof row.rm === 'object' && Object.keys(row.rm).length > 0) mergedMessage.reason_metadata = Object.assign({}, row.rm);
+    return {
+      row_type: rowType,
+      run_id: String(row.rid || ''),
+      stage: stage,
+      started_at: String(row.sa || ''),
+      ended_at: String(row.ea || ''),
+      status: String(row.ss || ''),
+      reason_code: String(row.rcd || ''),
+      message: JSON.stringify(mergedMessage),
+      fetched_odds: Number(row.fo || 0),
+      fetched_schedule: Number(row.fs || 0),
+      allowed_tournaments: Number(row.at || 0),
+      matched: Number(row.mt || 0),
+      unmatched: Number(row.um || 0),
+      signals_found: Number(row.sg || 0),
+      rejection_codes: JSON.stringify(expandedRejections),
+      cooldown_suppressed: Number(row.cds || 0),
+      duplicate_suppressed: Number(row.dds || 0),
+      lock_event: String(row.lk || ''),
+      debounce_event: String(row.db || ''),
+      trigger_event: String(row.tr || ''),
+      exception: String(row.ex || ''),
+      stack: String(row.stk || ''),
+      stage_summaries: JSON.stringify(expandedStageSummaries),
+    };
+  }
+
+  return {
+    row_type: rowType,
+    run_id: String(row.rid || ''),
+    stage: stage,
+    started_at: String(row.sa || ''),
+    ended_at: String(row.ea || ''),
+    status: String(row.ss || ''),
+    reason_code: String(row.rcd || ''),
+    message: legacyMessage,
+    fetched_odds: Number(row.fo || 0),
+    fetched_schedule: Number(row.fs || 0),
+    allowed_tournaments: Number(row.at || 0),
+    matched: Number(row.mt || 0),
+    unmatched: Number(row.um || 0),
+    signals_found: Number(row.sg || 0),
+    rejection_codes: JSON.stringify(expandedRejections),
+    cooldown_suppressed: Number(row.cds || 0),
+    duplicate_suppressed: Number(row.dds || 0),
+    lock_event: String(row.lk || ''),
+    debounce_event: String(row.db || ''),
+    trigger_event: String(row.tr || ''),
+    exception: String(row.ex || ''),
+    stack: String(row.stk || ''),
+    stage_summaries: JSON.stringify(expandedStageSummaries),
+  };
+}
+
 function normalizeUpstreamGateReason_(value) {
   const text = String(value === null || value === undefined ? '' : value).trim();
   return text || 'unspecified';
