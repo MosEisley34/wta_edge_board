@@ -28,6 +28,7 @@ SUMMARY_COUNTER_FIELDS = [
     "cooldown_suppressed",
     "duplicate_suppressed",
 ]
+BOUNDED_COUNTER_FIELDS = list(SUMMARY_COUNTER_FIELDS)
 
 
 def derive_run_health_attribution(summary, watchdog, rejection_codes):
@@ -187,6 +188,37 @@ def compare_index(verbose_idx, compact_idx):
     }
 
 
+def evaluate_counter_integrity(verbose_idx, compact_idx):
+    run_ids = sorted(set(verbose_idx.keys()) & set(compact_idx.keys()))
+    inflation_by_counter = {field: 0 for field in BOUNDED_COUNTER_FIELDS}
+    inflation_samples = []
+
+    for run_id in run_ids:
+        verbose_counters = verbose_idx[run_id].get("summary_counters", {})
+        compact_counters = compact_idx[run_id].get("summary_counters", {})
+        inflated = {}
+        for field in BOUNDED_COUNTER_FIELDS:
+            verbose_value = int(verbose_counters.get(field, 0) or 0)
+            compact_value = int(compact_counters.get(field, 0) or 0)
+            if compact_value > verbose_value:
+                inflation_by_counter[field] += 1
+                inflated[field] = {
+                    "verbose": verbose_value,
+                    "compact": compact_value,
+                    "delta": compact_value - verbose_value,
+                }
+        if inflated:
+            inflation_samples.append({"run_id": run_id, "inflated_counters": inflated})
+
+    return {
+        "bounded_counter_fields": BOUNDED_COUNTER_FIELDS,
+        "run_count_checked": len(run_ids),
+        "inflation_by_counter": inflation_by_counter,
+        "inflation_samples": inflation_samples[:10],
+        "passed": not any(count > 0 for count in inflation_by_counter.values()),
+    }
+
+
 def build_summary(verbose_path, compact_path, target_reduction_pct, critical_parity_keys):
     verbose_rows = load_rows(verbose_path)
     compact_rows = load_rows(compact_path)
@@ -197,13 +229,23 @@ def build_summary(verbose_path, compact_path, target_reduction_pct, critical_par
     if verbose_size > 0:
         reduction_pct = ((verbose_size - compact_size) / verbose_size) * 100.0
 
-    parity = compare_index(index_rows(verbose_rows), index_rows(compact_rows))
+    verbose_idx = index_rows(verbose_rows)
+    compact_idx = index_rows(compact_rows)
+
+    parity = compare_index(verbose_idx, compact_idx)
     mismatch_counts = parity.get("mismatch_counts", {})
     critical_mismatch_counts = {
         key: int(mismatch_counts.get(key, 0))
         for key in critical_parity_keys
     }
     failed_critical_parity = sorted([k for k, v in critical_mismatch_counts.items() if v > 0])
+    counter_integrity = evaluate_counter_integrity(verbose_idx, compact_idx)
+
+    quality_gate_failed_reasons = (
+        (["reduction_below_target"] if reduction_pct < target_reduction_pct else [])
+        + (["critical_parity_failure"] if failed_critical_parity else [])
+        + (["counter_integrity_failure"] if not counter_integrity["passed"] else [])
+    )
 
     return {
         "legacy_verbose_output_size_bytes": verbose_size,
@@ -215,10 +257,14 @@ def build_summary(verbose_path, compact_path, target_reduction_pct, critical_par
         "critical_parity_keys": critical_parity_keys,
         "critical_mismatch_counts": critical_mismatch_counts,
         "critical_parity_passed": not failed_critical_parity,
-        "quality_gate_failed_reasons": (
-            (["reduction_below_target"] if reduction_pct < target_reduction_pct else [])
-            + (["critical_parity_failure"] if failed_critical_parity else [])
-        ),
+        "counter_integrity": counter_integrity,
+        "counter_integrity_passed": counter_integrity["passed"],
+        "pass_conditions": {
+            "size_reduction_threshold_met": reduction_pct >= target_reduction_pct,
+            "critical_parity_intact": not failed_critical_parity,
+            "counter_integrity_invariants_passed": counter_integrity["passed"],
+        },
+        "quality_gate_failed_reasons": quality_gate_failed_reasons,
         "failed_critical_parity_keys": failed_critical_parity,
     }
 
