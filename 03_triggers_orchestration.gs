@@ -508,7 +508,7 @@ function runEdgeBoard() {
       playerStatsStage.summary.reason_codes,
       signalStage.summary.reason_codes,
       persistStage.summary.reason_codes,
-    ];
+    ].map((map) => cloneReasonCodeMap_(map));
     const reasonMetadataMaps = [
       oddsStage.summary.reason_metadata,
       scheduleStage.summary.reason_metadata,
@@ -519,7 +519,38 @@ function runEdgeBoard() {
     ];
 
     const combinedReasonCodes = mergeReasonCounts_(reasonCodeMaps);
+    const stageReasonCodeMutationDiagnostics = buildStageReasonCodeMutationDiagnostics_([
+      { stage: 'stageFetchOdds', summary: oddsStage.summary, snapshot: reasonCodeMaps[0] },
+      { stage: 'stageFetchSchedule', summary: scheduleStage.summary, snapshot: reasonCodeMaps[1] },
+      { stage: 'stageMatchEvents', summary: matchStage.summary, snapshot: reasonCodeMaps[2] },
+      { stage: 'stageFetchPlayerStats', summary: playerStatsStage.summary, snapshot: reasonCodeMaps[3] },
+      { stage: 'stageGenerateSignals', summary: signalStage.summary, snapshot: reasonCodeMaps[4] },
+      { stage: 'stagePersist', summary: persistStage.summary, snapshot: reasonCodeMaps[5] },
+    ]);
     const combinedReasonMetadata = mergeReasonMetadata_(reasonMetadataMaps);
+    const stageReasonCodeMaximaViolations = validateStageReasonCodeMaxima_([
+      oddsStage.summary,
+      scheduleStage.summary,
+      matchStage.summary,
+      playerStatsStage.summary,
+      signalStage.summary,
+      persistStage.summary,
+    ]);
+    if (stageReasonCodeMutationDiagnostics.mutated_stages.length > 0 || stageReasonCodeMaximaViolations.length > 0) {
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'reason_code_accumulation_guard',
+        status: 'warning',
+        reason_code: stageReasonCodeMutationDiagnostics.mutated_stages.length > 0
+          ? 'reason_code_map_mutated_after_snapshot'
+          : 'reason_code_counter_exceeds_stage_max',
+        message: JSON.stringify({
+          reason_code_map_mutated_after_snapshot: stageReasonCodeMutationDiagnostics,
+          reason_code_counter_exceeds_stage_max: stageReasonCodeMaximaViolations,
+        }),
+      });
+    }
 
     const emptyCycleState = updateBootstrapEmptyCycleState_(runId, oddsStage.rows.length, scheduleStage.events.length);
     if (emptyCycleState.reason_code) {
@@ -699,6 +730,10 @@ function runEdgeBoard() {
       top_rejection_reasons: getTopReasonCodes_(combinedReasonCodes, 10),
       reason_codes: combinedReasonCodes,
       reason_metadata: combinedReasonMetadata,
+      reason_code_accumulation_guard: {
+        mutation_diagnostics: stageReasonCodeMutationDiagnostics,
+        maxima_violations: stageReasonCodeMaximaViolations,
+      },
       upstream_gate_reason: combinedReasonMetadata.upstream_gate_reason || '',
       run_health: {
         status: runHealthDiagnostics.status,
@@ -1285,4 +1320,53 @@ function resolveRunHealthFetchedOddsCount_(fetchedBeforeGateCount, gatedOddsStag
   const initialCount = Number(fetchedBeforeGateCount || 0);
   const gatedCount = Number((gatedOddsStage && gatedOddsStage.events && gatedOddsStage.events.length) || 0);
   return Math.max(initialCount, gatedCount);
+}
+
+function buildStageReasonCodeMutationDiagnostics_(stageSnapshots) {
+  const mutatedStages = [];
+  (stageSnapshots || []).forEach((entry) => {
+    const stage = entry && entry.stage ? String(entry.stage) : '';
+    const summary = entry && entry.summary ? entry.summary : {};
+    const baseline = cloneReasonCodeMap_(entry && entry.snapshot ? entry.snapshot : {});
+    const current = cloneReasonCodeMap_(summary.reason_codes || {});
+    if (!areReasonCodeMapsEquivalent_(baseline, current)) {
+      mutatedStages.push({
+        stage: stage,
+        baseline: baseline,
+        current: current,
+      });
+    }
+  });
+  return {
+    checked_stage_count: Number((stageSnapshots || []).length || 0),
+    mutated_stages: mutatedStages,
+  };
+}
+
+function validateStageReasonCodeMaxima_(stageSummaries) {
+  const violations = [];
+  (stageSummaries || []).forEach((summary) => {
+    const safeSummary = summary || {};
+    const stageName = String(safeSummary.stage || '');
+    const reasonCodes = cloneReasonCodeMap_(safeSummary.reason_codes || {});
+    const maxCount = Math.max(
+      Number(safeSummary.input_count || 0),
+      Number(safeSummary.output_count || 0)
+    );
+
+    Object.keys(reasonCodes).forEach((reasonCode) => {
+      if (!/within|allowed/i.test(reasonCode)) return;
+      const value = Number(reasonCodes[reasonCode] || 0);
+      if (!Number.isFinite(value) || value <= maxCount) return;
+      violations.push({
+        stage: stageName,
+        reason_code: reasonCode,
+        value: value,
+        max_allowed: maxCount,
+        input_count: Number(safeSummary.input_count || 0),
+        output_count: Number(safeSummary.output_count || 0),
+      });
+    });
+  });
+  return violations;
 }
