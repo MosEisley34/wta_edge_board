@@ -22,6 +22,25 @@ const SECRET_REDACTION_MAP = {
   query_param_pattern: /([?&](?:apiKey|api_key|token|access_token|key|secret|password|webhook|authorization)=)([^&#\s]*)/gi,
 };
 
+const STAGE_LATENCY_EXPECTATIONS_MS = {
+  healthy: {
+    stageFetchOdds: { min: 0, max: 3000 },
+    stageFetchSchedule: { min: 0, max: 2500 },
+    stageMatchEvents: { min: 0, max: 1500 },
+    stageFetchPlayerStats: { min: 0, max: 4500 },
+    stageGenerateSignals: { min: 0, max: 2000 },
+    stagePersist: { min: 0, max: 2000 },
+  },
+  degraded: {
+    stageFetchOdds: { min: 0, max: 4500 },
+    stageFetchSchedule: { min: 0, max: 3500 },
+    stageMatchEvents: { min: 0, max: 2200 },
+    stageFetchPlayerStats: { min: 0, max: 6500 },
+    stageGenerateSignals: { min: 0, max: 3000 },
+    stagePersist: { min: 0, max: 3000 },
+  },
+};
+
 
 function appendRunStartConfigAuditLog_(runId, config, startedAt) {
   const cfg = config || {};
@@ -519,6 +538,7 @@ function updateEmptyProductiveOutputState_(runId, metrics, config) {
 function maybeEmitRunRollup_(config, payload) {
   const cfg = config || getConfig_();
   const cadence = Math.max(1, Number(cfg.ROLLUP_EVERY_N_RUNS || 10));
+  const runHealthMode = resolveRunHealthMode_((payload && payload.run_health_reason_code) || '');
   const prior = getStateJson_('RUN_ROLLUP_STATE') || {};
   const runCount = Number(prior.run_count || 0) + 1;
   const nextState = {
@@ -538,6 +558,7 @@ function maybeEmitRunRollup_(config, payload) {
   }
 
   const stageDurations = computeStageDurationRollup_((payload && payload.stage_summaries) || []);
+  const stageLatencyContract = buildStageLatencyContract_(stageDurations, runHealthMode);
   const reasonCodes = compactReasonCodeMapForLog_((payload && payload.reason_codes) || {}, REASON_CODE_ALIAS_SCHEMA_ID).reason_codes;
   const topReasonCodes = getTopReasonCodes_(reasonCodes, 5).filter(function (entry) {
     return Number(entry && entry.count || 0) > 0;
@@ -558,11 +579,12 @@ function maybeEmitRunRollup_(config, payload) {
   const previousSnapshot = (prior && prior.last_rollup_snapshot) || null;
   const delta = computeRollupDelta_(currentSnapshot, previousSnapshot);
   const rollup = {
-    rollup_schema: 'run_rollup_v1',
+    rollup_schema: 'run_rollup_v2',
     run_count: runCount,
     rollup_every_n_runs: cadence,
     top_reason_codes: topReasonCodes,
     stage_duration_ms: stageDurations,
+    stage_latency_contract: stageLatencyContract,
     key_deltas_vs_previous_rollup: delta,
     watchdog_progression: {
       bootstrap_empty_cycle: formatWatchdogProgress_(payload && payload.watchdog && payload.watchdog.bootstrap_empty_cycles, payload && payload.watchdog && payload.watchdog.bootstrap_threshold),
@@ -575,6 +597,7 @@ function maybeEmitRunRollup_(config, payload) {
   nextState.last_rollup_snapshot = currentSnapshot;
   setStateValue_('RUN_ROLLUP_STATE', JSON.stringify(nextState));
   setStateValue_('LAST_RUN_ROLLUP_JSON', JSON.stringify(rollup, null, 2));
+  setStateValue_('LAST_RUN_BASELINE_COMPARISON_JSON', JSON.stringify(buildRunBaselineComparisonArtifact_(rollup), null, 2));
 
   return {
     emitted: true,
@@ -603,6 +626,113 @@ function computeRollupDelta_(current, previous) {
     ? currentReason
     : (previousReason || '(none)') + '→' + (currentReason || '(none)');
   return delta;
+}
+
+
+function resolveRunHealthMode_(runHealthReasonCode) {
+  return String(runHealthReasonCode || '').trim() ? 'degraded' : 'healthy';
+}
+
+function getStageLatencyExpectationsForMode_(mode) {
+  const normalized = String(mode || 'healthy').toLowerCase() === 'degraded' ? 'degraded' : 'healthy';
+  return STAGE_LATENCY_EXPECTATIONS_MS[normalized] || STAGE_LATENCY_EXPECTATIONS_MS.healthy || {};
+}
+
+function getLatencyAnomalyReasonCode_(stage, metric, mode) {
+  const stageSlug = String(stage || 'unknown_stage').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase() || 'unknown_stage';
+  const metricSlug = String(metric || 'duration').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase() || 'duration';
+  const modeSlug = String(mode || 'healthy').toLowerCase() === 'degraded' ? 'degraded' : 'healthy';
+  return 'latency_' + modeSlug + '_' + stageSlug + '_' + metricSlug + '_threshold_exceeded';
+}
+
+function buildStageLatencyContract_(stageDurations, mode) {
+  const selectedMode = String(mode || 'healthy').toLowerCase() === 'degraded' ? 'degraded' : 'healthy';
+  const expectations = getStageLatencyExpectationsForMode_(selectedMode);
+  const stageNames = Object.keys(expectations).concat(Object.keys(stageDurations || {})).filter(function (name, idx, arr) {
+    return arr.indexOf(name) === idx;
+  });
+
+  const out = {
+    schema: 'stage_latency_contract_v1',
+    mode: selectedMode,
+    thresholds_ms: {},
+    anomalies: {},
+    anomaly_reason_codes: [],
+  };
+
+  const anomalyCodes = [];
+  stageNames.forEach(function (stage) {
+    const threshold = expectations[stage] || { min: 0, max: 0 };
+    const observed = (stageDurations && stageDurations[stage]) || null;
+    out.thresholds_ms[stage] = {
+      min: Number(threshold.min || 0),
+      max: Number(threshold.max || 0),
+    };
+    if (!observed) {
+      return;
+    }
+
+    const metrics = [
+      { name: 'avg', value: Number(observed.avg || 0), compare: 'max' },
+      { name: 'p95', value: Number(observed.p95 || 0), compare: 'max' },
+    ];
+    const stageAnomalies = [];
+    metrics.forEach(function (metric) {
+      if (!Number.isFinite(metric.value)) return;
+      if (metric.compare === 'max' && metric.value > Number(threshold.max || 0)) {
+        const reasonCode = getLatencyAnomalyReasonCode_(stage, metric.name, selectedMode);
+        stageAnomalies.push({
+          metric: metric.name,
+          observed_ms: metric.value,
+          threshold_ms: Number(threshold.max || 0),
+          reason_code: reasonCode,
+        });
+        anomalyCodes.push(reasonCode);
+      }
+      if (metric.compare === 'min' && metric.value < Number(threshold.min || 0)) {
+        const reasonCode = getLatencyAnomalyReasonCode_(stage, metric.name, selectedMode);
+        stageAnomalies.push({
+          metric: metric.name,
+          observed_ms: metric.value,
+          threshold_ms: Number(threshold.min || 0),
+          reason_code: reasonCode,
+        });
+        anomalyCodes.push(reasonCode);
+      }
+    });
+
+    if (stageAnomalies.length) {
+      out.anomalies[stage] = {
+        observed_ms: {
+          min: Number(observed.min || 0),
+          avg: Number(observed.avg || 0),
+          p95: Number(observed.p95 || 0),
+        },
+        threshold_ms: {
+          min: Number(threshold.min || 0),
+          max: Number(threshold.max || 0),
+        },
+        reason_codes: stageAnomalies,
+      };
+    }
+  });
+
+  out.anomaly_reason_codes = anomalyCodes;
+  return out;
+}
+
+function buildRunBaselineComparisonArtifact_(rollup) {
+  const current = rollup || {};
+  return {
+    baseline_comparison_schema: 'run_baseline_comparison_v1',
+    generated_at_utc: new Date().toISOString(),
+    rollup_run_count: Number(current.run_count || 0),
+    run_health_mode: (current.stage_latency_contract && current.stage_latency_contract.mode) || 'healthy',
+    top_reason_codes: (current.top_reason_codes || []).slice(0, 5),
+    stage_duration_ms: current.stage_duration_ms || {},
+    stage_latency_contract: current.stage_latency_contract || {},
+    key_deltas_vs_previous_rollup: current.key_deltas_vs_previous_rollup || {},
+  };
 }
 
 function computeStageDurationRollup_(summaries) {

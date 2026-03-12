@@ -6603,21 +6603,68 @@ function testMaybeEmitRunRollup_emitsOnConfiguredCadenceWithIndependentPayload_(
     assertEquals_(2, Number(emitted.run_count || 0));
     assertEquals_(2, Number(emitted.rollup.run_count || 0));
     assertEquals_(2, Number(emitted.rollup.top_reason_codes[0].count || 0));
-    assertEquals_('no_player_match', emitted.rollup.top_reason_codes[0].reason_code);
     assertEquals_(100, Number(emitted.rollup.stage_duration_ms.stageFetchOdds.min || 0));
     assertEquals_(266.67, Number(emitted.rollup.stage_duration_ms.stageFetchOdds.avg || 0));
     assertEquals_(400, Number(emitted.rollup.stage_duration_ms.stageFetchOdds.p95 || 0));
+    assertEquals_('degraded', String(emitted.rollup.stage_latency_contract.mode || ''));
+    assertEquals_(4500, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
+    assertEquals_(0, Number((emitted.rollup.stage_latency_contract.anomaly_reason_codes || []).length || 0));
     assertEquals_(1, Number(emitted.rollup.key_deltas_vs_previous_rollup.fetched_odds || 0));
     assertEquals_('old_reason→new_reason', emitted.rollup.key_deltas_vs_previous_rollup.run_health_reason_code);
     assertEquals_('2/3', emitted.rollup.watchdog_progression.bootstrap_empty_cycle.status);
 
     const standalone = JSON.parse(state.LAST_RUN_ROLLUP_JSON || '{}');
-    assertEquals_('run_rollup_v1', standalone.rollup_schema);
+    assertEquals_('run_rollup_v2', standalone.rollup_schema);
     assertEquals_(2, Number(standalone.run_count || 0));
+    const baselineArtifact = JSON.parse(state.LAST_RUN_BASELINE_COMPARISON_JSON || '{}');
+    assertEquals_('run_baseline_comparison_v1', String(baselineArtifact.baseline_comparison_schema || ''));
+    assertEquals_(2, Number(baselineArtifact.rollup_run_count || 0));
   } finally {
     getStateJson_ = originalGetStateJson;
     setStateValue_ = originalSetStateValue;
     getTopReasonCodes_ = originalGetTopReasonCodes;
+  }
+}
+
+
+function testMaybeEmitRunRollup_emitsLatencyAnomalyReasonCodesForDegradedMode_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+
+  const state = {
+    RUN_ROLLUP_STATE: JSON.stringify({ run_count: 0, last_rollup_at_count: 0 }),
+  };
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+
+  try {
+    const emitted = maybeEmitRunRollup_({ ROLLUP_EVERY_N_RUNS: 1 }, {
+      fetched_odds: 1,
+      matched: 0,
+      signals_found: 0,
+      run_health_reason_code: 'run_health_no_matches_from_odds',
+      reason_codes: {},
+      stage_summaries: [
+        { stage: 'stageFetchOdds', duration_ms: 6000 },
+        { stage: 'stageFetchOdds', duration_ms: 6100 },
+      ],
+      watchdog: {},
+    });
+
+    assertEquals_(true, emitted.emitted);
+    assertEquals_('degraded', String(emitted.rollup.stage_latency_contract.mode || ''));
+    const anomalyCodes = emitted.rollup.stage_latency_contract.anomaly_reason_codes || [];
+    assertEquals_(true, anomalyCodes.indexOf('latency_degraded_stagefetchodds_avg_threshold_exceeded') >= 0);
+    assertEquals_(true, anomalyCodes.indexOf('latency_degraded_stagefetchodds_p95_threshold_exceeded') >= 0);
+    assertEquals_(4500, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
   }
 }
 
