@@ -31,7 +31,50 @@ class CompareLogProfilesTests(unittest.TestCase):
                     }
                 ]
             ),
+            "fetched_odds": 5,
+            "fetched_schedule": 3,
+            "allowed_tournaments": 3,
+            "matched": 2,
+            "unmatched": 1,
+            "signals_found": 2,
+            "rejected": 0,
+            "cooldown_suppressed": 0,
+            "duplicate_suppressed": 0,
         }
+
+    def test_fails_when_counter_integrity_is_violated(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            verbose = tmp / "verbose.json"
+            compact = tmp / "compact.json"
+
+            self._write_json(verbose, [self._summary_row("run-1")])
+            compact_summary = self._summary_row("run-1")
+            compact_summary["matched"] = 3
+            self._write_json(compact, [compact_summary])
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE_SCRIPT),
+                    str(verbose),
+                    str(compact),
+                    "--target-reduction-pct",
+                    "0",
+                    "--critical-parity-keys",
+                    "gate_reasons",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(1, result.returncode)
+            report = json.loads(result.stdout)
+            self.assertFalse(report["counter_integrity_passed"])
+            self.assertIn("counter_integrity_failure", report["quality_gate_failed_reasons"])
+            self.assertFalse(report["pass_conditions"]["counter_integrity_invariants_passed"])
 
     def test_fails_when_reduction_below_target(self):
         with tempfile.TemporaryDirectory() as td:
@@ -133,6 +176,10 @@ class CompareLogProfilesTests(unittest.TestCase):
             report = json.loads(summary.read_text(encoding="utf-8"))
             self.assertTrue(report["target_met"])
             self.assertTrue(report["critical_parity_passed"])
+            self.assertTrue(report["counter_integrity_passed"])
+            self.assertTrue(report["pass_conditions"]["size_reduction_threshold_met"])
+            self.assertTrue(report["pass_conditions"]["critical_parity_intact"])
+            self.assertTrue(report["pass_conditions"]["counter_integrity_invariants_passed"])
             self.assertEqual([], report["quality_gate_failed_reasons"])
 
 
