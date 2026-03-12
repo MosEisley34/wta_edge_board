@@ -1684,8 +1684,8 @@ function evaluateRunHealthDiagnostics_(metrics) {
 
 function buildRunHealthDegradedContract_(metrics) {
   const safe = metrics || {};
-  const sampledBlockedOdds = (safe.sampled_blocked_odds || []).slice(0, 5);
-  const sampledBlockedOddsIds = sampledBlockedOdds
+  const sampledBlockedRecords = (safe.sampled_blocked_odds || []).slice(0, 5);
+  const sampledBlockedOddsIds = sampledBlockedRecords
     .map(function (entry) { return sanitizeRunHealthText_(entry && entry.odds_event_id, 72); })
     .filter(function (value) { return !!value; })
     .slice(0, 3);
@@ -1697,9 +1697,20 @@ function buildRunHealthDegradedContract_(metrics) {
   const cooldownSuppressedCount = Number(safe.cooldown_suppressed_count || 0);
   const statsZeroCoverageCount = Number(safe.stats_zero_coverage_count || 0);
 
+  const blockerCounts = {
+    opening_lag_blocked_count: openingLagBlockedCount,
+    schedule_only_seed_count: scheduleOnlySeedCount,
+    no_odds_stage_count: noOddsStageCount,
+    stale_odds_skip_count: staleOddsSkipCount,
+    low_edge_suppressed_count: lowEdgeSuppressedCount,
+    cooldown_suppressed_count: cooldownSuppressedCount,
+    stats_zero_coverage_count: statsZeroCoverageCount,
+  };
+
   return {
-    run_health_contract_version: 1,
+    run_health_contract_version: 2,
     reason_code: sanitizeRunHealthText_(safe.reason_code, 72),
+    blocker_counts: blockerCounts,
     opening_lag_blocked_count: openingLagBlockedCount,
     schedule_only_seed_count: scheduleOnlySeedCount,
     no_odds_stage_count: noOddsStageCount,
@@ -1739,7 +1750,8 @@ function buildRunHealthDegradedContract_(metrics) {
         stats_zero_coverage: statsZeroCoverageCount,
       }
     ),
-    sampled_blocked_odds: sampledBlockedOdds,
+    sampled_blocked_records: sampledBlockedRecords,
+    sampled_blocked_odds: sampledBlockedRecords,
     sample_unmatched_events: (safe.sample_unmatched_cases || []).slice(0, 5).map(function (entry) {
       return {
         odds_event_id: entry.odds_event_id,
