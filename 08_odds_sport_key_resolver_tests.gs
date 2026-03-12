@@ -6352,6 +6352,40 @@ function testAdaptRunLogRecordForLegacy_reconstructsCompactV2Row_() {
   assertEquals_(2, Number((stageSummaries[0].reason_codes || {}).match_map_diagnostic_records_written || 0));
 }
 
+
+function testSerializeCompactReasonCodesForLogEntry_dedupesEquivalentRowAndMessageMaps_() {
+  const normalized = serializeCompactReasonCodesForLogEntry_({
+    reason_codes: { no_player_match: 2 },
+    message: JSON.stringify({ reason_codes: { no_player_match: 2 } }),
+  }, REASON_CODE_ALIAS_SCHEMA_ID);
+
+  const message = JSON.parse(normalized.message || '{}');
+  assertEquals_(2, Number((message.reason_codes || {}).no_player_match || 0));
+}
+
+function testAssertDebugBoundedStageCounters_onlyChecksVerboseLogProfile_() {
+  const compactViolations = assertDebugBoundedStageCounters_({ LOG_PROFILE: 'compact' }, [{
+    stage: 'stageMatchEvents',
+    max_name: 'output_count',
+    max: 1,
+    counters: { matched_count: 3 },
+  }]);
+  assertEquals_(0, compactViolations.length);
+
+  const verboseViolations = assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, [{
+    stage: 'stageMatchEvents',
+    max_name: 'output_count',
+    max: 1,
+    counters: { matched_count: 3, rejected_count: 1 },
+  }]);
+
+  assertEquals_(1, verboseViolations.length);
+  assertEquals_('stageMatchEvents', verboseViolations[0].stage);
+  assertEquals_('matched_count', verboseViolations[0].counter_name);
+  assertEquals_(3, Number(verboseViolations[0].counter_value || 0));
+  assertEquals_(1, Number(verboseViolations[0].max_allowed || 0));
+}
+
 function testStageFetchOdds_bypassStaleFallback_returnsApiFailureSource_() {
   const originalFetchOdds = fetchOddsWindowFromOddsApi_;
   const originalGetCachedPayload = getCachedPayload_;
