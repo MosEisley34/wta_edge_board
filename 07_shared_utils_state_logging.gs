@@ -171,6 +171,11 @@ function toReasonCodeMapForLog_(value, schemaId) {
 function normalizeLogEntryForAppend_(entry) {
   const normalized = Object.assign({}, entry || {});
   const schemaId = String(REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+  return serializeCompactReasonCodesForLogEntry_(normalized, schemaId);
+}
+
+function serializeCompactReasonCodesForLogEntry_(normalizedEntry, schemaId) {
+  const normalized = Object.assign({}, normalizedEntry || {});
   const messagePayload = parseLogJsonLike_(normalized.message, null);
   const messageObject = messagePayload && typeof messagePayload === 'object' && !Array.isArray(messagePayload)
     ? Object.assign({}, messagePayload)
@@ -965,18 +970,18 @@ function adaptRunLogRecordForLegacy_(record) {
     : ((eventType === 'watchdog' || stage === 'run_start_config_audit' || stage.indexOf('watchdog') >= 0 || stage === 'run_lifecycle') ? 'ops' : 'stage');
 
   const legacyMessageObj = parseLogJsonLike_(row.msg, null);
+  const compactSchemaId = String(row.ras || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
   const legacyMessage = legacyMessageObj && typeof legacyMessageObj === 'object'
     ? JSON.stringify((function () {
       const messagePayload = Object.assign({}, legacyMessageObj || {});
       if (messagePayload.reason_codes) {
-        const messageSchemaId = String(messagePayload.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+        const messageSchemaId = String(messagePayload.schema_id || compactSchemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
         messagePayload.reason_codes = expandReasonCodeMapForLegacy_(messagePayload.reason_codes || {}, messageSchemaId);
       }
       return messagePayload;
     })())
     : String(row.msg || '');
 
-  const compactSchemaId = String(row.ras || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
   const expandedReasonCodes = expandReasonCodeMapForLegacy_(row.rc || {}, compactSchemaId);
   const expandedRejections = expandReasonCodeMapForLegacy_(row.rj || {}, compactSchemaId);
   const expandedStageSummaries = expandStageSummariesForLegacy_(row.ssu || [], compactSchemaId);

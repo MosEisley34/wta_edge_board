@@ -117,6 +117,11 @@ def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
     msg = _parse_json_like(record.get("msg"), None)
     if isinstance(msg, dict):
         merged_message = dict(msg)
+        if merged_message.get("reason_codes"):
+            message_schema_id = str(merged_message.get("schema_id") or compact_schema_id or REASON_CODE_ALIAS_SCHEMA_ID)
+            merged_message["reason_codes"] = _expand_reason_map(
+                merged_message.get("reason_codes") or {}, schema_id=message_schema_id
+            )
         if expanded_stage_reason_codes:
             merged_message["reason_codes"] = expanded_stage_reason_codes
         merged_message.setdefault("input_count", int(record.get("ic") or 0))

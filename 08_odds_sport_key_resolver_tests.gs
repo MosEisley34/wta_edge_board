@@ -6145,6 +6145,22 @@ function testAdaptRunLogRecordForLegacy_expandsAliasReasonMapsForLegacyRows_() {
   assertEquals_(3, Number((stageSummaries[0].reason_codes || {}).match_map_diagnostic_records_written || 0));
 }
 
+
+function testAdaptRunLogRecordForLegacy_expandsAliasOnlyCompactMessageReasonCodes_() {
+  const adapted = adaptRunLogRecordForLegacy_({
+    schema_version: 2,
+    et: 'summary',
+    rid: 'run-v2-msg',
+    st: 'runEdgeBoard',
+    ss: 'success',
+    msg: { schema_id: REASON_CODE_ALIAS_SCHEMA_ID, reason_codes: { OR_OUT_WIN: 4 } },
+    rc: {},
+  });
+
+  const message = JSON.parse(adapted.message || '{}');
+  assertEquals_(4, Number((message.reason_codes || {}).odds_refresh_skipped_outside_window || 0));
+}
+
 function testAdaptRunLogRecordForLegacy_reconstructsCompactV2Row_() {
   const adapted = adaptRunLogRecordForLegacy_({
     schema_version: 2,
