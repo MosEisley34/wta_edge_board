@@ -1139,20 +1139,22 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   const fallbackExemptionMaxAgeMinutes = Math.max(0, Number(config.OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES || 0));
   const fallbackExemptionMaxRowsPerRun = Math.max(0, Number(config.OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN || 0));
   const fallbackExemptionCapMode = String(config.OPENING_LAG_FALLBACK_EXEMPTION_CAP_MODE || 'unlimited_when_zero').toLowerCase();
-  const fallbackExemptionAllowedSources = parseOpeningLagPolicySources_(
+  const fallbackExemptionAllowedSourcesInput = parseOpeningLagPolicySources_(
     config.OPENING_LAG_FALLBACK_EXEMPTION_ALLOWED_SOURCES_JSON,
     ['fallback_cached_stale']
   );
-  const fallbackExemptionDeniedSources = parseOpeningLagPolicySources_(
+  const fallbackExemptionDeniedSourcesInput = parseOpeningLagPolicySources_(
     config.OPENING_LAG_FALLBACK_EXEMPTION_DENIED_SOURCES_JSON,
     ['strict_gate', 'fallback_cached_fresh']
   );
   const fallbackExemptionConfigValidation = validateOpeningLagFallbackExemptionConfig_({
     cap_mode: fallbackExemptionCapMode,
     max_rows_per_run: fallbackExemptionMaxRowsPerRun,
-    allowed_sources: fallbackExemptionAllowedSources,
-    denied_sources: fallbackExemptionDeniedSources,
+    allowed_sources: fallbackExemptionAllowedSourcesInput,
+    denied_sources: fallbackExemptionDeniedSourcesInput,
   });
+  const fallbackExemptionAllowedSources = fallbackExemptionConfigValidation.allowed_sources;
+  const fallbackExemptionDeniedSources = fallbackExemptionConfigValidation.denied_sources;
   const denyAllWhenCapZero = fallbackExemptionConfigValidation.cap_zero_blocks_all;
   const now = new Date();
   const nowMs = now.getTime();
@@ -1371,21 +1373,40 @@ function parseOpeningLagPolicySources_(value, fallbackList) {
 
 function validateOpeningLagFallbackExemptionConfig_(config) {
   const safe = config || {};
-  const capMode = String(safe.cap_mode || 'unlimited_when_zero').toLowerCase();
+  const rawCapMode = String(safe.cap_mode || 'unlimited_when_zero').toLowerCase();
+  const capMode = normalizeOpeningLagFallbackCapMode_(rawCapMode, 'unlimited_when_zero');
   const maxRowsPerRun = Math.max(0, Number(safe.max_rows_per_run || 0));
-  const allowedSources = safe.allowed_sources || {};
-  const deniedSources = safe.denied_sources || {};
+  const allowedSources = Object.assign({}, safe.allowed_sources || {});
+  const deniedSources = Object.assign({}, safe.denied_sources || {});
+  const allowListWasEmpty = Object.keys(allowedSources).length === 0;
+  if (allowListWasEmpty) {
+    allowedSources.fallback_cached_stale = true;
+  }
   const capZeroBlocksAll = capMode === 'deny_all_when_zero' && maxRowsPerRun === 0;
   const overlap = Object.keys(allowedSources).filter(function (source) { return !!deniedSources[source]; });
+  const invalidCapMode = rawCapMode !== capMode;
 
   return {
     cap_mode: capMode,
+    invalid_cap_mode: invalidCapMode,
     cap_zero_blocks_all: capZeroBlocksAll,
     has_unsafe_cap_zero: capZeroBlocksAll,
     has_allow_deny_overlap: overlap.length > 0,
     allow_deny_overlap_sources: overlap,
-    allow_list_empty: Object.keys(allowedSources).length === 0,
+    allow_list_empty: allowListWasEmpty,
+    allow_list_defaulted: allowListWasEmpty,
+    has_config_warning: invalidCapMode || overlap.length > 0 || allowListWasEmpty,
+    allowed_sources: allowedSources,
+    denied_sources: deniedSources,
   };
+}
+
+function normalizeOpeningLagFallbackCapMode_(value, fallback) {
+  const normalized = String(value || '').toLowerCase().trim();
+  if (normalized === 'deny_all_when_zero' || normalized === 'unlimited_when_zero') {
+    return normalized;
+  }
+  return String(fallback || 'unlimited_when_zero').toLowerCase();
 }
 
 function pushOpeningLagFallbackEvidence_(bucket, evidence, limit) {
@@ -1397,7 +1418,7 @@ function pushOpeningLagFallbackEvidence_(bucket, evidence, limit) {
 function buildOpeningLagFallbackDiagnostics_(evidence, counts) {
   const safeEvidence = evidence || {};
   const safeCounts = counts || {};
-  return {
+  const diagnostics = {
     exempted: Number(safeCounts.exempted || 0),
     blocked_by_source: Number(safeCounts.blocked_by_source || 0),
     blocked_by_age: Number(safeCounts.blocked_by_age || 0),
@@ -1409,6 +1430,17 @@ function buildOpeningLagFallbackDiagnostics_(evidence, counts) {
       blocked_by_cap: Array.isArray(safeEvidence.blocked_by_cap) ? safeEvidence.blocked_by_cap.slice() : [],
     },
   };
+  diagnostics.summary = [
+    'exempted=' + diagnostics.exempted,
+    'blocked_by_age=' + diagnostics.blocked_by_age,
+    'blocked_by_cap=' + diagnostics.blocked_by_cap,
+    'sampled=' + (
+      diagnostics.samples.exempted.length
+      + diagnostics.samples.blocked_by_age.length
+      + diagnostics.samples.blocked_by_cap.length
+    ),
+  ].join(' ');
+  return diagnostics;
 }
 
 function openingLagAgeBucket_(openingLagMinutes) {
