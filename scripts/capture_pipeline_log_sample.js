@@ -52,6 +52,8 @@ function main() {
   const outPath = process.argv[2] || 'docs/baselines/pipeline_log_sample_3h.json';
   const runs = Number(process.argv[3] || 36);
   const stepMinutes = Number(process.argv[4] || 5);
+  const logProfile = String(process.argv[5] || 'compact').toLowerCase() === 'verbose' ? 'verbose' : 'compact';
+  const logVerbosity = logProfile === 'verbose' ? 3 : 1;
 
   const context = loadContext();
   const logs = [];
@@ -81,6 +83,9 @@ function main() {
 
   context.getConfig_ = () => ({
     RUN_ENABLED: true,
+    LOG_PROFILE: logProfile,
+    LOG_VERBOSITY_LEVEL: logVerbosity,
+    VERBOSE_LOGGING: logProfile === 'verbose',
     DUPLICATE_DEBOUNCE_MS: 0,
     PIPELINE_MAX_RUNTIME_MS: 330000,
     MODEL_MODE: 'hybrid',
@@ -161,7 +166,7 @@ function main() {
 
   fs.mkdirSync(require('path').dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, JSON.stringify(logs, null, 2));
-  console.log(`wrote ${logs.length} rows to ${outPath}`);
+  console.log(`wrote ${logs.length} rows to ${outPath} (profile=${logProfile})`);
 }
 
 main();
