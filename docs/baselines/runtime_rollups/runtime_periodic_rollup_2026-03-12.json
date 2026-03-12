@@ -1,0 +1,65 @@
+{
+  "schema": "runtime_periodic_rollup_v1",
+  "generated_at_utc": "2026-03-12T23:18:41.194051+00:00",
+  "source_file_count": 1,
+  "cadence": "daily",
+  "rollups": [
+    {
+      "period_start": "2026-03-10",
+      "cadence": "daily",
+      "runs": 2,
+      "success_runs": 1,
+      "success_ratio": 0.5,
+      "productivity": {
+        "avg_ratio": 0.65,
+        "matched_total": 9,
+        "unmatched_total": 3
+      },
+      "blocker_mix": [
+        {
+          "blocker": "opening_lag_blocked_count",
+          "count": 6,
+          "share": 0.6
+        },
+        {
+          "blocker": "no_odds_stage_count",
+          "count": 4,
+          "share": 0.4
+        }
+      ],
+      "stage_latency_trends": {
+        "stageFetchOdds": {
+          "samples": 2,
+          "avg_ms": 600.0,
+          "p95_ms": 700
+        },
+        "stageFetchSchedule": {
+          "samples": 2,
+          "avg_ms": 825.0,
+          "p95_ms": 900
+        }
+      }
+    },
+    {
+      "period_start": "2026-03-11",
+      "cadence": "daily",
+      "runs": 1,
+      "success_runs": 1,
+      "success_ratio": 1.0,
+      "productivity": {
+        "avg_ratio": 1.0,
+        "matched_total": 0,
+        "unmatched_total": 0
+      },
+      "blocker_mix": [],
+      "stage_latency_trends": {
+        "stageFetchOdds": {
+          "samples": 1,
+          "avg_ms": 650.0,
+          "p95_ms": 650
+        }
+      }
+    }
+  ],
+  "notes": "Historical rollups only; raw runtime logs remain outside this snapshot artifact."
+}

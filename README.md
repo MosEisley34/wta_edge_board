@@ -222,6 +222,16 @@ Tuning flags:
 - `--max-stages` (default `8`),
 - `--warning-limit` (default `4`).
 
+For periodic planning/postmortem analysis, generate historical aggregate snapshots (without copying raw runtime logs) into a dedicated rollup directory:
+
+```bash
+scripts/runtime_periodic_aggregates.py ./exports --snapshot-dir ./docs/baselines/runtime_rollups
+```
+
+Snapshot artifacts are date-stamped as:
+- `docs/baselines/runtime_rollups/runtime_periodic_rollup_YYYY-MM-DD.json`
+
+
 ### 3) Interpret expected output
 
 Start with **Run-health degraded contract (first-pass triage)**:
