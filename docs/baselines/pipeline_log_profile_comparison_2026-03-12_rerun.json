@@ -1,0 +1,19 @@
+{
+  "legacy_verbose_output_size_bytes": 345493,
+  "compact_output_size_bytes": 345493,
+  "percentage_reduction": 0.0,
+  "target_reduction_pct": 60.0,
+  "target_met": false,
+  "field_parity": {
+    "run_count_compared": 36,
+    "missing_in_verbose": [],
+    "missing_in_compact": [],
+    "mismatch_counts": {
+      "gate_reasons": 0,
+      "source_selection": 0,
+      "watchdog": 0,
+      "stage_timing": 0
+    },
+    "mismatch_samples": []
+  }
+}
