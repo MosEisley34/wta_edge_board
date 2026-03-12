@@ -31,6 +31,18 @@ class RuntimeDiagnosticsSummaryTests(unittest.TestCase):
         self.assertEqual("watchdog_trend none", lines[3])
         self.assertEqual("warnings none", lines[4])
 
+    def test_rollup_uses_run_level_reason_counts_without_stage_inflation(self):
+        fixture = ROOT / "scripts" / "fixtures" / "runtime_rollup_regression_runs.json"
+        lines = build_summary([str(fixture)], top_n=3, max_stages=2, warning_limit=2)
+
+        self.assertEqual("runs total=2 status=success:2", lines[0])
+        self.assertEqual("top_reason_codes gamma:4;alpha:3;beta:1", lines[1])
+        self.assertEqual(
+            "stage_duration_ms stageFetchOdds[min=500,avg=600.0,p95=700];"
+            "stageFetchSchedule[min=900,avg=1000.0,p95=1100]",
+            lines[2],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
