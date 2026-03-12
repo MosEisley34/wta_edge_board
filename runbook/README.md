@@ -22,6 +22,7 @@ scripts/run_triage_bundle.sh [--out-dir ./exports] <file-or-directory> [more pat
 What it does:
 1. Runs `scripts/prepare_runtime_exports.sh` to export `Run_Log`/`State` CSV/JSON into `./exports` (default).
 2. Immediately invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`).
+3. Prioritize the scanner's **Run-health degraded contract (first-pass triage)** section before any key-specific deep dive.
 
 ## Manual usage flow (optional)
 
@@ -70,6 +71,7 @@ Optional knobs:
 
 3. Interpret output:
 
+- Start with `Run-health degraded contract (first-pass triage)` to validate contract version consistency, blocker totals, dominant blocker categories, sampled blocked records, and stage-skipped reason rollups.
 - `Grouped counts` shows frequency per diagnostic key.
 - `Top matching rows` shows concrete file/row examples for quick drill-down.
 - Prioritize investigation by highest-count key and confirm with row previews.

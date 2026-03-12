@@ -1523,6 +1523,7 @@ function testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_() {
 
     const warningPayload = JSON.parse(healthWarning.message || '{}');
     assertEquals_('run_health_no_matches_from_odds', warningPayload.reason_code);
+    assertEquals_(1, warningPayload.run_health_contract_version);
     assertEquals_(1, warningPayload.stage_skipped_reason_counts.schedule_enrichment_no_schedule_events);
     assertEquals_(1, warningPayload.stage_skipped_reason_counts.no_player_match);
     assertEquals_('no_player_match', warningPayload.dominant_blocker_categories[0].category);
@@ -1531,6 +1532,7 @@ function testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_() {
     assertEquals_('no_player_match', warningPayload.sample_unmatched_events[0].rejection_code);
     assertEquals_(0, warningPayload.opening_lag_blocked_count);
     assertEquals_(0, warningPayload.schedule_only_seed_count);
+    assertEquals_(0, warningPayload.stats_zero_coverage_count);
   } finally {
     harness.restore();
   }
@@ -1702,8 +1704,11 @@ function testRunEdgeBoard_degradesWhenMatchedButStatsCoverageIsZero_() {
 
     const warningPayload = JSON.parse(healthWarning.message || '{}');
     assertEquals_('stats_zero_coverage', warningPayload.reason_code);
+    assertEquals_(1, warningPayload.run_health_contract_version);
     assertEquals_(1, warningPayload.matched);
     assertEquals_(0, warningPayload.players_with_non_null_stats);
+    assertEquals_(1, warningPayload.stats_zero_coverage_count);
+    assertEquals_(0, warningPayload.sample_unmatched_events.length);
 
     const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
     assertEquals_(1, Number((verbose.reason_codes || {}).stats_zero_coverage || 0));

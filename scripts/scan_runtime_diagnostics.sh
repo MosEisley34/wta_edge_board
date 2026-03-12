@@ -43,6 +43,7 @@ KEYS = [
     "schedule_enrichment_h2h_missing",
 ]
 MAX_EXAMPLES_PER_KEY = 5
+RUN_HEALTH_SAMPLE_LIMIT = 5
 
 
 def is_supported_file(path: str) -> bool:
@@ -139,6 +140,11 @@ def main():
 
     counts = defaultdict(int)
     examples = defaultdict(list)
+    run_health_contract_counts = defaultdict(int)
+    run_health_stage_skipped_totals = defaultdict(float)
+    run_health_blocker_totals = defaultdict(float)
+    run_health_dominant = defaultdict(float)
+    run_health_samples = []
     scanned_records = 0
 
     for path in files:
@@ -154,12 +160,126 @@ def main():
                         if len(examples[key]) < MAX_EXAMPLES_PER_KEY:
                             preview = text if len(text) <= 260 else text[:257] + '...'
                             examples[key].append((path, row_num, preview))
+
+                stage = str(record.get('stage') or '')
+                payload = None
+                if stage == 'run_health_guard':
+                    message = record.get('message')
+                    if isinstance(message, dict):
+                        payload = message
+                    elif isinstance(message, str) and message.strip():
+                        try:
+                            parsed = json.loads(message)
+                            if isinstance(parsed, dict):
+                                payload = parsed
+                        except Exception:
+                            payload = None
+                if isinstance(payload, dict):
+                    contract_version = int(payload.get('run_health_contract_version') or 0)
+                    run_health_contract_counts[contract_version] += 1
+
+                    for key, value in (payload.get('stage_skipped_reason_counts') or {}).items():
+                        try:
+                            numeric = float(value)
+                        except (TypeError, ValueError):
+                            continue
+                        if numeric > 0:
+                            run_health_stage_skipped_totals[str(key)] += numeric
+
+                    for key in (
+                        'opening_lag_blocked_count',
+                        'schedule_only_seed_count',
+                        'no_odds_stage_count',
+                        'stale_odds_skip_count',
+                        'low_edge_suppressed_count',
+                        'cooldown_suppressed_count',
+                        'stats_zero_coverage_count',
+                    ):
+                        try:
+                            numeric = float(payload.get(key) or 0)
+                        except (TypeError, ValueError):
+                            numeric = 0
+                        if numeric > 0:
+                            run_health_blocker_totals[key] += numeric
+
+                    for entry in payload.get('dominant_blocker_categories') or []:
+                        if not isinstance(entry, dict):
+                            continue
+                        category = str(entry.get('category') or '')
+                        if not category:
+                            continue
+                        try:
+                            numeric = float(entry.get('count') or 0)
+                        except (TypeError, ValueError):
+                            continue
+                        if numeric > 0:
+                            run_health_dominant[category] += numeric
+
+                    if len(run_health_samples) < RUN_HEALTH_SAMPLE_LIMIT:
+                        run_health_samples.append({
+                            'path': path,
+                            'row': row_num,
+                            'reason_code': str(payload.get('reason_code') or ''),
+                            'sampled_blocked_odds': payload.get('sampled_blocked_odds') or [],
+                            'sample_unmatched_events': payload.get('sample_unmatched_events') or [],
+                        })
         except Exception as exc:
             print(f"Warning: failed to parse {path}: {exc}", file=sys.stderr)
 
     print("Runtime diagnostics scan")
     print(f"Scanned files: {len(files)}")
     print(f"Scanned records: {scanned_records}")
+    print()
+
+    print("Run-health degraded contract (first-pass triage)")
+    total_run_health_records = sum(run_health_contract_counts.values())
+    print(f"- degraded run_health_guard records: {total_run_health_records}")
+    if total_run_health_records:
+        versions = ", ".join(
+            f"v{version}:{count}" for version, count in sorted(run_health_contract_counts.items())
+        )
+        print(f"- contract versions: {versions}")
+
+        if run_health_blocker_totals:
+            blockers = sorted(run_health_blocker_totals.items(), key=lambda item: (-item[1], item[0]))
+            blocker_part = "; ".join(
+                f"{k}:{int(v) if float(v).is_integer() else round(v, 2)}" for k, v in blockers
+            )
+        else:
+            blocker_part = "none"
+        print(f"- blocker counts: {blocker_part}")
+
+        if run_health_dominant:
+            dominant = sorted(run_health_dominant.items(), key=lambda item: (-item[1], item[0]))[:5]
+            dominant_part = "; ".join(
+                f"{k}:{int(v) if float(v).is_integer() else round(v, 2)}" for k, v in dominant
+            )
+        else:
+            dominant_part = "none"
+        print(f"- dominant categories: {dominant_part}")
+
+        if run_health_stage_skipped_totals:
+            skipped = sorted(run_health_stage_skipped_totals.items(), key=lambda item: (-item[1], item[0]))[:8]
+            skipped_part = "; ".join(
+                f"{k}:{int(v) if float(v).is_integer() else round(v, 2)}" for k, v in skipped
+            )
+        else:
+            skipped_part = "none"
+        print(f"- stage-skipped reason rollups: {skipped_part}")
+
+        print(f"- sampled blocked records (up to {RUN_HEALTH_SAMPLE_LIMIT})")
+        for sample in run_health_samples:
+            blocked = sample['sampled_blocked_odds']
+            unmatched = sample['sample_unmatched_events']
+            blocked_preview = blocked[0] if blocked else {}
+            unmatched_preview = unmatched[0] if unmatched else {}
+            print(
+                f"  - {sample['path']}:{sample['row']} reason={sample['reason_code']} "
+                f"blocked_odds={json.dumps(blocked_preview, ensure_ascii=False, sort_keys=True)} "
+                f"unmatched={json.dumps(unmatched_preview, ensure_ascii=False, sort_keys=True)}"
+            )
+    else:
+        print("- none")
     print()
 
     print("Grouped counts")

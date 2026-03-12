@@ -135,6 +135,8 @@ scripts/run_triage_bundle.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime
 
 The wrapper runs `scripts/prepare_runtime_exports.sh` and then invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`) so diagnostics inputs are consistently prepared before scanning.
 
+First-pass diagnosis should always start with the scanner's **Run-health degraded contract (first-pass triage)** section. It standardizes degraded run blocker counts, dominant blocker categories, sampled blocked records, and stage-skipped reason rollups before key-specific deep dives.
+
 Manual 3-step flow is still available when needed:
 
 1. **Export artifacts to a known directory** (`./exports` by default).
@@ -219,6 +221,15 @@ Tuning flags:
 - `--warning-limit` (default `4`).
 
 ### 3) Interpret expected output
+
+Start with **Run-health degraded contract (first-pass triage)**:
+- confirm degraded records all report the same `run_health_contract_version`,
+- review aggregate blocker counts to identify the largest suppression/failure bucket,
+- inspect dominant blocker categories to identify where losses concentrate,
+- use sampled blocked records to quickly anchor investigation in real event IDs,
+- read stage-skipped reason rollups to verify which skip/blocked reasons dominate.
+
+Then use the key-specific diagnostics section:
 
 The scan reports:
 - **Grouped counts** for each diagnostic key:
