@@ -26,6 +26,8 @@ REASON_CODE_ALIAS_DICTIONARIES: dict[str, dict[str, str]] = {
         "source_entity_domain_mismatch_non_tennis_sport_slug_football": "SRC_DM_FOOT",
         "source_entity_domain_mismatch": "SRC_DM",
         "match_map_diagnostic_records_written": "MM_DIAG_WR",
+        "productive_output_mitigation_activated": "PO_MIT_ON",
+        "odds_api_failure_no_stale_fallback": "ODDS_NO_STALE",
     }
 }
 ALIAS_TO_REASON_CODE_BY_SCHEMA = {
@@ -46,11 +48,17 @@ def _parse_json_like(value: Any, fallback: Any) -> Any:
         return fallback
 
 
-def _expand_reason_map(reason_map: dict[str, Any] | None, schema_id: str = REASON_CODE_ALIAS_SCHEMA_ID) -> dict[str, float]:
+def _expand_reason_map(
+    reason_map: dict[str, Any] | None,
+    schema_id: str = REASON_CODE_ALIAS_SCHEMA_ID,
+    fallback_aliases: dict[str, str] | None = None,
+) -> dict[str, float]:
     expanded: dict[str, float] = {}
     alias_to_reason_code = ALIAS_TO_REASON_CODE_BY_SCHEMA.get(schema_id) or {}
+    fallback_alias_map = {str(k): str(v) for k, v in (fallback_aliases or {}).items() if str(k) and str(v)}
     for alias_or_code, raw_value in (reason_map or {}).items():
-        reason_code = alias_to_reason_code.get(str(alias_or_code), str(alias_or_code))
+        alias_or_code_text = str(alias_or_code)
+        reason_code = fallback_alias_map.get(alias_or_code_text) or alias_to_reason_code.get(alias_or_code_text, alias_or_code_text)
         try:
             value = float(raw_value)
         except (TypeError, ValueError):
@@ -65,7 +73,11 @@ def _expand_stage_summaries(
     expanded = []
     for summary in stage_summaries or []:
         clone = dict(summary or {})
-        clone["reason_codes"] = _expand_reason_map(clone.get("reason_codes") or {}, schema_id=schema_id)
+        clone["reason_codes"] = _expand_reason_map(
+            clone.get("reason_codes") or {},
+            schema_id=schema_id,
+            fallback_aliases=clone.get("fallback_aliases") or {},
+        )
         expanded.append(clone)
     return expanded
 
@@ -86,14 +98,22 @@ def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
         message = _parse_json_like(adapted.get("message"), None)
         if isinstance(message, dict) and message.get("reason_codes"):
             message_schema_id = str(message.get("schema_id") or REASON_CODE_ALIAS_SCHEMA_ID)
-            message["reason_codes"] = _expand_reason_map(message.get("reason_codes") or {}, schema_id=message_schema_id)
+            message["reason_codes"] = _expand_reason_map(
+                message.get("reason_codes") or {},
+                schema_id=message_schema_id,
+                fallback_aliases=message.get("fallback_aliases") or {},
+            )
             adapted["message"] = json.dumps(message)
 
         rejection_envelope = _parse_json_like(adapted.get("rejection_codes"), None)
         if isinstance(rejection_envelope, dict) and rejection_envelope.get("reason_codes"):
             rejection_schema_id = str(rejection_envelope.get("schema_id") or REASON_CODE_ALIAS_SCHEMA_ID)
             adapted["rejection_codes"] = json.dumps(
-                _expand_reason_map(rejection_envelope.get("reason_codes") or {}, schema_id=rejection_schema_id)
+                _expand_reason_map(
+                    rejection_envelope.get("reason_codes") or {},
+                    schema_id=rejection_schema_id,
+                    fallback_aliases=rejection_envelope.get("fallback_aliases") or {},
+                )
             )
 
         stage_summary_envelope = _parse_json_like(adapted.get("stage_summaries"), None)
@@ -110,8 +130,17 @@ def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
     row_type = _legacy_row_type(event_type, stage)
 
     compact_schema_id = str(record.get("ras") or REASON_CODE_ALIAS_SCHEMA_ID)
-    expanded_stage_reason_codes = _expand_reason_map(record.get("rc") or {}, schema_id=compact_schema_id)
-    expanded_rejections = _expand_reason_map(record.get("rj") or {}, schema_id=compact_schema_id)
+    rm = record.get("rm") if isinstance(record.get("rm"), dict) else {}
+    expanded_stage_reason_codes = _expand_reason_map(
+        record.get("rc") or {},
+        schema_id=compact_schema_id,
+        fallback_aliases=rm.get("fallback_aliases") if isinstance(rm.get("fallback_aliases"), dict) else {},
+    )
+    expanded_rejections = _expand_reason_map(
+        record.get("rj") or {},
+        schema_id=compact_schema_id,
+        fallback_aliases=rm.get("rejection_fallback_aliases") if isinstance(rm.get("rejection_fallback_aliases"), dict) else {},
+    )
     expanded_stage_summaries = _expand_stage_summaries(record.get("ssu") or [], schema_id=compact_schema_id)
 
     msg = _parse_json_like(record.get("msg"), None)
@@ -120,7 +149,9 @@ def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
         if merged_message.get("reason_codes"):
             message_schema_id = str(merged_message.get("schema_id") or compact_schema_id or REASON_CODE_ALIAS_SCHEMA_ID)
             merged_message["reason_codes"] = _expand_reason_map(
-                merged_message.get("reason_codes") or {}, schema_id=message_schema_id
+                merged_message.get("reason_codes") or {},
+                schema_id=message_schema_id,
+                fallback_aliases=merged_message.get("fallback_aliases") or {},
             )
         if expanded_stage_reason_codes:
             merged_message["reason_codes"] = expanded_stage_reason_codes

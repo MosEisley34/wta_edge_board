@@ -3,6 +3,7 @@ const STATE_VALUE_SAFE_CHAR_THRESHOLD = 45000;
 const STATE_VALUE_GUARD_REASON = 'state_value_summarized_size_guard';
 
 let REASON_ALIAS_DICTIONARY_EMITTED_FOR_PROCESS = false;
+let REASON_ALIAS_FALLBACK_WARNING_EMITTED = {};
 
 const SECRET_REDACTION_MAP = {
   exact_keys: [
@@ -150,12 +151,17 @@ function appendStageLog_(runId, summary) {
   });
 }
 
-function buildReasonCodeEnvelopeForLog_(reasonMap, schemaId) {
+function buildReasonCodeEnvelopeForLog_(reasonMap, schemaId, options) {
   const resolvedSchemaId = String(schemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
-  return {
+  const compacted = compactReasonCodeMapForLog_(reasonMap || {}, resolvedSchemaId, options || {});
+  const envelope = {
     schema_id: resolvedSchemaId,
-    reason_codes: compactReasonCodeMapForLog_(reasonMap || {}, resolvedSchemaId),
+    reason_codes: compacted.reason_codes,
   };
+  if (Object.keys(compacted.fallback_aliases || {}).length > 0) {
+    envelope.fallback_aliases = compacted.fallback_aliases;
+  }
+  return envelope;
 }
 
 function toReasonCodeMapForLog_(value, schemaId) {
@@ -163,7 +169,7 @@ function toReasonCodeMapForLog_(value, schemaId) {
   if (!parsed || typeof parsed !== 'object') return {};
   if (Object.prototype.hasOwnProperty.call(parsed, 'reason_codes')) {
     const envelopeSchemaId = String(parsed.schema_id || schemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
-    return expandReasonCodeMapForLegacy_(parsed.reason_codes || {}, envelopeSchemaId);
+    return expandReasonCodeMapForLegacy_(parsed.reason_codes || {}, envelopeSchemaId, parsed.fallback_aliases || {});
   }
   return expandReasonCodeMapForLegacy_(parsed, String(schemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim());
 }
@@ -171,11 +177,18 @@ function toReasonCodeMapForLog_(value, schemaId) {
 function normalizeLogEntryForAppend_(entry) {
   const normalized = Object.assign({}, entry || {});
   const schemaId = String(REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
-  return serializeCompactReasonCodesForLogEntry_(normalized, schemaId);
+  const allowCanonicalPassthrough = toBoolean_(
+    normalized.allow_canonical_reason_code_passthrough,
+    toBoolean_(DEFAULT_CONFIG.REASON_CODE_ALIAS_ALLOW_CANONICAL_PASSTHROUGH, false)
+  );
+  return serializeCompactReasonCodesForLogEntry_(normalized, schemaId, {
+    allow_canonical_passthrough: allowCanonicalPassthrough,
+  });
 }
 
-function serializeCompactReasonCodesForLogEntry_(normalizedEntry, schemaId) {
+function serializeCompactReasonCodesForLogEntry_(normalizedEntry, schemaId, options) {
   const normalized = Object.assign({}, normalizedEntry || {});
+  const compactOptions = Object.assign({}, options || {});
   const messagePayload = parseLogJsonLike_(normalized.message, null);
   const messageObject = messagePayload && typeof messagePayload === 'object' && !Array.isArray(messagePayload)
     ? Object.assign({}, messagePayload)
@@ -202,20 +215,42 @@ function serializeCompactReasonCodesForLogEntry_(normalizedEntry, schemaId) {
   }
 
   if (messageObject && Object.keys(reasonCodeMap).length > 0) {
-    const compactEnvelope = buildReasonCodeEnvelopeForLog_(reasonCodeMap, schemaId);
+    const compactEnvelope = buildReasonCodeEnvelopeForLog_(reasonCodeMap, schemaId, compactOptions);
     messageObject.schema_id = compactEnvelope.schema_id;
     messageObject.reason_codes = compactEnvelope.reason_codes;
+    if (compactEnvelope.fallback_aliases) {
+      messageObject.fallback_aliases = compactEnvelope.fallback_aliases;
+    } else {
+      delete messageObject.fallback_aliases;
+    }
     normalized.message = JSON.stringify(messageObject);
   }
 
   const rejectionReasonCodes = toReasonCodeMapForLog_(normalized.rejection_codes, schemaId);
-  normalized.rejection_codes = JSON.stringify(buildReasonCodeEnvelopeForLog_(rejectionReasonCodes, schemaId));
+  normalized.rejection_codes = JSON.stringify(buildReasonCodeEnvelopeForLog_(rejectionReasonCodes, schemaId, compactOptions));
 
   const stageSummaryPayload = parseLogJsonLike_(normalized.stage_summaries, normalized.stage_summaries);
   if (Array.isArray(stageSummaryPayload)) {
-    normalized.stage_summaries = JSON.stringify(compactStageSummariesForLog_(stageSummaryPayload, schemaId));
+    normalized.stage_summaries = JSON.stringify(compactStageSummariesForLog_(stageSummaryPayload, schemaId, compactOptions));
   } else if (stageSummaryPayload && typeof stageSummaryPayload === 'object' && stageSummaryPayload.stage_summaries) {
-    normalized.stage_summaries = JSON.stringify(compactStageSummariesForLog_(stageSummaryPayload.stage_summaries || [], String(stageSummaryPayload.schema_id || schemaId)));
+    normalized.stage_summaries = JSON.stringify(compactStageSummariesForLog_(stageSummaryPayload.stage_summaries || [], String(stageSummaryPayload.schema_id || schemaId), compactOptions));
+  }
+
+  const fallbackWarningAliases = {};
+  const rejectionEnvelopeForWarning = parseLogJsonLike_(normalized.rejection_codes, null);
+  if (rejectionEnvelopeForWarning && rejectionEnvelopeForWarning.fallback_aliases) {
+    Object.assign(fallbackWarningAliases, rejectionEnvelopeForWarning.fallback_aliases || {});
+  }
+  if (messageObject && messageObject.fallback_aliases) {
+    Object.assign(fallbackWarningAliases, messageObject.fallback_aliases || {});
+  }
+  if (Object.keys(fallbackWarningAliases).length > 0) {
+    normalized.__reason_alias_fallback_warning = {
+      schema_id: schemaId,
+      aliases: Object.keys(fallbackWarningAliases).sort(),
+      canonical_reasons: fallbackWarningAliases,
+      allow_canonical_passthrough: !!compactOptions.allow_canonical_passthrough,
+    };
   }
 
   return normalized;
@@ -256,6 +291,8 @@ function appendLogRow_(entry) {
     sanitizeForLog_(normalized.stack || ''),
     sanitizeForLog_(normalized.stage_summaries || '[]'),
   ]);
+
+  maybeEmitReasonAliasFallbackWarningOpsLog_(normalized);
 }
 
 function setStateValue_(key, value, opts) {
@@ -467,7 +504,7 @@ function maybeEmitRunRollup_(config, payload) {
   }
 
   const stageDurations = computeStageDurationRollup_((payload && payload.stage_summaries) || []);
-  const reasonCodes = compactReasonCodeMapForLog_((payload && payload.reason_codes) || {}, REASON_CODE_ALIAS_SCHEMA_ID);
+  const reasonCodes = compactReasonCodeMapForLog_((payload && payload.reason_codes) || {}, REASON_CODE_ALIAS_SCHEMA_ID).reason_codes;
   const topReasonCodes = getTopReasonCodes_(reasonCodes, 5).filter(function (entry) {
     return Number(entry && entry.count || 0) > 0;
   });
@@ -908,11 +945,57 @@ function getReasonCodeAliasSchema_() {
   };
 }
 
-function reasonCodeToAlias_(reasonCode, schemaId) {
+function reasonCodeToAlias_(reasonCode, schemaId, options) {
   const text = String(reasonCode || '').trim();
-  if (!text) return '';
+  if (!text) return { alias: '', canonical: '', was_fallback: false, was_passthrough: false };
   const dictionary = getReasonCodeAliasDictionary_(schemaId);
-  return String(dictionary[text] || text);
+  if (Object.prototype.hasOwnProperty.call(dictionary, text)) {
+    return { alias: String(dictionary[text]), canonical: text, was_fallback: false, was_passthrough: false };
+  }
+  const allowPassthrough = !!((options || {}).allow_canonical_passthrough);
+  if (allowPassthrough) {
+    return { alias: text, canonical: text, was_fallback: false, was_passthrough: true };
+  }
+  const fallbackAlias = buildReasonCodeFallbackAlias_(text);
+  return { alias: fallbackAlias, canonical: text, was_fallback: true, was_passthrough: false };
+}
+
+
+function buildReasonCodeFallbackAlias_(reasonCode) {
+  const hash = Number(stringHashCode_(String(reasonCode || '')) || 0);
+  return 'UNK_' + hash.toString(36).toUpperCase();
+}
+
+function maybeEmitReasonAliasFallbackWarningOpsLog_(entry) {
+  const warning = entry && entry.__reason_alias_fallback_warning;
+  if (!warning || !warning.aliases || !warning.aliases.length) return;
+  const key = String(warning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '') + '::' + warning.aliases.join(',');
+  if (REASON_ALIAS_FALLBACK_WARNING_EMITTED[key]) return;
+  REASON_ALIAS_FALLBACK_WARNING_EMITTED[key] = true;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEETS.RUN_LOG) || ensureSheet_(ss, SHEETS.RUN_LOG);
+  const nowIso = formatLocalIso_(new Date());
+  sh.appendRow([
+    'ops',
+    entry.run_id || '',
+    'reason_alias_resolution',
+    nowIso,
+    nowIso,
+    'warning',
+    'reason_code_alias_missing_fallback_emitted',
+    sanitizeForLog_(JSON.stringify({
+      reason_code_alias_schema_id: String(warning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || ''),
+      fallback_aliases: warning.aliases,
+      canonical_reasons: warning.canonical_reasons || {},
+      mode: warning.allow_canonical_passthrough ? 'canonical_passthrough' : 'hash_fallback',
+    })),
+    0,0,0,0,0,0,
+    '{}',
+    0,0,
+    '', '', '', '', '',
+    '[]',
+  ]);
 }
 
 function reasonCodeAliasToCode_(reasonAlias, schemaId) {
@@ -922,32 +1005,45 @@ function reasonCodeAliasToCode_(reasonAlias, schemaId) {
   return String(inverted[text] || text);
 }
 
-function compactReasonCodeMapForLog_(reasonMap, schemaId) {
+function compactReasonCodeMapForLog_(reasonMap, schemaId, options) {
   const compacted = {};
+  const fallbackAliases = {};
   Object.keys(reasonMap || {}).forEach((reasonCode) => {
     const value = Number((reasonMap || {})[reasonCode]);
     if (!Number.isFinite(value) || value === 0) return;
-    const alias = reasonCodeToAlias_(reasonCode, schemaId);
-    compacted[alias] = value;
+    const resolved = reasonCodeToAlias_(reasonCode, schemaId, options || {});
+    if (!resolved.alias) return;
+    compacted[resolved.alias] = value;
+    if (resolved.was_fallback) {
+      fallbackAliases[resolved.alias] = resolved.canonical;
+    }
   });
-  return compacted;
+  return {
+    reason_codes: compacted,
+    fallback_aliases: fallbackAliases,
+  };
 }
 
-function compactStageSummariesForLog_(stageSummaries, schemaId) {
+function compactStageSummariesForLog_(stageSummaries, schemaId, options) {
   return {
     schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
     stage_summaries: (stageSummaries || []).map((summary) => {
       const cloned = Object.assign({}, summary || {});
-      cloned.reason_codes = compactReasonCodeMapForLog_((summary || {}).reason_codes || {}, schemaId);
+      const compacted = compactReasonCodeMapForLog_((summary || {}).reason_codes || {}, schemaId, options || {});
+      cloned.reason_codes = compacted.reason_codes;
+      if (Object.keys(compacted.fallback_aliases || {}).length > 0) cloned.fallback_aliases = compacted.fallback_aliases;
       return cloned;
     }),
   };
 }
 
-function expandReasonCodeMapForLegacy_(reasonMap, schemaId) {
+function expandReasonCodeMapForLegacy_(reasonMap, schemaId, fallbackAliases) {
   const expanded = {};
+  const fallbacks = fallbackAliases || {};
   Object.keys(reasonMap || {}).forEach((aliasOrCode) => {
-    const reasonCode = reasonCodeAliasToCode_(aliasOrCode, schemaId);
+    const aliasKey = String(aliasOrCode || '');
+    const fallbackCode = String(fallbacks[aliasKey] || '').trim();
+    const reasonCode = fallbackCode || reasonCodeAliasToCode_(aliasOrCode, schemaId);
     const value = Number((reasonMap || {})[aliasOrCode]);
     if (!reasonCode || !Number.isFinite(value)) return;
     expanded[reasonCode] = value;
@@ -958,7 +1054,7 @@ function expandReasonCodeMapForLegacy_(reasonMap, schemaId) {
 function expandStageSummariesForLegacy_(stageSummaries, schemaId) {
   return (stageSummaries || []).map((summary) => {
     const cloned = Object.assign({}, summary || {});
-    cloned.reason_codes = expandReasonCodeMapForLegacy_((summary || {}).reason_codes || {}, schemaId);
+    cloned.reason_codes = expandReasonCodeMapForLegacy_((summary || {}).reason_codes || {}, schemaId, (summary || {}).fallback_aliases || {});
     return cloned;
   });
 }
@@ -982,13 +1078,13 @@ function adaptRunLogRecordForLegacy_(record) {
     const legacyMessage = parseLogJsonLike_(row.message, null);
     if (legacyMessage && typeof legacyMessage === 'object' && legacyMessage.reason_codes) {
       const messageSchemaId = String(legacyMessage.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
-      legacyMessage.reason_codes = expandReasonCodeMapForLegacy_(legacyMessage.reason_codes || {}, messageSchemaId);
+      legacyMessage.reason_codes = expandReasonCodeMapForLegacy_(legacyMessage.reason_codes || {}, messageSchemaId, legacyMessage.fallback_aliases || {});
       row.message = JSON.stringify(legacyMessage);
     }
     const rejectionEnvelope = parseLogJsonLike_(row.rejection_codes, null);
     if (rejectionEnvelope && rejectionEnvelope.reason_codes) {
       const rejectionSchemaId = String(rejectionEnvelope.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
-      rejectionEnvelope.reason_codes = expandReasonCodeMapForLegacy_(rejectionEnvelope.reason_codes || {}, rejectionSchemaId);
+      rejectionEnvelope.reason_codes = expandReasonCodeMapForLegacy_(rejectionEnvelope.reason_codes || {}, rejectionSchemaId, rejectionEnvelope.fallback_aliases || {});
       row.rejection_codes = JSON.stringify(rejectionEnvelope.reason_codes);
     }
     const stageSummaryEnvelope = parseLogJsonLike_(row.stage_summaries, null);
@@ -1013,14 +1109,14 @@ function adaptRunLogRecordForLegacy_(record) {
       const messagePayload = Object.assign({}, legacyMessageObj || {});
       if (messagePayload.reason_codes) {
         const messageSchemaId = String(messagePayload.schema_id || compactSchemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
-        messagePayload.reason_codes = expandReasonCodeMapForLegacy_(messagePayload.reason_codes || {}, messageSchemaId);
+        messagePayload.reason_codes = expandReasonCodeMapForLegacy_(messagePayload.reason_codes || {}, messageSchemaId, messagePayload.fallback_aliases || ((row.rm || {}).fallback_aliases || {}));
       }
       return messagePayload;
     })())
     : String(row.msg || '');
 
-  const expandedReasonCodes = expandReasonCodeMapForLegacy_(row.rc || {}, compactSchemaId);
-  const expandedRejections = expandReasonCodeMapForLegacy_(row.rj || {}, compactSchemaId);
+  const expandedReasonCodes = expandReasonCodeMapForLegacy_(row.rc || {}, compactSchemaId, ((row.rm || {}).fallback_aliases || {}));
+  const expandedRejections = expandReasonCodeMapForLegacy_(row.rj || {}, compactSchemaId, ((row.rm || {}).rejection_fallback_aliases || {}));
   const expandedStageSummaries = expandStageSummariesForLegacy_(row.ssu || [], compactSchemaId);
 
   if (legacyMessageObj && typeof legacyMessageObj === 'object' && Object.keys(expandedReasonCodes).length > 0) {
