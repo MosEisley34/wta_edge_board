@@ -146,24 +146,26 @@ const TIMESTAMP_TIMEZONE = {
 };
 
 const REASON_CODE_ALIAS_SCHEMA_ID = 'reason_code_alias_v1';
-const REASON_CODE_ALIAS_DICTIONARY = {
-  odds_refresh_skipped_outside_window: 'or_out_win',
-  odds_refresh_cache_hit_within_window: 'or_hit_win',
-  odds_refresh_cache_hit_outside_window: 'or_hit_out',
-  odds_refresh_skipped_credits_soft_limit: 'or_skip_soft',
-  odds_refresh_skipped_credits_hard_limit: 'or_skip_hard',
-  odds_refresh_no_eligible_matches: 'or_no_elig',
-  odds_refresh_fetched_success: 'or_fetch_ok',
-  productive_output_empty_streak_detected: 'po_empty_stk',
-  schedule_only_streak_detected: 'sched_only_stk',
-  bootstrap_empty_cycle_detected: 'boot_empty_stk',
-  opening_lag_within_limit: 'open_lag_ok',
-  opening_lag_exceeded: 'open_lag_hi',
-  missing_open_timestamp: 'open_ts_miss',
-  run_health_no_matches_from_odds: 'rh_no_match',
-  source_entity_domain_mismatch_non_tennis_sport_slug_football: 'src_dm_foot',
-  source_entity_domain_mismatch: 'src_dm',
-  match_map_diagnostic_records_written: 'mm_diag_wr',
+const REASON_CODE_ALIAS_DICTIONARIES = {
+  [REASON_CODE_ALIAS_SCHEMA_ID]: {
+    odds_refresh_skipped_outside_window: 'OR_OUT_WIN',
+    odds_refresh_cache_hit_within_window: 'OR_HIT_WIN',
+    odds_refresh_cache_hit_outside_window: 'OR_HIT_OUT',
+    odds_refresh_skipped_credits_soft_limit: 'OR_SKIP_SOFT',
+    odds_refresh_skipped_credits_hard_limit: 'OR_SKIP_HARD',
+    odds_refresh_no_eligible_matches: 'OR_NO_ELIG',
+    odds_refresh_fetched_success: 'OR_FETCH_OK',
+    productive_output_empty_streak_detected: 'PO_EMPTY_STK',
+    schedule_only_streak_detected: 'SCH_ONLY_STK',
+    bootstrap_empty_cycle_detected: 'BOOT_EMPTY_STK',
+    opening_lag_within_limit: 'OPEN_LAG_OK',
+    opening_lag_exceeded: 'OPEN_LAG_HI',
+    missing_open_timestamp: 'OPEN_TS_MISS',
+    run_health_no_matches_from_odds: 'RH_NO_MATCH',
+    source_entity_domain_mismatch_non_tennis_sport_slug_football: 'SRC_DM_FOOT',
+    source_entity_domain_mismatch: 'SRC_DM',
+    match_map_diagnostic_records_written: 'MM_DIAG_WR',
+  },
 };
 
 function getConfig_() {

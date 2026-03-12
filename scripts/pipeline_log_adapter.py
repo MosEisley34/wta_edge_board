@@ -6,28 +6,32 @@ from __future__ import annotations
 import json
 from typing import Any
 
-REASON_CODE_ALIAS_DICTIONARY: dict[str, str] = {
-    "odds_refresh_skipped_outside_window": "or_out_win",
-    "odds_refresh_cache_hit_within_window": "or_hit_win",
-    "odds_refresh_cache_hit_outside_window": "or_hit_out",
-    "odds_refresh_skipped_credits_soft_limit": "or_skip_soft",
-    "odds_refresh_skipped_credits_hard_limit": "or_skip_hard",
-    "odds_refresh_no_eligible_matches": "or_no_elig",
-    "odds_refresh_fetched_success": "or_fetch_ok",
-    "productive_output_empty_streak_detected": "po_empty_stk",
-    "schedule_only_streak_detected": "sched_only_stk",
-    "bootstrap_empty_cycle_detected": "boot_empty_stk",
-    "opening_lag_within_limit": "open_lag_ok",
-    "opening_lag_exceeded": "open_lag_hi",
-    "missing_open_timestamp": "open_ts_miss",
-    "run_health_no_matches_from_odds": "rh_no_match",
-    "source_entity_domain_mismatch_non_tennis_sport_slug_football": "src_dm_foot",
-    "source_entity_domain_mismatch": "src_dm",
-    "match_map_diagnostic_records_written": "mm_diag_wr",
+REASON_CODE_ALIAS_SCHEMA_ID = "reason_code_alias_v1"
+REASON_CODE_ALIAS_DICTIONARIES: dict[str, dict[str, str]] = {
+    REASON_CODE_ALIAS_SCHEMA_ID: {
+        "odds_refresh_skipped_outside_window": "OR_OUT_WIN",
+        "odds_refresh_cache_hit_within_window": "OR_HIT_WIN",
+        "odds_refresh_cache_hit_outside_window": "OR_HIT_OUT",
+        "odds_refresh_skipped_credits_soft_limit": "OR_SKIP_SOFT",
+        "odds_refresh_skipped_credits_hard_limit": "OR_SKIP_HARD",
+        "odds_refresh_no_eligible_matches": "OR_NO_ELIG",
+        "odds_refresh_fetched_success": "OR_FETCH_OK",
+        "productive_output_empty_streak_detected": "PO_EMPTY_STK",
+        "schedule_only_streak_detected": "SCH_ONLY_STK",
+        "bootstrap_empty_cycle_detected": "BOOT_EMPTY_STK",
+        "opening_lag_within_limit": "OPEN_LAG_OK",
+        "opening_lag_exceeded": "OPEN_LAG_HI",
+        "missing_open_timestamp": "OPEN_TS_MISS",
+        "run_health_no_matches_from_odds": "RH_NO_MATCH",
+        "source_entity_domain_mismatch_non_tennis_sport_slug_football": "SRC_DM_FOOT",
+        "source_entity_domain_mismatch": "SRC_DM",
+        "match_map_diagnostic_records_written": "MM_DIAG_WR",
+    }
 }
-
-ALIAS_TO_REASON_CODE = {alias: code for code, alias in REASON_CODE_ALIAS_DICTIONARY.items()}
-
+ALIAS_TO_REASON_CODE_BY_SCHEMA = {
+    schema_id: {alias: code for code, alias in aliases.items()}
+    for schema_id, aliases in REASON_CODE_ALIAS_DICTIONARIES.items()
+}
 
 def _parse_json_like(value: Any, fallback: Any) -> Any:
     if value in (None, ""):
@@ -42,10 +46,11 @@ def _parse_json_like(value: Any, fallback: Any) -> Any:
         return fallback
 
 
-def _expand_reason_map(reason_map: dict[str, Any] | None) -> dict[str, float]:
+def _expand_reason_map(reason_map: dict[str, Any] | None, schema_id: str = REASON_CODE_ALIAS_SCHEMA_ID) -> dict[str, float]:
     expanded: dict[str, float] = {}
+    alias_to_reason_code = ALIAS_TO_REASON_CODE_BY_SCHEMA.get(schema_id) or {}
     for alias_or_code, raw_value in (reason_map or {}).items():
-        reason_code = ALIAS_TO_REASON_CODE.get(str(alias_or_code), str(alias_or_code))
+        reason_code = alias_to_reason_code.get(str(alias_or_code), str(alias_or_code))
         try:
             value = float(raw_value)
         except (TypeError, ValueError):
@@ -54,11 +59,13 @@ def _expand_reason_map(reason_map: dict[str, Any] | None) -> dict[str, float]:
     return expanded
 
 
-def _expand_stage_summaries(stage_summaries: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def _expand_stage_summaries(
+    stage_summaries: list[dict[str, Any]] | None, schema_id: str = REASON_CODE_ALIAS_SCHEMA_ID
+) -> list[dict[str, Any]]:
     expanded = []
     for summary in stage_summaries or []:
         clone = dict(summary or {})
-        clone["reason_codes"] = _expand_reason_map(clone.get("reason_codes") or {})
+        clone["reason_codes"] = _expand_reason_map(clone.get("reason_codes") or {}, schema_id=schema_id)
         expanded.append(clone)
     return expanded
 
@@ -78,17 +85,22 @@ def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
         adapted = dict(record)
         message = _parse_json_like(adapted.get("message"), None)
         if isinstance(message, dict) and message.get("reason_codes"):
-            message["reason_codes"] = _expand_reason_map(message.get("reason_codes") or {})
+            message_schema_id = str(message.get("schema_id") or REASON_CODE_ALIAS_SCHEMA_ID)
+            message["reason_codes"] = _expand_reason_map(message.get("reason_codes") or {}, schema_id=message_schema_id)
             adapted["message"] = json.dumps(message)
 
         rejection_envelope = _parse_json_like(adapted.get("rejection_codes"), None)
         if isinstance(rejection_envelope, dict) and rejection_envelope.get("reason_codes"):
-            adapted["rejection_codes"] = json.dumps(_expand_reason_map(rejection_envelope.get("reason_codes") or {}))
+            rejection_schema_id = str(rejection_envelope.get("schema_id") or REASON_CODE_ALIAS_SCHEMA_ID)
+            adapted["rejection_codes"] = json.dumps(
+                _expand_reason_map(rejection_envelope.get("reason_codes") or {}, schema_id=rejection_schema_id)
+            )
 
         stage_summary_envelope = _parse_json_like(adapted.get("stage_summaries"), None)
         if isinstance(stage_summary_envelope, dict) and stage_summary_envelope.get("stage_summaries"):
+            stage_schema_id = str(stage_summary_envelope.get("schema_id") or REASON_CODE_ALIAS_SCHEMA_ID)
             adapted["stage_summaries"] = json.dumps(
-                _expand_stage_summaries(stage_summary_envelope.get("stage_summaries") or [])
+                _expand_stage_summaries(stage_summary_envelope.get("stage_summaries") or [], schema_id=stage_schema_id)
             )
 
         return adapted
@@ -97,9 +109,10 @@ def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
     stage = str(record.get("st") or event_type)
     row_type = _legacy_row_type(event_type, stage)
 
-    expanded_stage_reason_codes = _expand_reason_map(record.get("rc") or {})
-    expanded_rejections = _expand_reason_map(record.get("rj") or {})
-    expanded_stage_summaries = _expand_stage_summaries(record.get("ssu") or [])
+    compact_schema_id = str(record.get("ras") or REASON_CODE_ALIAS_SCHEMA_ID)
+    expanded_stage_reason_codes = _expand_reason_map(record.get("rc") or {}, schema_id=compact_schema_id)
+    expanded_rejections = _expand_reason_map(record.get("rj") or {}, schema_id=compact_schema_id)
+    expanded_stage_summaries = _expand_stage_summaries(record.get("ssu") or [], schema_id=compact_schema_id)
 
     msg = _parse_json_like(record.get("msg"), None)
     if isinstance(msg, dict):

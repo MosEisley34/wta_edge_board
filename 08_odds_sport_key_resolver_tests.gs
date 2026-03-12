@@ -6093,12 +6093,12 @@ function testAdaptRunLogRecordForLegacy_expandsAliasReasonMapsForLegacyRows_() {
     row_type: 'summary',
     run_id: 'run-1',
     stage: 'runEdgeBoard',
-    message: JSON.stringify({ reason_codes: { or_out_win: 2 } }),
-    rejection_codes: JSON.stringify({ schema_id: REASON_CODE_ALIAS_SCHEMA_ID, reason_codes: { open_lag_hi: 1 } }),
+    message: JSON.stringify({ reason_codes: { OR_OUT_WIN: 2 } }),
+    rejection_codes: JSON.stringify({ schema_id: REASON_CODE_ALIAS_SCHEMA_ID, reason_codes: { OPEN_LAG_HI: 1 } }),
     stage_summaries: JSON.stringify({
       schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
       stage_summaries: [
-        { stage: 'stageFetchOdds', reason_codes: { mm_diag_wr: 3 } },
+        { stage: 'stageFetchOdds', reason_codes: { MM_DIAG_WR: 3 } },
       ],
     }),
   });
@@ -6126,11 +6126,11 @@ function testAdaptRunLogRecordForLegacy_reconstructsCompactV2Row_() {
     oc: 5,
     pr: 'odds_api',
     acu: 1,
-    rc: { or_out_win: 2 },
+    rc: { OR_OUT_WIN: 2 },
     rm: { resolver: 'canonical' },
     msg: { context: 'compact' },
-    rj: { open_lag_hi: 1 },
-    ssu: [{ stage: 'stageFetchOdds', reason_codes: { mm_diag_wr: 2 } }],
+    rj: { OPEN_LAG_HI: 1 },
+    ssu: [{ stage: 'stageFetchOdds', reason_codes: { MM_DIAG_WR: 2 } }],
   });
 
   const message = JSON.parse(adapted.message || '{}');

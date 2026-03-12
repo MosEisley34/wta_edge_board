@@ -131,7 +131,7 @@ function writeOpeningLagSkipState_(runId, payload) {
 }
 
 function appendStageLog_(runId, summary) {
-  const compactReasonCodes = compactReasonCodeMapForLog_(summary.reason_codes || {});
+  const compactReasonCodes = compactReasonCodeMapForLog_(summary.reason_codes || {}, REASON_CODE_ALIAS_SCHEMA_ID);
   appendLogRow_({
     row_type: 'stage',
     run_id: runId,
@@ -395,7 +395,7 @@ function maybeEmitRunRollup_(config, payload) {
   }
 
   const stageDurations = computeStageDurationRollup_((payload && payload.stage_summaries) || []);
-  const reasonCodes = compactReasonCodeMapForLog_((payload && payload.reason_codes) || {});
+  const reasonCodes = compactReasonCodeMapForLog_((payload && payload.reason_codes) || {}, REASON_CODE_ALIAS_SCHEMA_ID);
   const topReasonCodes = getTopReasonCodes_(reasonCodes, 5).filter(function (entry) {
     return Number(entry && entry.count || 0) > 0;
   });
@@ -755,8 +755,11 @@ function maybeEmitReasonAliasDictionary_(config) {
   }, 1);
 }
 
-function getReasonCodeAliasDictionary_() {
-  return REASON_CODE_ALIAS_DICTIONARY || {};
+function getReasonCodeAliasDictionary_(schemaId) {
+  const resolvedSchemaId = String(schemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+  const dictionaries = REASON_CODE_ALIAS_DICTIONARIES || {};
+  const dictionary = dictionaries[resolvedSchemaId] || {};
+  return dictionary;
 }
 
 function invertReasonCodeAliasDictionary_(aliasDictionary) {
@@ -779,46 +782,46 @@ function getReasonCodeAliasSchema_() {
   };
 }
 
-function reasonCodeToAlias_(reasonCode) {
+function reasonCodeToAlias_(reasonCode, schemaId) {
   const text = String(reasonCode || '').trim();
   if (!text) return '';
-  const dictionary = getReasonCodeAliasDictionary_();
+  const dictionary = getReasonCodeAliasDictionary_(schemaId);
   return String(dictionary[text] || text);
 }
 
-function reasonCodeAliasToCode_(reasonAlias) {
+function reasonCodeAliasToCode_(reasonAlias, schemaId) {
   const text = String(reasonAlias || '').trim();
   if (!text) return '';
-  const inverted = invertReasonCodeAliasDictionary_(getReasonCodeAliasDictionary_());
+  const inverted = invertReasonCodeAliasDictionary_(getReasonCodeAliasDictionary_(schemaId));
   return String(inverted[text] || text);
 }
 
-function compactReasonCodeMapForLog_(reasonMap) {
+function compactReasonCodeMapForLog_(reasonMap, schemaId) {
   const compacted = {};
   Object.keys(reasonMap || {}).forEach((reasonCode) => {
     const value = Number((reasonMap || {})[reasonCode]);
     if (!Number.isFinite(value) || value === 0) return;
-    const alias = reasonCodeToAlias_(reasonCode);
+    const alias = reasonCodeToAlias_(reasonCode, schemaId);
     compacted[alias] = value;
   });
   return compacted;
 }
 
-function compactStageSummariesForLog_(stageSummaries) {
+function compactStageSummariesForLog_(stageSummaries, schemaId) {
   return {
     schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
     stage_summaries: (stageSummaries || []).map((summary) => {
       const cloned = Object.assign({}, summary || {});
-      cloned.reason_codes = compactReasonCodeMapForLog_((summary || {}).reason_codes || {});
+      cloned.reason_codes = compactReasonCodeMapForLog_((summary || {}).reason_codes || {}, schemaId);
       return cloned;
     }),
   };
 }
 
-function expandReasonCodeMapForLegacy_(reasonMap) {
+function expandReasonCodeMapForLegacy_(reasonMap, schemaId) {
   const expanded = {};
   Object.keys(reasonMap || {}).forEach((aliasOrCode) => {
-    const reasonCode = reasonCodeAliasToCode_(aliasOrCode);
+    const reasonCode = reasonCodeAliasToCode_(aliasOrCode, schemaId);
     const value = Number((reasonMap || {})[aliasOrCode]);
     if (!reasonCode || !Number.isFinite(value)) return;
     expanded[reasonCode] = value;
@@ -826,10 +829,10 @@ function expandReasonCodeMapForLegacy_(reasonMap) {
   return expanded;
 }
 
-function expandStageSummariesForLegacy_(stageSummaries) {
+function expandStageSummariesForLegacy_(stageSummaries, schemaId) {
   return (stageSummaries || []).map((summary) => {
     const cloned = Object.assign({}, summary || {});
-    cloned.reason_codes = expandReasonCodeMapForLegacy_((summary || {}).reason_codes || {});
+    cloned.reason_codes = expandReasonCodeMapForLegacy_((summary || {}).reason_codes || {}, schemaId);
     return cloned;
   });
 }
@@ -852,17 +855,20 @@ function adaptRunLogRecordForLegacy_(record) {
   if (schemaVersion !== 2) {
     const legacyMessage = parseLogJsonLike_(row.message, null);
     if (legacyMessage && typeof legacyMessage === 'object' && legacyMessage.reason_codes) {
-      legacyMessage.reason_codes = expandReasonCodeMapForLegacy_(legacyMessage.reason_codes || {});
+      const messageSchemaId = String(legacyMessage.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+      legacyMessage.reason_codes = expandReasonCodeMapForLegacy_(legacyMessage.reason_codes || {}, messageSchemaId);
       row.message = JSON.stringify(legacyMessage);
     }
     const rejectionEnvelope = parseLogJsonLike_(row.rejection_codes, null);
     if (rejectionEnvelope && rejectionEnvelope.reason_codes) {
-      rejectionEnvelope.reason_codes = expandReasonCodeMapForLegacy_(rejectionEnvelope.reason_codes || {});
+      const rejectionSchemaId = String(rejectionEnvelope.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+      rejectionEnvelope.reason_codes = expandReasonCodeMapForLegacy_(rejectionEnvelope.reason_codes || {}, rejectionSchemaId);
       row.rejection_codes = JSON.stringify(rejectionEnvelope.reason_codes);
     }
     const stageSummaryEnvelope = parseLogJsonLike_(row.stage_summaries, null);
     if (stageSummaryEnvelope && stageSummaryEnvelope.stage_summaries) {
-      const expandedSummaries = expandStageSummariesForLegacy_(stageSummaryEnvelope.stage_summaries || []);
+      const stageSummarySchemaId = String(stageSummaryEnvelope.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+      const expandedSummaries = expandStageSummariesForLegacy_(stageSummaryEnvelope.stage_summaries || [], stageSummarySchemaId);
       row.stage_summaries = JSON.stringify(expandedSummaries);
     }
     return row;
@@ -879,15 +885,17 @@ function adaptRunLogRecordForLegacy_(record) {
     ? JSON.stringify((function () {
       const messagePayload = Object.assign({}, legacyMessageObj || {});
       if (messagePayload.reason_codes) {
-        messagePayload.reason_codes = expandReasonCodeMapForLegacy_(messagePayload.reason_codes || {});
+        const messageSchemaId = String(messagePayload.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+        messagePayload.reason_codes = expandReasonCodeMapForLegacy_(messagePayload.reason_codes || {}, messageSchemaId);
       }
       return messagePayload;
     })())
     : String(row.msg || '');
 
-  const expandedReasonCodes = expandReasonCodeMapForLegacy_(row.rc || {});
-  const expandedRejections = expandReasonCodeMapForLegacy_(row.rj || {});
-  const expandedStageSummaries = expandStageSummariesForLegacy_(row.ssu || []);
+  const compactSchemaId = String(row.ras || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+  const expandedReasonCodes = expandReasonCodeMapForLegacy_(row.rc || {}, compactSchemaId);
+  const expandedRejections = expandReasonCodeMapForLegacy_(row.rj || {}, compactSchemaId);
+  const expandedStageSummaries = expandStageSummariesForLegacy_(row.ssu || [], compactSchemaId);
 
   if (legacyMessageObj && typeof legacyMessageObj === 'object' && Object.keys(expandedReasonCodes).length > 0) {
     const mergedMessage = Object.assign({}, legacyMessageObj, {
