@@ -1523,10 +1523,14 @@ function testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_() {
 
     const warningPayload = JSON.parse(healthWarning.message || '{}');
     assertEquals_('run_health_no_matches_from_odds', warningPayload.reason_code);
-    assertEquals_(1, warningPayload.failure_reasons.schedule_enrichment_no_schedule_events);
-    assertEquals_(1, warningPayload.failure_reasons.no_player_match);
+    assertEquals_(1, warningPayload.stage_skipped_reason_counts.schedule_enrichment_no_schedule_events);
+    assertEquals_(1, warningPayload.stage_skipped_reason_counts.no_player_match);
+    assertEquals_('no_player_match', warningPayload.dominant_blocker_categories[0].category);
+    assertEquals_(1, warningPayload.dominant_blocker_categories[0].count);
     assertEquals_('odds_1', warningPayload.sample_unmatched_events[0].odds_event_id);
     assertEquals_('no_player_match', warningPayload.sample_unmatched_events[0].rejection_code);
+    assertEquals_(0, warningPayload.opening_lag_blocked_count);
+    assertEquals_(0, warningPayload.schedule_only_seed_count);
   } finally {
     harness.restore();
   }

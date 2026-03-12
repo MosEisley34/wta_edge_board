@@ -484,9 +484,12 @@ function runEdgeBoard() {
       signals_found: signalsFoundCount,
       players_with_non_null_stats: playersWithNonNullStats,
       sample_unmatched_cases: matchStage.unmatched,
+      sample_blocked_odds_cases: oddsStage.non_actionable_rows,
       odds_reason_codes: oddsStage.summary.reason_codes,
       schedule_reason_codes: scheduleStage.summary.reason_codes,
       match_reason_codes: matchStage.summary.reason_codes,
+      opening_lag_blocked_count: Number((oddsStage.skipped_reason_codes && oddsStage.skipped_reason_codes.opening_lag_exceeded) || 0),
+      schedule_only_seed_count: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.schedule_seed_no_odds) || 0),
     });
 
     if (runHealthDiagnostics.warning_payload && runHealthDiagnostics.should_emit_warning) {
@@ -1228,6 +1231,9 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const oddsReasonCodes = Object.assign({}, (metrics && metrics.odds_reason_codes) || {});
   const scheduleReasonCodes = Object.assign({}, (metrics && metrics.schedule_reason_codes) || {});
   const matchReasonCodes = Object.assign({}, (metrics && metrics.match_reason_codes) || {});
+  const openingLagBlockedCount = Number(metrics && metrics.opening_lag_blocked_count || 0);
+  const scheduleOnlySeedCount = Number(metrics && metrics.schedule_only_seed_count || 0);
+  const sampledBlockedOdds = sanitizeBlockedOddsSamples_((metrics && metrics.sample_blocked_odds_cases) || []);
 
   const outsideWindowOddsSkipped = Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0) > 0;
   const scheduleSkippedOutsideWindowCreditSaver = Number(scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver || 0) > 0;
@@ -1307,12 +1313,17 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const warningPayload = {
     reason_code: 'run_health_no_matches_from_odds',
     fetched_odds: fetchedOdds,
+    fetched_schedule: fetchedSchedule,
     matched: matched,
     signals_found: signalsFound,
-    failure_reasons: {
-      schedule_enrichment_no_schedule_events: Number(scheduleReasonCodes.schedule_enrichment_no_schedule_events || 0),
-      no_player_match: Number(matchReasonCodes.no_player_match || 0),
-    },
+    opening_lag_blocked_count: openingLagBlockedCount,
+    schedule_only_seed_count: scheduleOnlySeedCount,
+    stage_skipped_reason_counts: deriveStageSkippedReasonCounts_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes),
+    dominant_blocker_categories: resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes, {
+      opening_lag_blocked: openingLagBlockedCount,
+      schedule_only_seed: scheduleOnlySeedCount,
+    }),
+    sampled_blocked_odds: sampledBlockedOdds,
     sample_unmatched_events: sampleUnmatchedCases.slice(0, 5).map(function (entry) {
       return {
         odds_event_id: entry.odds_event_id,
@@ -1336,6 +1347,78 @@ function evaluateRunHealthDiagnostics_(metrics) {
     warning_payload: warningPayload,
     should_emit_warning: true,
   };
+}
+
+function deriveStageSkippedReasonCounts_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes) {
+  const merged = mergeReasonCounts_([
+    oddsReasonCodes || {},
+    scheduleReasonCodes || {},
+    matchReasonCodes || {},
+  ]);
+  const counts = {};
+  Object.keys(merged).forEach(function (code) {
+    const value = Number(merged[code] || 0);
+    if (value <= 0) return;
+    if (/(^|_)(skip|skipped|blocked)(_|$)/.test(code)
+      || code === 'opening_lag_exceeded'
+      || code === 'missing_open_timestamp'
+      || code === 'schedule_seed_no_odds'
+      || code === 'schedule_enrichment_no_schedule_events'
+      || code === 'no_player_match') {
+      counts[code] = value;
+    }
+  });
+  return counts;
+}
+
+function resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes, explicitCounts) {
+  const counts = Object.assign({
+    opening_lag_blocked: 0,
+    schedule_only_seed: 0,
+    no_player_match: 0,
+    schedule_unavailable: 0,
+    no_schedule_candidates: 0,
+    no_odds_candidates: 0,
+    outside_window_idle_skip: 0,
+  }, explicitCounts || {});
+  counts.no_player_match += Number((matchReasonCodes && matchReasonCodes.no_player_match) || 0);
+  counts.schedule_unavailable += Number((scheduleReasonCodes && scheduleReasonCodes.schedule_enrichment_no_schedule_events) || 0);
+  counts.no_schedule_candidates += Number((matchReasonCodes && matchReasonCodes.no_schedule_candidates) || 0);
+  counts.no_odds_candidates += Number((matchReasonCodes && matchReasonCodes.no_odds_candidates) || 0);
+  counts.outside_window_idle_skip += Number((oddsReasonCodes && oddsReasonCodes.odds_refresh_skipped_outside_window) || 0);
+  counts.outside_window_idle_skip += Number((scheduleReasonCodes && scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver) || 0);
+
+  return Object.keys(counts)
+    .map(function (category) {
+      return {
+        category: category,
+        count: Number(counts[category] || 0),
+      };
+    })
+    .filter(function (entry) { return entry.count > 0; })
+    .sort(function (a, b) { return b.count - a.count; })
+    .slice(0, 5);
+}
+
+function sanitizeBlockedOddsSamples_(blockedRows) {
+  return (blockedRows || []).slice(0, 5).map(function (row) {
+    const safe = row || {};
+    return {
+      odds_event_id: sanitizeRunHealthText_(safe.event_id, 72),
+      teams: [sanitizeRunHealthText_(safe.player_1, 48), sanitizeRunHealthText_(safe.player_2, 48)].filter(function (item) { return !!item; }).join(' vs '),
+      commence_time: sanitizeRunHealthText_(safe.commence_time, 40),
+      open_timestamp: sanitizeRunHealthText_(safe.open_timestamp, 40),
+      blocked_reason_code: sanitizeRunHealthText_(safe.reason_code, 48),
+    };
+  });
+}
+
+function sanitizeRunHealthText_(value, maxLen) {
+  if (value === null || typeof value === 'undefined') return '';
+  const normalized = String(value).replace(/\s+/g, ' ').trim();
+  const limit = Math.max(1, Number(maxLen || 64));
+  if (normalized.length <= limit) return normalized;
+  return normalized.slice(0, limit - 1) + '…';
 }
 
 function resolveRunHealthFetchedOddsCount_(fetchedBeforeGateCount, gatedOddsStage) {
