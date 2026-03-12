@@ -400,7 +400,7 @@ function runEdgeBoard() {
     });
     appendStageLog_(runId, playerStatsStage.summary);
 
-    const signalUpstreamGateReason = deriveSignalUpstreamGateReason_(oddsStage, matchStage, playerStatsStage);
+    const signalUpstreamGate = deriveSignalUpstreamGateReason_(oddsStage, scheduleStage, matchStage, playerStatsStage);
     const signalStage = runCheckpointedStage_(lifecycleContext, 'signals', function () {
       assertPipelineRuntimeBudget_(lifecycleContext, runId);
       return stageGenerateSignals(
@@ -410,7 +410,8 @@ function runEdgeBoard() {
         matchStage.rows,
         playerStatsStage.byOddsEventId,
         {
-          upstream_gate_reason: signalUpstreamGateReason,
+          upstream_gate_reason: signalUpstreamGate.reason,
+          upstream_gate_inputs: signalUpstreamGate.inputs,
         }
       );
     });
@@ -1014,8 +1015,10 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   return stage;
 }
 
-function deriveSignalUpstreamGateReason_(oddsStage, matchStage, playerStatsStage) {
+function deriveSignalUpstreamGateReason_(oddsStage, scheduleStage, matchStage, playerStatsStage) {
   const oddsCount = Number((oddsStage && oddsStage.events && oddsStage.events.length) || 0);
+  const oddsReasonCodes = (oddsStage && oddsStage.summary && oddsStage.summary.reason_codes) || {};
+  const scheduleReasonCodes = (scheduleStage && scheduleStage.summary && scheduleStage.summary.reason_codes) || {};
   const matchedCount = Number((matchStage && matchStage.matchedCount) || 0);
   const matchReasonCodes = (matchStage && matchStage.summary && matchStage.summary.reason_codes) || {};
   const playersWithNonNullStats = Number(
@@ -1026,16 +1029,70 @@ function deriveSignalUpstreamGateReason_(oddsStage, matchStage, playerStatsStage
     || 0
   );
 
+  const upstreamInputs = {
+    odds_stage_reason: resolvePrimaryStageGateReason_(oddsReasonCodes, [
+      'odds_refresh_skipped_outside_window',
+      'source_credit_saver_skip',
+    ]),
+    schedule_stage_reason: resolvePrimaryStageGateReason_(scheduleReasonCodes, [
+      'source_credit_saver_skip',
+      'schedule_fetch_skipped_outside_window_credit_saver',
+    ]),
+    match_stage_reason: resolvePrimaryStageGateReason_(matchReasonCodes, [
+      'schedule_seed_no_odds',
+      'no_schedule_candidates',
+      'no_odds_candidates',
+    ]),
+  };
+
+  if (upstreamInputs.odds_stage_reason) {
+    return {
+      reason: upstreamInputs.odds_stage_reason,
+      inputs: upstreamInputs,
+    };
+  }
+
+  if (upstreamInputs.schedule_stage_reason) {
+    return {
+      reason: upstreamInputs.schedule_stage_reason,
+      inputs: upstreamInputs,
+    };
+  }
+
   if (oddsCount === 0 && Number(matchReasonCodes.schedule_seed_no_odds || 0) > 0) {
-    return 'schedule_seed_no_odds';
+    return {
+      reason: 'schedule_seed_no_odds',
+      inputs: upstreamInputs,
+    };
   }
 
   if (oddsCount > 0 && matchedCount === 0) {
-    return 'no_matched_events';
+    return {
+      reason: 'no_matched_events',
+      inputs: upstreamInputs,
+    };
   }
 
   if (matchedCount > 0 && playersWithNonNullStats === 0) {
-    return 'stats_zero_coverage';
+    return {
+      reason: 'stats_zero_coverage',
+      inputs: upstreamInputs,
+    };
+  }
+
+  return {
+    reason: '',
+    inputs: upstreamInputs,
+  };
+}
+
+function resolvePrimaryStageGateReason_(reasonCodes, priorityOrder) {
+  const codes = reasonCodes || {};
+  const priorities = priorityOrder || [];
+
+  for (let i = 0; i < priorities.length; i += 1) {
+    const reason = priorities[i];
+    if (Number(codes[reason] || 0) > 0) return reason;
   }
 
   return '';
