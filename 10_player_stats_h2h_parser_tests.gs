@@ -163,6 +163,9 @@ function testGetTaH2hCoverageForCanonicalPair_partialCoverageReason_() {
     const coverage = getTaH2hCoverageForCanonicalPair_({}, 'Iga Swiatek', 'Coco Gauff');
     assertEquals_(null, coverage.row);
     assertEquals_('h2h_partial_coverage', coverage.reason_code);
+    assertEquals_('source_coverage', coverage.reason_metadata.category);
+    assertEquals_('top_15_matrix', coverage.reason_metadata.coverage_scope);
+    assertEquals_(true, coverage.reason_metadata.expected_missing);
   } finally {
     getTaH2hDataset_ = originalGetTaH2hDataset;
   }
@@ -211,6 +214,24 @@ function testGetTaH2hCoverageForCanonicalPair_datasetUnavailableReturnsUpstreamF
     assertEquals_('ta_h2h_parse_failed', coverage.reason_code);
     assertEquals_('pipeline_failure', coverage.reason_metadata.category);
     assertEquals_(false, coverage.reason_metadata.expected_missing);
+  } finally {
+    getTaH2hDataset_ = originalGetTaH2hDataset;
+    getStateJson_ = originalGetStateJson;
+  }
+}
+
+
+function testGetTaH2hCoverageForCanonicalPair_datasetUnavailableUsesDedicatedReasonWithoutUpstreamFailure_() {
+  const originalGetTaH2hDataset = getTaH2hDataset_;
+  const originalGetStateJson = getStateJson_;
+  getTaH2hDataset_ = function () { return null; };
+  getStateJson_ = function () { return {}; };
+
+  try {
+    const coverage = getTaH2hCoverageForCanonicalPair_({}, 'Iga Swiatek', 'Coco Gauff');
+    assertEquals_(null, coverage.row);
+    assertEquals_('h2h_dataset_unavailable', coverage.reason_code);
+    assertEquals_('', coverage.reason_metadata.category || '');
   } finally {
     getTaH2hDataset_ = originalGetTaH2hDataset;
     getStateJson_ = originalGetStateJson;
