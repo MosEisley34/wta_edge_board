@@ -182,11 +182,19 @@ function serializeCompactReasonCodesForLogEntry_(normalizedEntry, schemaId) {
     : null;
 
   let reasonCodeMap = {};
-  if (normalized.reason_codes) {
-    reasonCodeMap = mergeReasonCounts_([reasonCodeMap, toReasonCodeMapForLog_(normalized.reason_codes, schemaId)]);
+  const rowReasonCodeMap = toReasonCodeMapForLog_(normalized.reason_codes, schemaId);
+  if (Object.keys(rowReasonCodeMap).length > 0) {
+    reasonCodeMap = mergeReasonCounts_([reasonCodeMap, rowReasonCodeMap]);
   }
-  if (messageObject && messageObject.reason_codes) {
-    reasonCodeMap = mergeReasonCounts_([reasonCodeMap, toReasonCodeMapForLog_(messageObject.reason_codes, String(messageObject.schema_id || schemaId))]);
+  const messageReasonCodeMap = messageObject && messageObject.reason_codes
+    ? toReasonCodeMapForLog_(messageObject.reason_codes, String(messageObject.schema_id || schemaId))
+    : {};
+  if (Object.keys(messageReasonCodeMap).length > 0) {
+    const alreadyCounted = Object.keys(rowReasonCodeMap).length > 0
+      && areReasonCodeMapsEquivalent_(rowReasonCodeMap, messageReasonCodeMap);
+    if (!alreadyCounted) {
+      reasonCodeMap = mergeReasonCounts_([reasonCodeMap, messageReasonCodeMap]);
+    }
   }
   const inferredReasonCode = String(normalized.reason_code || '').trim();
   if (!Object.keys(reasonCodeMap).length && inferredReasonCode) {
@@ -830,6 +838,35 @@ function areReasonCodeMapsEquivalent_(left, right) {
     if (Number(leftClone[key]) !== Number(rightClone[key])) return false;
   }
   return true;
+}
+
+
+function assertDebugBoundedStageCounters_(config, checks) {
+  const runtimeConfig = config || {};
+  const debugMode = normalizeLogProfile_(runtimeConfig.LOG_PROFILE || DEFAULT_CONFIG.LOG_PROFILE) === 'verbose';
+  if (!debugMode) return [];
+
+  const violations = [];
+  (checks || []).forEach(function (check) {
+    const safeCheck = check || {};
+    const stage = String(safeCheck.stage || 'unknown_stage');
+    const maxName = String(safeCheck.max_name || 'max');
+    const max = Math.max(0, Number(safeCheck.max || 0));
+    const counters = safeCheck.counters || {};
+    Object.keys(counters).forEach(function (counterName) {
+      const value = Number(counters[counterName] || 0);
+      if (!Number.isFinite(value) || value <= max) return;
+      violations.push({
+        stage: stage,
+        counter_name: counterName,
+        counter_value: value,
+        max_name: maxName,
+        max_allowed: max,
+      });
+    });
+  });
+
+  return violations;
 }
 
 

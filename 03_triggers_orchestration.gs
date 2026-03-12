@@ -485,8 +485,9 @@ function runEdgeBoard() {
     );
     const statsZeroCoverage = matchedCount > 0 && playersWithNonNullStats === 0;
     if (statsZeroCoverage) {
-      playerStatsStage.summary.reason_codes.stats_zero_coverage =
-        (playerStatsStage.summary.reason_codes.stats_zero_coverage || 0) + 1;
+      const playerStatsReasonCodes = cloneReasonCodeMap_((playerStatsStage.summary && playerStatsStage.summary.reason_codes) || {});
+      playerStatsReasonCodes.stats_zero_coverage = Number(playerStatsReasonCodes.stats_zero_coverage || 0) + 1;
+      playerStatsStage.summary.reason_codes = playerStatsReasonCodes;
     }
     const runHealthDiagnostics = evaluateRunHealthDiagnostics_({
       fetched_odds: fetchedOddsCount,
@@ -515,42 +516,56 @@ function runEdgeBoard() {
       logDiagnosticEvent_(config, 'run_health_guard_warning', runHealthDiagnostics.warning_payload, 1);
     }
 
-    const reasonCodeMaps = [
-      oddsStage.summary.reason_codes,
-      scheduleStage.summary.reason_codes,
-      matchStage.summary.reason_codes,
-      playerStatsStage.summary.reason_codes,
-      signalStage.summary.reason_codes,
-      persistStage.summary.reason_codes,
-    ].map((map) => cloneReasonCodeMap_(map));
-    const reasonMetadataMaps = [
-      oddsStage.summary.reason_metadata,
-      scheduleStage.summary.reason_metadata,
-      matchStage.summary.reason_metadata,
-      playerStatsStage.summary.reason_metadata,
-      signalStage.summary.reason_metadata,
-      persistStage.summary.reason_metadata,
-    ];
-
-    const combinedReasonCodes = mergeReasonCounts_(reasonCodeMaps);
-    const stageReasonCodeMutationDiagnostics = buildStageReasonCodeMutationDiagnostics_([
-      { stage: 'stageFetchOdds', summary: oddsStage.summary, snapshot: reasonCodeMaps[0] },
-      { stage: 'stageFetchSchedule', summary: scheduleStage.summary, snapshot: reasonCodeMaps[1] },
-      { stage: 'stageMatchEvents', summary: matchStage.summary, snapshot: reasonCodeMaps[2] },
-      { stage: 'stageFetchPlayerStats', summary: playerStatsStage.summary, snapshot: reasonCodeMaps[3] },
-      { stage: 'stageGenerateSignals', summary: signalStage.summary, snapshot: reasonCodeMaps[4] },
-      { stage: 'stagePersist', summary: persistStage.summary, snapshot: reasonCodeMaps[5] },
-    ]);
-    const combinedReasonMetadata = mergeReasonMetadata_(reasonMetadataMaps);
-    const stageReasonCodeMaximaViolations = validateStageReasonCodeMaxima_([
+    const stageSummarySnapshots = [
       oddsStage.summary,
       scheduleStage.summary,
       matchStage.summary,
       playerStatsStage.summary,
       signalStage.summary,
       persistStage.summary,
+    ].map((summary) => {
+      const safeSummary = summary || {};
+      return Object.assign({}, safeSummary, {
+        reason_codes: cloneReasonCodeMap_(safeSummary.reason_codes || {}),
+        reason_metadata: Object.assign({}, safeSummary.reason_metadata || {}),
+      });
+    });
+    const reasonCodeMaps = stageSummarySnapshots.map((summary) => summary.reason_codes);
+    const reasonMetadataMaps = stageSummarySnapshots.map((summary) => summary.reason_metadata);
+
+    const combinedReasonCodes = mergeReasonCounts_(reasonCodeMaps);
+    const stageReasonCodeMutationDiagnostics = buildStageReasonCodeMutationDiagnostics_([
+      { stage: 'stageFetchOdds', summary: oddsStage.summary, snapshot: stageSummarySnapshots[0].reason_codes },
+      { stage: 'stageFetchSchedule', summary: scheduleStage.summary, snapshot: stageSummarySnapshots[1].reason_codes },
+      { stage: 'stageMatchEvents', summary: matchStage.summary, snapshot: stageSummarySnapshots[2].reason_codes },
+      { stage: 'stageFetchPlayerStats', summary: playerStatsStage.summary, snapshot: stageSummarySnapshots[3].reason_codes },
+      { stage: 'stageGenerateSignals', summary: signalStage.summary, snapshot: stageSummarySnapshots[4].reason_codes },
+      { stage: 'stagePersist', summary: persistStage.summary, snapshot: stageSummarySnapshots[5].reason_codes },
     ]);
-    if (stageReasonCodeMutationDiagnostics.mutated_stages.length > 0 || stageReasonCodeMaximaViolations.length > 0) {
+    const combinedReasonMetadata = mergeReasonMetadata_(reasonMetadataMaps);
+    const stageReasonCodeMaximaViolations = validateStageReasonCodeMaxima_(stageSummarySnapshots);
+    const boundedCounterInvariantViolations = assertDebugBoundedStageCounters_(config, [
+      {
+        stage: 'stageMatchEvents',
+        max_name: 'output_count',
+        max: Number((matchStage.summary && matchStage.summary.output_count) || 0),
+        counters: {
+          matched_count: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.matched_count) || 0),
+          matched_rows: Number(matchStage.matchedCount || 0),
+        },
+      },
+      {
+        stage: 'stageMatchEvents',
+        max_name: 'input_count',
+        max: Number((matchStage.summary && matchStage.summary.input_count) || 0),
+        counters: {
+          rejected_count: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.rejected_count) || 0),
+          unmatched_rows: Number(matchStage.unmatchedCount || 0),
+          diagnostic_records_written: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.diagnostic_records_written) || 0),
+        },
+      },
+    ]);
+    if (stageReasonCodeMutationDiagnostics.mutated_stages.length > 0 || stageReasonCodeMaximaViolations.length > 0 || boundedCounterInvariantViolations.length > 0) {
       appendLogRow_({
         row_type: 'ops',
         run_id: runId,
@@ -558,10 +573,13 @@ function runEdgeBoard() {
         status: 'warning',
         reason_code: stageReasonCodeMutationDiagnostics.mutated_stages.length > 0
           ? 'reason_code_map_mutated_after_snapshot'
-          : 'reason_code_counter_exceeds_stage_max',
+          : (stageReasonCodeMaximaViolations.length > 0
+            ? 'reason_code_counter_exceeds_stage_max'
+            : 'bounded_stage_counter_invariant_exceeded'),
         message: JSON.stringify({
           reason_code_map_mutated_after_snapshot: stageReasonCodeMutationDiagnostics,
           reason_code_counter_exceeds_stage_max: stageReasonCodeMaximaViolations,
+          bounded_stage_counter_invariant_exceeded: boundedCounterInvariantViolations,
         }),
       });
     }
@@ -658,15 +676,11 @@ function runEdgeBoard() {
       unmatched: matchStage.unmatchedCount,
       signals_found: signalsFoundCount,
       run_health_reason_code: runHealthDiagnostics.reason_code,
-      reason_codes: combinedReasonCodes,
-      stage_summaries: [
-        oddsStage.summary,
-        scheduleStage.summary,
-        matchStage.summary,
-        playerStatsStage.summary,
-        signalStage.summary,
-        persistStage.summary,
-      ],
+      reason_codes: cloneReasonCodeMap_(combinedReasonCodes),
+      stage_summaries: stageSummarySnapshots.map((summary) => Object.assign({}, summary, {
+        reason_codes: cloneReasonCodeMap_(summary.reason_codes || {}),
+        reason_metadata: Object.assign({}, summary.reason_metadata || {}),
+      })),
       watchdog: {
         bootstrap_empty_cycles: emptyCycleState.consecutive_empty_cycles,
         bootstrap_threshold: emptyCycleState.threshold,
