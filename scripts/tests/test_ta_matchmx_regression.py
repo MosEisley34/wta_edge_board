@@ -797,6 +797,40 @@ class TaMatchMxRegressionTest(unittest.TestCase):
             1,
         )
 
+    def test_check_ta_parity_classifies_bjk_cup_team_phase_rows_as_expected_non_model(self):
+        fixture = ROOT / "tmp" / "test_ta_parity_bjk_team_phase_rows.body"
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_text(
+            '\n'.join([
+                'matchmx[0] = ["2026-04-12","BJK Cup Finals Group A","Indoor Hard","Poland/Spain","Iga Swiatek/Paula Badosa","SF","1","0.8","0.7","65","38","60","50","58","67","49","41","1.12","54"];',
+                'matchmx[1] = ["2026-04-13","Madrid","Clay","Opponent A","Iga Swiatek","6-2 6-2","1","0.8","0.7","65","38","60","50","58","67","49","41","1.12","54"];',
+            ]),
+            encoding="utf-8",
+        )
+
+        cmd = [
+            sys.executable,
+            str(SCRIPTS_DIR / "check_ta_parity.py"),
+            "--input",
+            str(fixture),
+            "--min-rows",
+            "1",
+            "--min-unique-players",
+            "1",
+        ]
+        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0)
+        summary = json.loads(result.stdout)
+        self.assertEqual(summary["matchmx_unusable_rows"], 1)
+        self.assertEqual(summary["matchmx_expected_non_model_rows"], 1)
+        self.assertEqual(summary["matchmx_unexpected_parse_failure_rows"], 0)
+        self.assertEqual(
+            summary["parser_metrics"]["ta_matchmx_invalid_reason_counts"].get(
+                "expected_non_model:team_or_doubles_marker"
+            ),
+            1,
+        )
+
     def test_check_ta_parity_reason_code_prefers_parser_failure_when_unusable_payload_present(self):
         fixture = ROOT / "tmp" / "test_ta_parity_parser_and_threshold_failure.body"
         fixture.parent.mkdir(parents=True, exist_ok=True)
