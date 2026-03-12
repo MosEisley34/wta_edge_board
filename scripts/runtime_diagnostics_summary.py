@@ -119,6 +119,20 @@ def _format_ms(values: list[int]) -> str:
     return f"min={sorted_values[0]},avg={avg:.1f},p95={p95}"
 
 
+def _coerce_positive_reason_map(reason_codes: Any) -> dict[str, float]:
+    if not isinstance(reason_codes, dict):
+        return {}
+    normalized: dict[str, float] = {}
+    for code, value in sorted(reason_codes.items(), key=lambda item: str(item[0])):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if numeric > 0:
+            normalized[str(code)] = numeric
+    return normalized
+
+
 def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: int) -> list[str]:
     files, missing = _collect_files(paths)
     if missing:
@@ -132,6 +146,10 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
     reason_totals: defaultdict[str, float] = defaultdict(float)
     fallback_reason_counts: Counter[str] = Counter()
     stage_durations: defaultdict[str, list[int]] = defaultdict(list)
+    run_reason_maps: dict[str, dict[str, float]] = {}
+    run_stage_reason_fallback: defaultdict[str, dict[str, float]] = defaultdict(dict)
+    run_stage_duration_from_summaries: defaultdict[str, dict[str, int]] = defaultdict(dict)
+    run_stage_duration_from_stage_rows: defaultdict[str, dict[str, int]] = defaultdict(dict)
     watchdog_points: list[tuple[int, int, str]] = []
     warning_reasons: Counter[str] = Counter()
 
@@ -169,39 +187,45 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
             message = _parse_json_like(record.get("message"))
             if not isinstance(reason_codes, dict) and isinstance(message, dict):
                 reason_codes = message.get("reason_codes") if isinstance(message.get("reason_codes"), dict) else None
-            if isinstance(reason_codes, dict) and row_type == "stage":
-                for code, value in sorted(reason_codes.items(), key=lambda item: str(item[0])):
-                    try:
-                        numeric = float(value)
-                    except (TypeError, ValueError):
-                        continue
-                    if numeric > 0:
-                        reason_totals[str(code)] += numeric
+            normalized_reasons = _coerce_positive_reason_map(reason_codes)
+            is_run_summary = row_type == "summary" or stage == "runEdgeBoard"
+            if run_id and normalized_reasons:
+                if is_run_summary:
+                    run_reason_maps[run_id] = normalized_reasons
+                elif row_type == "stage":
+                    fallback_map = run_stage_reason_fallback[run_id]
+                    for code, numeric in normalized_reasons.items():
+                        fallback_map[code] = max(fallback_map.get(code, 0.0), numeric)
 
             start = _parse_timestamp(record.get("started_at"))
             end = _parse_timestamp(record.get("ended_at"))
-            if start and end and stage.startswith("stage"):
+            if run_id and start and end and stage.startswith("stage"):
                 duration_ms = int((end - start).total_seconds() * 1000)
                 if duration_ms >= 0:
-                    stage_durations[stage].append(duration_ms)
+                    run_stage_duration_from_stage_rows[run_id][stage] = duration_ms
 
             stage_summaries = record.get("stage_summaries")
             if isinstance(stage_summaries, str):
                 parsed_summaries = _parse_json_like(stage_summaries)
                 stage_summaries = parsed_summaries if isinstance(parsed_summaries, list) else None
-            if isinstance(stage_summaries, list):
+            if run_id and isinstance(stage_summaries, list):
                 for summary in stage_summaries:
                     if not isinstance(summary, dict):
                         continue
                     summary_stage = str(summary.get("stage") or "")
                     if not summary_stage.startswith("stage"):
                         continue
-                    try:
-                        duration_ms = int(float(summary.get("duration_ms") or 0))
-                    except (TypeError, ValueError):
-                        continue
+                    summary_start = _parse_timestamp(summary.get("started_at"))
+                    summary_end = _parse_timestamp(summary.get("ended_at"))
+                    if summary_start and summary_end:
+                        duration_ms = int((summary_end - summary_start).total_seconds() * 1000)
+                    else:
+                        try:
+                            duration_ms = int(float(summary.get("duration_ms") or 0))
+                        except (TypeError, ValueError):
+                            continue
                     if duration_ms >= 0:
-                        stage_durations[summary_stage].append(duration_ms)
+                        run_stage_duration_from_summaries[run_id][summary_stage] = duration_ms
 
             is_watchdog = "watchdog" in stage or reason_code == "watchdog_recovered"
             if is_watchdog:
@@ -223,6 +247,15 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
     run_status_source = run_summary_status if run_summary_status else run_last_status
     for _, status in sorted(run_status_source.values(), key=lambda item: item[0]):
         status_counts[status] += 1
+
+    for run_id in run_status_source:
+        run_reasons = run_reason_maps.get(run_id) or run_stage_reason_fallback.get(run_id) or {}
+        for code, numeric in run_reasons.items():
+            reason_totals[code] += numeric
+
+        stage_samples = run_stage_duration_from_summaries.get(run_id) or run_stage_duration_from_stage_rows.get(run_id) or {}
+        for stage_name, duration_ms in stage_samples.items():
+            stage_durations[stage_name].append(duration_ms)
 
     run_total = len(run_status_source)
     status_part = ",".join(f"{key}:{status_counts[key]}" for key in sorted(status_counts)) or "none"
@@ -306,3 +339,11 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+    for run_id in run_status_source:
+        run_reasons = run_reason_maps.get(run_id) or run_stage_reason_fallback.get(run_id) or {}
+        for code, numeric in run_reasons.items():
+            reason_totals[code] += numeric
+
+        stage_samples = run_stage_duration_from_summaries.get(run_id) or run_stage_duration_from_stage_rows.get(run_id) or {}
+        for stage_name, duration_ms in stage_samples.items():
+            stage_durations[stage_name].append(duration_ms)
