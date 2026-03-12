@@ -1054,19 +1054,23 @@ function evaluateRunHealthDiagnostics_(metrics) {
 
   const outsideWindowOddsSkipped = Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0) > 0;
   const scheduleSkippedOutsideWindowCreditSaver = Number(scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver || 0) > 0;
+  const sourceCreditSaverSkip = Number(oddsReasonCodes.source_credit_saver_skip || 0) > 0
+    || Number(scheduleReasonCodes.source_credit_saver_skip || 0) > 0;
   const scheduleOnlyIdle = fetchedOdds === 0
     && outsideWindowOddsSkipped
-    && (fetchedSchedule > 0 || scheduleSkippedOutsideWindowCreditSaver);
+    && (fetchedSchedule > 0 || scheduleSkippedOutsideWindowCreditSaver || sourceCreditSaverSkip);
 
   if (scheduleOnlyIdle) {
     const idlePayload = {
-      reason_code: 'run_health_expected_idle_outside_odds_window',
+      reason_code: 'odds_refresh_skipped_outside_window',
       fetched_odds: fetchedOdds,
       fetched_schedule: fetchedSchedule,
       matched: matched,
       signals_found: signalsFound,
       message: scheduleSkippedOutsideWindowCreditSaver
         ? 'Odds refresh was intentionally skipped outside the configured odds window, and schedule fetch was credit-saved; zero matches/signals are expected in this idle run.'
+        : sourceCreditSaverSkip
+          ? 'Odds refresh was intentionally skipped outside the configured odds window, and upstream source selection activated credit saver; zero matches/signals are expected in this idle run.'
         : 'Odds refresh was intentionally skipped outside the configured odds window; zero matches/signals are expected in this schedule-only run.',
     };
 
