@@ -500,8 +500,13 @@ function runEdgeBoard() {
       odds_reason_codes: oddsStage.summary.reason_codes,
       schedule_reason_codes: scheduleStage.summary.reason_codes,
       match_reason_codes: matchStage.summary.reason_codes,
+      signal_reason_codes: signalStage.summary.reason_codes,
       opening_lag_blocked_count: Number((oddsStage.skipped_reason_codes && oddsStage.skipped_reason_codes.opening_lag_exceeded) || 0),
       schedule_only_seed_count: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.schedule_seed_no_odds) || 0),
+      no_odds_stage_count: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.no_odds_candidates) || 0),
+      stale_odds_skip_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.stale_odds_skip) || 0),
+      low_edge_suppressed_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.edge_below_threshold) || 0),
+      cooldown_suppressed_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.cooldown_suppressed) || 0),
     });
 
     if (runHealthDiagnostics.warning_payload && runHealthDiagnostics.should_emit_warning) {
@@ -1333,9 +1338,18 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const oddsReasonCodes = Object.assign({}, (metrics && metrics.odds_reason_codes) || {});
   const scheduleReasonCodes = Object.assign({}, (metrics && metrics.schedule_reason_codes) || {});
   const matchReasonCodes = Object.assign({}, (metrics && metrics.match_reason_codes) || {});
+  const signalReasonCodes = Object.assign({}, (metrics && metrics.signal_reason_codes) || {});
   const openingLagBlockedCount = Number(metrics && metrics.opening_lag_blocked_count || 0);
   const scheduleOnlySeedCount = Number(metrics && metrics.schedule_only_seed_count || 0);
+  const noOddsStageCount = Number(metrics && metrics.no_odds_stage_count || 0);
+  const staleOddsSkipCount = Number(metrics && metrics.stale_odds_skip_count || 0);
+  const lowEdgeSuppressedCount = Number(metrics && metrics.low_edge_suppressed_count || 0);
+  const cooldownSuppressedCount = Number(metrics && metrics.cooldown_suppressed_count || 0);
   const sampledBlockedOdds = sanitizeBlockedOddsSamples_((metrics && metrics.sample_blocked_odds_cases) || []);
+  const sampledBlockedOddsIds = sampledBlockedOdds
+    .map(function (entry) { return sanitizeRunHealthText_(entry && entry.odds_event_id, 72); })
+    .filter(function (value) { return !!value; })
+    .slice(0, 3);
 
   const outsideWindowOddsSkipped = Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0) > 0;
   const scheduleSkippedOutsideWindowCreditSaver = Number(scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver || 0) > 0;
@@ -1420,10 +1434,27 @@ function evaluateRunHealthDiagnostics_(metrics) {
     signals_found: signalsFound,
     opening_lag_blocked_count: openingLagBlockedCount,
     schedule_only_seed_count: scheduleOnlySeedCount,
+    no_odds_stage_count: noOddsStageCount,
+    stale_odds_skip_count: staleOddsSkipCount,
+    low_edge_suppressed_count: lowEdgeSuppressedCount,
+    cooldown_suppressed_count: cooldownSuppressedCount,
+    failure_reasons: buildRunHealthFailureReasons_({
+      opening_lag_blocked_count: openingLagBlockedCount,
+      schedule_only_seed_count: scheduleOnlySeedCount,
+      no_odds_stage_count: noOddsStageCount,
+      stale_odds_skip_count: staleOddsSkipCount,
+      low_edge_suppressed_count: lowEdgeSuppressedCount,
+      cooldown_suppressed_count: cooldownSuppressedCount,
+      sampled_blocked_odds_ids: sampledBlockedOddsIds,
+    }),
     stage_skipped_reason_counts: deriveStageSkippedReasonCounts_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes),
-    dominant_blocker_categories: resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes, {
+    dominant_blocker_categories: resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes, signalReasonCodes, {
       opening_lag_blocked: openingLagBlockedCount,
       schedule_only_seed: scheduleOnlySeedCount,
+      no_odds_stage: noOddsStageCount,
+      stale_odds_skip: staleOddsSkipCount,
+      low_edge_suppressed: lowEdgeSuppressedCount,
+      cooldown_suppressed: cooldownSuppressedCount,
     }),
     sampled_blocked_odds: sampledBlockedOdds,
     sample_unmatched_events: sampleUnmatchedCases.slice(0, 5).map(function (entry) {
@@ -1473,10 +1504,49 @@ function deriveStageSkippedReasonCounts_(oddsReasonCodes, scheduleReasonCodes, m
   return counts;
 }
 
-function resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes, explicitCounts) {
+function buildRunHealthFailureReasons_(counts) {
+  const safeCounts = counts || {};
+  const blockerSpecs = [
+    {
+      reason_code: 'opening_lag_blocked',
+      count: Number(safeCounts.opening_lag_blocked_count || 0),
+      sampled_odds_event_ids: (safeCounts.sampled_blocked_odds_ids || []).slice(0, 3),
+    },
+    {
+      reason_code: 'schedule_only_seed',
+      count: Number(safeCounts.schedule_only_seed_count || 0),
+    },
+    {
+      reason_code: 'no_odds_stage',
+      count: Number(safeCounts.no_odds_stage_count || 0),
+    },
+    {
+      reason_code: 'stale_odds_skip',
+      count: Number(safeCounts.stale_odds_skip_count || 0),
+    },
+    {
+      reason_code: 'low_edge_suppressed',
+      count: Number(safeCounts.low_edge_suppressed_count || 0),
+    },
+    {
+      reason_code: 'cooldown_suppressed',
+      count: Number(safeCounts.cooldown_suppressed_count || 0),
+    },
+  ];
+
+  return blockerSpecs.filter(function (entry) {
+    return Number(entry.count || 0) > 0;
+  });
+}
+
+function resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes, matchReasonCodes, signalReasonCodes, explicitCounts) {
   const counts = Object.assign({
     opening_lag_blocked: 0,
     schedule_only_seed: 0,
+    no_odds_stage: 0,
+    stale_odds_skip: 0,
+    low_edge_suppressed: 0,
+    cooldown_suppressed: 0,
     no_player_match: 0,
     schedule_unavailable: 0,
     no_schedule_candidates: 0,
@@ -1487,6 +1557,9 @@ function resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes,
   counts.schedule_unavailable += Number((scheduleReasonCodes && scheduleReasonCodes.schedule_enrichment_no_schedule_events) || 0);
   counts.no_schedule_candidates += Number((matchReasonCodes && matchReasonCodes.no_schedule_candidates) || 0);
   counts.no_odds_candidates += Number((matchReasonCodes && matchReasonCodes.no_odds_candidates) || 0);
+  counts.stale_odds_skip += Number((signalReasonCodes && signalReasonCodes.stale_odds_skip) || 0);
+  counts.low_edge_suppressed += Number((signalReasonCodes && signalReasonCodes.edge_below_threshold) || 0);
+  counts.cooldown_suppressed += Number((signalReasonCodes && signalReasonCodes.cooldown_suppressed) || 0);
   counts.outside_window_idle_skip += Number((oddsReasonCodes && oddsReasonCodes.odds_refresh_skipped_outside_window) || 0);
   counts.outside_window_idle_skip += Number((scheduleReasonCodes && scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver) || 0);
 
