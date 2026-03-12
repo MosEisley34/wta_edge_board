@@ -356,6 +356,7 @@ function runEdgeBoard() {
         ? stageFetchOdds(runId, config, oddsWindowDecision.odds_fetch_window)
         : buildSkippedOddsStage_(runId, oddsWindowDecision.decision_reason_code, oddsWindowDecision.decision_message);
     });
+    const fetchedOddsCountBeforeGate = Number((initialOddsStage && initialOddsStage.events && initialOddsStage.events.length) || 0);
     const oddsStage = runCheckpointedStage_(lifecycleContext, 'odds_gate', function () {
       assertPipelineRuntimeBudget_(lifecycleContext, runId);
       return applyOpeningLagActionabilityGate_(runId, config, initialOddsStage);
@@ -457,7 +458,7 @@ function runEdgeBoard() {
       })),
     }, 3);
 
-    const fetchedOddsCount = Number(oddsStage.events.length || 0);
+    const fetchedOddsCount = resolveRunHealthFetchedOddsCount_(fetchedOddsCountBeforeGate, oddsStage);
     const matchedCount = Number(matchStage.matchedCount || 0);
     const signalsFoundCount = Number(signalStage.rows.length || 0);
     const playersWithNonNullStats = Number(
@@ -1144,4 +1145,10 @@ function evaluateRunHealthDiagnostics_(metrics) {
     warning_payload: warningPayload,
     should_emit_warning: true,
   };
+}
+
+function resolveRunHealthFetchedOddsCount_(fetchedBeforeGateCount, gatedOddsStage) {
+  const initialCount = Number(fetchedBeforeGateCount || 0);
+  const gatedCount = Number((gatedOddsStage && gatedOddsStage.events && gatedOddsStage.events.length) || 0);
+  return Math.max(initialCount, gatedCount);
 }
