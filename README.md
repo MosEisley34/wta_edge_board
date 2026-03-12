@@ -178,6 +178,22 @@ CI triage wrapper (uses `RUNTIME_EXPORT_DIR` or defaults to `./exports`):
 scripts/triage_runtime_diagnostics_ci.sh
 ```
 
+### CI deterministic profile + parity gate
+
+Run this CI gate after runtime artifact export/diagnostics to enforce compact-profile quality constraints:
+
+```bash
+scripts/ci_profile_parity_gate.sh
+```
+
+The gate fails when either condition is true:
+- compact reduction is below `PROFILE_REDUCTION_TARGET_PCT` (default `60`), or
+- any configured critical parity diagnostics (`PROFILE_CRITICAL_PARITY_KEYS`, default `gate_reasons,source_selection,watchdog`) has mismatches.
+
+It also writes a machine-readable summary artifact JSON to `PROFILE_SUMMARY_JSON_OUT` (default `./exports/pipeline_log_profile_ci_summary.json`) for trend tracking.
+
+`triage_runtime_diagnostics_ci.sh` now runs this gate by default after diagnostics scan (`RUN_PROFILE_PARITY_GATE=1`), and it can be disabled with `RUN_PROFILE_PARITY_GATE=0` when needed.
+
 Direct scanner usage is still available:
 
 ```bash

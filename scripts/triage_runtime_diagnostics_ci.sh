@@ -2,6 +2,7 @@
 set -euo pipefail
 
 EXPORT_DIR="${RUNTIME_EXPORT_DIR:-./exports}"
+RUN_PROFILE_PARITY_GATE="${RUN_PROFILE_PARITY_GATE:-1}"
 
 if [[ ! -d "$EXPORT_DIR" ]]; then
   echo "Error: CI runtime exports directory missing: $EXPORT_DIR" >&2
@@ -16,3 +17,7 @@ if ! find "$EXPORT_DIR" -maxdepth 1 -type f \( -iname '*run*log*.csv' -o -iname 
 fi
 
 scripts/scan_runtime_diagnostics.sh "$EXPORT_DIR"
+
+if [[ "$RUN_PROFILE_PARITY_GATE" == "1" ]]; then
+  scripts/ci_profile_parity_gate.sh
+fi
