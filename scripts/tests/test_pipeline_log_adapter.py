@@ -40,6 +40,22 @@ class PipelineLogAdapterTests(unittest.TestCase):
         self.assertEqual(1, rejection_codes["opening_lag_exceeded"])
         self.assertEqual(3, stage_summaries[0]["reason_codes"]["match_map_diagnostic_records_written"])
 
+    def test_compact_v2_alias_only_message_reason_codes_expand_to_canonical(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "schema_version": 2,
+                "et": "summary",
+                "rid": "run-v2-msg",
+                "st": "runEdgeBoard",
+                "ss": "success",
+                "msg": {"schema_id": "reason_code_alias_v1", "reason_codes": {"OR_OUT_WIN": 4}},
+                "rc": {},
+            }
+        )
+
+        message = json.loads(adapted["message"])
+        self.assertEqual(4, message["reason_codes"]["odds_refresh_skipped_outside_window"])
+
     def test_compact_v2_row_reconstructed_to_legacy_shape(self):
         adapted = adapt_run_log_record_for_legacy(
             {
