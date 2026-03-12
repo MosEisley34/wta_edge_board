@@ -247,7 +247,10 @@ EXPECTED_NON_MODEL_ROW_KEYWORDS = {
     "double",
     "team",
     "teams",
+    "bjk",
+    "bjkc",
     "billie jean king cup",
+    "billie jean king",
     "fed cup",
     "united cup",
     "hopman cup",
@@ -522,13 +525,19 @@ def _is_round_label(value: object) -> bool:
 def classify_expected_non_model_row(tokens: list[str]) -> str | None:
     lowered_tokens = [str(token or "").strip().lower() for token in tokens]
     joined = " | ".join(token for token in lowered_tokens if token)
+    alpha_tokens = [token for token in lowered_tokens if re.search(r"[a-z]", token)]
 
     if any(keyword in joined for keyword in EXPECTED_NON_MODEL_ROW_KEYWORDS):
         return "team_or_doubles_marker"
 
+    if any("cup" in token for token in alpha_tokens) and any(
+        marker in joined for marker in {"finals", "qualifiers", "play-offs", "playoffs", "group"}
+    ):
+        return "team_competition_phase_marker"
+
     slash_like_tokens = [
         token
-        for token in lowered_tokens[:8]
+        for token in lowered_tokens[:10]
         if "/" in token and not re.search(r"\d\s*/\s*\d", token)
     ]
     if slash_like_tokens:
