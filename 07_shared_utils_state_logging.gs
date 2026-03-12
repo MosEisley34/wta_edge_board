@@ -793,13 +793,38 @@ function getStateJson_(key) {
 function mergeReasonCounts_(reasonMaps) {
   const merged = {};
   reasonMaps.forEach((map) => {
-    Object.keys(map || {}).forEach((k) => {
-      const value = Number((map || {})[k]);
+    const safeMap = cloneReasonCodeMap_(map);
+    Object.keys(safeMap).forEach((k) => {
+      const value = Number(safeMap[k]);
       if (!Number.isFinite(value)) return;
       merged[k] = Number(merged[k] || 0) + value;
     });
   });
   return merged;
+}
+
+function cloneReasonCodeMap_(reasonMap) {
+  const clone = {};
+  Object.keys(reasonMap || {}).forEach((reasonCode) => {
+    const value = Number((reasonMap || {})[reasonCode]);
+    if (!Number.isFinite(value)) return;
+    clone[reasonCode] = value;
+  });
+  return clone;
+}
+
+function areReasonCodeMapsEquivalent_(left, right) {
+  const leftClone = cloneReasonCodeMap_(left);
+  const rightClone = cloneReasonCodeMap_(right);
+  const leftKeys = Object.keys(leftClone);
+  const rightKeys = Object.keys(rightClone);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (let i = 0; i < leftKeys.length; i += 1) {
+    const key = leftKeys[i];
+    if (!Object.prototype.hasOwnProperty.call(rightClone, key)) return false;
+    if (Number(leftClone[key]) !== Number(rightClone[key])) return false;
+  }
+  return true;
 }
 
 
