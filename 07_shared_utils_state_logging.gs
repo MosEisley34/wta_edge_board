@@ -129,6 +129,7 @@ function writeOpeningLagSkipState_(runId, payload) {
 }
 
 function appendStageLog_(runId, summary) {
+  const compactReasonCodes = compactReasonCodeMapForLog_(summary.reason_codes || {});
   appendLogRow_({
     row_type: 'stage',
     run_id: runId,
@@ -141,7 +142,7 @@ function appendStageLog_(runId, summary) {
       input_count: summary.input_count,
       output_count: summary.output_count,
       provider: summary.provider,
-      reason_codes: summary.reason_codes,
+      reason_codes: compactReasonCodes,
     }),
   });
 }
@@ -598,6 +599,24 @@ function mergeReasonCounts_(reasonMaps) {
     });
   });
   return merged;
+}
+
+function compactReasonCodeMapForLog_(reasonMap) {
+  const compacted = {};
+  Object.keys(reasonMap || {}).forEach((reasonCode) => {
+    const value = Number((reasonMap || {})[reasonCode]);
+    if (!Number.isFinite(value) || value === 0) return;
+    compacted[reasonCode] = value;
+  });
+  return compacted;
+}
+
+function compactStageSummariesForLog_(stageSummaries) {
+  return (stageSummaries || []).map((summary) => {
+    const cloned = Object.assign({}, summary || {});
+    cloned.reason_codes = compactReasonCodeMapForLog_((summary || {}).reason_codes || {});
+    return cloned;
+  });
 }
 
 function normalizeUpstreamGateReason_(value) {

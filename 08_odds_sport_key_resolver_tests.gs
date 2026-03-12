@@ -1989,6 +1989,59 @@ function testRunEdgeBoard_scheduleOnlyWatchdogNoticeIsLowSeverityExpectedIdleAnd
   }
 }
 
+
+function testRunEdgeBoard_compactSummaryReasonMapsKeepVerboseReasonMaps_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }],
+      oddsRows: [{ key: 'odds_1|h2h|p1' }],
+      oddsReasonCodes: { odds_present: 1, zeroed_reason: 0 },
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      scheduleReasonCodes: { schedule_present: 1, schedule_zeroed: 0 },
+      matchedCount: 0,
+      unmatchedCount: 1,
+      rejectedCount: 1,
+      diagnosticRecordsWritten: 0,
+      matchReasonCodes: { no_schedule_candidates: 1, match_zeroed: 0 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+
+    const summary = harness.logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
+    })[0];
+    const compactReasonCodes = JSON.parse(summary.rejection_codes || '{}');
+    const compactStageSummaries = JSON.parse(summary.stage_summaries || '[]');
+    const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+
+    assertEquals_(1, compactReasonCodes.odds_present || 0);
+    assertEquals_(undefined, compactReasonCodes.zeroed_reason);
+    assertEquals_(undefined, compactReasonCodes.schedule_zeroed);
+    assertEquals_(undefined, compactReasonCodes.match_zeroed);
+
+    assertEquals_(1, Number((compactStageSummaries[0].reason_codes || {}).odds_present || 0));
+    assertEquals_(undefined, (compactStageSummaries[0].reason_codes || {}).zeroed_reason);
+    assertEquals_(1, Number((compactStageSummaries[1].reason_codes || {}).schedule_present || 0));
+    assertEquals_(undefined, (compactStageSummaries[1].reason_codes || {}).schedule_zeroed);
+
+    assertEquals_(0, Number((verbose.reason_codes || {}).zeroed_reason || 0));
+    assertEquals_(0, Number((verbose.reason_codes || {}).schedule_zeroed || 0));
+    assertEquals_(0, Number((verbose.reason_codes || {}).match_zeroed || 0));
+    assertEquals_(0, Number((verbose.stage_summaries[0].reason_codes || {}).zeroed_reason || 0));
+    assertEquals_(0, Number((verbose.stage_summaries[1].reason_codes || {}).schedule_zeroed || 0));
+  } finally {
+    harness.restore();
+  }
+}
+
 function createRunEdgeBoardTestHarness_(options) {
   const opts = options || {};
   const originalDateNow = Date.now;
