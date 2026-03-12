@@ -17,6 +17,54 @@ WATCHDOG_STAGES = {
     "run_lifecycle",
 }
 DEFAULT_CRITICAL_PARITY_KEYS = ["gate_reasons", "source_selection", "watchdog"]
+SUMMARY_COUNTER_FIELDS = [
+    "fetched_odds",
+    "fetched_schedule",
+    "allowed_tournaments",
+    "matched",
+    "unmatched",
+    "signals_found",
+    "rejected",
+    "cooldown_suppressed",
+    "duplicate_suppressed",
+]
+
+
+def derive_run_health_attribution(summary, watchdog, rejection_codes):
+    degraded_watchdog = sorted(
+        [
+            {
+                "stage": row.get("stage", ""),
+                "status": row.get("status", ""),
+                "reason_code": row.get("reason_code", ""),
+            }
+            for row in watchdog
+            if str(row.get("status", "")).lower() not in {"", "success", "ok", "healthy"}
+        ],
+        key=lambda x: (x["stage"], x["reason_code"], x["status"]),
+    )
+    degraded_rejection_reasons = sorted(
+        [
+            str(code)
+            for code, count in (rejection_codes or {}).items()
+            if float(count or 0) > 0 and (str(code).startswith("run_health_") or str(code).endswith("_detected"))
+        ]
+    )
+    degraded_reason_sources = {
+        "watchdog": [row["reason_code"] for row in degraded_watchdog],
+        "summary_reason_code": str(summary.get("reason_code", "")),
+        "rejection_codes": degraded_rejection_reasons,
+    }
+    return {
+        "status": "degraded" if (degraded_watchdog or degraded_rejection_reasons) else "healthy",
+        "degraded_reason_sources": degraded_reason_sources,
+        "degraded_attribution_consistent": bool(degraded_watchdog or degraded_rejection_reasons)
+        == bool(
+            degraded_reason_sources["watchdog"]
+            or degraded_reason_sources["rejection_codes"]
+            or degraded_reason_sources["summary_reason_code"].startswith("run_health_")
+        ),
+    }
 
 
 def canonical_bytes(rows):
@@ -83,14 +131,22 @@ def index_rows(rows):
         if isinstance(rejection_codes, dict) and "reason_codes" in rejection_codes:
             rejection_codes = rejection_codes.get("reason_codes") or {}
 
+        summary_counters = {
+            field: int(summary.get(field, 0) or 0)
+            for field in SUMMARY_COUNTER_FIELDS
+        }
+        run_health_attribution = derive_run_health_attribution(summary, watchdog, rejection_codes)
+
         indexed[run_id] = {
             "gate_reasons": {
                 "summary_reason_code": summary.get("reason_code", ""),
                 "rejection_codes": rejection_codes,
             },
+            "summary_counters": summary_counters,
             "source_selection": source_selection,
             "watchdog": sorted(watchdog, key=lambda x: (x["stage"], x["reason_code"], x["status"])),
             "stage_timing": stage_timing,
+            "run_health_attribution": run_health_attribution,
         }
 
     return indexed
@@ -103,9 +159,11 @@ def compare_index(verbose_idx, compact_idx):
 
     mismatch_counts = {
         "gate_reasons": 0,
+        "summary_counters": 0,
         "source_selection": 0,
         "watchdog": 0,
         "stage_timing": 0,
+        "run_health_attribution": 0,
     }
     mismatch_samples = []
 
