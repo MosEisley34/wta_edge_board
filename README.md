@@ -194,6 +194,8 @@ The gate fails when either condition is true:
 
 It also writes a machine-readable summary artifact JSON to `PROFILE_SUMMARY_JSON_OUT` (default `./exports/pipeline_log_profile_ci_summary.json`) for trend tracking.
 
+Run rollups now emit a stage-latency contract (`run_rollup_v2`) with healthy/degraded threshold ranges, anomaly reason codes when stage `avg`/`p95` exceed thresholds, and periodic baseline comparison artifacts persisted to State as `LAST_RUN_BASELINE_COMPARISON_JSON` for trend monitoring.
+
 `triage_runtime_diagnostics_ci.sh` now runs this gate by default after diagnostics scan (`RUN_PROFILE_PARITY_GATE=1`), and it can be disabled with `RUN_PROFILE_PARITY_GATE=0` when needed.
 
 Direct scanner usage is still available:
