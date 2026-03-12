@@ -254,6 +254,16 @@ function serializeCompactReasonCodesForLogEntry_(normalizedEntry, schemaId, opti
   if (messageObject && messageObject.fallback_aliases) {
     Object.assign(fallbackWarningAliases, messageObject.fallback_aliases || {});
   }
+  const compactStageSummaryEnvelopeForWarning = parseLogJsonLike_(normalized.stage_summaries, null);
+  const compactStageSummariesForWarning = compactStageSummaryEnvelopeForWarning
+    && typeof compactStageSummaryEnvelopeForWarning === 'object'
+    && Array.isArray(compactStageSummaryEnvelopeForWarning.stage_summaries)
+      ? compactStageSummaryEnvelopeForWarning.stage_summaries
+      : [];
+  compactStageSummariesForWarning.forEach((summary) => {
+    if (!summary || !summary.fallback_aliases) return;
+    Object.assign(fallbackWarningAliases, summary.fallback_aliases || {});
+  });
   if (Object.keys(fallbackWarningAliases).length > 0) {
     normalized.__reason_alias_fallback_warning = {
       schema_id: schemaId,
@@ -948,6 +958,7 @@ function maybeEmitReasonAliasDictionary_(config) {
   logDiagnosticEvent_(config || null, 'reason_code_alias_dictionary', {
     schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
     aliases: dictionary,
+    reverse_aliases: invertReasonCodeAliasDictionary_(dictionary),
   }, 1);
 }
 

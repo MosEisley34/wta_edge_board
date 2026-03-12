@@ -192,8 +192,15 @@ const REASON_CODE_ALIAS_DICTIONARIES = {
     source_entity_domain_mismatch_non_tennis_sport_slug_football: 'SRC_DM_FOOT',
     source_entity_domain_mismatch: 'SRC_DM',
     match_map_diagnostic_records_written: 'MM_DIAG_WR',
+    match_map_upserts: 'MM_UPS',
+    match_map_upserts_matched: 'MM_UPS_MT',
+    match_map_upserts_rejected: 'MM_UPS_RJ',
     productive_output_mitigation_activated: 'PO_MIT_ON',
     odds_api_failure_no_stale_fallback: 'ODDS_NO_STALE',
+    raw_odds_upserts: 'ODDS_UPS',
+    raw_player_stats_upserts: 'PSTATS_UPS',
+    raw_schedule_upserts: 'SCH_UPS',
+    signals_upserts: 'SIG_UPS',
   },
 };
 
