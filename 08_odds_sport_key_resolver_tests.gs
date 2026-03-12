@@ -3494,7 +3494,11 @@ function testStageFetchSchedule_h2hMissingSummarySeparatesExpectedVsPipelineFail
       h2h_missing_classification: {
         expected_missing_source_coverage: 1,
         pipeline_failure: 1,
-        unclassified: 1,
+        source_partial_coverage: 0,
+        source_dataset_unavailable: 0,
+        invalid_h2h_pair: 0,
+        generic_h2h_missing: 1,
+        unclassified: 0,
       },
       failed: false,
       error: '',
@@ -3503,7 +3507,8 @@ function testStageFetchSchedule_h2hMissingSummarySeparatesExpectedVsPipelineFail
 
   assertEquals_(1, result.stage.summary.reason_codes.schedule_enrichment_h2h_missing_expected_source_coverage || 0);
   assertEquals_(1, result.stage.summary.reason_codes.schedule_enrichment_h2h_missing_pipeline_failure || 0);
-  assertEquals_(1, result.stage.summary.reason_codes.schedule_enrichment_h2h_missing_unclassified || 0);
+  assertEquals_(1, result.stage.summary.reason_codes.schedule_enrichment_h2h_missing_generic_h2h_missing || 0);
+  assertEquals_(0, result.stage.summary.reason_codes.schedule_enrichment_h2h_missing_unclassified || 0);
 }
 
 function testBuildCanonicalSchedulePlayers_filtersPastEventsAndDedupes_() {
@@ -3666,7 +3671,11 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hMixedCoverageTracksReason
     assertEquals_(1, result.h2h_missing_reason_codes.h2h_player_not_in_matrix || 0);
     assertEquals_(1, result.h2h_missing_classification.expected_missing_source_coverage || 0);
     assertEquals_(0, result.h2h_missing_classification.pipeline_failure || 0);
-    assertEquals_(1, result.h2h_missing_classification.unclassified || 0);
+    assertEquals_(1, result.h2h_missing_classification.source_partial_coverage || 0);
+    assertEquals_(0, result.h2h_missing_classification.source_dataset_unavailable || 0);
+    assertEquals_(0, result.h2h_missing_classification.invalid_h2h_pair || 0);
+    assertEquals_(0, result.h2h_missing_classification.generic_h2h_missing || 0);
+    assertEquals_(0, result.h2h_missing_classification.unclassified || 0);
     assertEquals_(2, result.events[0].h2h_p1_wins);
     assertEquals_(1, result.events[0].h2h_p2_wins);
     assertEquals_(2, (result.h2h_lookup_debug_samples || []).length);
@@ -3721,6 +3730,10 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hPipelineFailuresClassifie
     assertEquals_(1, result.h2h_missing_reason_codes.ta_h2h_fetch_failed || 0);
     assertEquals_(0, result.h2h_missing_classification.expected_missing_source_coverage || 0);
     assertEquals_(2, result.h2h_missing_classification.pipeline_failure || 0);
+    assertEquals_(0, result.h2h_missing_classification.source_partial_coverage || 0);
+    assertEquals_(0, result.h2h_missing_classification.source_dataset_unavailable || 0);
+    assertEquals_(0, result.h2h_missing_classification.invalid_h2h_pair || 0);
+    assertEquals_(0, result.h2h_missing_classification.generic_h2h_missing || 0);
     assertEquals_(0, result.h2h_missing_classification.unclassified || 0);
   } finally {
     Date.now = originalDateNow;
@@ -3728,6 +3741,18 @@ function testEnrichScheduleEventsFromTennisAbstract_h2hPipelineFailuresClassifie
     getStateJson_ = originalGetStateJson;
     getTaH2hCoverageForCanonicalPair_ = originalGetTaH2hCoverageForCanonicalPair;
   }
+}
+
+
+function testClassifyScheduleEnrichmentH2hMissingReason_specificBucketsAndFallback_() {
+  assertEquals_('expected_missing_source_coverage', classifyScheduleEnrichmentH2hMissingReason_('h2h_player_not_in_matrix'));
+  assertEquals_('pipeline_failure', classifyScheduleEnrichmentH2hMissingReason_('ta_h2h_fetch_failed'));
+  assertEquals_('pipeline_failure', classifyScheduleEnrichmentH2hMissingReason_('ta_h2h_parse_failed'));
+  assertEquals_('source_partial_coverage', classifyScheduleEnrichmentH2hMissingReason_('h2h_partial_coverage'));
+  assertEquals_('source_dataset_unavailable', classifyScheduleEnrichmentH2hMissingReason_('h2h_dataset_unavailable'));
+  assertEquals_('invalid_h2h_pair', classifyScheduleEnrichmentH2hMissingReason_('h2h_pair_invalid'));
+  assertEquals_('generic_h2h_missing', classifyScheduleEnrichmentH2hMissingReason_('h2h_missing'));
+  assertEquals_('unclassified', classifyScheduleEnrichmentH2hMissingReason_('h2h_missing_mystery'));
 }
 
 function runStageFetchScheduleScenario_(options) {
@@ -3837,6 +3862,10 @@ function runStageFetchScheduleScenario_(options) {
       h2h_missing_classification: {
         expected_missing_source_coverage: 0,
         pipeline_failure: 0,
+        source_partial_coverage: 0,
+        source_dataset_unavailable: 0,
+        invalid_h2h_pair: 0,
+        generic_h2h_missing: 0,
         unclassified: 0,
       },
       failed: false,
