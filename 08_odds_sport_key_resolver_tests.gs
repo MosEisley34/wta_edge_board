@@ -7046,12 +7046,20 @@ function testSerializeCompactReasonCodesForLogEntry_canAllowExplicitCanonicalPas
 
 function testMaybeEmitReasonAliasFallbackWarningOpsLog_groupsWarningsPerRunSummary_() {
   const originalGetActiveSpreadsheet = SpreadsheetApp.getActiveSpreadsheet;
+  const originalGetConfig = getConfig_;
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
   const originalFallbackState = REASON_ALIAS_FALLBACK_WARNING_EMITTED;
   const originalPendingState = REASON_ALIAS_FALLBACK_WARNING_PENDING;
+  const originalAggregateCache = REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE;
   const appended = [];
 
   REASON_ALIAS_FALLBACK_WARNING_EMITTED = {};
   REASON_ALIAS_FALLBACK_WARNING_PENDING = {};
+  REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = null;
+  getConfig_ = function () { return { ROLLUP_EVERY_N_RUNS: 50 }; };
+  getStateJson_ = function () { return null; };
+  setStateValue_ = function () {};
   SpreadsheetApp.getActiveSpreadsheet = function () {
     return {
       getSheetByName: function () {
@@ -7098,12 +7106,92 @@ function testMaybeEmitReasonAliasFallbackWarningOpsLog_groupsWarningsPerRunSumma
 
     assertEquals_(1, appended.length);
     const warningPayload = JSON.parse(appended[0][7] || '{}');
-    assertEquals_('UNK_A,UNK_B', (warningPayload.fallback_aliases || []).join(','));
-    assertEquals_('missing_b', (warningPayload.canonical_reasons || {}).UNK_B || '');
+    assertEquals_('UNK_A', (warningPayload.fallback_aliases || []).join(','));
   } finally {
     SpreadsheetApp.getActiveSpreadsheet = originalGetActiveSpreadsheet;
+    getConfig_ = originalGetConfig;
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
     REASON_ALIAS_FALLBACK_WARNING_EMITTED = originalFallbackState;
     REASON_ALIAS_FALLBACK_WARNING_PENDING = originalPendingState;
+    REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = originalAggregateCache;
+  }
+}
+
+function testMaybeEmitReasonAliasFallbackWarningOpsLog_rollsUpRepeatedSetsOnCadence_() {
+  const originalGetActiveSpreadsheet = SpreadsheetApp.getActiveSpreadsheet;
+  const originalGetConfig = getConfig_;
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const originalFallbackState = REASON_ALIAS_FALLBACK_WARNING_EMITTED;
+  const originalPendingState = REASON_ALIAS_FALLBACK_WARNING_PENDING;
+  const originalAggregateCache = REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE;
+  const appended = [];
+
+  REASON_ALIAS_FALLBACK_WARNING_EMITTED = {};
+  REASON_ALIAS_FALLBACK_WARNING_PENDING = {};
+  REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = null;
+  getConfig_ = function () { return { ROLLUP_EVERY_N_RUNS: 3 }; };
+  getStateJson_ = function () { return null; };
+  setStateValue_ = function () {};
+  SpreadsheetApp.getActiveSpreadsheet = function () {
+    return {
+      getSheetByName: function () {
+        return {
+          appendRow: function (row) {
+            appended.push(row);
+          },
+        };
+      },
+    };
+  };
+
+  try {
+    maybeEmitReasonAliasFallbackWarningOpsLog_({
+      row_type: 'summary',
+      run_id: 'run-1',
+      stage: 'runEdgeBoard',
+      __reason_alias_fallback_warning: {
+        schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+        aliases: ['UNK_REPEAT'],
+        canonical_reasons: { UNK_REPEAT: 'missing_repeat' },
+      },
+    });
+    maybeEmitReasonAliasFallbackWarningOpsLog_({
+      row_type: 'summary',
+      run_id: 'run-2',
+      stage: 'runEdgeBoard',
+      __reason_alias_fallback_warning: {
+        schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+        aliases: ['UNK_REPEAT'],
+        canonical_reasons: { UNK_REPEAT: 'missing_repeat' },
+      },
+    });
+    maybeEmitReasonAliasFallbackWarningOpsLog_({
+      row_type: 'summary',
+      run_id: 'run-3',
+      stage: 'runEdgeBoard',
+      __reason_alias_fallback_warning: {
+        schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+        aliases: ['UNK_REPEAT'],
+        canonical_reasons: { UNK_REPEAT: 'missing_repeat' },
+      },
+    });
+
+    assertEquals_(2, appended.length);
+    assertEquals_('reason_code_alias_missing_fallback_emitted', appended[0][6]);
+    assertEquals_('reason_code_alias_missing_fallback_repeat_rollup', appended[1][6]);
+    const summaryPayload = JSON.parse(appended[1][7] || '{}');
+    assertEquals_(2, Number(summaryPayload.repeat_count || 0));
+    assertEquals_('missing_repeat', (summaryPayload.canonical_reasons || {}).UNK_REPEAT || '');
+  } finally {
+    SpreadsheetApp.getActiveSpreadsheet = originalGetActiveSpreadsheet;
+    getConfig_ = originalGetConfig;
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+    REASON_ALIAS_FALLBACK_WARNING_EMITTED = originalFallbackState;
+    REASON_ALIAS_FALLBACK_WARNING_PENDING = originalPendingState;
+    REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = originalAggregateCache;
   }
 }
 
