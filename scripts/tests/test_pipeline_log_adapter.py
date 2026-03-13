@@ -143,6 +143,33 @@ class PipelineLogAdapterTests(unittest.TestCase):
         self.assertEqual(1, message["reason_codes"]["match_map_upserts"])
         self.assertEqual(1, message["reason_codes"]["signals_upserts"])
 
+    def test_compact_v2_supports_recurring_alias_entries(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "schema_version": 2,
+                "et": "summary",
+                "rid": "run-v2-recurring-aliases",
+                "st": "runEdgeBoard",
+                "msg": {
+                    "schema_id": "reason_code_alias_v1",
+                    "reason_codes": {
+                        "RUN_START": 1,
+                        "RUN_DONE": 1,
+                        "SRC_CRED_SKIP": 1,
+                        "SCH_WIN_FB_NO": 1,
+                        "CREDIT_HDR": 1,
+                    },
+                },
+            }
+        )
+        message = json.loads(adapted["message"])
+        self.assertEqual(1, message["reason_codes"]["started"])
+        self.assertEqual(1, message["reason_codes"]["completed"])
+        self.assertEqual(1, message["reason_codes"]["source_credit_saver_skip"])
+        self.assertEqual(1, message["reason_codes"]["schedule_window_fallback_no_odds"])
+        self.assertEqual(1, message["reason_codes"]["credit_header_missing"])
+
+
 
 if __name__ == "__main__":
     unittest.main()
