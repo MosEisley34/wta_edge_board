@@ -766,6 +766,7 @@ function runEdgeBoard() {
       unmatched: matchStage.unmatchedCount,
       signals_found: signalsFoundCount,
       run_health_reason_code: runHealthDiagnostics.reason_code,
+      run_mode: oddsWindowDecision.current_refresh_mode || '',
       reason_codes: cloneReasonCodeMap_(combinedReasonCodes),
       stage_summaries: stageSummarySnapshots.map((summary) => Object.assign({}, summary, {
         reason_codes: cloneReasonCodeMap_(summary.reason_codes || {}),
