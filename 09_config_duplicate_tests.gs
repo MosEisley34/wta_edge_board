@@ -323,6 +323,128 @@ function testPreflightConfigUniqueness_failsWhenConfigSheetMissing_() {
   }
 }
 
+function testGetConfig_failsDeterministicallyWhenConfigSheetMissing_() {
+  const originalSpreadsheetApp = SpreadsheetApp;
+  const originalEnsureTabsAndConfig = ensureTabsAndConfig_;
+
+  SpreadsheetApp = {
+    getActiveSpreadsheet: function () {
+      return {
+        getSheetByName: function () {
+          return null;
+        },
+      };
+    },
+  };
+  ensureTabsAndConfig_ = function () {};
+
+  try {
+    let thrown = null;
+    try {
+      getConfig_();
+    } catch (err) {
+      thrown = err;
+    }
+
+    assertTrue_(!!thrown, 'expected getConfig_ to throw when Config sheet is missing');
+    const message = String((thrown && thrown.message) || thrown || '');
+    assertTrue_(message.indexOf('[config_sheet_missing_preflight]') >= 0, 'expected handled missing-sheet reason code');
+    assertTrue_(message.indexOf('Setup / Verify Tabs') >= 0, 'expected recovery guidance in missing-sheet error');
+    assertTrue_(message.indexOf('Cannot read') === -1, 'expected no raw null dereference message');
+    assertTrue_(message.indexOf('getDataRange') === -1, 'expected no null.getDataRange crash text');
+  } finally {
+    SpreadsheetApp = originalSpreadsheetApp;
+    ensureTabsAndConfig_ = originalEnsureTabsAndConfig;
+  }
+}
+
+function testEnsureConfigDefaults_failsDeterministicallyWhenConfigSheetMissing_() {
+  const originalSpreadsheetApp = SpreadsheetApp;
+  const originalEnsureTabsAndConfig = ensureTabsAndConfig_;
+
+  SpreadsheetApp = {
+    getActiveSpreadsheet: function () {
+      return {
+        getSheetByName: function () {
+          return null;
+        },
+      };
+    },
+  };
+  ensureTabsAndConfig_ = function () {};
+
+  try {
+    let thrown = null;
+    try {
+      ensureConfigDefaults_();
+    } catch (err) {
+      thrown = err;
+    }
+
+    assertTrue_(!!thrown, 'expected ensureConfigDefaults_ to throw when Config sheet is missing');
+    const message = String((thrown && thrown.message) || thrown || '');
+    assertTrue_(message.indexOf('[config_sheet_missing_preflight]') >= 0, 'expected handled missing-sheet reason code');
+    assertTrue_(message.indexOf('Setup / Verify Tabs') >= 0, 'expected recovery guidance in missing-sheet error');
+    assertTrue_(message.indexOf('getDataRange') === -1, 'expected no null.getDataRange crash text');
+    assertTrue_(message.indexOf('Cannot read') === -1, 'expected no raw null dereference message');
+  } finally {
+    SpreadsheetApp = originalSpreadsheetApp;
+    ensureTabsAndConfig_ = originalEnsureTabsAndConfig;
+  }
+}
+
+function testRunEdgeBoard_resetInProgress_logsSkippedSummaryWithStableReasonCode_() {
+  const originalBuildRunId = buildRunId_;
+  const originalAppendLogRow = appendLogRow_;
+  const originalEnsureTabsAndConfig = ensureTabsAndConfig_;
+  const originalTryLock = tryLock_;
+  const originalGetScriptProperties = PropertiesService.getScriptProperties;
+
+  const logs = [];
+
+  buildRunId_ = function () { return 'reset-in-progress-run'; };
+  appendLogRow_ = function (entry) { logs.push(entry); };
+  ensureTabsAndConfig_ = function () {
+    throw new Error('runEdgeBoard should return before ensureTabsAndConfig_ when reset is in progress');
+  };
+  tryLock_ = function () {
+    throw new Error('runEdgeBoard should return before lock acquisition when reset is in progress');
+  };
+  PropertiesService.getScriptProperties = function () {
+    return {
+      getProperty: function (key) {
+        if (key === PROPS.WORKBOOK_RESET_IN_PROGRESS) return 'true';
+        return null;
+      },
+      setProperty: function () {},
+      deleteProperty: function () {},
+    };
+  };
+
+  try {
+    runEdgeBoard();
+
+    assertEquals_(2, logs.length);
+    assertEquals_('ops', logs[0].row_type);
+    assertEquals_('runEdgeBoard', logs[0].stage);
+    assertEquals_('skipped', logs[0].status);
+    assertEquals_('reset_in_progress_skip', logs[0].reason_code);
+    assertEquals_('Skipped runEdgeBoard because workbook reset is in progress.', logs[0].message);
+
+    assertEquals_('summary', logs[1].row_type);
+    assertEquals_('runEdgeBoard', logs[1].stage);
+    assertEquals_('skipped', logs[1].status);
+    assertEquals_('reset_in_progress_skip', logs[1].reason_code);
+    assertEquals_('Skipped because WORKBOOK_RESET_IN_PROGRESS flag is set.', logs[1].message);
+  } finally {
+    buildRunId_ = originalBuildRunId;
+    appendLogRow_ = originalAppendLogRow;
+    ensureTabsAndConfig_ = originalEnsureTabsAndConfig;
+    tryLock_ = originalTryLock;
+    PropertiesService.getScriptProperties = originalGetScriptProperties;
+  }
+}
+
 function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_() {
   const configSheet = createFakeConfigSheet_([
     ['key', 'value'],
