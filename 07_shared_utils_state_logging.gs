@@ -636,7 +636,13 @@ function computeRollupDelta_(current, previous) {
 
 
 function resolveRunHealthMode_(runHealthReasonCode) {
-  return String(runHealthReasonCode || '').trim() ? 'degraded' : 'healthy';
+  const reason = String(runHealthReasonCode || '').trim();
+  if (!reason) return 'healthy';
+  const healthyReasonFamilies = {
+    odds_refresh_skipped_outside_window: true,
+    run_health_expected_temporary_no_odds: true,
+  };
+  return healthyReasonFamilies[reason] ? 'healthy' : 'degraded';
 }
 
 function getStageLatencyExpectationsForMode_(mode) {
