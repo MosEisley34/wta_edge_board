@@ -677,11 +677,12 @@ function runEdgeBoard() {
       combinedReasonCodes[runHealthDiagnostics.degraded_reason_code] = (combinedReasonCodes[runHealthDiagnostics.degraded_reason_code] || 0) + 1;
     }
     if (emptyCycleState.warning_needed) {
+      const bootstrapWatchdogEmission = resolveBootstrapEmptyCycleWatchdogEmission_(emptyCycleState, runHealthDiagnostics);
       appendLogRow_({
         row_type: 'ops',
         run_id: runId,
         stage: 'bootstrap_empty_cycle_watchdog',
-        status: 'warning',
+        status: bootstrapWatchdogEmission.status,
         reason_code: 'bootstrap_empty_cycle_detected',
         message: JSON.stringify({
           consecutive_empty_cycles: emptyCycleState.consecutive_empty_cycles,
@@ -689,6 +690,10 @@ function runEdgeBoard() {
           diagnostics_counter: emptyCycleState.diagnostics_counter,
           last_non_empty_fetch_at: emptyCycleState.last_non_empty_fetch_at || '',
           last_non_empty_fetch_at_utc: emptyCycleState.last_non_empty_fetch_at_utc || '',
+          watchdog_emission_mode: bootstrapWatchdogEmission.mode,
+          outside_window_expected_idle: bootstrapWatchdogEmission.outside_window_expected_idle,
+          material_threshold_change: bootstrapWatchdogEmission.material_threshold_change,
+          watchdog_state_unexpected: bootstrapWatchdogEmission.watchdog_state_unexpected,
         }),
       });
     }
@@ -943,6 +948,27 @@ function runEdgeBoard() {
     releaseRunLifecycleLease_(scriptProps, lifecycleContext, runId);
     lock.releaseLock();
   }
+}
+
+function resolveBootstrapEmptyCycleWatchdogEmission_(emptyCycleState, runHealthDiagnostics) {
+  const state = emptyCycleState || {};
+  const diagnostics = runHealthDiagnostics || {};
+  const consecutive = Number(state.consecutive_empty_cycles || 0);
+  const threshold = Math.max(1, Number(state.threshold || 0));
+  const diagnosticsCounter = Number(state.diagnostics_counter || 0);
+  const expectedIdleOutsideWindow = String(diagnostics.reason_code || '') === 'odds_refresh_skipped_outside_window';
+  const materialThresholdChange = consecutive === threshold
+    || (consecutive > threshold && threshold > 0 && (consecutive % threshold === 0));
+  const unexpectedState = consecutive < threshold || diagnosticsCounter < consecutive;
+  const summaryMode = expectedIdleOutsideWindow && !materialThresholdChange && !unexpectedState;
+
+  return {
+    status: summaryMode ? 'info' : 'warning',
+    mode: summaryMode ? 'outside_window_summary' : 'warning',
+    outside_window_expected_idle: expectedIdleOutsideWindow,
+    material_threshold_change: materialThresholdChange,
+    watchdog_state_unexpected: unexpectedState,
+  };
 }
 
 function buildRunEdgeBoardBoundedCounterInvariantChecks_(scheduleSummary, matchStage) {
