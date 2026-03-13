@@ -5,6 +5,11 @@ const STATE_VALUE_GUARD_REASON = 'state_value_summarized_size_guard';
 let REASON_ALIAS_DICTIONARY_EMITTED_FOR_PROCESS = false;
 let REASON_ALIAS_FALLBACK_WARNING_EMITTED = {};
 let REASON_ALIAS_FALLBACK_WARNING_PENDING = {};
+let REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = null;
+
+const REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_STATE_KEY = 'REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_STATE';
+const REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_SCHEMA = 'reason_alias_fallback_warning_aggregate_v1';
+const REASON_ALIAS_FALLBACK_WARNING_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 const SECRET_REDACTION_MAP = {
   exact_keys: [
@@ -1203,38 +1208,202 @@ function buildReasonCodeFallbackAlias_(reasonCode) {
 }
 
 function maybeEmitReasonAliasFallbackWarningOpsLog_(entry) {
-  const warning = entry && entry.__reason_alias_fallback_warning;
-  if (!warning || !warning.aliases || !warning.aliases.length) return;
-  const schemaId = String(warning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '');
-  const key = String(entry && entry.run_id || '') + '::' + schemaId;
-  const pending = REASON_ALIAS_FALLBACK_WARNING_PENDING[key] || {
-    schema_id: schemaId,
-    fallback_aliases: {},
-    allow_canonical_passthrough: false,
-  };
-  (warning.aliases || []).forEach((alias) => {
-    const aliasText = String(alias || '').trim();
-    if (!aliasText) return;
-    pending.fallback_aliases[aliasText] = String((warning.canonical_reasons || {})[aliasText] || pending.fallback_aliases[aliasText] || '');
-  });
-  pending.allow_canonical_passthrough = pending.allow_canonical_passthrough || !!warning.allow_canonical_passthrough;
-  REASON_ALIAS_FALLBACK_WARNING_PENDING[key] = pending;
-
   const rowType = String(entry && entry.row_type || '');
   const stage = String(entry && entry.stage || '');
+  const runId = String(entry && entry.run_id || '');
   const isRunSummaryRow = rowType === 'summary' || stage === 'runEdgeBoard';
+  const warning = entry && entry.__reason_alias_fallback_warning;
+
+  if (warning && warning.aliases && warning.aliases.length) {
+    const schemaId = String(warning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '');
+    const key = runId + '::' + schemaId;
+    const pending = REASON_ALIAS_FALLBACK_WARNING_PENDING[key] || {
+      schema_id: schemaId,
+      fallback_aliases: {},
+      allow_canonical_passthrough: false,
+    };
+    (warning.aliases || []).forEach((alias) => {
+      const aliasText = String(alias || '').trim();
+      if (!aliasText) return;
+      pending.fallback_aliases[aliasText] = String((warning.canonical_reasons || {})[aliasText] || pending.fallback_aliases[aliasText] || '');
+    });
+    pending.allow_canonical_passthrough = pending.allow_canonical_passthrough || !!warning.allow_canonical_passthrough;
+    REASON_ALIAS_FALLBACK_WARNING_PENDING[key] = pending;
+  }
+
   if (!isRunSummaryRow) return;
-  if (REASON_ALIAS_FALLBACK_WARNING_EMITTED[key]) return;
-  REASON_ALIAS_FALLBACK_WARNING_EMITTED[key] = true;
+  if (REASON_ALIAS_FALLBACK_WARNING_EMITTED[runId]) {
+    maybeEmitReasonAliasFallbackAggregateSummary_(entry);
+    return;
+  }
+  REASON_ALIAS_FALLBACK_WARNING_EMITTED[runId] = true;
 
-  const mergedWarning = REASON_ALIAS_FALLBACK_WARNING_PENDING[key] || pending;
-  const fallbackAliases = Object.keys((mergedWarning && mergedWarning.fallback_aliases) || {}).sort();
-  if (!fallbackAliases.length) return;
-  delete REASON_ALIAS_FALLBACK_WARNING_PENDING[key];
+  const aggregateState = getReasonAliasFallbackWarningAggregateState_();
+  aggregateState.summary_run_count = Number(aggregateState.summary_run_count || 0) + 1;
 
+  const summaryKeys = Object.keys(REASON_ALIAS_FALLBACK_WARNING_PENDING).filter((pendingKey) => {
+    return pendingKey.indexOf(runId + '::') === 0;
+  });
+  const now = new Date();
+
+  summaryKeys.forEach((pendingKey) => {
+    const mergedWarning = REASON_ALIAS_FALLBACK_WARNING_PENDING[pendingKey] || {};
+    delete REASON_ALIAS_FALLBACK_WARNING_PENDING[pendingKey];
+    const fallbackAliases = Object.keys((mergedWarning && mergedWarning.fallback_aliases) || {}).sort();
+    if (!fallbackAliases.length) return;
+    const aggregateEntry = registerReasonAliasFallbackWarningSet_(aggregateState, {
+      schema_id: String(mergedWarning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || ''),
+      fallback_aliases: fallbackAliases,
+      canonical_reasons: mergedWarning.fallback_aliases || {},
+      allow_canonical_passthrough: !!mergedWarning.allow_canonical_passthrough,
+      now: now,
+    });
+    if (aggregateEntry.emit_detailed_now) {
+      appendReasonAliasFallbackWarningOpsRow_(entry, 'reason_code_alias_missing_fallback_emitted', {
+        reason_code_alias_schema_id: aggregateEntry.schema_id,
+        fallback_aliases: aggregateEntry.fallback_aliases,
+        canonical_reasons: aggregateEntry.canonical_reasons,
+        mode: aggregateEntry.mode,
+        repeat_count: Number(aggregateEntry.repeat_count || 0),
+        first_seen: aggregateEntry.first_seen,
+        last_seen: aggregateEntry.last_seen,
+      }, now);
+    }
+  });
+
+  maybeEmitReasonAliasFallbackAggregateSummary_(entry, aggregateState);
+  persistReasonAliasFallbackWarningAggregateState_(aggregateState);
+}
+
+function getReasonAliasFallbackWarningAggregateState_() {
+  if (REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE) return REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE;
+  const stored = getStateJson_(REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_STATE_KEY) || {};
+  const state = {
+    schema: REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_SCHEMA,
+    summary_run_count: Number(stored.summary_run_count || 0),
+    last_summary_emit_run_count: Number(stored.last_summary_emit_run_count || 0),
+    sets: {},
+  };
+  const storedSets = stored.sets && typeof stored.sets === 'object' ? stored.sets : {};
+  Object.keys(storedSets).forEach((setKey) => {
+    const setEntry = storedSets[setKey] || {};
+    state.sets[setKey] = {
+      schema_id: String(setEntry.schema_id || ''),
+      fallback_aliases: Array.isArray(setEntry.fallback_aliases) ? setEntry.fallback_aliases.slice().sort() : [],
+      canonical_reasons: setEntry.canonical_reasons || {},
+      mode: String(setEntry.mode || 'hash_fallback'),
+      count: Number(setEntry.count || 0),
+      first_seen: String(setEntry.first_seen || ''),
+      last_seen: String(setEntry.last_seen || ''),
+      last_detailed_emitted_at: String(setEntry.last_detailed_emitted_at || ''),
+      last_detailed_emitted_at_ms: Number(setEntry.last_detailed_emitted_at_ms || 0),
+      repeat_count_since_summary: Number(setEntry.repeat_count_since_summary || 0),
+      repeat_count_since_detailed: Number(setEntry.repeat_count_since_detailed || 0),
+    };
+  });
+  REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = state;
+  return state;
+}
+
+function persistReasonAliasFallbackWarningAggregateState_(state) {
+  const safeState = state || getReasonAliasFallbackWarningAggregateState_();
+  REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = safeState;
+  setStateValue_(REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_STATE_KEY, JSON.stringify(safeState));
+}
+
+function buildReasonAliasFallbackAggregateSetKey_(schemaId, aliases) {
+  return String(schemaId || '') + '::' + (aliases || []).join('|');
+}
+
+function registerReasonAliasFallbackWarningSet_(state, payload) {
+  const safeState = state || getReasonAliasFallbackWarningAggregateState_();
+  const schemaId = String(payload && payload.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '');
+  const fallbackAliases = Array.isArray(payload && payload.fallback_aliases) ? payload.fallback_aliases.slice().sort() : [];
+  const canonicalReasons = (payload && payload.canonical_reasons) || {};
+  const mode = payload && payload.allow_canonical_passthrough ? 'canonical_passthrough' : 'hash_fallback';
+  const now = (payload && payload.now) || new Date();
+  const nowIso = formatLocalIso_(now);
+  const setKey = buildReasonAliasFallbackAggregateSetKey_(schemaId, fallbackAliases);
+  const existing = safeState.sets[setKey] || {
+    schema_id: schemaId,
+    fallback_aliases: fallbackAliases,
+    canonical_reasons: {},
+    mode: mode,
+    count: 0,
+    first_seen: nowIso,
+    last_seen: nowIso,
+    last_detailed_emitted_at: '',
+    last_detailed_emitted_at_ms: 0,
+    repeat_count_since_summary: 0,
+    repeat_count_since_detailed: 0,
+  };
+
+  existing.count = Number(existing.count || 0) + 1;
+  existing.last_seen = nowIso;
+  existing.schema_id = schemaId;
+  existing.fallback_aliases = fallbackAliases;
+  existing.mode = mode;
+  fallbackAliases.forEach((alias) => {
+    existing.canonical_reasons[alias] = String(canonicalReasons[alias] || existing.canonical_reasons[alias] || '');
+  });
+
+  const lastDetailedMs = Number(existing.last_detailed_emitted_at_ms || 0);
+  const cooldownMs = Math.max(1, Number(REASON_ALIAS_FALLBACK_WARNING_COOLDOWN_MS || 0));
+  const isFirstObservation = Number(existing.count || 0) === 1;
+  const emitDetailedNow = isFirstObservation || !lastDetailedMs || (now.getTime() - lastDetailedMs >= cooldownMs);
+
+  if (emitDetailedNow) {
+    existing.last_detailed_emitted_at = nowIso;
+    existing.last_detailed_emitted_at_ms = now.getTime();
+    existing.repeat_count_since_detailed = 0;
+  } else {
+    existing.repeat_count_since_summary = Number(existing.repeat_count_since_summary || 0) + 1;
+    existing.repeat_count_since_detailed = Number(existing.repeat_count_since_detailed || 0) + 1;
+  }
+
+  safeState.sets[setKey] = existing;
+  return {
+    emit_detailed_now: emitDetailedNow,
+    schema_id: existing.schema_id,
+    fallback_aliases: existing.fallback_aliases,
+    canonical_reasons: existing.canonical_reasons,
+    mode: existing.mode,
+    repeat_count: Number(existing.repeat_count_since_detailed || 0),
+    first_seen: existing.first_seen,
+    last_seen: existing.last_seen,
+  };
+}
+
+function maybeEmitReasonAliasFallbackAggregateSummary_(entry, state) {
+  const safeState = state || getReasonAliasFallbackWarningAggregateState_();
+  const cfg = getConfig_();
+  const cadence = Math.max(1, Number(cfg.ROLLUP_EVERY_N_RUNS || 10));
+  const runCount = Number(safeState.summary_run_count || 0);
+  if (runCount <= 0 || runCount % cadence !== 0) return;
+
+  const setKeys = Object.keys(safeState.sets || {}).sort();
+  setKeys.forEach((setKey) => {
+    const setEntry = safeState.sets[setKey] || {};
+    const repeatCount = Number(setEntry.repeat_count_since_summary || 0);
+    if (repeatCount <= 0) return;
+    appendReasonAliasFallbackWarningOpsRow_(entry, 'reason_code_alias_missing_fallback_repeat_rollup', {
+      reason_code_alias_schema_id: String(setEntry.schema_id || ''),
+      fallback_aliases: Array.isArray(setEntry.fallback_aliases) ? setEntry.fallback_aliases.slice() : [],
+      canonical_reasons: setEntry.canonical_reasons || {},
+      mode: String(setEntry.mode || 'hash_fallback'),
+      repeat_count: repeatCount,
+      first_seen: String(setEntry.first_seen || ''),
+      last_seen: String(setEntry.last_seen || ''),
+    });
+    setEntry.repeat_count_since_summary = 0;
+  });
+  safeState.last_summary_emit_run_count = runCount;
+}
+
+function appendReasonAliasFallbackWarningOpsRow_(entry, reasonCode, payload, now) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getSheetByName(SHEETS.RUN_LOG) || ensureSheet_(ss, SHEETS.RUN_LOG);
-  const nowIso = formatLocalIso_(new Date());
+  const nowIso = formatLocalIso_(now || new Date());
   sh.appendRow([
     'ops',
     entry.run_id || '',
@@ -1242,13 +1411,8 @@ function maybeEmitReasonAliasFallbackWarningOpsLog_(entry) {
     nowIso,
     nowIso,
     'warning',
-    'reason_code_alias_missing_fallback_emitted',
-    sanitizeForLog_(JSON.stringify({
-      reason_code_alias_schema_id: schemaId,
-      fallback_aliases: fallbackAliases,
-      canonical_reasons: mergedWarning.fallback_aliases || {},
-      mode: mergedWarning.allow_canonical_passthrough ? 'canonical_passthrough' : 'hash_fallback',
-    })),
+    reasonCode,
+    sanitizeForLog_(JSON.stringify(payload || {})),
     0,0,0,0,0,0,
     '{}',
     0,0,
