@@ -422,9 +422,9 @@ function ensureTabsAndConfig_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   Object.keys(SHEETS).forEach((k) => ensureSheet_(ss, SHEETS[k]));
 
-  ensureHeaders_(SHEETS.CONFIG, ['key', 'value']);
-  ensureHeaders_(SHEETS.RUN_LOG, RUN_LOG_HEADERS);
-  ensureHeaders_(SHEETS.RAW_ODDS, [
+  ensureHeaders_(ss, SHEETS.CONFIG, ['key', 'value']);
+  ensureHeaders_(ss, SHEETS.RUN_LOG, RUN_LOG_HEADERS);
+  ensureHeaders_(ss, SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
     'odds_updated_epoch_ms', 'provider_odds_updated_time', 'ingestion_timestamp', 'commence_time',
     'commence_epoch_ms', 'competition', 'player_1', 'player_2',
@@ -434,7 +434,7 @@ function ensureTabsAndConfig_() {
     'surface', 'stats_source', 'h2h_source', 'stats_as_of',
     'source', 'updated_at',
   ]);
-  ensureHeaders_(SHEETS.RAW_SCHEDULE, [
+  ensureHeaders_(ss, SHEETS.RAW_SCHEDULE, [
     'key', 'event_id', 'match_id', 'start_time', 'start_epoch_ms', 'competition', 'player_1', 'player_2',
     'player_1_hold_pct', 'player_2_hold_pct', 'player_1_break_pct', 'player_2_break_pct',
     'player_1_form_score', 'player_2_form_score',
@@ -442,23 +442,23 @@ function ensureTabsAndConfig_() {
     'surface', 'stats_source', 'h2h_source', 'stats_as_of',
     'canonical_tier', 'is_allowed', 'reason_code', 'source', 'updated_at',
   ]);
-  ensureHeaders_(SHEETS.RAW_PLAYER_STATS, [
+  ensureHeaders_(ss, SHEETS.RAW_PLAYER_STATS, [
     'key', 'event_id', 'player_canonical_name', 'source', 'feature_timestamp', 'feature_values', 'has_stats', 'updated_at',
   ]);
-  ensureHeaders_(SHEETS.MATCH_MAP, [
+  ensureHeaders_(ss, SHEETS.MATCH_MAP, [
     'key', 'odds_event_id', 'schedule_event_id', 'match_type',
     'rejection_code', 'time_diff_min', 'competition_tier', 'updated_at',
   ]);
-  ensureHeaders_(SHEETS.SIGNALS, [
+  ensureHeaders_(ss, SHEETS.SIGNALS, [
     'key', 'run_id', 'odds_event_id', 'schedule_event_id',
     'market', 'side', 'bookmaker', 'competition_tier', 'model_version',
     'model_probability', 'market_implied_probability', 'edge_value', 'edge_tier', 'stake_units',
     'signal_hash', 'notification_outcome', 'reason_code', 'created_at',
   ]);
-  ensureHeaders_(SHEETS.STATE, ['key', 'value', 'updated_at']);
-  ensureHeaders_(SHEETS.PROVIDER_HEALTH, ['metric', 'value', 'status', 'details', 'updated_at']);
+  ensureHeaders_(ss, SHEETS.STATE, ['key', 'value', 'updated_at']);
+  ensureHeaders_(ss, SHEETS.PROVIDER_HEALTH, ['metric', 'value', 'status', 'details', 'updated_at']);
 
-  ensureConfigDefaults_();
+  ensureConfigDefaults_(ss);
 }
 
 function ensureSheet_(ss, name) {
@@ -467,8 +467,26 @@ function ensureSheet_(ss, name) {
   return sh;
 }
 
-function ensureHeaders_(sheetName, headers) {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+function ensureHeaders_(spreadsheetOrSheetOrName, sheetNameOrHeaders, maybeHeaders) {
+  let sh;
+  let headers;
+
+  if (maybeHeaders) {
+    sh = spreadsheetOrSheetOrName.getSheetByName(sheetNameOrHeaders);
+    headers = maybeHeaders;
+  } else if (sheetNameOrHeaders) {
+    headers = sheetNameOrHeaders;
+    if (spreadsheetOrSheetOrName && typeof spreadsheetOrSheetOrName.getRange === 'function') {
+      sh = spreadsheetOrSheetOrName;
+    } else {
+      sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(spreadsheetOrSheetOrName);
+    }
+  }
+
+  if (!sh) {
+    throw new Error('ensureHeaders_: target sheet not found');
+  }
+
   const existingHeaderWidth = Math.max(1, sh.getLastColumn() || 1);
   const existingHeaders = sh.getRange(1, 1, 1, existingHeaderWidth).getValues()[0];
 
@@ -489,8 +507,8 @@ function ensureHeaders_(sheetName, headers) {
   if (sh.getFrozenRows() !== 1) sh.setFrozenRows(1);
 }
 
-function ensureConfigDefaults_() {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
+function ensureConfigDefaults_(ss) {
+  const sh = (ss || SpreadsheetApp.getActiveSpreadsheet()).getSheetByName(SHEETS.CONFIG);
   const values = sh.getDataRange().getValues();
   const parsed = parseConfigRows_(values, {
     mode: 'warn_last_wins',
@@ -593,7 +611,7 @@ function dedupeConfigSheet_(sheet, options) {
   const values = sh.getDataRange().getValues();
 
   if (!values.length) {
-    ensureHeaders_(SHEETS.CONFIG, ['key', 'value']);
+    ensureHeaders_(sh, ['key', 'value']);
     return {
       rewritten: false,
       duplicate_keys: [],
