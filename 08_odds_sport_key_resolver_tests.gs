@@ -7016,6 +7016,8 @@ function testBuildRunEdgeBoardBoundedCounterInvariantChecks_oddsPresentMatchedMo
   );
 
   assertEquals_(3, checks.length);
+  assertEquals_('odds_present', String(checks[0].mode || ''));
+  assertEquals_('odds_present', String(checks[2].mode || ''));
   assertEquals_('stageMatchEvents.input_count (odds-present mode)', String(checks[2].bound_source || ''));
   assertEquals_(2, Number(checks[2].max || 0));
 
@@ -7031,6 +7033,7 @@ function testBuildRunEdgeBoardBoundedCounterInvariantChecks_oddsAbsentScheduleSe
         input_count: 0,
         output_count: 0,
         reason_codes: {
+          schedule_seed_no_odds: 1,
           matched_count: 0,
           rejected_count: 0,
           diagnostic_records_written: 3,
@@ -7042,12 +7045,14 @@ function testBuildRunEdgeBoardBoundedCounterInvariantChecks_oddsAbsentScheduleSe
   );
 
   assertEquals_('stageFetchSchedule.output_count (schedule-seed mode)', String(checks[2].bound_source || ''));
+  assertEquals_('schedule_seed_no_odds', String(checks[2].mode || ''));
   assertEquals_(3, Number(checks[2].max || 0));
   assertEquals_(0, assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, checks).length);
 
   const violations = assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, [Object.assign({}, checks[2], { max: 2 })]);
   assertEquals_(1, violations.length);
   assertEquals_('diagnostic_records_written', violations[0].counter_name);
+  assertEquals_('schedule_seed_no_odds', String(violations[0].mode || ''));
   assertEquals_('stageFetchSchedule.output_count (schedule-seed mode)', String(violations[0].bound_source || ''));
 }
 
@@ -7074,6 +7079,32 @@ function testBuildRunEdgeBoardBoundedCounterInvariantChecks_mixedDiagnosticAndMa
   assertEquals_(0, assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, checks).length);
 }
 
+
+
+
+function testTriageRunEdgeBoardBoundedCounterInvariantViolations_downgradesExpectedScheduleSeedDiagnosticOvercounts_() {
+  const triaged = triageRunEdgeBoardBoundedCounterInvariantViolations_([
+    {
+      stage: 'stageMatchEvents',
+      mode: 'schedule_seed_no_odds',
+      counter_name: 'diagnostic_records_written',
+      counter_value: 5,
+      max_allowed: 2,
+    },
+    {
+      stage: 'stageMatchEvents',
+      mode: 'odds_present',
+      counter_name: 'matched_count',
+      counter_value: 4,
+      max_allowed: 3,
+    },
+  ]);
+
+  assertEquals_(1, triaged.downgraded_violations.length);
+  assertEquals_('schedule_seed_no_odds_expected_diagnostic_overcount', String(triaged.downgraded_violations[0].downgrade_reason || ''));
+  assertEquals_(1, triaged.enforceable_violations.length);
+  assertEquals_('matched_count', String(triaged.enforceable_violations[0].counter_name || ''));
+}
 
 function testEnforceInvariant_warnModeReturnsWarningPayload_() {
   const warningRows = [];

@@ -635,10 +635,11 @@ function runEdgeBoard() {
     const stageReasonCodeMaximaViolations = validateStageReasonCodeMaxima_(stageSummarySnapshots);
     const boundedCounterInvariantChecks = buildRunEdgeBoardBoundedCounterInvariantChecks_(scheduleStage.summary, matchStage);
     const boundedCounterInvariantViolations = assertDebugBoundedStageCounters_(config, boundedCounterInvariantChecks);
+    const boundedCounterInvariantViolationTriage = triageRunEdgeBoardBoundedCounterInvariantViolations_(boundedCounterInvariantViolations);
     const boundedCounterInvariantEnforcement = enforceInvariant_(config, {
       invariant: 'bounded_stage_counter_invariant_exceeded',
       context: 'runEdgeBoard',
-      violations: boundedCounterInvariantViolations,
+      violations: boundedCounterInvariantViolationTriage.enforceable_violations,
       hard_fail: false,
       error_prefix: 'bounded_stage_counter_invariant_exceeded',
     });
@@ -657,6 +658,7 @@ function runEdgeBoard() {
           reason_code_map_mutated_after_snapshot: stageReasonCodeMutationDiagnostics,
           reason_code_counter_exceeds_stage_max: stageReasonCodeMaximaViolations,
           bounded_stage_counter_invariant_exceeded: boundedCounterInvariantViolations,
+          bounded_stage_counter_invariant_downgraded: boundedCounterInvariantViolationTriage.downgraded_violations,
           invariant_enforcement: boundedCounterInvariantEnforcement,
         }),
       });
@@ -944,41 +946,72 @@ function buildRunEdgeBoardBoundedCounterInvariantChecks_(scheduleSummary, matchS
   const safeMatchSummary = safeMatchStage.summary || {};
   const matchInputCount = Number(safeMatchSummary.input_count || 0);
   const scheduleOutputCount = Number(safeScheduleSummary.output_count || 0);
-  const diagnosticBoundUsesScheduleSeeds = matchInputCount === 0;
+  const matchReasonCodes = safeMatchSummary.reason_codes || {};
+  const scheduleSeedNoOddsCount = Number(matchReasonCodes.schedule_seed_no_odds || 0);
+  const scheduleSeedNoOddsMode = matchInputCount === 0 && scheduleSeedNoOddsCount > 0;
+  const mode = scheduleSeedNoOddsMode ? 'schedule_seed_no_odds' : 'odds_present';
+  const diagnosticBoundUsesScheduleSeeds = scheduleSeedNoOddsMode;
 
   return [
     {
       stage: 'stageMatchEvents',
+      mode: mode,
       max_name: 'output_count',
       max: Number(safeMatchSummary.output_count || 0),
       bound_source: 'stageMatchEvents.output_count',
       counters: {
-        matched_count: Number((safeMatchSummary.reason_codes && safeMatchSummary.reason_codes.matched_count) || 0),
+        matched_count: Number(matchReasonCodes.matched_count || 0),
         matched_rows: Number(safeMatchStage.matchedCount || 0),
       },
     },
     {
       stage: 'stageMatchEvents',
+      mode: mode,
       max_name: 'input_count',
       max: matchInputCount,
       bound_source: 'stageMatchEvents.input_count',
       counters: {
-        rejected_count: Number((safeMatchSummary.reason_codes && safeMatchSummary.reason_codes.rejected_count) || 0),
+        rejected_count: Number(matchReasonCodes.rejected_count || 0),
         unmatched_rows: Number(safeMatchStage.unmatchedCount || 0),
       },
     },
     {
       stage: 'stageMatchEvents',
+      mode: mode,
       max_name: diagnosticBoundUsesScheduleSeeds ? 'stageFetchSchedule.output_count' : 'input_count',
       max: diagnosticBoundUsesScheduleSeeds ? scheduleOutputCount : matchInputCount,
       bound_source: diagnosticBoundUsesScheduleSeeds
         ? 'stageFetchSchedule.output_count (schedule-seed mode)'
         : 'stageMatchEvents.input_count (odds-present mode)',
       counters: {
-        diagnostic_records_written: Number((safeMatchSummary.reason_codes && safeMatchSummary.reason_codes.diagnostic_records_written) || 0),
+        diagnostic_records_written: Number(matchReasonCodes.diagnostic_records_written || 0),
       },
     },
   ];
+}
+
+function triageRunEdgeBoardBoundedCounterInvariantViolations_(violations) {
+  const downgradedViolations = [];
+  const enforceableViolations = [];
+
+  (violations || []).forEach((violation) => {
+    const safeViolation = violation || {};
+    const mode = String(safeViolation.mode || 'odds_present');
+    const counterName = String(safeViolation.counter_name || '');
+    const shouldDowngrade = mode === 'schedule_seed_no_odds' && counterName === 'diagnostic_records_written';
+    if (shouldDowngrade) {
+      downgradedViolations.push(Object.assign({}, safeViolation, {
+        downgrade_reason: 'schedule_seed_no_odds_expected_diagnostic_overcount',
+      }));
+      return;
+    }
+    enforceableViolations.push(safeViolation);
+  });
+
+  return {
+    downgraded_violations: downgradedViolations,
+    enforceable_violations: enforceableViolations,
+  };
 }
 
 function resolvePipelineMaxRuntimeMs_(config) {
