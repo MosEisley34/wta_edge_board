@@ -6822,6 +6822,8 @@ function testMaybeEmitRunRollup_emitsOnConfiguredCadenceWithIndependentPayload_(
     assertEquals_(266.67, Number(emitted.rollup.stage_duration_ms.stageFetchOdds.avg || 0));
     assertEquals_(400, Number(emitted.rollup.stage_duration_ms.stageFetchOdds.p95 || 0));
     assertEquals_('degraded', String(emitted.rollup.stage_latency_contract.mode || ''));
+    assertEquals_('active', String(emitted.rollup.stage_latency_contract.evaluation_mode || ''));
+    assertEquals_('warning', String(emitted.rollup.stage_latency_contract.anomaly_severity || ''));
     assertEquals_(4500, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
     assertEquals_(0, Number((emitted.rollup.stage_latency_contract.anomaly_reason_codes || []).length || 0));
     assertEquals_(1, Number(emitted.rollup.key_deltas_vs_previous_rollup.fetched_odds || 0));
@@ -6874,6 +6876,8 @@ function testMaybeEmitRunRollup_treatsExpectedTemporaryNoOddsReasonAsHealthyMode
 
     assertEquals_(true, emitted.emitted);
     assertEquals_('healthy', String(emitted.rollup.stage_latency_contract.mode || ''));
+    assertEquals_('active', String(emitted.rollup.stage_latency_contract.evaluation_mode || ''));
+    assertEquals_('high', String(emitted.rollup.stage_latency_contract.anomaly_severity || ''));
     assertEquals_(3000, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
   } finally {
     getStateJson_ = originalGetStateJson;
@@ -6913,6 +6917,8 @@ function testMaybeEmitRunRollup_treatsOpeningLagScheduleSeedNoOddsReasonAsHealth
 
     assertEquals_(true, emitted.emitted);
     assertEquals_('healthy', String(emitted.rollup.stage_latency_contract.mode || ''));
+    assertEquals_('active', String(emitted.rollup.stage_latency_contract.evaluation_mode || ''));
+    assertEquals_('high', String(emitted.rollup.stage_latency_contract.anomaly_severity || ''));
     assertEquals_(3000, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
   } finally {
     getStateJson_ = originalGetStateJson;
@@ -6951,15 +6957,61 @@ function testMaybeEmitRunRollup_emitsLatencyAnomalyReasonCodesForDegradedMode_()
 
     assertEquals_(true, emitted.emitted);
     assertEquals_('degraded', String(emitted.rollup.stage_latency_contract.mode || ''));
+    assertEquals_('active', String(emitted.rollup.stage_latency_contract.evaluation_mode || ''));
+    assertEquals_('warning', String(emitted.rollup.stage_latency_contract.anomaly_severity || ''));
     const anomalyCodes = emitted.rollup.stage_latency_contract.anomaly_reason_codes || [];
-    assertEquals_(true, anomalyCodes.indexOf('latency_degraded_stagefetchodds_avg_threshold_exceeded') >= 0);
-    assertEquals_(true, anomalyCodes.indexOf('latency_degraded_stagefetchodds_p95_threshold_exceeded') >= 0);
+    assertEquals_(true, anomalyCodes.indexOf('latency_active_degraded_stagefetchodds_avg_threshold_exceeded') >= 0);
+    assertEquals_(true, anomalyCodes.indexOf('latency_active_degraded_stagefetchodds_p95_threshold_exceeded') >= 0);
     assertEquals_(4500, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
   } finally {
     getStateJson_ = originalGetStateJson;
     setStateValue_ = originalSetStateValue;
   }
 }
+
+function testMaybeEmitRunRollup_marksOutsideWindowIdleLatencyAnomaliesInformational_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+
+  const state = {
+    RUN_ROLLUP_STATE: JSON.stringify({ run_count: 0, last_rollup_at_count: 0 }),
+  };
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+
+  try {
+    const emitted = maybeEmitRunRollup_({ ROLLUP_EVERY_N_RUNS: 1 }, {
+      fetched_odds: 0,
+      matched: 0,
+      signals_found: 0,
+      run_health_reason_code: 'odds_refresh_skipped_outside_window',
+      reason_codes: {},
+      stage_summaries: [
+        { stage: 'stageFetchOdds', duration_ms: 6000 },
+        { stage: 'stageFetchOdds', duration_ms: 6100 },
+      ],
+      watchdog: {},
+    });
+
+    assertEquals_(true, emitted.emitted);
+    assertEquals_('degraded', String(emitted.rollup.stage_latency_contract.mode || ''));
+    assertEquals_('idle', String(emitted.rollup.stage_latency_contract.evaluation_mode || ''));
+    assertEquals_('informational', String(emitted.rollup.stage_latency_contract.anomaly_severity || ''));
+    const anomalyCodes = emitted.rollup.stage_latency_contract.anomaly_reason_codes || [];
+    assertEquals_(true, anomalyCodes.indexOf('latency_idle_degraded_stagefetchodds_avg_threshold_exceeded') >= 0);
+    assertEquals_(true, anomalyCodes.indexOf('latency_idle_degraded_stagefetchodds_p95_threshold_exceeded') >= 0);
+    assertEquals_(4500, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+  }
+}
+
 
 function testMaybeEmitRunRollup_tracksRunCountWhenCadenceNotReached_() {
   const originalGetStateJson = getStateJson_;
