@@ -305,7 +305,18 @@ const REASON_CODE_ALIAS_DICTIONARIES = {
 };
 
 function getConfig_() {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(SHEETS.CONFIG);
+  if (!sh) {
+    ensureTabsAndConfig_();
+    sh = ss.getSheetByName(SHEETS.CONFIG);
+  }
+  if (!sh) {
+    throw new Error(
+      '[config_sheet_missing_preflight] Config sheet is missing. '
+      + 'Run "Setup / Verify Tabs" (or "Re-create / Reset Workbook") once, then retry.'
+    );
+  }
   const values = sh.getDataRange().getValues();
   const parsed = parseConfigRows_(values, {
     mode: 'error',
