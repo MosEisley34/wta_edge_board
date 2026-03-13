@@ -800,6 +800,9 @@ function runEdgeBoard() {
       persistStage.summary,
     ], REASON_CODE_ALIAS_SCHEMA_ID);
 
+    const topRejectionReasonsRaw = getTopReasonCodes_(combinedReasonCodes, 10);
+    const topRejectionReasonNormalization = normalizeReasonCodeEntriesForDisplay_(topRejectionReasonsRaw, REASON_CODE_ALIAS_SCHEMA_ID);
+
     const verbosePayload = {
       run_id: runId,
       timezone: TIMESTAMP_TIMEZONE.ID,
@@ -847,7 +850,9 @@ function runEdgeBoard() {
       unresolved_competitions: scheduleStage.unresolvedCompetitions.slice(0, 50),
       top_unresolved_competitions: scheduleStage.topUnresolvedCompetitions,
       sample_unmatched_cases: matchStage.unmatched.slice(0, 20),
-      top_rejection_reasons: getTopReasonCodes_(combinedReasonCodes, 10),
+      top_rejection_reasons: topRejectionReasonNormalization.entries,
+      top_rejection_reasons_raw: topRejectionReasonsRaw,
+      reason_code_display_normalization: topRejectionReasonNormalization.metadata,
       reason_codes: combinedReasonCodes,
       reason_metadata: combinedReasonMetadata,
       reason_code_accumulation_guard: {

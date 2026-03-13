@@ -582,9 +582,11 @@ function maybeEmitRunRollup_(config, payload) {
   const stageDurations = computeStageDurationRollup_((payload && payload.stage_summaries) || []);
   const stageLatencyContract = buildStageLatencyContract_(stageDurations, latencyEvaluation);
   const reasonCodes = compactReasonCodeMapForLog_((payload && payload.reason_codes) || {}, REASON_CODE_ALIAS_SCHEMA_ID).reason_codes;
-  const topReasonCodes = getTopReasonCodes_(reasonCodes, 5).filter(function (entry) {
+  const topReasonCodesRaw = getTopReasonCodes_(reasonCodes, 5).filter(function (entry) {
     return Number(entry && entry.count || 0) > 0;
   });
+  const topReasonCodeNormalization = normalizeReasonCodeEntriesForDisplay_(topReasonCodesRaw, REASON_CODE_ALIAS_SCHEMA_ID);
+  const topReasonCodes = topReasonCodeNormalization.entries;
 
   const currentSnapshot = {
     fetched_odds: Number(payload && payload.fetched_odds || 0),
@@ -605,6 +607,8 @@ function maybeEmitRunRollup_(config, payload) {
     run_count: runCount,
     rollup_every_n_runs: cadence,
     top_reason_codes: topReasonCodes,
+    top_reason_codes_raw: topReasonCodesRaw,
+    reason_code_display_normalization: topReasonCodeNormalization.metadata,
     stage_duration_ms: stageDurations,
     stage_latency_contract: stageLatencyContract,
     key_deltas_vs_previous_rollup: delta,
@@ -795,6 +799,12 @@ function buildRunBaselineComparisonArtifact_(rollup) {
     rollup_run_count: Number(current.run_count || 0),
     run_health_mode: (current.stage_latency_contract && current.stage_latency_contract.mode) || 'healthy',
     top_reason_codes: (current.top_reason_codes || []).slice(0, 5),
+    top_reason_codes_raw: (current.top_reason_codes_raw || []).slice(0, 5),
+    reason_code_display_normalization: current.reason_code_display_normalization || {
+      normalization_applied: false,
+      mapped_legacy_aliases: {},
+      mapped_legacy_alias_count: 0,
+    },
     stage_duration_ms: current.stage_duration_ms || {},
     stage_latency_contract: current.stage_latency_contract || {},
     key_deltas_vs_previous_rollup: current.key_deltas_vs_previous_rollup || {},
@@ -1909,6 +1919,70 @@ function getTopReasonCodes_(reasonMap, topN) {
     .map((k) => ({ reason_code: k, count: reasonMap[k] }))
     .sort((a, b) => b.count - a.count)
     .slice(0, topN || 10);
+}
+
+function normalizeReasonCodeEntriesForDisplay_(entries, schemaId) {
+  const normalizedEntries = [];
+  const normalizationMap = getReasonCodeDisplayNormalizationMap_(schemaId);
+  const appliedMappings = {};
+
+  (entries || []).forEach(function (entry) {
+    const safeEntry = entry || {};
+    const rawReasonCode = String(safeEntry.reason_code || '').trim();
+    const mapping = normalizationMap[rawReasonCode];
+    if (!mapping || !mapping.alias) {
+      normalizedEntries.push(Object.assign({}, safeEntry));
+      return;
+    }
+
+    appliedMappings[rawReasonCode] = {
+      canonical_alias: mapping.alias,
+      canonical_reason: mapping.canonical_reason,
+      source: mapping.source,
+    };
+    normalizedEntries.push(Object.assign({}, safeEntry, {
+      reason_code: mapping.alias,
+      legacy_reason_code: rawReasonCode,
+    }));
+  });
+
+  return {
+    entries: normalizedEntries,
+    metadata: {
+      normalization_applied: Object.keys(appliedMappings).length > 0,
+      mapped_legacy_aliases: appliedMappings,
+      mapped_legacy_alias_count: Object.keys(appliedMappings).length,
+    },
+  };
+}
+
+function getReasonCodeDisplayNormalizationMap_(schemaId) {
+  const resolvedSchemaId = String(schemaId || REASON_CODE_ALIAS_SCHEMA_ID || '').trim();
+  const aggregateState = getReasonAliasFallbackWarningAggregateState_();
+  const sets = (aggregateState && aggregateState.sets) || {};
+  const mapping = {};
+
+  Object.keys(sets).forEach(function (setKey) {
+    const entry = sets[setKey] || {};
+    if (String(entry.schema_id || resolvedSchemaId) !== resolvedSchemaId) return;
+    const canonicalReasons = entry.canonical_reasons || {};
+    Object.keys(canonicalReasons).forEach(function (legacyAlias) {
+      const aliasText = String(legacyAlias || '').trim();
+      if (!aliasText || aliasText.indexOf('UNK_') !== 0) return;
+      const canonicalReasonCode = String(canonicalReasons[legacyAlias] || '').trim();
+      if (!canonicalReasonCode) return;
+      const aliasResult = reasonCodeToAlias_(canonicalReasonCode, resolvedSchemaId, { allow_canonical_passthrough: true });
+      const canonicalAlias = String(aliasResult.alias || '').trim();
+      if (!canonicalAlias || canonicalAlias === aliasText || canonicalAlias.indexOf('UNK_') === 0) return;
+      mapping[aliasText] = {
+        alias: canonicalAlias,
+        canonical_reason: canonicalReasonCode,
+        source: 'reason_alias_fallback_warning_aggregate',
+      };
+    });
+  });
+
+  return mapping;
 }
 
 function buildRunId_() {
