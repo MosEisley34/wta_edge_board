@@ -2137,6 +2137,22 @@ function testResolveBootstrapEmptyCycleWatchdogEmission_keepsWarningAtThresholdB
   assertEquals_(false, emission.watchdog_state_unexpected);
 }
 
+
+function testResolveBootstrapEmptyCycleWatchdogEmission_usesSummaryReasonCodeForOutsideWindowContext_() {
+  const emission = resolveBootstrapEmptyCycleWatchdogEmission_({
+    consecutive_empty_cycles: 7,
+    threshold: 3,
+    diagnostics_counter: 7,
+  }, {
+    reason_code: '',
+    summary_reason_code: 'odds_refresh_skipped_outside_window',
+  });
+
+  assertEquals_('info', emission.status);
+  assertEquals_('outside_window_summary', emission.mode);
+  assertEquals_(true, emission.outside_window_expected_idle);
+}
+
 function testResolveBootstrapEmptyCycleWatchdogEmission_keepsWarningForActiveWindowRuns_() {
   const emission = resolveBootstrapEmptyCycleWatchdogEmission_({
     consecutive_empty_cycles: 5,
