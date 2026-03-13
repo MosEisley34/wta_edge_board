@@ -1543,6 +1543,101 @@ function testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_() {
 }
 
 
+
+function testRunEdgeBoard_treatsExpectedTemporaryNoOddsAsNonFailing_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }],
+      oddsRows: [{ key: 'odds_1|book|h2h|p1' }],
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchedCount: 0,
+      unmatchedCount: 1,
+      rejectedCount: 1,
+      diagnosticRecordsWritten: 1,
+      unmatched: [{
+        odds_event_id: 'odds_1',
+        competition: 'WTA 500 Doha',
+        player_1: 'Player One',
+        player_2: 'Player Two',
+        commence_time: '2025-03-01T12:00:00.000Z',
+        rejection_code: 'no_odds_candidates',
+      }],
+      matchReasonCodes: { no_odds_candidates: 1, rejected_count: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    assertEquals_('run_health_expected_temporary_no_odds', harness.summaryReasonCode());
+
+    let summary = null;
+    let healthWarning = null;
+    for (let i = 0; i < harness.logs.length; i += 1) {
+      const row = harness.logs[i];
+      if (row.row_type === 'summary' && row.stage === 'runEdgeBoard') summary = row;
+      if (row.row_type === 'ops' && row.stage === 'run_health_guard') healthWarning = row;
+    }
+
+    assertEquals_('success', summary.status);
+    assertEquals_('run_health_expected_temporary_no_odds', summary.reason_code);
+    assertEquals_(1, summary.fetched_odds);
+    assertEquals_(0, summary.matched);
+    assertEquals_(null, healthWarning);
+
+    const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+    assertEquals_('idle_expected_temporary_no_odds', verbose.run_health.status);
+    assertEquals_('run_health_expected_temporary_no_odds', verbose.run_health.reason_code);
+    assertEquals_('run_health_expected_temporary_no_odds', verbose.run_health.diagnostics.reason_code);
+  } finally {
+    harness.restore();
+  }
+}
+
+function testRunEdgeBoard_emitsRunHealthWarningForPersistentTemporaryNoOdds_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }],
+      oddsRows: [{ key: 'odds_1|book|h2h|p1' }],
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchedCount: 0,
+      unmatchedCount: 1,
+      rejectedCount: 1,
+      diagnosticRecordsWritten: 1,
+      matchReasonCodes: { no_odds_candidates: 2, rejected_count: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    assertEquals_('run_health_expected_temporary_no_odds', harness.summaryReasonCode());
+
+    let healthWarning = null;
+    for (let i = 0; i < harness.logs.length; i += 1) {
+      const row = harness.logs[i];
+      if (row.row_type === 'ops' && row.stage === 'run_health_guard') healthWarning = row;
+    }
+
+    assertTrue_((healthWarning && healthWarning.message) ? true : false, 'expected run-health warning for persistent temporary no-odds');
+    const warningPayload = JSON.parse((healthWarning && healthWarning.message) || '{}');
+    assertEquals_('run_health_expected_temporary_no_odds', warningPayload.reason_code);
+    assertEquals_(2, warningPayload.no_odds_stage_count);
+  } finally {
+    harness.restore();
+  }
+}
+
 function testRunEdgeBoard_marksIdleOutsideOddsWindowForScheduleOnlyRun_() {
   const harness = createRunEdgeBoardTestHarness_({
     nowMs: 1000000,
@@ -6717,6 +6812,45 @@ function testMaybeEmitRunRollup_emitsOnConfiguredCadenceWithIndependentPayload_(
   }
 }
 
+
+
+function testMaybeEmitRunRollup_treatsExpectedTemporaryNoOddsReasonAsHealthyMode_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+
+  const state = {
+    RUN_ROLLUP_STATE: JSON.stringify({ run_count: 0, last_rollup_at_count: 0 }),
+  };
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+
+  try {
+    const emitted = maybeEmitRunRollup_({ ROLLUP_EVERY_N_RUNS: 1 }, {
+      fetched_odds: 1,
+      matched: 0,
+      signals_found: 0,
+      run_health_reason_code: 'run_health_expected_temporary_no_odds',
+      reason_codes: {},
+      stage_summaries: [
+        { stage: 'stageFetchOdds', duration_ms: 1000 },
+        { stage: 'stageFetchOdds', duration_ms: 1100 },
+      ],
+      watchdog: {},
+    });
+
+    assertEquals_(true, emitted.emitted);
+    assertEquals_('healthy', String(emitted.rollup.stage_latency_contract.mode || ''));
+    assertEquals_(3000, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+  }
+}
 
 function testMaybeEmitRunRollup_emitsLatencyAnomalyReasonCodesForDegradedMode_() {
   const originalGetStateJson = getStateJson_;
