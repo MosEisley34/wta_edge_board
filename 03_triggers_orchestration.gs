@@ -242,11 +242,36 @@ function buildMenuTriggerActionResult_(action, verification) {
 }
 
 function runEdgeBoard() {
-  ensureTabsAndConfig_();
-
   const runId = buildRunId_();
   const startedAt = new Date();
   const scriptProps = PropertiesService.getScriptProperties();
+
+  if (scriptProps.getProperty(PROPS.WORKBOOK_RESET_IN_PROGRESS) === 'true') {
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: runId,
+      stage: 'runEdgeBoard',
+      status: 'skipped',
+      reason_code: 'reset_in_progress_skip',
+      message: 'Skipped runEdgeBoard because workbook reset is in progress.',
+      lock_event: 'reset_in_progress_skip',
+    });
+    appendLogRow_({
+      row_type: 'summary',
+      run_id: runId,
+      stage: 'runEdgeBoard',
+      started_at: startedAt,
+      ended_at: new Date(),
+      status: 'skipped',
+      reason_code: 'reset_in_progress_skip',
+      message: 'Skipped because WORKBOOK_RESET_IN_PROGRESS flag is set.',
+      lock_event: 'reset_in_progress_skip',
+    });
+    return;
+  }
+
+  ensureTabsAndConfig_();
+
   const lock = LockService.getScriptLock();
   let lifecycleContext = null;
 

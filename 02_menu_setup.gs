@@ -774,49 +774,72 @@ function recreateWorkbook_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const managedTabs = Object.keys(SHEETS).map((k) => SHEETS[k]);
   const placeholderName = '__WTA_RESET_PLACEHOLDER__';
-  const createdPlaceholder = !ss.getSheetByName(placeholderName);
+  const lock = LockService.getScriptLock();
+  const runId = buildRunId_();
 
-  removePipelineTriggers();
-
-  if (createdPlaceholder && ss.getSheets().length <= managedTabs.length) {
-    ensureSheet_(ss, placeholderName);
+  if (!tryLock_(lock, 5000)) {
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: runId,
+      stage: 'recreateWorkbook_',
+      status: 'failed',
+      reason_code: 'reset_lock_acquire_failed',
+      message: 'Workbook reset skipped because the script lock could not be acquired within 5000ms.',
+      lock_event: 'reset_lock_acquire_failed',
+    });
+    throw new Error('Workbook reset skipped: script lock acquisition timed out.');
   }
 
-  managedTabs.forEach((name) => {
-    const sh = ss.getSheetByName(name);
-    if (sh) ss.deleteSheet(sh);
-  });
+  try {
+    const scriptProps = PropertiesService.getScriptProperties();
+    scriptProps.setProperty(PROPS.WORKBOOK_RESET_IN_PROGRESS, 'true');
 
-  const placeholder = ss.getSheetByName(placeholderName);
-  if (placeholder && ss.getSheets().length > 1) {
-    ss.deleteSheet(placeholder);
+    removePipelineTriggers();
+
+    const createdPlaceholder = !ss.getSheetByName(placeholderName);
+    if (createdPlaceholder && ss.getSheets().length <= managedTabs.length) {
+      ensureSheet_(ss, placeholderName);
+    }
+
+    managedTabs.forEach((name) => {
+      const sh = ss.getSheetByName(name);
+      if (sh) ss.deleteSheet(sh);
+    });
+
+    const placeholder = ss.getSheetByName(placeholderName);
+    if (placeholder && ss.getSheets().length > 1) {
+      ss.deleteSheet(placeholder);
+    }
+
+    const allProps = scriptProps.getProperties();
+    Object.keys(allProps || {}).forEach((key) => {
+      scriptProps.deleteProperty(key);
+    });
+    scriptProps.setProperty(PROPS.WORKBOOK_RESET_IN_PROGRESS, 'true');
+
+    const scriptCache = CacheService.getScriptCache();
+    scriptCache.removeAll([
+      'ODDS_WINDOW_PAYLOAD',
+      'SCHEDULE_WINDOW_CACHE',
+    ]);
+
+    ensureTabsAndConfig_();
+
+    const placeholderAfterSetup = ss.getSheetByName(placeholderName);
+    if (placeholderAfterSetup && ss.getSheets().length > 1) {
+      ss.deleteSheet(placeholderAfterSetup);
+    }
+
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: runId,
+      stage: 'recreateWorkbook_',
+      status: 'success',
+      reason_code: 'recreate_completed',
+      message: 'Workbook tabs were deleted/recreated, triggers removed, and script state cleared.',
+    });
+  } finally {
+    PropertiesService.getScriptProperties().deleteProperty(PROPS.WORKBOOK_RESET_IN_PROGRESS);
+    lock.releaseLock();
   }
-
-  const scriptProps = PropertiesService.getScriptProperties();
-  const allProps = scriptProps.getProperties();
-  Object.keys(allProps || {}).forEach((key) => {
-    scriptProps.deleteProperty(key);
-  });
-
-  const scriptCache = CacheService.getScriptCache();
-  scriptCache.removeAll([
-    'ODDS_WINDOW_PAYLOAD',
-    'SCHEDULE_WINDOW_CACHE',
-  ]);
-
-  ensureTabsAndConfig_();
-
-  const placeholderAfterSetup = ss.getSheetByName(placeholderName);
-  if (placeholderAfterSetup && ss.getSheets().length > 1) {
-    ss.deleteSheet(placeholderAfterSetup);
-  }
-
-  appendLogRow_({
-    row_type: 'ops',
-    run_id: buildRunId_(),
-    stage: 'recreateWorkbook_',
-    status: 'success',
-    reason_code: 'recreate_completed',
-    message: 'Workbook tabs were deleted/recreated, triggers removed, and script state cleared.',
-  });
 }
