@@ -21,6 +21,29 @@ WATCHDOG_METRIC_KEYS = ("streak_count", "consecutive_empty_cycles", "diagnostics
 NON_SUCCESS_STATUSES = {"warning", "failed", "error", "notice"}
 
 
+def _coerce_int(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _summary_metric(record: dict[str, Any], key: str, fallback_reason_key: str = "") -> int:
+    direct = _coerce_int(record.get(key))
+    if direct is not None and direct >= 0:
+        return direct
+
+    reason_codes = record.get("reason_codes")
+    if isinstance(reason_codes, str):
+        parsed = _parse_json_like(reason_codes)
+        reason_codes = parsed if isinstance(parsed, dict) else None
+    if fallback_reason_key and isinstance(reason_codes, dict):
+        reason_value = _coerce_int(reason_codes.get(fallback_reason_key))
+        if reason_value is not None and reason_value >= 0:
+            return reason_value
+    return 0
+
+
 def _parse_json_like(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return value
@@ -153,6 +176,10 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
     watchdog_points: list[tuple[int, int, str]] = []
     warning_reasons: Counter[str] = Counter()
     run_warning_reason_sets: defaultdict[str, set[str]] = defaultdict(set)
+    bucket_runs_completed: Counter[str] = Counter()
+    bucket_runs_degraded: Counter[str] = Counter()
+    bucket_odds_not_actionable: Counter[str] = Counter()
+    bucket_signals_produced: Counter[str] = Counter()
 
     row_idx = 0
     for path in files:
@@ -176,6 +203,23 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
             if str(record.get("row_type") or "") == "summary" or stage == "runEdgeBoard":
                 if run_id:
                     run_summary_status[run_id] = (row_idx, status)
+                bucket_ts = _parse_timestamp(record.get("ended_at") or record.get("started_at"))
+                bucket = (bucket_ts.date().isoformat() if bucket_ts else "unknown")
+                if status.lower() == "success":
+                    bucket_runs_completed[bucket] += 1
+                elif status.lower() in NON_SUCCESS_STATUSES:
+                    bucket_runs_degraded[bucket] += 1
+
+                bucket_odds_not_actionable[bucket] += _summary_metric(
+                    record,
+                    "odds_not_actionable",
+                    fallback_reason_key="odds_non_actionable",
+                )
+                bucket_signals_produced[bucket] += _summary_metric(
+                    record,
+                    "signals_found",
+                    fallback_reason_key="signals_generated",
+                )
 
             fallback_reason_counts[reason_code] += 1 if reason_code else 0
 
@@ -307,8 +351,44 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
             warning_bits.append("watchdog_trend_up")
     warnings_part = ";".join(warning_bits) if warning_bits else "none"
 
+    latest_bucket = "unknown"
+    prior_bucket = ""
+    if bucket_runs_completed or bucket_runs_degraded or bucket_odds_not_actionable or bucket_signals_produced:
+        bucket_keys = sorted(
+            set(bucket_runs_completed)
+            | set(bucket_runs_degraded)
+            | set(bucket_odds_not_actionable)
+            | set(bucket_signals_produced)
+        )
+        latest_bucket = bucket_keys[-1]
+        if len(bucket_keys) > 1:
+            prior_bucket = bucket_keys[-2]
+
+    completed = bucket_runs_completed.get(latest_bucket, 0)
+    degraded = bucket_runs_degraded.get(latest_bucket, 0)
+    odds_not_actionable = bucket_odds_not_actionable.get(latest_bucket, 0)
+    signals_produced = bucket_signals_produced.get(latest_bucket, 0)
+
+    if prior_bucket:
+        delta_completed = completed - bucket_runs_completed.get(prior_bucket, 0)
+        delta_degraded = degraded - bucket_runs_degraded.get(prior_bucket, 0)
+        delta_odds_not_actionable = odds_not_actionable - bucket_odds_not_actionable.get(prior_bucket, 0)
+        delta_signals_produced = signals_produced - bucket_signals_produced.get(prior_bucket, 0)
+        delta_part = (
+            f"What changed since yesterday ({prior_bucket}→{latest_bucket}): "
+            f"Runs completed {delta_completed:+d}, Runs degraded {delta_degraded:+d}, "
+            f"Odds not actionable yet {delta_odds_not_actionable:+d}, Signals produced {delta_signals_produced:+d}"
+        )
+    else:
+        delta_part = "What changed since yesterday: not enough history yet"
+
     return [
         f"runs total={run_total} status={status_part}",
+        (
+            f"daily status ({latest_bucket}) Runs completed={completed}, Runs degraded={degraded}, "
+            f"Odds not actionable yet={odds_not_actionable}, Signals produced={signals_produced}"
+        ),
+        delta_part,
         f"top_reason_codes {reason_part}",
         f"stage_duration_ms {stage_part}",
         f"watchdog_trend {watchdog_part}",

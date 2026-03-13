@@ -36,7 +36,7 @@ scripts/prepare_runtime_exports.sh --out-dir ./exports <file-or-directory>
 # 2) Run local triage scanner (first-pass contract + grouped counts + row samples).
 scripts/triage_runtime_diagnostics_local.sh ./exports
 
-# 3) Emit 5-line compact incident summary for chat/ticket updates.
+# 3) Emit 7-line compact incident summary for chat/ticket updates.
 scripts/runtime_diagnostics_summary.py ./exports
 
 # 4) Optional: run the wrapper that does steps (1)+(2) in one command.
@@ -46,7 +46,7 @@ scripts/run_triage_bundle.sh --out-dir ./exports <file-or-directory>
 Operational expectation:
 - `prepare_runtime_exports.sh` must produce `runtime_export_manifest.json` plus at least one Run_Log/State artifact.
 - `triage_runtime_diagnostics_local.sh` should show `Run-health degraded contract (first-pass triage)` near the top.
-- `runtime_diagnostics_summary.py` should print deterministic five-line summary output.
+- `runtime_diagnostics_summary.py` should print deterministic seven-line summary output including daily status and day-over-day deltas.
 
 ## Manual usage flow (optional)
 
@@ -81,8 +81,10 @@ Optional compact incident summary (for chat handoff / ticket updates):
 scripts/runtime_diagnostics_summary.py ./exports
 ```
 
-Output is deterministic and intentionally small (5 lines) covering:
+Output is deterministic and intentionally small (7 lines) covering:
 - run count + status breakdown,
+- daily status snapshot with business-friendly labels (`Runs completed`, `Runs degraded`, `Odds not actionable yet`, `Signals produced`),
+- short `What changed since yesterday` deltas,
 - top non-zero reason codes,
 - stage duration min/avg/p95,
 - watchdog trend delta,
@@ -95,7 +97,7 @@ Optional knobs:
 
 ### Periodic historical rollups (for planning/postmortems)
 
-Generate dated aggregate snapshots (blocker mix, productivity ratio, stage latency trends) into a dedicated historical folder so raw runtime logs stay separate and do not bloat long-term artifacts:
+Generate dated aggregate snapshots (blocker mix, productivity ratio, stage latency trends, daily status labels, and day-over-day deltas) into a dedicated historical folder so raw runtime logs stay separate and do not bloat long-term artifacts:
 
 ```bash
 scripts/runtime_periodic_aggregates.py ./exports --snapshot-dir ./docs/baselines/runtime_rollups
