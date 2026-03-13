@@ -529,3 +529,10 @@ function testGetLogVerbosityLevel_compactProfileCapsVerbosityAtOne_() {
   assertEquals_(1, getLogVerbosityLevel_({ LOG_PROFILE: 'compact' }));
   assertEquals_(3, getLogVerbosityLevel_({ LOG_PROFILE: 'verbose', LOG_VERBOSITY_LEVEL: 3 }));
 }
+
+
+function testNormalizeInvariantEnforcementLevel_defaultsToWarnOnInvalidValue_() {
+  assertEquals_('warn', normalizeInvariantEnforcementLevel_(''));
+  assertEquals_('warn', normalizeInvariantEnforcementLevel_('noise'));
+  assertEquals_('strict', normalizeInvariantEnforcementLevel_('STRICT'));
+}

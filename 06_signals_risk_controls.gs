@@ -883,7 +883,29 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   }));
 
   if ((Number(reasonCounts.sent || 0) + allDropReasons) !== oddsEvents.length) {
-    throw new Error('stageGenerateSignals invariant violated: sent + all_drop_reasons must equal input_count');
+    const invariantViolations = [{
+      sent_count: Number(reasonCounts.sent || 0),
+      all_drop_reasons: allDropReasons,
+      input_count: oddsEvents.length,
+      processed_count: processedCandidateCount,
+    }];
+    const invariantEnforcement = enforceInvariant_(config, {
+      invariant: 'stage_generate_signals_sent_plus_drop_reasons_equals_input',
+      context: 'stageGenerateSignals',
+      violations: invariantViolations,
+      hard_fail: true,
+      error_prefix: 'stageGenerateSignals invariant violated',
+    });
+    if (invariantEnforcement.warning_emitted) {
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'stageGenerateSignals',
+        status: 'warning',
+        reason_code: 'stage_generate_signals_invariant_violation',
+        message: JSON.stringify(invariantEnforcement.payload || {}),
+      });
+    }
   }
 
   const signalDecisionSummary = buildSignalDecisionRunSummary_({

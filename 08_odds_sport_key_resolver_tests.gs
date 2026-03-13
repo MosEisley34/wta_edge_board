@@ -6976,6 +6976,43 @@ function testBuildRunEdgeBoardBoundedCounterInvariantChecks_mixedDiagnosticAndMa
   assertEquals_(0, assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, checks).length);
 }
 
+
+function testEnforceInvariant_warnModeReturnsWarningPayload_() {
+  const warningRows = [];
+  const result = enforceInvariant_({ INVARIANT_ENFORCEMENT_LEVEL: 'warn' }, {
+    invariant: 'bounded_stage_counter_invariant_exceeded',
+    context: 'runEdgeBoard',
+    violations: [{ stage: 'stageMatchEvents', counter_name: 'matched_count', counter_value: 3, max_allowed: 2 }],
+    hard_fail: false,
+    error_prefix: 'bounded_stage_counter_invariant_exceeded',
+    warn_logger: function (payload) {
+      warningRows.push(payload);
+    },
+  });
+
+  assertEquals_(true, !!result.warning_emitted);
+  assertEquals_('warn', String(result.enforcement_level || ''));
+  assertEquals_(1, warningRows.length);
+  assertEquals_('bounded_stage_counter_invariant_exceeded', String(warningRows[0].invariant || ''));
+}
+
+function testEnforceInvariant_strictModeThrows_() {
+  let threw = false;
+  try {
+    enforceInvariant_({ INVARIANT_ENFORCEMENT_LEVEL: 'strict' }, {
+      invariant: 'bounded_stage_counter_invariant_exceeded',
+      context: 'runEdgeBoard',
+      violations: [{ stage: 'stageMatchEvents', counter_name: 'matched_count', counter_value: 3, max_allowed: 2 }],
+      hard_fail: false,
+      error_prefix: 'bounded_stage_counter_invariant_exceeded',
+    });
+  } catch (error) {
+    threw = true;
+    assertContains_(String(error && error.message || ''), 'bounded_stage_counter_invariant_exceeded');
+  }
+  assertEquals_(true, threw);
+}
+
 function testStageFetchOdds_bypassStaleFallback_returnsApiFailureSource_() {
   const originalFetchOdds = fetchOddsWindowFromOddsApi_;
   const originalGetCachedPayload = getCachedPayload_;
