@@ -1535,7 +1535,8 @@ function testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_() {
     assertEquals_(0, warningPayload.opening_lag_blocked_count);
     assertEquals_(0, warningPayload.schedule_only_seed_count);
     assertEquals_(0, warningPayload.stats_zero_coverage_count);
-    assertEquals_(0, warningPayload.sampled_blocked_records.length);
+    assertEquals_(1, warningPayload.sampled_blocked_records.length);
+    assertEquals_('missing_open_timestamp', warningPayload.sampled_blocked_records[0].blocked_reason_code);
   } finally {
     harness.restore();
   }
@@ -1712,7 +1713,8 @@ function testRunEdgeBoard_degradesWhenMatchedButStatsCoverageIsZero_() {
     assertEquals_(0, warningPayload.players_with_non_null_stats);
     assertEquals_(1, warningPayload.stats_zero_coverage_count);
     assertEquals_(1, warningPayload.blocker_counts.stats_zero_coverage_count);
-    assertEquals_(0, warningPayload.sampled_blocked_records.length);
+    assertEquals_(1, warningPayload.sampled_blocked_records.length);
+    assertEquals_('missing_open_timestamp', warningPayload.sampled_blocked_records[0].blocked_reason_code);
     assertEquals_(0, warningPayload.sample_unmatched_events.length);
 
     const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');

@@ -1,0 +1,297 @@
+[
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "run_start_config_audit",
+    "started_at": "2026-03-13T01:39:07.672Z",
+    "status": "success",
+    "reason_code": "run_mode_gates",
+    "message": "{\"model_mode\":\"\",\"disable_sofascore\":false,\"require_opening_line_proximity\":false,\"max_opening_lag_minutes\":0,\"opening_lag_fallback_exemption_max_age_minutes\":0,\"opening_lag_fallback_exemption_max_rows_per_run\":0,\"opening_lag_fallback_key_match_window_minutes\":0,\"opening_lag_fallback_key_match_max_age_minutes\":0}"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "resolveOddsWindowForPipeline",
+    "status": "success",
+    "reason_code": "odds_refresh_test"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "odds_bootstrap_metadata",
+    "status": "success",
+    "reason_code": "odds_refresh_bootstrap_inactive",
+    "message": "{\"bootstrap_mode\":false,\"bootstrap_window_hours\":0,\"bootstrap_cached_payload_has_events\":false,\"bootstrap_cached_payload_source\":\"\",\"bootstrap_empty_cycle_mitigation_active\":false,\"bootstrap_empty_cycle_count\":0,\"bootstrap_empty_cycle_threshold\":0,\"current_refresh_mode\":\"\",\"previous_refresh_mode\":\"\",\"transitioned_from_bootstrap_to_active_window\":false,\"transition_state\":\"active_window_or_skipped\"}"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "run_lifecycle",
+    "status": "started",
+    "reason_code": "started",
+    "message": "{\"status\":\"started\",\"run_key\":\"1970-01-01||::wta125:0|wta250:0|lookahead:::||odds_refresh_test\",\"run_key_hash\":\"1734070671\",\"lease_status\":\"active\"}"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "odds_opening_lag_gate",
+    "status": "success",
+    "reason_code": "opening_lag_within_limit",
+    "message": "{\"run_id\":\"test-run\",\"updated_at\":\"2025-03-01T00:00:00-07:00\",\"updated_at_utc\":\"2025-03-01T07:00:00.000Z\",\"max_opening_lag_minutes\":0,\"require_opening_line_proximity\":false,\"evaluated_count\":0,\"actionable_count\":0,\"missing_open_timestamp\":0,\"opening_lag_exceeded\":0,\"opening_lag_fallback_exempted\":0,\"opening_lag_fallback_exemption_denied_source\":0,\"opening_lag_fallback_exemption_denied_age\":0,\"opening_lag_fallback_exemption_denied_cap\":0,\"opening_lag_fallback_exemption_key_match_window_minutes\":120,\"opening_lag_fallback_exemption_key_match_max_age_minutes\":240,\"opening_lag_fallback_exemption_cap_mode\":\"unlimited_when_zero\",\"opening_lag_fallback_exemption_allowed_sources\":[\"fallback_cached_stale\"],\"opening_lag_fallback_exemption_denied_sources\":[\"strict_gate\",\"fallback_cached_fresh\"],\"opening_lag_fallback_exemption_config_validation\":{\"cap_mode\":\"unlimited_when_zero\",\"invalid_cap_mode\":false,\"cap_zero_blocks_all\":false,\"has_unsafe_cap_zero\":false,\"has_allow_deny_overlap\":false,\"allow_deny_overlap_sources\":[],\"allow_list_empty\":false,\"allow_list_defaulted\":false,\"has_config_warning\":false,\"allowed_sources\":{\"fallback_cached_stale\":true},\"denied_sources\":{\"strict_gate\":true,\"fallback_cached_fresh\":true}},\"opening_lag_fallback_exemption_age_bucket_summary\":{\"<=60\":0,\"61-180\":0,\">180\":0},\"opening_lag_fallback_exemption_diagnostics\":{\"exempted\":0,\"blocked_by_source\":0,\"blocked_by_age\":0,\"blocked_by_cap\":0,\"samples\":{\"exempted\":[],\"blocked_by_source\":[],\"blocked_by_age\":[],\"blocked_by_cap\":[]},\"summary\":\"exempted=0 blocked_by_age=0 blocked_by_cap=0 sampled=0\"},\"opening_lag_gate_diagnostics_summary\":\"blocked_by_age=0;blocked_by_cap=0;blocked_by_source=0;exempted=0\"}"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "odds_source_selection",
+    "status": "success",
+    "reason_code": "fallback_static_window",
+    "message": "Odds source selected for this run: fallback_static_window"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run",
+    "stage": "stageFetchPlayerStats",
+    "status": "skipped",
+    "reason_code": "skipped_schedule_only_no_odds"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "reason_code_accumulation_guard",
+    "status": "warning",
+    "reason_code": "bounded_stage_counter_invariant_exceeded",
+    "message": "{\"reason_code_map_mutated_after_snapshot\":{\"checked_stage_count\":6,\"mutated_stages\":[]},\"reason_code_counter_exceeds_stage_max\":[],\"bounded_stage_counter_invariant_exceeded\":[{\"stage\":\"stageMatchEvents\",\"counter_name\":\"diagnostic_records_written\",\"counter_value\":1,\"max_name\":\"stageFetchSchedule.output_count\",\"bound_source\":\"stageFetchSchedule.output_count (schedule-seed mode)\",\"max_allowed\":0}],\"invariant_enforcement\":{\"hard_failed\":false,\"warning_emitted\":true,\"enforcement_level\":\"warn\",\"payload\":{\"invariant\":\"bounded_stage_counter_invariant_exceeded\",\"context\":\"runEdgeBoard\",\"violations\":[{\"stage\":\"stageMatchEvents\",\"counter_name\":\"diagnostic_records_written\",\"counter_value\":1,\"max_name\":\"stageFetchSchedule.output_count\",\"bound_source\":\"stageFetchSchedule.output_count (schedule-seed mode)\",\"max_allowed\":0}],\"hard_fail\":false,\"enforcement_level\":\"warn\"}}}"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run",
+    "stage": "runEdgeBoard",
+    "started_at": "2026-03-13T01:39:07.672Z",
+    "ended_at": "2026-03-13T01:39:07.682Z",
+    "status": "success",
+    "reason_code": "odds_refresh_skipped_outside_window",
+    "message": "Odds refresh was intentionally skipped outside the configured odds window; zero matches/signals are expected in this schedule-only run.",
+    "fetched_odds": 0,
+    "fetched_schedule": 1,
+    "allowed_tournaments": 0,
+    "matched": 0,
+    "unmatched": 0,
+    "rejected": 0,
+    "signals_found": 0,
+    "signals_scored": 0,
+    "signal_decision_summary": "{\"run_id\":\"test-run\",\"sent_count\":0,\"scored_count\":0,\"suppression_counts\":{\"cooldown\":{\"total\":0,\"by_reason\":{\"cooldown_suppressed\":0}},\"edge\":{\"total\":0,\"by_reason\":{\"edge_below_threshold\":0}},\"stale\":{\"total\":0,\"by_reason\":{\"stale_odds_skip\":0}},\"timing\":{\"total\":0,\"by_reason\":{\"too_close_to_start_skip\":0}},\"config\":{\"total\":0,\"by_reason\":{\"notify_disabled\":0,\"notify_missing_config\":0}}},\"sampled_top_suppressions\":[],\"alignment_checks\":{\"sent_matches_reason_counts\":true}}",
+    "reason_codes": {
+      "odds_refresh_skipped_outside_window": 1,
+      "opening_lag_within_limit": 0,
+      "missing_open_timestamp": 0,
+      "opening_lag_exceeded": 0,
+      "opening_lag_fallback_exempted": 0,
+      "opening_lag_fallback_exemption_allowed": 0,
+      "opening_lag_fallback_exemption_denied_source": 0,
+      "opening_lag_fallback_exemption_denied_age": 0,
+      "opening_lag_fallback_exemption_denied_cap": 0,
+      "odds_actionable": 0,
+      "odds_non_actionable": 0,
+      "schedule_seed_no_odds": 1,
+      "diagnostic_records_written": 1,
+      "skipped_schedule_only_no_odds": 1
+    },
+    "rejection_codes": {
+      "odds_refresh_skipped_outside_window": 1,
+      "opening_lag_within_limit": 0,
+      "missing_open_timestamp": 0,
+      "opening_lag_exceeded": 0,
+      "opening_lag_fallback_exempted": 0,
+      "opening_lag_fallback_exemption_allowed": 0,
+      "opening_lag_fallback_exemption_denied_source": 0,
+      "opening_lag_fallback_exemption_denied_age": 0,
+      "opening_lag_fallback_exemption_denied_cap": 0,
+      "odds_actionable": 0,
+      "odds_non_actionable": 0,
+      "schedule_seed_no_odds": 1,
+      "diagnostic_records_written": 1,
+      "skipped_schedule_only_no_odds": 1
+    },
+    "stage_summaries": "[{\"reason_codes\":{\"odds_refresh_skipped_outside_window\":1,\"opening_lag_within_limit\":0,\"missing_open_timestamp\":0,\"opening_lag_exceeded\":0,\"opening_lag_fallback_exempted\":0,\"opening_lag_fallback_exemption_allowed\":0,\"opening_lag_fallback_exemption_denied_source\":0,\"opening_lag_fallback_exemption_denied_age\":0,\"opening_lag_fallback_exemption_denied_cap\":0,\"odds_actionable\":0,\"odds_non_actionable\":0},\"output_count\":0,\"reason_metadata\":{\"max_opening_lag_minutes\":0,\"require_opening_line_proximity\":false,\"fallback_exemption_max_age_minutes\":0,\"fallback_exemption_key_match_window_minutes\":120,\"fallback_exemption_key_match_max_age_minutes\":240,\"fallback_exemption_max_rows_per_run\":0,\"fallback_exemption_cap_mode\":\"unlimited_when_zero\",\"fallback_exemption_allowed_sources\":[\"fallback_cached_stale\"],\"fallback_exemption_denied_sources\":[\"strict_gate\",\"fallback_cached_fresh\"],\"fallback_exemption_config_validation\":{\"cap_mode\":\"unlimited_when_zero\",\"invalid_cap_mode\":false,\"cap_zero_blocks_all\":false,\"has_unsafe_cap_zero\":false,\"has_allow_deny_overlap\":false,\"allow_deny_overlap_sources\":[],\"allow_list_empty\":false,\"allow_list_defaulted\":false,\"has_config_warning\":false,\"allowed_sources\":{\"fallback_cached_stale\":true},\"denied_sources\":{\"strict_gate\":true,\"fallback_cached_fresh\":true}},\"fallback_exemption_age_buckets\":{},\"fallback_exemption_age_bucket_summary\":{\"<=60\":0,\"61-180\":0,\">180\":0},\"fallback_exemption_diagnostics\":{\"exempted\":0,\"blocked_by_source\":0,\"blocked_by_age\":0,\"blocked_by_cap\":0,\"samples\":{\"exempted\":[],\"blocked_by_source\":[],\"blocked_by_age\":[],\"blocked_by_cap\":[]},\"summary\":\"exempted=0 blocked_by_age=0 blocked_by_cap=0 sampled=0\"}}},{\"reason_codes\":{}},{\"reason_codes\":{\"schedule_seed_no_odds\":1,\"diagnostic_records_written\":1}},{\"run_id\":\"test-run\",\"stage\":\"stageFetchPlayerStats\",\"started_at\":\"1970-01-01T00:16:40.000Z-07:00\",\"ended_at\":\"1970-01-01T00:16:40.000Z-07:00\",\"duration_ms\":0,\"input_count\":0,\"output_count\":0,\"provider\":\"stage_skipped\",\"api_credit_usage\":0,\"reason_codes\":{\"skipped_schedule_only_no_odds\":1},\"reason_metadata\":{},\"status\":\"skipped\",\"reason_code\":\"skipped_schedule_only_no_odds\",\"message\":\"Skipped player stats fetch because run is schedule-only with no odds candidates.\"},{\"reason_codes\":{}},{\"reason_codes\":{}}]",
+    "cooldown_suppressed": 0,
+    "duplicate_suppressed": 0
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "run_lifecycle",
+    "status": "completed",
+    "reason_code": "completed",
+    "message": "{\"status\":\"completed\",\"run_key_hash\":\"1734070671\"}"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "run_start_config_audit",
+    "started_at": "2026-03-13T01:39:07.683Z",
+    "status": "success",
+    "reason_code": "run_mode_gates",
+    "message": "{\"model_mode\":\"\",\"disable_sofascore\":false,\"require_opening_line_proximity\":false,\"max_opening_lag_minutes\":0,\"opening_lag_fallback_exemption_max_age_minutes\":0,\"opening_lag_fallback_exemption_max_rows_per_run\":0,\"opening_lag_fallback_key_match_window_minutes\":0,\"opening_lag_fallback_key_match_max_age_minutes\":0}"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "resolveOddsWindowForPipeline",
+    "status": "success",
+    "reason_code": "odds_refresh_test"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "odds_bootstrap_metadata",
+    "status": "success",
+    "reason_code": "odds_refresh_bootstrap_inactive",
+    "message": "{\"bootstrap_mode\":false,\"bootstrap_window_hours\":0,\"bootstrap_cached_payload_has_events\":false,\"bootstrap_cached_payload_source\":\"\",\"bootstrap_empty_cycle_mitigation_active\":false,\"bootstrap_empty_cycle_count\":0,\"bootstrap_empty_cycle_threshold\":0,\"current_refresh_mode\":\"\",\"previous_refresh_mode\":\"\",\"transitioned_from_bootstrap_to_active_window\":false,\"transition_state\":\"active_window_or_skipped\"}"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "run_lifecycle",
+    "status": "started",
+    "reason_code": "started",
+    "message": "{\"status\":\"started\",\"run_key\":\"1970-01-01||::wta125:0|wta250:0|lookahead:::||odds_refresh_test\",\"run_key_hash\":\"1734070671\",\"lease_status\":\"active\"}"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "odds_opening_lag_gate",
+    "status": "success",
+    "reason_code": "missing_open_timestamp",
+    "message": "{\"run_id\":\"test-run\",\"updated_at\":\"2025-03-01T00:00:00-07:00\",\"updated_at_utc\":\"2025-03-01T07:00:00.000Z\",\"max_opening_lag_minutes\":0,\"require_opening_line_proximity\":false,\"evaluated_count\":1,\"actionable_count\":0,\"missing_open_timestamp\":1,\"opening_lag_exceeded\":0,\"opening_lag_fallback_exempted\":0,\"opening_lag_fallback_exemption_denied_source\":0,\"opening_lag_fallback_exemption_denied_age\":0,\"opening_lag_fallback_exemption_denied_cap\":0,\"opening_lag_fallback_exemption_key_match_window_minutes\":120,\"opening_lag_fallback_exemption_key_match_max_age_minutes\":240,\"opening_lag_fallback_exemption_cap_mode\":\"unlimited_when_zero\",\"opening_lag_fallback_exemption_allowed_sources\":[\"fallback_cached_stale\"],\"opening_lag_fallback_exemption_denied_sources\":[\"strict_gate\",\"fallback_cached_fresh\"],\"opening_lag_fallback_exemption_config_validation\":{\"cap_mode\":\"unlimited_when_zero\",\"invalid_cap_mode\":false,\"cap_zero_blocks_all\":false,\"has_unsafe_cap_zero\":false,\"has_allow_deny_overlap\":false,\"allow_deny_overlap_sources\":[],\"allow_list_empty\":false,\"allow_list_defaulted\":false,\"has_config_warning\":false,\"allowed_sources\":{\"fallback_cached_stale\":true},\"denied_sources\":{\"strict_gate\":true,\"fallback_cached_fresh\":true}},\"opening_lag_fallback_exemption_age_bucket_summary\":{\"<=60\":1,\"61-180\":0,\">180\":0},\"opening_lag_fallback_exemption_diagnostics\":{\"exempted\":0,\"blocked_by_source\":0,\"blocked_by_age\":0,\"blocked_by_cap\":0,\"samples\":{\"exempted\":[],\"blocked_by_source\":[],\"blocked_by_age\":[],\"blocked_by_cap\":[]},\"summary\":\"exempted=0 blocked_by_age=0 blocked_by_cap=0 sampled=0\"},\"opening_lag_gate_diagnostics_summary\":\"blocked_by_age=0;blocked_by_cap=0;blocked_by_source=0;exempted=0\"}"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "odds_source_selection",
+    "status": "success",
+    "reason_code": "fallback_static_window",
+    "message": "Odds source selected for this run: fallback_static_window"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "run_health_guard",
+    "status": "warning",
+    "reason_code": "run_health_no_matches_from_odds",
+    "message": "{\"run_health_contract_version\":2,\"reason_code\":\"run_health_no_matches_from_odds\",\"blocker_counts\":{\"opening_lag_blocked_count\":0,\"schedule_only_seed_count\":0,\"no_odds_stage_count\":0,\"stale_odds_skip_count\":0,\"low_edge_suppressed_count\":0,\"cooldown_suppressed_count\":0,\"stats_zero_coverage_count\":0},\"opening_lag_blocked_count\":0,\"schedule_only_seed_count\":0,\"no_odds_stage_count\":0,\"stale_odds_skip_count\":0,\"low_edge_suppressed_count\":0,\"cooldown_suppressed_count\":0,\"stats_zero_coverage_count\":0,\"failure_reasons\":[],\"stage_skipped_reason_counts\":{\"missing_open_timestamp\":1,\"schedule_enrichment_no_schedule_events\":1,\"no_player_match\":1},\"dominant_blocker_categories\":[{\"category\":\"no_player_match\",\"count\":1},{\"category\":\"schedule_unavailable\",\"count\":1}],\"sampled_blocked_records\":[{\"odds_event_id\":\"\",\"teams\":\"\",\"commence_time\":\"\",\"open_timestamp\":\"\",\"blocked_reason_code\":\"missing_open_timestamp\"}],\"sampled_blocked_odds\":[{\"odds_event_id\":\"\",\"teams\":\"\",\"commence_time\":\"\",\"open_timestamp\":\"\",\"blocked_reason_code\":\"missing_open_timestamp\"}],\"sample_unmatched_events\":[{\"odds_event_id\":\"odds_1\",\"competition\":\"WTA 500 Doha\",\"player_1\":\"Player One\",\"player_2\":\"Player Two\",\"commence_time\":\"2025-03-01T12:00:00.000Z\",\"rejection_code\":\"no_player_match\"}],\"fetched_odds\":1,\"fetched_schedule\":0,\"matched\":0,\"signals_found\":0}"
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "reason_code_accumulation_guard",
+    "status": "warning",
+    "reason_code": "bounded_stage_counter_invariant_exceeded",
+    "message": "{\"reason_code_map_mutated_after_snapshot\":{\"checked_stage_count\":6,\"mutated_stages\":[]},\"reason_code_counter_exceeds_stage_max\":[],\"bounded_stage_counter_invariant_exceeded\":[{\"stage\":\"stageMatchEvents\",\"counter_name\":\"rejected_count\",\"counter_value\":1,\"max_name\":\"input_count\",\"bound_source\":\"stageMatchEvents.input_count\",\"max_allowed\":0},{\"stage\":\"stageMatchEvents\",\"counter_name\":\"unmatched_rows\",\"counter_value\":1,\"max_name\":\"input_count\",\"bound_source\":\"stageMatchEvents.input_count\",\"max_allowed\":0}],\"invariant_enforcement\":{\"hard_failed\":false,\"warning_emitted\":true,\"enforcement_level\":\"warn\",\"payload\":{\"invariant\":\"bounded_stage_counter_invariant_exceeded\",\"context\":\"runEdgeBoard\",\"violations\":[{\"stage\":\"stageMatchEvents\",\"counter_name\":\"rejected_count\",\"counter_value\":1,\"max_name\":\"input_count\",\"bound_source\":\"stageMatchEvents.input_count\",\"max_allowed\":0},{\"stage\":\"stageMatchEvents\",\"counter_name\":\"unmatched_rows\",\"counter_value\":1,\"max_name\":\"input_count\",\"bound_source\":\"stageMatchEvents.input_count\",\"max_allowed\":0}],\"hard_fail\":false,\"enforcement_level\":\"warn\"}}}"
+  },
+  {
+    "row_type": "summary",
+    "run_id": "test-run",
+    "stage": "runEdgeBoard",
+    "started_at": "2026-03-13T01:39:07.683Z",
+    "ended_at": "2026-03-13T01:39:07.692Z",
+    "status": "degraded",
+    "reason_code": "run_health_no_matches_from_odds",
+    "message": "Pipeline run completed with degraded run-health guard.",
+    "fetched_odds": 1,
+    "fetched_schedule": 0,
+    "allowed_tournaments": 0,
+    "matched": 0,
+    "unmatched": 1,
+    "rejected": 1,
+    "signals_found": 0,
+    "signals_scored": 0,
+    "signal_decision_summary": "{\"run_id\":\"test-run\",\"sent_count\":0,\"scored_count\":0,\"suppression_counts\":{\"cooldown\":{\"total\":0,\"by_reason\":{\"cooldown_suppressed\":0}},\"edge\":{\"total\":0,\"by_reason\":{\"edge_below_threshold\":0}},\"stale\":{\"total\":0,\"by_reason\":{\"stale_odds_skip\":0}},\"timing\":{\"total\":0,\"by_reason\":{\"too_close_to_start_skip\":0}},\"config\":{\"total\":0,\"by_reason\":{\"notify_disabled\":0,\"notify_missing_config\":0}}},\"sampled_top_suppressions\":[],\"alignment_checks\":{\"sent_matches_reason_counts\":true}}",
+    "reason_codes": {
+      "opening_lag_within_limit": 0,
+      "missing_open_timestamp": 1,
+      "opening_lag_exceeded": 0,
+      "opening_lag_fallback_exempted": 0,
+      "opening_lag_fallback_exemption_allowed": 0,
+      "opening_lag_fallback_exemption_denied_source": 0,
+      "opening_lag_fallback_exemption_denied_age": 0,
+      "opening_lag_fallback_exemption_denied_cap": 0,
+      "odds_actionable": 0,
+      "odds_non_actionable": 1,
+      "schedule_enrichment_no_schedule_events": 1,
+      "no_player_match": 1,
+      "rejected_count": 1,
+      "run_health_no_matches_from_odds": 1
+    },
+    "rejection_codes": {
+      "opening_lag_within_limit": 0,
+      "missing_open_timestamp": 1,
+      "opening_lag_exceeded": 0,
+      "opening_lag_fallback_exempted": 0,
+      "opening_lag_fallback_exemption_allowed": 0,
+      "opening_lag_fallback_exemption_denied_source": 0,
+      "opening_lag_fallback_exemption_denied_age": 0,
+      "opening_lag_fallback_exemption_denied_cap": 0,
+      "odds_actionable": 0,
+      "odds_non_actionable": 1,
+      "schedule_enrichment_no_schedule_events": 1,
+      "no_player_match": 1,
+      "rejected_count": 1,
+      "run_health_no_matches_from_odds": 1
+    },
+    "stage_summaries": "[{\"reason_codes\":{\"opening_lag_within_limit\":0,\"missing_open_timestamp\":1,\"opening_lag_exceeded\":0,\"opening_lag_fallback_exempted\":0,\"opening_lag_fallback_exemption_allowed\":0,\"opening_lag_fallback_exemption_denied_source\":0,\"opening_lag_fallback_exemption_denied_age\":0,\"opening_lag_fallback_exemption_denied_cap\":0,\"odds_actionable\":0,\"odds_non_actionable\":1},\"output_count\":0,\"reason_metadata\":{\"max_opening_lag_minutes\":0,\"require_opening_line_proximity\":false,\"fallback_exemption_max_age_minutes\":0,\"fallback_exemption_key_match_window_minutes\":120,\"fallback_exemption_key_match_max_age_minutes\":240,\"fallback_exemption_max_rows_per_run\":0,\"fallback_exemption_cap_mode\":\"unlimited_when_zero\",\"fallback_exemption_allowed_sources\":[\"fallback_cached_stale\"],\"fallback_exemption_denied_sources\":[\"strict_gate\",\"fallback_cached_fresh\"],\"fallback_exemption_config_validation\":{\"cap_mode\":\"unlimited_when_zero\",\"invalid_cap_mode\":false,\"cap_zero_blocks_all\":false,\"has_unsafe_cap_zero\":false,\"has_allow_deny_overlap\":false,\"allow_deny_overlap_sources\":[],\"allow_list_empty\":false,\"allow_list_defaulted\":false,\"has_config_warning\":false,\"allowed_sources\":{\"fallback_cached_stale\":true},\"denied_sources\":{\"strict_gate\":true,\"fallback_cached_fresh\":true}},\"fallback_exemption_age_buckets\":{\"0_30m\":1},\"fallback_exemption_age_bucket_summary\":{\"<=60\":1,\"61-180\":0,\">180\":0},\"fallback_exemption_diagnostics\":{\"exempted\":0,\"blocked_by_source\":0,\"blocked_by_age\":0,\"blocked_by_cap\":0,\"samples\":{\"exempted\":[],\"blocked_by_source\":[],\"blocked_by_age\":[],\"blocked_by_cap\":[]},\"summary\":\"exempted=0 blocked_by_age=0 blocked_by_cap=0 sampled=0\"}}},{\"reason_codes\":{\"schedule_enrichment_no_schedule_events\":1}},{\"reason_codes\":{\"no_player_match\":1,\"rejected_count\":1}},{\"reason_codes\":{}},{\"reason_codes\":{}},{\"reason_codes\":{}}]",
+    "cooldown_suppressed": 0,
+    "duplicate_suppressed": 0
+  },
+  {
+    "row_type": "ops",
+    "run_id": "test-run",
+    "stage": "run_lifecycle",
+    "status": "completed",
+    "reason_code": "completed",
+    "message": "{\"status\":\"completed\",\"run_key_hash\":\"1734070671\"}"
+  }
+]
