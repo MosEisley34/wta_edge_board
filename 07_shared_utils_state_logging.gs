@@ -9,7 +9,9 @@ let REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = null;
 
 const REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_STATE_KEY = 'REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_STATE';
 const REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_SCHEMA = 'reason_alias_fallback_warning_aggregate_v1';
-const REASON_ALIAS_FALLBACK_WARNING_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const WATCHDOG_WARNING_AGGREGATE_STATE_KEY = 'WATCHDOG_WARNING_AGGREGATE_STATE';
+const WATCHDOG_WARNING_AGGREGATE_SCHEMA = 'watchdog_warning_aggregate_v1';
+let WATCHDOG_WARNING_AGGREGATE_CACHE = null;
 
 const SECRET_REDACTION_MAP = {
   exact_keys: [
@@ -357,6 +359,7 @@ function appendLogRow_(entry) {
   ]);
 
   maybeEmitReasonAliasFallbackWarningOpsLog_(normalized);
+  maybeEmitWatchdogWarningAggregateOpsLog_(normalized);
 }
 
 function setStateValue_(key, value, opts) {
@@ -1347,10 +1350,8 @@ function registerReasonAliasFallbackWarningSet_(state, payload) {
     existing.canonical_reasons[alias] = String(canonicalReasons[alias] || existing.canonical_reasons[alias] || '');
   });
 
-  const lastDetailedMs = Number(existing.last_detailed_emitted_at_ms || 0);
-  const cooldownMs = Math.max(1, Number(REASON_ALIAS_FALLBACK_WARNING_COOLDOWN_MS || 0));
   const isFirstObservation = Number(existing.count || 0) === 1;
-  const emitDetailedNow = isFirstObservation || !lastDetailedMs || (now.getTime() - lastDetailedMs >= cooldownMs);
+  const emitDetailedNow = isFirstObservation;
 
   if (emitDetailedNow) {
     existing.last_detailed_emitted_at = nowIso;
@@ -1408,6 +1409,224 @@ function appendReasonAliasFallbackWarningOpsRow_(entry, reasonCode, payload, now
     'ops',
     entry.run_id || '',
     'reason_alias_resolution',
+    nowIso,
+    nowIso,
+    'warning',
+    reasonCode,
+    sanitizeForLog_(JSON.stringify(payload || {})),
+    0,0,0,0,0,0,
+    '{}',
+    0,0,
+    '', '', '', '', '',
+    '[]',
+  ]);
+}
+
+
+function maybeEmitWatchdogWarningAggregateOpsLog_(entry) {
+  const normalized = entry || {};
+  const rowType = String(normalized.row_type || '');
+  const status = String(normalized.status || '').toLowerCase();
+  const stage = String(normalized.stage || '');
+  const reasonCode = String(normalized.reason_code || '').trim();
+  const isWarningRow = rowType === 'ops' && status === 'warning' && stage.indexOf('watchdog') >= 0;
+  const isRunSummaryRow = rowType === 'summary' || stage === 'runEdgeBoard';
+  const aggregateState = getWatchdogWarningAggregateState_();
+
+  if (isWarningRow && reasonCode) {
+    const payload = parseLogJsonLike_(normalized.message, null);
+    const summary = summarizeWatchdogWarningPayload_(payload);
+    const aggregateEntry = registerWatchdogWarningAggregate_(aggregateState, {
+      stage: stage,
+      reason_code: reasonCode,
+      payload: summary,
+      now: new Date(),
+    });
+    if (aggregateEntry.emit_detailed_now) {
+      appendWatchdogWarningOpsRow_(normalized, reasonCode, {
+        warning_aggregate_schema_id: WATCHDOG_WARNING_AGGREGATE_SCHEMA,
+        warning_summary_key: aggregateEntry.summary_key,
+        repeat_count: Number(aggregateEntry.repeat_count || 0),
+        first_seen: aggregateEntry.first_seen,
+        last_seen: aggregateEntry.last_seen,
+        warning_summary: summary,
+      });
+    }
+  }
+
+  if (isRunSummaryRow) {
+    aggregateState.summary_run_count = Number(aggregateState.summary_run_count || 0) + 1;
+    maybeEmitWatchdogWarningAggregateSummary_(normalized, aggregateState);
+    persistWatchdogWarningAggregateState_(aggregateState);
+  }
+}
+
+function summarizeWatchdogWarningPayload_(payload) {
+  const parsed = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload
+    : {};
+  const summary = {};
+  if (Object.prototype.hasOwnProperty.call(parsed, 'consecutive_empty_cycles')) {
+    summary.consecutive_empty_cycles = Number(parsed.consecutive_empty_cycles || 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'consecutive_count')) {
+    summary.consecutive_count = Number(parsed.consecutive_count || 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'schedule_only_consecutive_count')) {
+    summary.schedule_only_consecutive_count = Number(parsed.schedule_only_consecutive_count || 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'threshold')) {
+    summary.threshold = Number(parsed.threshold || 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'schedule_only_threshold')) {
+    summary.schedule_only_threshold = Number(parsed.schedule_only_threshold || 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'reason_code')) {
+    summary.reason_code = String(parsed.reason_code || '');
+  }
+  return summary;
+}
+
+function getWatchdogWarningAggregateState_() {
+  if (WATCHDOG_WARNING_AGGREGATE_CACHE) return WATCHDOG_WARNING_AGGREGATE_CACHE;
+  const stored = getStateJson_(WATCHDOG_WARNING_AGGREGATE_STATE_KEY) || {};
+  const state = {
+    schema: WATCHDOG_WARNING_AGGREGATE_SCHEMA,
+    summary_run_count: Number(stored.summary_run_count || 0),
+    last_summary_emit_run_count: Number(stored.last_summary_emit_run_count || 0),
+    warnings: {},
+  };
+  const storedWarnings = stored.warnings && typeof stored.warnings === 'object' ? stored.warnings : {};
+  Object.keys(storedWarnings).forEach((warningKey) => {
+    const warningEntry = storedWarnings[warningKey] || {};
+    state.warnings[warningKey] = {
+      stage: String(warningEntry.stage || ''),
+      reason_code: String(warningEntry.reason_code || ''),
+      summary_key: String(warningEntry.summary_key || ''),
+      payload_sample: warningEntry.payload_sample || {},
+      count: Number(warningEntry.count || 0),
+      first_seen: String(warningEntry.first_seen || ''),
+      last_seen: String(warningEntry.last_seen || ''),
+      last_detailed_emitted_at: String(warningEntry.last_detailed_emitted_at || ''),
+      last_detailed_emitted_at_ms: Number(warningEntry.last_detailed_emitted_at_ms || 0),
+      repeat_count_since_summary: Number(warningEntry.repeat_count_since_summary || 0),
+      repeat_count_since_detailed: Number(warningEntry.repeat_count_since_detailed || 0),
+    };
+  });
+  WATCHDOG_WARNING_AGGREGATE_CACHE = state;
+  return state;
+}
+
+function persistWatchdogWarningAggregateState_(state) {
+  const safeState = state || getWatchdogWarningAggregateState_();
+  WATCHDOG_WARNING_AGGREGATE_CACHE = safeState;
+  setStateValue_(WATCHDOG_WARNING_AGGREGATE_STATE_KEY, JSON.stringify(safeState));
+}
+
+function buildWatchdogWarningSummaryKey_(payload) {
+  const keys = Object.keys(payload || {}).sort();
+  if (!keys.length) return '{}';
+  const normalized = {};
+  keys.forEach((key) => {
+    normalized[key] = payload[key];
+  });
+  return JSON.stringify(normalized);
+}
+
+function buildWatchdogWarningAggregateKey_(stage, reasonCode, summaryKey) {
+  return [String(stage || ''), String(reasonCode || ''), String(summaryKey || '{}')].join('::');
+}
+
+function registerWatchdogWarningAggregate_(state, payload) {
+  const safeState = state || getWatchdogWarningAggregateState_();
+  const stage = String(payload && payload.stage || '');
+  const reasonCode = String(payload && payload.reason_code || '');
+  const warningPayload = (payload && payload.payload) || {};
+  const now = (payload && payload.now) || new Date();
+  const nowIso = formatLocalIso_(now);
+  const summaryKey = buildWatchdogWarningSummaryKey_(warningPayload);
+  const warningKey = buildWatchdogWarningAggregateKey_(stage, reasonCode, summaryKey);
+  const existing = safeState.warnings[warningKey] || {
+    stage: stage,
+    reason_code: reasonCode,
+    summary_key: summaryKey,
+    payload_sample: warningPayload,
+    count: 0,
+    first_seen: nowIso,
+    last_seen: nowIso,
+    last_detailed_emitted_at: '',
+    last_detailed_emitted_at_ms: 0,
+    repeat_count_since_summary: 0,
+    repeat_count_since_detailed: 0,
+  };
+
+  existing.stage = stage;
+  existing.reason_code = reasonCode;
+  existing.summary_key = summaryKey;
+  existing.payload_sample = warningPayload;
+  existing.count = Number(existing.count || 0) + 1;
+  existing.last_seen = nowIso;
+
+  const isFirstObservation = Number(existing.count || 0) === 1;
+  const emitDetailedNow = isFirstObservation;
+
+  if (emitDetailedNow) {
+    existing.last_detailed_emitted_at = nowIso;
+    existing.last_detailed_emitted_at_ms = now.getTime();
+    existing.repeat_count_since_detailed = 0;
+  } else {
+    existing.repeat_count_since_summary = Number(existing.repeat_count_since_summary || 0) + 1;
+    existing.repeat_count_since_detailed = Number(existing.repeat_count_since_detailed || 0) + 1;
+  }
+
+  safeState.warnings[warningKey] = existing;
+  return {
+    emit_detailed_now: emitDetailedNow,
+    summary_key: existing.summary_key,
+    repeat_count: Number(existing.repeat_count_since_detailed || 0),
+    first_seen: String(existing.first_seen || ''),
+    last_seen: String(existing.last_seen || ''),
+  };
+}
+
+function maybeEmitWatchdogWarningAggregateSummary_(entry, state) {
+  const safeState = state || getWatchdogWarningAggregateState_();
+  const cfg = getConfig_();
+  const cadence = Math.max(1, Number(cfg.ROLLUP_EVERY_N_RUNS || 10));
+  const runCount = Number(safeState.summary_run_count || 0);
+  if (runCount <= 0 || runCount % cadence !== 0) return;
+
+  const warningKeys = Object.keys(safeState.warnings || {}).sort();
+  warningKeys.forEach((warningKey) => {
+    const warningEntry = safeState.warnings[warningKey] || {};
+    const repeatCount = Number(warningEntry.repeat_count_since_summary || 0);
+    if (repeatCount <= 0) return;
+
+    appendWatchdogWarningOpsRow_(entry, 'watchdog_warning_repeat_rollup', {
+      warning_aggregate_schema_id: WATCHDOG_WARNING_AGGREGATE_SCHEMA,
+      stage: String(warningEntry.stage || ''),
+      reason_code: String(warningEntry.reason_code || ''),
+      warning_summary_key: String(warningEntry.summary_key || ''),
+      repeat_count: repeatCount,
+      first_seen: String(warningEntry.first_seen || ''),
+      last_seen: String(warningEntry.last_seen || ''),
+      warning_summary: warningEntry.payload_sample || {},
+    });
+
+    warningEntry.repeat_count_since_summary = 0;
+  });
+
+  safeState.last_summary_emit_run_count = runCount;
+}
+
+function appendWatchdogWarningOpsRow_(entry, reasonCode, payload, now) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEETS.RUN_LOG) || ensureSheet_(ss, SHEETS.RUN_LOG);
+  const nowIso = formatLocalIso_(now || new Date());
+  sh.appendRow([
+    'ops',
+    entry.run_id || '',
+    'watchdog_warning_aggregate',
     nowIso,
     nowIso,
     'warning',
