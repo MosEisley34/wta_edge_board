@@ -756,3 +756,23 @@ function testNormalizeInvariantEnforcementLevel_defaultsToWarnOnInvalidValue_() 
   assertEquals_('warn', normalizeInvariantEnforcementLevel_('noise'));
   assertEquals_('strict', normalizeInvariantEnforcementLevel_('STRICT'));
 }
+
+
+function testGetStateJson_returnsNullWhenStateSheetMissing_() {
+  const originalSpreadsheetApp = SpreadsheetApp;
+  SpreadsheetApp = {
+    getActiveSpreadsheet: function () {
+      return {
+        getSheetByName: function () {
+          return null;
+        },
+      };
+    },
+  };
+
+  try {
+    assertEquals_(null, getStateJson_('missing_state_key'));
+  } finally {
+    SpreadsheetApp = originalSpreadsheetApp;
+  }
+}
