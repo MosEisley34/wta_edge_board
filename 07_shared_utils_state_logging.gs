@@ -1052,6 +1052,7 @@ function assertDebugBoundedStageCounters_(config, checks) {
     const safeCheck = check || {};
     const stage = String(safeCheck.stage || 'unknown_stage');
     const maxName = String(safeCheck.max_name || 'max');
+    const boundSource = String(safeCheck.bound_source || maxName || 'max');
     const max = Math.max(0, Number(safeCheck.max || 0));
     const counters = safeCheck.counters || {};
     Object.keys(counters).forEach(function (counterName) {
@@ -1062,6 +1063,7 @@ function assertDebugBoundedStageCounters_(config, checks) {
         counter_name: counterName,
         counter_value: value,
         max_name: maxName,
+        bound_source: boundSource,
         max_allowed: max,
       });
     });

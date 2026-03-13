@@ -44,7 +44,13 @@ const GROUPS = {
   reason_code_aggregation: [
     'testResolveSinglePassReasonCodeMap_prefersRowMapWithoutDoubleCounting_',
     'testAppendStageLog_clonesReasonCodeMapAcrossEmitters_',
-  ]
+  ],
+  bounded_counter_invariants: [
+    'testAssertDebugBoundedStageCounters_onlyChecksVerboseLogProfile_',
+    'testBuildRunEdgeBoardBoundedCounterInvariantChecks_oddsPresentMatchedMode_',
+    'testBuildRunEdgeBoardBoundedCounterInvariantChecks_oddsAbsentScheduleSeedMode_',
+    'testBuildRunEdgeBoardBoundedCounterInvariantChecks_mixedDiagnosticAndMatchedMode_',
+  ],
 };
 
 function loadContext() {
