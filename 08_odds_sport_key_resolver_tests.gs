@@ -6822,9 +6822,11 @@ function testSerializeCompactReasonCodesForLogEntry_canAllowExplicitCanonicalPas
 function testMaybeEmitReasonAliasFallbackWarningOpsLog_groupsWarningsPerRunSummary_() {
   const originalGetActiveSpreadsheet = SpreadsheetApp.getActiveSpreadsheet;
   const originalFallbackState = REASON_ALIAS_FALLBACK_WARNING_EMITTED;
+  const originalPendingState = REASON_ALIAS_FALLBACK_WARNING_PENDING;
   const appended = [];
 
   REASON_ALIAS_FALLBACK_WARNING_EMITTED = {};
+  REASON_ALIAS_FALLBACK_WARNING_PENDING = {};
   SpreadsheetApp.getActiveSpreadsheet = function () {
     return {
       getSheetByName: function () {
@@ -6865,13 +6867,18 @@ function testMaybeEmitReasonAliasFallbackWarningOpsLog_groupsWarningsPerRunSumma
       __reason_alias_fallback_warning: {
         schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
         aliases: ['UNK_B'],
+        canonical_reasons: { UNK_B: 'missing_b' },
       },
     });
 
     assertEquals_(1, appended.length);
+    const warningPayload = JSON.parse(appended[0][7] || '{}');
+    assertEquals_('UNK_A,UNK_B', (warningPayload.fallback_aliases || []).join(','));
+    assertEquals_('missing_b', (warningPayload.canonical_reasons || {}).UNK_B || '');
   } finally {
     SpreadsheetApp.getActiveSpreadsheet = originalGetActiveSpreadsheet;
     REASON_ALIAS_FALLBACK_WARNING_EMITTED = originalFallbackState;
+    REASON_ALIAS_FALLBACK_WARNING_PENDING = originalPendingState;
   }
 }
 

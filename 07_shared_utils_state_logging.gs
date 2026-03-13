@@ -4,6 +4,7 @@ const STATE_VALUE_GUARD_REASON = 'state_value_summarized_size_guard';
 
 let REASON_ALIAS_DICTIONARY_EMITTED_FOR_PROCESS = false;
 let REASON_ALIAS_FALLBACK_WARNING_EMITTED = {};
+let REASON_ALIAS_FALLBACK_WARNING_PENDING = {};
 
 const SECRET_REDACTION_MAP = {
   exact_keys: [
@@ -1191,13 +1192,32 @@ function buildReasonCodeFallbackAlias_(reasonCode) {
 function maybeEmitReasonAliasFallbackWarningOpsLog_(entry) {
   const warning = entry && entry.__reason_alias_fallback_warning;
   if (!warning || !warning.aliases || !warning.aliases.length) return;
+  const schemaId = String(warning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '');
+  const key = String(entry && entry.run_id || '') + '::' + schemaId;
+  const pending = REASON_ALIAS_FALLBACK_WARNING_PENDING[key] || {
+    schema_id: schemaId,
+    fallback_aliases: {},
+    allow_canonical_passthrough: false,
+  };
+  (warning.aliases || []).forEach((alias) => {
+    const aliasText = String(alias || '').trim();
+    if (!aliasText) return;
+    pending.fallback_aliases[aliasText] = String((warning.canonical_reasons || {})[aliasText] || pending.fallback_aliases[aliasText] || '');
+  });
+  pending.allow_canonical_passthrough = pending.allow_canonical_passthrough || !!warning.allow_canonical_passthrough;
+  REASON_ALIAS_FALLBACK_WARNING_PENDING[key] = pending;
+
   const rowType = String(entry && entry.row_type || '');
   const stage = String(entry && entry.stage || '');
   const isRunSummaryRow = rowType === 'summary' || stage === 'runEdgeBoard';
   if (!isRunSummaryRow) return;
-  const key = String(entry && entry.run_id || '') + '::' + String(warning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || '');
   if (REASON_ALIAS_FALLBACK_WARNING_EMITTED[key]) return;
   REASON_ALIAS_FALLBACK_WARNING_EMITTED[key] = true;
+
+  const mergedWarning = REASON_ALIAS_FALLBACK_WARNING_PENDING[key] || pending;
+  const fallbackAliases = Object.keys((mergedWarning && mergedWarning.fallback_aliases) || {}).sort();
+  if (!fallbackAliases.length) return;
+  delete REASON_ALIAS_FALLBACK_WARNING_PENDING[key];
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getSheetByName(SHEETS.RUN_LOG) || ensureSheet_(ss, SHEETS.RUN_LOG);
@@ -1211,10 +1231,10 @@ function maybeEmitReasonAliasFallbackWarningOpsLog_(entry) {
     'warning',
     'reason_code_alias_missing_fallback_emitted',
     sanitizeForLog_(JSON.stringify({
-      reason_code_alias_schema_id: String(warning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || ''),
-      fallback_aliases: warning.aliases,
-      canonical_reasons: warning.canonical_reasons || {},
-      mode: warning.allow_canonical_passthrough ? 'canonical_passthrough' : 'hash_fallback',
+      reason_code_alias_schema_id: schemaId,
+      fallback_aliases: fallbackAliases,
+      canonical_reasons: mergedWarning.fallback_aliases || {},
+      mode: mergedWarning.allow_canonical_passthrough ? 'canonical_passthrough' : 'hash_fallback',
     })),
     0,0,0,0,0,0,
     '{}',
