@@ -59,6 +59,8 @@ function appendRunStartConfigAuditLog_(runId, config, startedAt) {
       max_opening_lag_minutes: Math.max(0, Number(cfg.MAX_OPENING_LAG_MINUTES || 0)),
       opening_lag_fallback_exemption_max_age_minutes: Math.max(0, Number(cfg.OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES || 0)),
       opening_lag_fallback_exemption_max_rows_per_run: Math.max(0, Number(cfg.OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN || 0)),
+      opening_lag_fallback_key_match_window_minutes: Math.max(0, Number(cfg.OPENING_LAG_FALLBACK_KEY_MATCH_WINDOW_MINUTES || 0)),
+      opening_lag_fallback_key_match_max_age_minutes: Math.max(0, Number(cfg.OPENING_LAG_FALLBACK_KEY_MATCH_MAX_AGE_MINUTES || 0)),
     }),
   });
 }
@@ -68,7 +70,7 @@ function stagePersist(runId, payload) {
 
   upsertSheetRows_(SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
-    'odds_updated_epoch_ms', 'provider_odds_updated_time', 'opening_price', 'evaluation_price', 'price_delta_bps', 'open_timestamp', 'open_timestamp_epoch_ms', 'opening_lag_minutes', 'opening_lag_evaluated_at', 'decision_gate_status', 'is_actionable', 'reason_code', 'ingestion_timestamp', 'commence_time',
+    'odds_updated_epoch_ms', 'provider_odds_updated_time', 'opening_price', 'evaluation_price', 'price_delta_bps', 'open_timestamp', 'open_timestamp_epoch_ms', 'opening_lag_minutes', 'opening_lag_evaluated_at', 'opening_lag_policy_tier', 'opening_lag_policy_tier_applied', 'opening_lag_fallback_exemption_max_age_minutes', 'opening_lag_fallback_minutes_to_start', 'opening_lag_fallback_age_bucket', 'decision_gate_status', 'is_actionable', 'fallback_exemption_reason_code', 'reason_code', 'ingestion_timestamp', 'commence_time',
     'commence_epoch_ms', 'competition', 'player_1', 'player_2',
     'player_1_hold_pct', 'player_2_hold_pct', 'player_1_break_pct', 'player_2_break_pct',
     'player_1_form_score', 'player_2_form_score',
@@ -144,6 +146,8 @@ function writeOpeningLagSkipState_(runId, payload) {
     opening_lag_fallback_exemption_denied_source: Number(payload.opening_lag_fallback_exemption_denied_source || 0),
     opening_lag_fallback_exemption_denied_age: Number(payload.opening_lag_fallback_exemption_denied_age || 0),
     opening_lag_fallback_exemption_denied_cap: Number(payload.opening_lag_fallback_exemption_denied_cap || 0),
+    opening_lag_fallback_exemption_key_match_window_minutes: Number(payload.opening_lag_fallback_exemption_key_match_window_minutes || 0),
+    opening_lag_fallback_exemption_key_match_max_age_minutes: Number(payload.opening_lag_fallback_exemption_key_match_max_age_minutes || 0),
     opening_lag_fallback_exemption_cap_mode: String(payload.opening_lag_fallback_exemption_cap_mode || 'unlimited_when_zero'),
     opening_lag_fallback_exemption_allowed_sources: Array.isArray(payload.opening_lag_fallback_exemption_allowed_sources)
       ? payload.opening_lag_fallback_exemption_allowed_sources.slice()
@@ -152,6 +156,7 @@ function writeOpeningLagSkipState_(runId, payload) {
       ? payload.opening_lag_fallback_exemption_denied_sources.slice()
       : [],
     opening_lag_fallback_exemption_config_validation: payload.opening_lag_fallback_exemption_config_validation || {},
+    opening_lag_fallback_exemption_age_bucket_summary: payload.opening_lag_fallback_exemption_age_bucket_summary || {},
     opening_lag_fallback_exemption_diagnostics: fallbackDiagnostics,
     opening_lag_gate_diagnostics_summary: [
       'blocked_by_age=' + Number(fallbackDiagnostics.blocked_by_age || 0),

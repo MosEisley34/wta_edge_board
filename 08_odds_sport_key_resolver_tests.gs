@@ -2461,6 +2461,95 @@ function testApplyOpeningLagActionabilityGate_partiallyBlockedFallbackExemptions
   });
 }
 
+
+function testApplyOpeningLagActionabilityGate_boundedWindowTierRelaxesFallbackAgeNearStart_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const config = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES: 180,
+      OPENING_LAG_FALLBACK_KEY_MATCH_WINDOW_MINUTES: 120,
+      OPENING_LAG_FALLBACK_KEY_MATCH_MAX_AGE_MINUTES: 240,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN: 0,
+    };
+
+    const stage = {
+      events: [{
+        event_id: 'evt_bounded_window',
+        market: 'h2h',
+        outcome: 'Player A',
+        provider_odds_updated_time: new Date(now - (210 * 60000)),
+        open_timestamp: new Date(now - (210 * 60000)),
+        commence_time: new Date(now + (45 * 60000)),
+        opening_lag_policy_tier: 'fallback_cached_stale',
+      }],
+      rows: [{ key: 'evt_bounded_window|h2h|Player A' }],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const gated = applyOpeningLagActionabilityGate_('run_opening_lag_bounded_window', config, stage);
+    assertEquals_(1, gated.events.length);
+    assertEquals_('opening_lag_fallback_exemption_allowed', gated.rows[0].fallback_exemption_reason_code);
+    assertEquals_('fallback_cached_stale_bounded_window', gated.rows[0].opening_lag_policy_tier_applied);
+    assertEquals_(240, Number(gated.rows[0].opening_lag_fallback_exemption_max_age_minutes || 0));
+    assertEquals_(1, Number((gated.summary.reason_metadata.fallback_exemption_age_bucket_summary || {})['>180'] || 0));
+  });
+}
+
+function testApplyOpeningLagActionabilityGate_emitsPolicyTuningAgeBucketSummary_() {
+  withOpeningLagStateWritesStub_(function () {
+    const now = Date.now();
+    const config = {
+      MAX_OPENING_LAG_MINUTES: 5,
+      REQUIRE_OPENING_LINE_PROXIMITY: true,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES: 300,
+      OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN: 0,
+    };
+
+    const stage = {
+      events: [
+        {
+          event_id: 'evt_bucket_1',
+          market: 'h2h',
+          outcome: 'Player A',
+          provider_odds_updated_time: new Date(now - (45 * 60000)),
+          open_timestamp: new Date(now - (45 * 60000)),
+          opening_lag_policy_tier: 'fallback_cached_stale',
+        },
+        {
+          event_id: 'evt_bucket_2',
+          market: 'h2h',
+          outcome: 'Player B',
+          provider_odds_updated_time: new Date(now - (120 * 60000)),
+          open_timestamp: new Date(now - (120 * 60000)),
+          opening_lag_policy_tier: 'fallback_cached_stale',
+        },
+        {
+          event_id: 'evt_bucket_3',
+          market: 'h2h',
+          outcome: 'Player C',
+          provider_odds_updated_time: new Date(now - (240 * 60000)),
+          open_timestamp: new Date(now - (240 * 60000)),
+          opening_lag_policy_tier: 'fallback_cached_stale',
+        },
+      ],
+      rows: [
+        { key: 'evt_bucket_1|h2h|Player A' },
+        { key: 'evt_bucket_2|h2h|Player B' },
+        { key: 'evt_bucket_3|h2h|Player C' },
+      ],
+      summary: { reason_codes: {}, reason_metadata: {} },
+    };
+
+    const gated = applyOpeningLagActionabilityGate_('run_opening_lag_age_bucket_summary', config, stage);
+    const summary = gated.summary.reason_metadata.fallback_exemption_age_bucket_summary || {};
+    assertEquals_(1, Number(summary['<=60'] || 0));
+    assertEquals_(1, Number(summary['61-180'] || 0));
+    assertEquals_(1, Number(summary['>180'] || 0));
+  });
+}
+
 function testApplyOpeningLagActionabilityGate_fullyBlockedWhenCapZeroRequiresExplicitMode_() {
   withOpeningLagStateWritesStub_(function () {
     const now = Date.now();
