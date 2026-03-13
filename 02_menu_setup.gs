@@ -509,17 +509,7 @@ function ensureHeaders_(spreadsheetOrSheetOrName, sheetNameOrHeaders, maybeHeade
 
 function ensureConfigDefaults_(ss) {
   const activeSs = ss || SpreadsheetApp.getActiveSpreadsheet();
-  let sh = activeSs.getSheetByName(SHEETS.CONFIG);
-  if (!sh) {
-    ensureTabsAndConfig_();
-    sh = activeSs.getSheetByName(SHEETS.CONFIG);
-  }
-  if (!sh) {
-    throw new Error(
-      '[config_sheet_missing_preflight] Config sheet is missing. '
-      + 'Run "Setup / Verify Tabs" (or "Re-create / Reset Workbook") once, then retry.'
-    );
-  }
+  const sh = requireConfigSheet_(activeSs);
   const values = sh.getDataRange().getValues();
   const parsed = parseConfigRows_(values, {
     mode: 'warn_last_wins',
@@ -583,7 +573,7 @@ function upsertConfigDefaults_(sheet, keyValueMap) {
 }
 
 function applyConfigPreset_(keyValueMap) {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
+  const sh = requireConfigSheet_(SpreadsheetApp.getActiveSpreadsheet());
   const keys = Object.keys(keyValueMap || {});
   upsertConfigDefaults_(sh, keyValueMap || {});
 
@@ -613,7 +603,7 @@ function dedupeConfigSheet_(sheet, options) {
     PLAYER_STATS_API_KEY: true,
     PLAYER_STATS_SCRAPE_URLS: true,
   };
-  const sh = sheet || SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
+  const sh = sheet || requireConfigSheet_(SpreadsheetApp.getActiveSpreadsheet());
   const opts = options || {};
   const precedence = String(opts.precedence || 'last_wins');
   const preserveRowOrder = opts.preserve_row_order !== false;
@@ -746,6 +736,22 @@ function dedupeConfigSheet_(sheet, options) {
   }
 
   return summary;
+}
+
+function requireConfigSheet_(spreadsheet) {
+  const activeSs = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  let sh = activeSs.getSheetByName(SHEETS.CONFIG);
+  if (!sh) {
+    ensureTabsAndConfig_();
+    sh = activeSs.getSheetByName(SHEETS.CONFIG);
+  }
+  if (!sh) {
+    throw new Error(
+      '[config_sheet_missing_preflight] Config sheet is missing. '
+      + 'Run "Setup / Verify Tabs" (or "Re-create / Reset Workbook") once, then retry.'
+    );
+  }
+  return sh;
 }
 
 function dedupeConfigSheetMenuAction_() {
