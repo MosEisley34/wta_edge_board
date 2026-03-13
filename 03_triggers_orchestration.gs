@@ -1830,6 +1830,58 @@ function evaluateRunHealthDiagnostics_(metrics) {
   }
 
   const temporaryNoOddsSignalCount = openingLagBlockedCount + scheduleOnlySeedCount + noOddsStageCount;
+  const openingLagScheduleSeedNoOdds = fetchedOdds > 0
+    && matched === 0
+    && Number(oddsReasonCodes.opening_lag_exceeded || 0) > 0
+    && (
+      scheduleOnlySeedCount > 0
+      || noOddsStageCount > 0
+      || Number(matchReasonCodes.schedule_seed_no_odds || 0) > 0
+      || Number(matchReasonCodes.no_odds_candidates || 0) > 0
+    );
+
+  if (openingLagScheduleSeedNoOdds) {
+    const openingLagSeedPayload = Object.assign(buildRunHealthDegradedContract_({
+      reason_code: 'run_health_opening_lag_schedule_seed_no_odds',
+      odds_reason_codes: oddsReasonCodes,
+      schedule_reason_codes: scheduleReasonCodes,
+      match_reason_codes: matchReasonCodes,
+      signal_reason_codes: signalReasonCodes,
+      player_stats_reason_codes: playerStatsReasonCodes,
+      opening_lag_blocked_count: openingLagBlockedCount,
+      schedule_only_seed_count: scheduleOnlySeedCount,
+      no_odds_stage_count: noOddsStageCount,
+      stale_odds_skip_count: staleOddsSkipCount,
+      low_edge_suppressed_count: lowEdgeSuppressedCount,
+      cooldown_suppressed_count: cooldownSuppressedCount,
+      sampled_blocked_odds: sampledBlockedOdds,
+      sample_unmatched_cases: sampleUnmatchedCases,
+    }), {
+      reason_code: 'run_health_opening_lag_schedule_seed_no_odds',
+      fetched_odds: fetchedOdds,
+      fetched_schedule: fetchedSchedule,
+      matched: matched,
+      signals_found: signalsFound,
+      message: 'Fetched odds rows were blocked by opening-lag guard, and downstream matching followed schedule-seed/no-odds path; zero matches/signals are expected while strict odds-quality gate remains active.',
+    });
+
+    const shouldEmitOpeningLagSeedWarning = openingLagBlockedCount >= 2
+      || scheduleOnlySeedCount >= 2
+      || noOddsStageCount >= 2;
+
+    return {
+      is_degraded: false,
+      status: 'idle_opening_lag_schedule_seed_no_odds',
+      reason_code: 'run_health_opening_lag_schedule_seed_no_odds',
+      degraded_reason_code: '',
+      summary_status: 'success',
+      summary_reason_code: 'run_health_opening_lag_schedule_seed_no_odds',
+      summary_message: openingLagSeedPayload.message,
+      warning_payload: openingLagSeedPayload,
+      should_emit_warning: shouldEmitOpeningLagSeedWarning,
+    };
+  }
+
   const expectedTemporaryNoOdds = fetchedOdds > 0
     && matched === 0
     && (

@@ -1599,6 +1599,35 @@ function testRunEdgeBoard_treatsExpectedTemporaryNoOddsAsNonFailing_() {
   }
 }
 
+
+function testEvaluateRunHealthDiagnostics_classifiesOpeningLagScheduleSeedNoOddsWithDedicatedReason_() {
+  const diagnostics = evaluateRunHealthDiagnostics_({
+    fetched_odds: 4,
+    fetched_schedule: 2,
+    matched: 0,
+    signals_found: 0,
+    odds_reason_codes: { opening_lag_exceeded: 2, odds_actionable: 0, odds_non_actionable: 4 },
+    schedule_reason_codes: {},
+    match_reason_codes: { schedule_seed_no_odds: 1, no_odds_candidates: 1 },
+    signal_reason_codes: {},
+    player_stats_reason_codes: {},
+    opening_lag_blocked_count: 2,
+    schedule_only_seed_count: 1,
+    no_odds_stage_count: 1,
+    stale_odds_skip_count: 0,
+    low_edge_suppressed_count: 0,
+    cooldown_suppressed_count: 0,
+  });
+
+  assertEquals_(false, diagnostics.is_degraded);
+  assertEquals_('idle_opening_lag_schedule_seed_no_odds', diagnostics.status);
+  assertEquals_('run_health_opening_lag_schedule_seed_no_odds', diagnostics.reason_code);
+  assertEquals_('run_health_opening_lag_schedule_seed_no_odds', diagnostics.summary_reason_code);
+  assertEquals_('run_health_opening_lag_schedule_seed_no_odds', diagnostics.warning_payload.reason_code);
+  assertEquals_(2, Number(diagnostics.warning_payload.opening_lag_blocked_count || 0));
+  assertEquals_(1, Number(diagnostics.warning_payload.schedule_only_seed_count || 0));
+  assertEquals_(1, Number(diagnostics.warning_payload.no_odds_stage_count || 0));
+}
 function testRunEdgeBoard_emitsRunHealthWarningForPersistentTemporaryNoOdds_() {
   const harness = createRunEdgeBoardTestHarness_({
     nowMs: 1000000,
@@ -6839,6 +6868,45 @@ function testMaybeEmitRunRollup_treatsExpectedTemporaryNoOddsReasonAsHealthyMode
       stage_summaries: [
         { stage: 'stageFetchOdds', duration_ms: 1000 },
         { stage: 'stageFetchOdds', duration_ms: 1100 },
+      ],
+      watchdog: {},
+    });
+
+    assertEquals_(true, emitted.emitted);
+    assertEquals_('healthy', String(emitted.rollup.stage_latency_contract.mode || ''));
+    assertEquals_(3000, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+  }
+}
+
+
+function testMaybeEmitRunRollup_treatsOpeningLagScheduleSeedNoOddsReasonAsHealthyMode_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+
+  const state = {
+    RUN_ROLLUP_STATE: JSON.stringify({ run_count: 0, last_rollup_at_count: 0 }),
+  };
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+
+  try {
+    const emitted = maybeEmitRunRollup_({ ROLLUP_EVERY_N_RUNS: 1 }, {
+      fetched_odds: 1,
+      matched: 0,
+      signals_found: 0,
+      run_health_reason_code: 'run_health_opening_lag_schedule_seed_no_odds',
+      reason_codes: {},
+      stage_summaries: [
+        { stage: 'stageFetchOdds', duration_ms: 1000 },
+        { stage: 'stageFetchOdds', duration_ms: 1200 },
       ],
       watchdog: {},
     });

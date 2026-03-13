@@ -649,6 +649,7 @@ function resolveRunHealthMode_(runHealthReasonCode) {
   const healthyReasonFamilies = {
     odds_refresh_skipped_outside_window: true,
     run_health_expected_temporary_no_odds: true,
+    run_health_opening_lag_schedule_seed_no_odds: true,
   };
   return healthyReasonFamilies[reason] ? 'healthy' : 'degraded';
 }
