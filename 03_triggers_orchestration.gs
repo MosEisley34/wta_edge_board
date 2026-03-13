@@ -573,7 +573,7 @@ function runEdgeBoard() {
       playerStatsReasonCodes.stats_zero_coverage = Number(playerStatsReasonCodes.stats_zero_coverage || 0) + 1;
       playerStatsStage.summary.reason_codes = playerStatsReasonCodes;
     }
-    const runHealthDiagnostics = evaluateRunHealthDiagnostics_({
+    const runHealthMetrics = {
       fetched_odds: fetchedOddsCount,
       fetched_schedule: scheduleStage.events.length,
       matched: matchedCount,
@@ -591,7 +591,12 @@ function runEdgeBoard() {
       stale_odds_skip_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.stale_odds_skip) || 0),
       low_edge_suppressed_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.edge_below_threshold) || 0),
       cooldown_suppressed_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.cooldown_suppressed) || 0),
-    });
+    };
+    const dataNotActionableState = updateRunHealthDataNotActionableState_(runId, runHealthMetrics, config);
+    const runHealthDiagnostics = evaluateRunHealthDiagnostics_(Object.assign({}, runHealthMetrics, {
+      data_not_actionable_streak: Number(dataNotActionableState.consecutive_count || 0),
+      data_not_actionable_escalation_threshold: Number(dataNotActionableState.threshold || 0),
+    }));
 
     if (runHealthDiagnostics.warning_payload && runHealthDiagnostics.should_emit_warning) {
       appendLogRow_({
@@ -1786,6 +1791,8 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const staleOddsSkipCount = Number(metrics && metrics.stale_odds_skip_count || 0);
   const lowEdgeSuppressedCount = Number(metrics && metrics.low_edge_suppressed_count || 0);
   const cooldownSuppressedCount = Number(metrics && metrics.cooldown_suppressed_count || 0);
+  const dataNotActionableStreak = Math.max(0, Number(metrics && metrics.data_not_actionable_streak || 0));
+  const dataNotActionableEscalationThreshold = Math.max(2, Number(metrics && metrics.data_not_actionable_escalation_threshold || 3));
   const sampledBlockedOdds = sanitizeBlockedOddsSamples_((metrics && metrics.sample_blocked_odds_cases) || []);
   const outsideWindowOddsSkipped = Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0) > 0;
   const scheduleSkippedOutsideWindowCreditSaver = Number(scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver || 0) > 0;
@@ -1875,6 +1882,54 @@ function evaluateRunHealthDiagnostics_(metrics) {
       summary_message: temporaryNoOddsPayload.message,
       warning_payload: temporaryNoOddsPayload,
       should_emit_warning: shouldEmitTemporaryNoOddsWarning,
+    };
+  }
+
+  const dataNotActionableYet = isRunHealthDataNotActionableYet_(metrics);
+  if (dataNotActionableYet) {
+    const persistentDataNotActionable = dataNotActionableStreak >= dataNotActionableEscalationThreshold;
+    const actionableGapPayload = Object.assign(buildRunHealthDegradedContract_({
+      reason_code: persistentDataNotActionable
+        ? 'run_health_data_not_actionable_persistent'
+        : 'run_health_data_not_actionable_yet',
+      odds_reason_codes: oddsReasonCodes,
+      schedule_reason_codes: scheduleReasonCodes,
+      match_reason_codes: matchReasonCodes,
+      signal_reason_codes: signalReasonCodes,
+      player_stats_reason_codes: playerStatsReasonCodes,
+      opening_lag_blocked_count: openingLagBlockedCount,
+      schedule_only_seed_count: scheduleOnlySeedCount,
+      no_odds_stage_count: noOddsStageCount,
+      stale_odds_skip_count: staleOddsSkipCount,
+      low_edge_suppressed_count: lowEdgeSuppressedCount,
+      cooldown_suppressed_count: cooldownSuppressedCount,
+      sampled_blocked_odds: sampledBlockedOdds,
+      sample_unmatched_cases: sampleUnmatchedCases,
+    }), {
+      reason_code: persistentDataNotActionable
+        ? 'run_health_data_not_actionable_persistent'
+        : 'run_health_data_not_actionable_yet',
+      fetched_odds: fetchedOdds,
+      fetched_schedule: fetchedSchedule,
+      matched: matched,
+      signals_found: signalsFound,
+      data_not_actionable_streak: dataNotActionableStreak,
+      data_not_actionable_escalation_threshold: dataNotActionableEscalationThreshold,
+      message: persistentDataNotActionable
+        ? 'Fetched odds are still not actionable after consecutive runs; downstream matches/signals remain empty and now require operator intervention.'
+        : 'Fetched odds are not actionable yet (e.g. missing open timestamps or no actionable rows); downstream matches/signals are expected to be empty while data is still warming.',
+    });
+
+    return {
+      is_degraded: persistentDataNotActionable,
+      status: persistentDataNotActionable ? 'degraded' : 'idle_data_not_actionable_yet',
+      reason_code: actionableGapPayload.reason_code,
+      degraded_reason_code: persistentDataNotActionable ? actionableGapPayload.reason_code : '',
+      summary_status: persistentDataNotActionable ? 'degraded' : 'success',
+      summary_reason_code: actionableGapPayload.reason_code,
+      summary_message: actionableGapPayload.message,
+      warning_payload: actionableGapPayload,
+      should_emit_warning: persistentDataNotActionable,
     };
   }
 
@@ -1968,6 +2023,50 @@ function evaluateRunHealthDiagnostics_(metrics) {
     warning_payload: warningPayload,
     should_emit_warning: true,
   };
+}
+
+function isRunHealthDataNotActionableYet_(metrics) {
+  const safe = metrics || {};
+  const fetchedOdds = Number(safe.fetched_odds || 0);
+  const matched = Number(safe.matched || 0);
+  const signalsFound = Number(safe.signals_found || 0);
+  const oddsReasonCodes = (safe.odds_reason_codes) || {};
+  const matchReasonCodes = (safe.match_reason_codes) || {};
+  const oddsActionableCount = Number(oddsReasonCodes.odds_actionable || 0);
+  const missingOpenTimestampCount = Number(oddsReasonCodes.missing_open_timestamp || 0);
+  const noOddsCandidatesCount = Number(matchReasonCodes.no_odds_candidates || 0);
+  const scheduleSeedNoOddsCount = Number(matchReasonCodes.schedule_seed_no_odds || 0);
+
+  return fetchedOdds > 0
+    && matched === 0
+    && signalsFound === 0
+    && (
+      oddsActionableCount === 0
+      || missingOpenTimestampCount > 0
+      || noOddsCandidatesCount > 0
+      || scheduleSeedNoOddsCount > 0
+    );
+}
+
+function updateRunHealthDataNotActionableState_(runId, metrics, config) {
+  const threshold = Math.max(2, Number((config && config.RUN_HEALTH_DATA_NOT_ACTIONABLE_PERSIST_THRESHOLD) || 3));
+  const previous = getStateJson_('RUN_HEALTH_DATA_NOT_ACTIONABLE_STATE') || {};
+  const isDataNotActionableYet = isRunHealthDataNotActionableYet_(metrics);
+  const previousCount = Math.max(0, Number(previous.consecutive_count || 0));
+  const consecutiveCount = isDataNotActionableYet ? previousCount + 1 : 0;
+  const escalated = isDataNotActionableYet && consecutiveCount >= threshold;
+
+  const next = {
+    run_id: runId,
+    updated_at: formatLocalIso_(new Date()),
+    threshold: threshold,
+    consecutive_count: consecutiveCount,
+    is_data_not_actionable_yet: isDataNotActionableYet,
+    escalated: escalated,
+  };
+  setStateValue_('RUN_HEALTH_DATA_NOT_ACTIONABLE_STATE', JSON.stringify(next));
+
+  return next;
 }
 
 function buildRunHealthDegradedContract_(metrics) {
