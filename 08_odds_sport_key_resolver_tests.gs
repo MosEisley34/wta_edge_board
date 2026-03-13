@@ -7101,17 +7101,65 @@ function testMaybeEmitRunRollup_marksOutsideWindowIdleLatencyAnomaliesInformatio
     assertEquals_(true, emitted.emitted);
     assertEquals_('degraded', String(emitted.rollup.stage_latency_contract.mode || ''));
     assertEquals_('idle', String(emitted.rollup.stage_latency_contract.evaluation_mode || ''));
+    assertEquals_('idle', String(emitted.rollup.stage_latency_contract.mode_context || ''));
+    assertEquals_('idle', String(emitted.rollup.stage_latency_contract.latency_expectation_profile || ''));
     assertEquals_('informational', String(emitted.rollup.stage_latency_contract.anomaly_severity || ''));
     const anomalyCodes = emitted.rollup.stage_latency_contract.anomaly_reason_codes || [];
-    assertEquals_(true, anomalyCodes.indexOf('latency_idle_degraded_stagefetchodds_avg_threshold_exceeded') >= 0);
-    assertEquals_(true, anomalyCodes.indexOf('latency_idle_degraded_stagefetchodds_p95_threshold_exceeded') >= 0);
-    assertEquals_(4500, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
+    assertEquals_(false, anomalyCodes.indexOf('latency_idle_degraded_stagefetchodds_avg_threshold_exceeded') >= 0);
+    assertEquals_(false, anomalyCodes.indexOf('latency_idle_degraded_stagefetchodds_p95_threshold_exceeded') >= 0);
+    assertEquals_(9000, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
   } finally {
     getStateJson_ = originalGetStateJson;
     setStateValue_ = originalSetStateValue;
   }
 }
 
+
+
+function testMaybeEmitRunRollup_usesIdleLatencyProfileForOutsideActiveWindowMode_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+
+  const state = {
+    RUN_ROLLUP_STATE: JSON.stringify({ run_count: 0, last_rollup_at_count: 0 }),
+  };
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+
+  try {
+    const emitted = maybeEmitRunRollup_({ ROLLUP_EVERY_N_RUNS: 1 }, {
+      fetched_odds: 1,
+      matched: 0,
+      signals_found: 0,
+      run_health_reason_code: 'run_health_expected_temporary_no_odds',
+      run_mode: 'outside_active_window',
+      reason_codes: {},
+      stage_summaries: [
+        { stage: 'stageFetchOdds', duration_ms: 7000 },
+        { stage: 'stageFetchOdds', duration_ms: 7100 },
+      ],
+      watchdog: {},
+    });
+
+    assertEquals_(true, emitted.emitted);
+    assertEquals_('healthy', String(emitted.rollup.stage_latency_contract.mode || ''));
+    assertEquals_('idle', String(emitted.rollup.stage_latency_contract.evaluation_mode || ''));
+    assertEquals_('idle', String(emitted.rollup.stage_latency_contract.mode_context || ''));
+    assertEquals_('idle', String(emitted.rollup.stage_latency_contract.latency_expectation_profile || ''));
+    assertEquals_('informational', String(emitted.rollup.stage_latency_contract.anomaly_severity || ''));
+    assertEquals_(9000, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
+    const anomalyCodes = emitted.rollup.stage_latency_contract.anomaly_reason_codes || [];
+    assertEquals_(0, Number(anomalyCodes.length || 0));
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+  }
+}
 
 function testMaybeEmitRunRollup_tracksRunCountWhenCadenceNotReached_() {
   const originalGetStateJson = getStateJson_;
