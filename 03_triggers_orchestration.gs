@@ -1257,6 +1257,11 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   const requireOpeningLineProximity = !!config.REQUIRE_OPENING_LINE_PROXIMITY;
   const fallbackExemptionMaxAgeMinutes = Math.max(0, Number(config.OPENING_LAG_FALLBACK_EXEMPTION_MAX_AGE_MINUTES || 0));
   const fallbackExemptionMaxRowsPerRun = Math.max(0, Number(config.OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN || 0));
+  const fallbackExemptionKeyMatchWindowMinutes = Math.max(0, Number(config.OPENING_LAG_FALLBACK_KEY_MATCH_WINDOW_MINUTES || 120));
+  const fallbackExemptionKeyMatchMaxAgeMinutes = Math.max(
+    fallbackExemptionMaxAgeMinutes,
+    Number(config.OPENING_LAG_FALLBACK_KEY_MATCH_MAX_AGE_MINUTES || 240)
+  );
   const fallbackExemptionCapMode = String(config.OPENING_LAG_FALLBACK_EXEMPTION_CAP_MODE || 'unlimited_when_zero').toLowerCase();
   const fallbackExemptionAllowedSourcesInput = parseOpeningLagPolicySources_(
     config.OPENING_LAG_FALLBACK_EXEMPTION_ALLOWED_SOURCES_JSON,
@@ -1286,6 +1291,11 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   let fallbackExemptionDeniedAge = 0;
   let fallbackExemptionDeniedCap = 0;
   const fallbackExemptionAgeBuckets = {};
+  const fallbackExemptionAgeBucketSummary = {
+    '<=60': 0,
+    '61-180': 0,
+    '>180': 0,
+  };
   const fallbackExemptionEvidenceSampleLimit = 3;
   const fallbackExemptionEvidence = {
     blocked_by_source: [],
@@ -1308,6 +1318,19 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     if (fallbackAgeBucket) {
       fallbackExemptionAgeBuckets[fallbackAgeBucket] = (fallbackExemptionAgeBuckets[fallbackAgeBucket] || 0) + 1;
     }
+    const tuningAgeBucket = openingLagPolicyTuningBucket_(openingLagMinutes);
+    if (tuningAgeBucket) {
+      fallbackExemptionAgeBucketSummary[tuningAgeBucket] = Number(fallbackExemptionAgeBucketSummary[tuningAgeBucket] || 0) + 1;
+    }
+
+    const dynamicExemptionPolicy = resolveOpeningLagFallbackExemptionPolicy_(
+      event,
+      policyTier,
+      fallbackExemptionMaxAgeMinutes,
+      fallbackExemptionKeyMatchWindowMinutes,
+      fallbackExemptionKeyMatchMaxAgeMinutes,
+      nowMs
+    );
 
     const evaluated = Object.assign({}, event || {});
     evaluated.open_timestamp = openTimestamp;
@@ -1316,6 +1339,9 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     evaluated.open_timestamp_type = timestampType;
     evaluated.open_timestamp_source = timestampSource;
     evaluated.opening_lag_policy_tier = policyTier;
+    evaluated.opening_lag_policy_tier_applied = dynamicExemptionPolicy.policy_tier;
+    evaluated.opening_lag_fallback_exemption_max_age_minutes = dynamicExemptionPolicy.max_age_minutes;
+    evaluated.opening_lag_fallback_minutes_to_start = dynamicExemptionPolicy.minutes_to_start;
     evaluated.opening_lag_fallback_age_bucket = fallbackAgeBucket || '';
     evaluated.is_actionable = true;
     evaluated.reason_code = '';
@@ -1333,14 +1359,19 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
       const eventEvidence = {
         event_id: String((event && event.event_id) || ''),
         policy_tier: policyTier,
+        policy_tier_applied: dynamicExemptionPolicy.policy_tier,
+        exemption_max_age_minutes: dynamicExemptionPolicy.max_age_minutes,
         opening_lag_minutes: Number.isFinite(Number(openingLagMinutes)) ? Number(openingLagMinutes) : null,
+        minutes_to_start: Number.isFinite(Number(dynamicExemptionPolicy.minutes_to_start))
+          ? Number(dynamicExemptionPolicy.minutes_to_start)
+          : null,
       };
 
       if (fallbackExemptionDeniedSources[policyTier] || !fallbackExemptionAllowedSources[policyTier]) {
         exemptionDecision = 'opening_lag_fallback_exemption_denied_source';
         fallbackExemptionDeniedSource += 1;
         pushOpeningLagFallbackEvidence_(fallbackExemptionEvidence.blocked_by_source, eventEvidence, fallbackExemptionEvidenceSampleLimit);
-      } else if (fallbackExemptionMaxAgeMinutes > 0 && openingLagMinutes > fallbackExemptionMaxAgeMinutes) {
+      } else if (dynamicExemptionPolicy.max_age_minutes > 0 && openingLagMinutes > dynamicExemptionPolicy.max_age_minutes) {
         exemptionDecision = 'opening_lag_fallback_exemption_denied_age';
         fallbackExemptionDeniedAge += 1;
         pushOpeningLagFallbackEvidence_(fallbackExemptionEvidence.blocked_by_age, eventEvidence, fallbackExemptionEvidenceSampleLimit);
@@ -1385,6 +1416,13 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
       open_timestamp_type: event.open_timestamp_type || '',
       open_timestamp_source: event.open_timestamp_source || '',
       opening_lag_policy_tier: event.opening_lag_policy_tier || '',
+      opening_lag_policy_tier_applied: event.opening_lag_policy_tier_applied || '',
+      opening_lag_fallback_exemption_max_age_minutes: Number.isFinite(Number(event.opening_lag_fallback_exemption_max_age_minutes))
+        ? Number(event.opening_lag_fallback_exemption_max_age_minutes)
+        : '',
+      opening_lag_fallback_minutes_to_start: Number.isFinite(Number(event.opening_lag_fallback_minutes_to_start))
+        ? Number(event.opening_lag_fallback_minutes_to_start)
+        : '',
       opening_lag_minutes: Number.isFinite(Number(event.opening_lag_minutes)) ? Number(event.opening_lag_minutes) : '',
       opening_lag_fallback_age_bucket: event.opening_lag_fallback_age_bucket || '',
       opening_lag_evaluated_at: event.opening_lag_evaluated_at ? event.opening_lag_evaluated_at.toISOString() : '',
@@ -1423,12 +1461,15 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     stage.summary.reason_metadata.max_opening_lag_minutes = maxOpeningLagMinutes;
     stage.summary.reason_metadata.require_opening_line_proximity = requireOpeningLineProximity;
     stage.summary.reason_metadata.fallback_exemption_max_age_minutes = fallbackExemptionMaxAgeMinutes;
+    stage.summary.reason_metadata.fallback_exemption_key_match_window_minutes = fallbackExemptionKeyMatchWindowMinutes;
+    stage.summary.reason_metadata.fallback_exemption_key_match_max_age_minutes = fallbackExemptionKeyMatchMaxAgeMinutes;
     stage.summary.reason_metadata.fallback_exemption_max_rows_per_run = fallbackExemptionMaxRowsPerRun;
     stage.summary.reason_metadata.fallback_exemption_cap_mode = fallbackExemptionCapMode;
     stage.summary.reason_metadata.fallback_exemption_allowed_sources = Object.keys(fallbackExemptionAllowedSources);
     stage.summary.reason_metadata.fallback_exemption_denied_sources = Object.keys(fallbackExemptionDeniedSources);
     stage.summary.reason_metadata.fallback_exemption_config_validation = fallbackExemptionConfigValidation;
     stage.summary.reason_metadata.fallback_exemption_age_buckets = fallbackExemptionAgeBuckets;
+    stage.summary.reason_metadata.fallback_exemption_age_bucket_summary = fallbackExemptionAgeBucketSummary;
     stage.summary.reason_metadata.fallback_exemption_diagnostics = buildOpeningLagFallbackDiagnostics_(fallbackExemptionEvidence, {
       exempted: fallbackCachedExempted,
       blocked_by_source: fallbackExemptionDeniedSource,
@@ -1448,10 +1489,13 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
     opening_lag_fallback_exemption_denied_source: fallbackExemptionDeniedSource,
     opening_lag_fallback_exemption_denied_age: fallbackExemptionDeniedAge,
     opening_lag_fallback_exemption_denied_cap: fallbackExemptionDeniedCap,
+    opening_lag_fallback_exemption_key_match_window_minutes: fallbackExemptionKeyMatchWindowMinutes,
+    opening_lag_fallback_exemption_key_match_max_age_minutes: fallbackExemptionKeyMatchMaxAgeMinutes,
     opening_lag_fallback_exemption_cap_mode: fallbackExemptionCapMode,
     opening_lag_fallback_exemption_allowed_sources: Object.keys(fallbackExemptionAllowedSources),
     opening_lag_fallback_exemption_denied_sources: Object.keys(fallbackExemptionDeniedSources),
     opening_lag_fallback_exemption_config_validation: fallbackExemptionConfigValidation,
+    opening_lag_fallback_exemption_age_bucket_summary: fallbackExemptionAgeBucketSummary,
     opening_lag_fallback_exemption_diagnostics: buildOpeningLagFallbackDiagnostics_(fallbackExemptionEvidence, {
       exempted: fallbackCachedExempted,
       blocked_by_source: fallbackExemptionDeniedSource,
@@ -1461,6 +1505,34 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   });
 
   return stage;
+}
+
+function resolveOpeningLagFallbackExemptionPolicy_(event, policyTier, baseMaxAgeMinutes, keyWindowMinutes, keyWindowMaxAgeMinutes, nowMs) {
+  const normalizedTier = String(policyTier || 'strict_gate');
+  const baseMaxAge = Math.max(0, Number(baseMaxAgeMinutes || 0));
+  const result = {
+    policy_tier: normalizedTier,
+    max_age_minutes: baseMaxAge,
+    minutes_to_start: null,
+  };
+
+  if (normalizedTier !== 'fallback_cached_stale') return result;
+
+  const commenceTime = event && event.commence_time instanceof Date && !Number.isNaN(event.commence_time.getTime())
+    ? event.commence_time
+    : null;
+  if (!commenceTime) return result;
+
+  const minutesToStart = (commenceTime.getTime() - nowMs) / 60000;
+  result.minutes_to_start = roundNumber_(minutesToStart, 2);
+  if (!Number.isFinite(minutesToStart) || minutesToStart < 0) return result;
+
+  const keyWindow = Math.max(0, Number(keyWindowMinutes || 0));
+  if (keyWindow <= 0 || minutesToStart > keyWindow) return result;
+
+  result.policy_tier = 'fallback_cached_stale_bounded_window';
+  result.max_age_minutes = Math.max(baseMaxAge, Math.max(0, Number(keyWindowMaxAgeMinutes || baseMaxAge)));
+  return result;
 }
 
 function parseOpeningLagPolicySources_(value, fallbackList) {
@@ -1570,6 +1642,14 @@ function openingLagAgeBucket_(openingLagMinutes) {
   if (lag <= 120) return '61_120m';
   if (lag <= 180) return '121_180m';
   return '181m_plus';
+}
+
+function openingLagPolicyTuningBucket_(openingLagMinutes) {
+  const lag = Number(openingLagMinutes);
+  if (!Number.isFinite(lag) || lag < 0) return '';
+  if (lag <= 60) return '<=60';
+  if (lag <= 180) return '61-180';
+  return '>180';
 }
 
 function deriveSignalUpstreamGateReason_(oddsStage, scheduleStage, matchStage, playerStatsStage) {
