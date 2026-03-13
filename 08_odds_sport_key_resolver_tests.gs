@@ -7186,6 +7186,8 @@ function testMaybeEmitRunRollup_marksOutsideWindowIdleLatencyAnomaliesInformatio
     assertEquals_('degraded', String(emitted.rollup.stage_latency_contract.mode || ''));
     assertEquals_('idle', String(emitted.rollup.stage_latency_contract.evaluation_mode || ''));
     assertEquals_('idle', String(emitted.rollup.stage_latency_contract.mode_context || ''));
+    assertEquals_('outside_active_window', String(emitted.rollup.stage_latency_contract.run_mode_tag || ''));
+    assertEquals_('idle_context_informational', String(emitted.rollup.stage_latency_contract.anomaly_context_tag || ''));
     assertEquals_('idle', String(emitted.rollup.stage_latency_contract.latency_expectation_profile || ''));
     assertEquals_('informational', String(emitted.rollup.stage_latency_contract.anomaly_severity || ''));
     const anomalyCodes = emitted.rollup.stage_latency_contract.anomaly_reason_codes || [];
@@ -7234,6 +7236,8 @@ function testMaybeEmitRunRollup_usesIdleLatencyProfileForOutsideActiveWindowMode
     assertEquals_('healthy', String(emitted.rollup.stage_latency_contract.mode || ''));
     assertEquals_('idle', String(emitted.rollup.stage_latency_contract.evaluation_mode || ''));
     assertEquals_('idle', String(emitted.rollup.stage_latency_contract.mode_context || ''));
+    assertEquals_('outside_active_window', String(emitted.rollup.stage_latency_contract.run_mode_tag || ''));
+    assertEquals_('idle_context_informational', String(emitted.rollup.stage_latency_contract.anomaly_context_tag || ''));
     assertEquals_('idle', String(emitted.rollup.stage_latency_contract.latency_expectation_profile || ''));
     assertEquals_('informational', String(emitted.rollup.stage_latency_contract.anomaly_severity || ''));
     assertEquals_(9000, Number(emitted.rollup.stage_latency_contract.thresholds_ms.stageFetchOdds.max || 0));
@@ -7243,6 +7247,46 @@ function testMaybeEmitRunRollup_usesIdleLatencyProfileForOutsideActiveWindowMode
     getStateJson_ = originalGetStateJson;
     setStateValue_ = originalSetStateValue;
   }
+}
+
+
+
+function testBuildStageLatencyContract_relaxesScheduleAndSignalThresholdsInIdleMode_() {
+  const contract = buildStageLatencyContract_({
+    stageFetchSchedule: { min: 100, avg: 9000, p95: 9000 },
+    stageGenerateSignals: { min: 100, avg: 7800, p95: 7800 },
+  }, {
+    contract_mode: 'healthy',
+    evaluation_mode: 'idle',
+    anomaly_severity: 'informational',
+    latency_expectation_profile: 'idle',
+    run_mode_tag: 'outside_active_window',
+    anomaly_context_tag: 'idle_context_informational',
+  });
+
+  assertEquals_(9450, Number(contract.thresholds_ms.stageFetchSchedule.max || 0));
+  assertEquals_(8100, Number(contract.thresholds_ms.stageGenerateSignals.max || 0));
+  assertEquals_(0, Number((contract.anomaly_reason_codes || []).length || 0));
+}
+
+function testBuildStageLatencyContract_keepsStrictThresholdsOutsideIdleMode_() {
+  const contract = buildStageLatencyContract_({
+    stageFetchSchedule: { min: 100, avg: 9000, p95: 9000 },
+    stageGenerateSignals: { min: 100, avg: 7800, p95: 7800 },
+  }, {
+    contract_mode: 'healthy',
+    evaluation_mode: 'active',
+    anomaly_severity: 'high',
+    latency_expectation_profile: 'healthy',
+    run_mode_tag: 'active_window',
+    anomaly_context_tag: 'active_context_operational',
+  });
+
+  assertEquals_(2500, Number(contract.thresholds_ms.stageFetchSchedule.max || 0));
+  assertEquals_(2000, Number(contract.thresholds_ms.stageGenerateSignals.max || 0));
+  const anomalyCodes = contract.anomaly_reason_codes || [];
+  assertEquals_(true, anomalyCodes.indexOf('latency_active_healthy_stagefetchschedule_avg_threshold_exceeded') >= 0);
+  assertEquals_(true, anomalyCodes.indexOf('latency_active_healthy_stagegeneratesignals_p95_threshold_exceeded') >= 0);
 }
 
 function testMaybeEmitRunRollup_tracksRunCountWhenCadenceNotReached_() {

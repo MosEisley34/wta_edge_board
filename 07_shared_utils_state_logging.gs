@@ -668,13 +668,17 @@ function resolveRunHealthMode_(runHealthReasonCode) {
 function resolveLatencyEvaluationContext_(runHealthReasonCode, runMode) {
   const reason = String(runHealthReasonCode || '').trim();
   const runHealthMode = resolveRunHealthMode_(reason);
-  const normalizedRunMode = String(runMode || '').trim().toLowerCase();
+  const normalizedRunMode = String(runMode || '').trim().toLowerCase() === 'outside_active_window'
+    ? 'outside_active_window'
+    : 'active_window';
   if (normalizedRunMode === 'outside_active_window' || reason === 'odds_refresh_skipped_outside_window') {
     return {
       contract_mode: runHealthMode,
       evaluation_mode: 'idle',
       anomaly_severity: 'informational',
       latency_expectation_profile: 'idle',
+      run_mode_tag: 'outside_active_window',
+      anomaly_context_tag: 'idle_context_informational',
     };
   }
 
@@ -683,6 +687,8 @@ function resolveLatencyEvaluationContext_(runHealthReasonCode, runMode) {
     evaluation_mode: 'active',
     anomaly_severity: runHealthMode === 'degraded' ? 'warning' : 'high',
     latency_expectation_profile: runHealthMode,
+    run_mode_tag: normalizedRunMode,
+    anomaly_context_tag: 'active_context_operational',
   };
 }
 
@@ -691,6 +697,26 @@ function getStageLatencyExpectationsForMode_(mode) {
   if (normalized === 'idle') return STAGE_LATENCY_EXPECTATIONS_MS.idle || {};
   if (normalized === 'degraded') return STAGE_LATENCY_EXPECTATIONS_MS.degraded || {};
   return STAGE_LATENCY_EXPECTATIONS_MS.healthy || {};
+}
+
+function shouldUseIdleRelaxedThresholdsForStage_(evaluationMode, stage) {
+  const idleMode = String(evaluationMode || '').toLowerCase() === 'idle';
+  if (!idleMode) return false;
+  const stageName = String(stage || '').trim();
+  return stageName === 'stageFetchSchedule' || stageName === 'stageGenerateSignals';
+}
+
+function resolveStageLatencyThreshold_(expectations, stage, evaluationMode) {
+  const stageExpectations = expectations || {};
+  const baseThreshold = stageExpectations[stage] || { min: 0, max: 0 };
+  const threshold = {
+    min: Number(baseThreshold.min || 0),
+    max: Number(baseThreshold.max || 0),
+  };
+  if (shouldUseIdleRelaxedThresholdsForStage_(evaluationMode, stage)) {
+    threshold.max = Math.round(threshold.max * 1.35);
+  }
+  return threshold;
 }
 
 function getLatencyAnomalyReasonCode_(stage, metric, contractMode, evaluationMode) {
@@ -707,6 +733,8 @@ function buildStageLatencyContract_(stageDurations, evaluationContext) {
   const selectedEvaluationMode = String(context.evaluation_mode || 'active').toLowerCase() === 'idle' ? 'idle' : 'active';
   const anomalySeverity = String(context.anomaly_severity || '').trim() || (selectedEvaluationMode === 'idle' ? 'informational' : 'high');
   const expectationProfile = String(context.latency_expectation_profile || '').toLowerCase() || (selectedEvaluationMode === 'idle' ? 'idle' : selectedMode);
+  const runModeTag = String(context.run_mode_tag || '').trim() || (selectedEvaluationMode === 'idle' ? 'outside_active_window' : 'active_window');
+  const anomalyContextTag = String(context.anomaly_context_tag || '').trim() || (selectedEvaluationMode === 'idle' ? 'idle_context_informational' : 'active_context_operational');
   const expectations = getStageLatencyExpectationsForMode_(expectationProfile);
   const stageNames = Object.keys(expectations).concat(Object.keys(stageDurations || {})).filter(function (name, idx, arr) {
     return arr.indexOf(name) === idx;
@@ -717,6 +745,8 @@ function buildStageLatencyContract_(stageDurations, evaluationContext) {
     mode: selectedMode,
     evaluation_mode: selectedEvaluationMode,
     mode_context: selectedEvaluationMode,
+    run_mode_tag: runModeTag,
+    anomaly_context_tag: anomalyContextTag,
     anomaly_severity: anomalySeverity,
     latency_expectation_profile: expectationProfile,
     thresholds_ms: {},
@@ -726,7 +756,7 @@ function buildStageLatencyContract_(stageDurations, evaluationContext) {
 
   const anomalyCodes = [];
   stageNames.forEach(function (stage) {
-    const threshold = expectations[stage] || { min: 0, max: 0 };
+    const threshold = resolveStageLatencyThreshold_(expectations, stage, selectedEvaluationMode);
     const observed = (stageDurations && stageDurations[stage]) || null;
     out.thresholds_ms[stage] = {
       min: Number(threshold.min || 0),
@@ -752,6 +782,8 @@ function buildStageLatencyContract_(stageDurations, evaluationContext) {
           severity: anomalySeverity,
           evaluation_mode: selectedEvaluationMode,
           mode_context: selectedEvaluationMode,
+          run_mode_tag: runModeTag,
+          anomaly_context_tag: anomalyContextTag,
           reason_code: reasonCode,
         });
         anomalyCodes.push(reasonCode);
@@ -765,6 +797,8 @@ function buildStageLatencyContract_(stageDurations, evaluationContext) {
           severity: anomalySeverity,
           evaluation_mode: selectedEvaluationMode,
           mode_context: selectedEvaluationMode,
+          run_mode_tag: runModeTag,
+          anomaly_context_tag: anomalyContextTag,
           reason_code: reasonCode,
         });
         anomalyCodes.push(reasonCode);
