@@ -6961,6 +6961,74 @@ function testMaybeEmitRunRollup_emitsOnConfiguredCadenceWithIndependentPayload_(
 
 
 
+
+function testMaybeEmitRunRollup_normalizesKnownLegacyUnkAliasesInDisplayPayloads_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const originalGetTopReasonCodes = getTopReasonCodes_;
+  const originalReasonAliasAggregateCache = REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE;
+
+  const state = {
+    RUN_ROLLUP_STATE: JSON.stringify({ run_count: 0, last_rollup_at_count: 0 }),
+    REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_STATE: JSON.stringify({
+      schema: 'reason_alias_fallback_warning_aggregate_v1',
+      summary_run_count: 1,
+      last_summary_emit_run_count: 0,
+      sets: {
+        'reason_code_alias_v1::UNK_LEGACY': {
+          schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+          fallback_aliases: ['UNK_LEGACY'],
+          canonical_reasons: { UNK_LEGACY: 'no_player_match' },
+          mode: 'hash_fallback',
+          count: 2,
+        },
+      },
+    }),
+  };
+
+  REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = null;
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+  getTopReasonCodes_ = function () {
+    return [{ reason_code: 'UNK_LEGACY', count: 7 }];
+  };
+
+  try {
+    const emitted = maybeEmitRunRollup_({ ROLLUP_EVERY_N_RUNS: 1 }, {
+      fetched_odds: 1,
+      matched: 0,
+      signals_found: 0,
+      run_health_reason_code: 'run_health_no_matches_from_odds',
+      reason_codes: { some_unmapped_canonical_reason: 7 },
+      stage_summaries: [],
+      watchdog: {},
+    });
+
+    assertEquals_(true, emitted.emitted);
+    assertEquals_('NO_P_MATCH', String(emitted.rollup.top_reason_codes[0].reason_code || ''));
+    assertEquals_('UNK_LEGACY', String(emitted.rollup.top_reason_codes_raw[0].reason_code || ''));
+    assertEquals_(true, !!(emitted.rollup.reason_code_display_normalization || {}).normalization_applied);
+    assertEquals_('NO_P_MATCH', String((((emitted.rollup.reason_code_display_normalization || {}).mapped_legacy_aliases || {}).UNK_LEGACY || {}).canonical_alias || ''));
+
+    const standalone = JSON.parse(state.LAST_RUN_ROLLUP_JSON || '{}');
+    assertEquals_('NO_P_MATCH', String((standalone.top_reason_codes[0] || {}).reason_code || ''));
+    assertEquals_('UNK_LEGACY', String((standalone.top_reason_codes_raw[0] || {}).reason_code || ''));
+
+    const baseline = JSON.parse(state.LAST_RUN_BASELINE_COMPARISON_JSON || '{}');
+    assertEquals_('NO_P_MATCH', String((baseline.top_reason_codes[0] || {}).reason_code || ''));
+    assertEquals_(true, !!(baseline.reason_code_display_normalization || {}).normalization_applied);
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+    getTopReasonCodes_ = originalGetTopReasonCodes;
+    REASON_ALIAS_FALLBACK_WARNING_AGGREGATE_CACHE = originalReasonAliasAggregateCache;
+  }
+}
+
 function testMaybeEmitRunRollup_treatsExpectedTemporaryNoOddsReasonAsHealthyMode_() {
   const originalGetStateJson = getStateJson_;
   const originalSetStateValue = setStateValue_;
