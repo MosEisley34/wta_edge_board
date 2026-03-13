@@ -1101,6 +1101,7 @@ function roundNumber_(value, decimals) {
 
 function getStateJson_(key) {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.STATE);
+  if (!sh) return null;
   const values = sh.getDataRange().getValues();
   for (let i = 1; i < values.length; i += 1) {
     if (String(values[i][0]) === key) {
