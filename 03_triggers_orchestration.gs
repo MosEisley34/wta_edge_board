@@ -633,27 +633,7 @@ function runEdgeBoard() {
     ]);
     const combinedReasonMetadata = mergeReasonMetadata_(reasonMetadataMaps);
     const stageReasonCodeMaximaViolations = validateStageReasonCodeMaxima_(stageSummarySnapshots);
-    const boundedCounterInvariantChecks = [
-      {
-        stage: 'stageMatchEvents',
-        max_name: 'output_count',
-        max: Number((matchStage.summary && matchStage.summary.output_count) || 0),
-        counters: {
-          matched_count: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.matched_count) || 0),
-          matched_rows: Number(matchStage.matchedCount || 0),
-        },
-      },
-      {
-        stage: 'stageMatchEvents',
-        max_name: 'input_count',
-        max: Number((matchStage.summary && matchStage.summary.input_count) || 0),
-        counters: {
-          rejected_count: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.rejected_count) || 0),
-          unmatched_rows: Number(matchStage.unmatchedCount || 0),
-          diagnostic_records_written: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.diagnostic_records_written) || 0),
-        },
-      },
-    ];
+    const boundedCounterInvariantChecks = buildRunEdgeBoardBoundedCounterInvariantChecks_(scheduleStage.summary, matchStage);
     const boundedCounterInvariantViolations = assertDebugBoundedStageCounters_(config, boundedCounterInvariantChecks);
     assertBoundedStageCounterInvariants_(boundedCounterInvariantChecks, 'runEdgeBoard');
     if (stageReasonCodeMutationDiagnostics.mutated_stages.length > 0 || stageReasonCodeMaximaViolations.length > 0 || boundedCounterInvariantViolations.length > 0) {
@@ -947,6 +927,49 @@ function runEdgeBoard() {
     releaseRunLifecycleLease_(scriptProps, lifecycleContext, runId);
     lock.releaseLock();
   }
+}
+
+function buildRunEdgeBoardBoundedCounterInvariantChecks_(scheduleSummary, matchStage) {
+  const safeScheduleSummary = scheduleSummary || {};
+  const safeMatchStage = matchStage || {};
+  const safeMatchSummary = safeMatchStage.summary || {};
+  const matchInputCount = Number(safeMatchSummary.input_count || 0);
+  const scheduleOutputCount = Number(safeScheduleSummary.output_count || 0);
+  const diagnosticBoundUsesScheduleSeeds = matchInputCount === 0;
+
+  return [
+    {
+      stage: 'stageMatchEvents',
+      max_name: 'output_count',
+      max: Number(safeMatchSummary.output_count || 0),
+      bound_source: 'stageMatchEvents.output_count',
+      counters: {
+        matched_count: Number((safeMatchSummary.reason_codes && safeMatchSummary.reason_codes.matched_count) || 0),
+        matched_rows: Number(safeMatchStage.matchedCount || 0),
+      },
+    },
+    {
+      stage: 'stageMatchEvents',
+      max_name: 'input_count',
+      max: matchInputCount,
+      bound_source: 'stageMatchEvents.input_count',
+      counters: {
+        rejected_count: Number((safeMatchSummary.reason_codes && safeMatchSummary.reason_codes.rejected_count) || 0),
+        unmatched_rows: Number(safeMatchStage.unmatchedCount || 0),
+      },
+    },
+    {
+      stage: 'stageMatchEvents',
+      max_name: diagnosticBoundUsesScheduleSeeds ? 'stageFetchSchedule.output_count' : 'input_count',
+      max: diagnosticBoundUsesScheduleSeeds ? scheduleOutputCount : matchInputCount,
+      bound_source: diagnosticBoundUsesScheduleSeeds
+        ? 'stageFetchSchedule.output_count (schedule-seed mode)'
+        : 'stageMatchEvents.input_count (odds-present mode)',
+      counters: {
+        diagnostic_records_written: Number((safeMatchSummary.reason_codes && safeMatchSummary.reason_codes.diagnostic_records_written) || 0),
+      },
+    },
+  ];
 }
 
 function resolvePipelineMaxRuntimeMs_(config) {

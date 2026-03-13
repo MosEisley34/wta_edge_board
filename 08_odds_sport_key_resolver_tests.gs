@@ -6896,6 +6896,84 @@ function testAssertDebugBoundedStageCounters_onlyChecksVerboseLogProfile_() {
   assertEquals_('matched_count', verboseViolations[0].counter_name);
   assertEquals_(3, Number(verboseViolations[0].counter_value || 0));
   assertEquals_(1, Number(verboseViolations[0].max_allowed || 0));
+  assertEquals_('output_count', String(verboseViolations[0].bound_source || ''));
+}
+
+function testBuildRunEdgeBoardBoundedCounterInvariantChecks_oddsPresentMatchedMode_() {
+  const checks = buildRunEdgeBoardBoundedCounterInvariantChecks_(
+    { output_count: 2 },
+    {
+      summary: {
+        input_count: 2,
+        output_count: 2,
+        reason_codes: {
+          matched_count: 2,
+          rejected_count: 0,
+          diagnostic_records_written: 0,
+        },
+      },
+      matchedCount: 2,
+      unmatchedCount: 0,
+    }
+  );
+
+  assertEquals_(3, checks.length);
+  assertEquals_('stageMatchEvents.input_count (odds-present mode)', String(checks[2].bound_source || ''));
+  assertEquals_(2, Number(checks[2].max || 0));
+
+  const violations = assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, checks);
+  assertEquals_(0, violations.length);
+}
+
+function testBuildRunEdgeBoardBoundedCounterInvariantChecks_oddsAbsentScheduleSeedMode_() {
+  const checks = buildRunEdgeBoardBoundedCounterInvariantChecks_(
+    { output_count: 3 },
+    {
+      summary: {
+        input_count: 0,
+        output_count: 0,
+        reason_codes: {
+          matched_count: 0,
+          rejected_count: 0,
+          diagnostic_records_written: 3,
+        },
+      },
+      matchedCount: 0,
+      unmatchedCount: 0,
+    }
+  );
+
+  assertEquals_('stageFetchSchedule.output_count (schedule-seed mode)', String(checks[2].bound_source || ''));
+  assertEquals_(3, Number(checks[2].max || 0));
+  assertEquals_(0, assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, checks).length);
+
+  const violations = assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, [Object.assign({}, checks[2], { max: 2 })]);
+  assertEquals_(1, violations.length);
+  assertEquals_('diagnostic_records_written', violations[0].counter_name);
+  assertEquals_('stageFetchSchedule.output_count (schedule-seed mode)', String(violations[0].bound_source || ''));
+}
+
+function testBuildRunEdgeBoardBoundedCounterInvariantChecks_mixedDiagnosticAndMatchedMode_() {
+  const checks = buildRunEdgeBoardBoundedCounterInvariantChecks_(
+    { output_count: 2 },
+    {
+      summary: {
+        input_count: 3,
+        output_count: 2,
+        reason_codes: {
+          matched_count: 2,
+          rejected_count: 1,
+          diagnostic_records_written: 1,
+        },
+      },
+      matchedCount: 2,
+      unmatchedCount: 1,
+    }
+  );
+
+  assertEquals_('stageMatchEvents.input_count (odds-present mode)', String(checks[2].bound_source || ''));
+  assertEquals_(3, Number(checks[2].max || 0));
+  assertEquals_(0, assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, checks).length);
 }
 
 function testStageFetchOdds_bypassStaleFallback_returnsApiFailureSource_() {
