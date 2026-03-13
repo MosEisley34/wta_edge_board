@@ -957,7 +957,7 @@ function resolveBootstrapEmptyCycleWatchdogEmission_(emptyCycleState, runHealthD
   const consecutive = Number(state.consecutive_empty_cycles || 0);
   const threshold = Math.max(1, Number(state.threshold || 0));
   const diagnosticsCounter = Number(state.diagnostics_counter || 0);
-  const expectedIdleOutsideWindow = String(diagnostics.reason_code || '') === 'odds_refresh_skipped_outside_window';
+  const expectedIdleOutsideWindow = isOutsideWindowExpectedIdleContext_(diagnostics);
   const materialThresholdChange = consecutive === threshold
     || (consecutive > threshold && threshold > 0 && (consecutive % threshold === 0));
   const unexpectedState = consecutive < threshold || diagnosticsCounter < consecutive;
@@ -970,6 +970,19 @@ function resolveBootstrapEmptyCycleWatchdogEmission_(emptyCycleState, runHealthD
     material_threshold_change: materialThresholdChange,
     watchdog_state_unexpected: unexpectedState,
   };
+}
+
+function isOutsideWindowExpectedIdleContext_(runHealthDiagnostics) {
+  const diagnostics = runHealthDiagnostics || {};
+  const outsideWindowReason = 'odds_refresh_skipped_outside_window';
+  return String(diagnostics.reason_code || '') === outsideWindowReason
+    || String(diagnostics.summary_reason_code || '') === outsideWindowReason
+    || String(diagnostics.degraded_reason_code || '') === outsideWindowReason
+    || String(diagnostics.status || '') === 'idle_outside_odds_window'
+    || String(diagnostics.summary_status || '') === 'idle_outside_odds_window'
+    || String(diagnostics.warning_payload && diagnostics.warning_payload.reason_code || '') === outsideWindowReason
+    || !!(diagnostics.warning_payload && diagnostics.warning_payload.outside_window_expected_idle)
+    || !!diagnostics.outside_window_expected_idle;
 }
 
 function buildRunEdgeBoardBoundedCounterInvariantChecks_(scheduleSummary, matchStage) {
