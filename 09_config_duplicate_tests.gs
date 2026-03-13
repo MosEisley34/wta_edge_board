@@ -300,6 +300,29 @@ function testPreflightConfigUniqueness_passesWhenUnique_() {
   }
 }
 
+function testPreflightConfigUniqueness_failsWhenConfigSheetMissing_() {
+  const originalSpreadsheetApp = SpreadsheetApp;
+  SpreadsheetApp = {
+    getActiveSpreadsheet: function () {
+      return {
+        getSheetByName: function () {
+          return null;
+        },
+      };
+    },
+  };
+
+  try {
+    const preflight = preflightConfigUniqueness_('test_missing_sheet');
+    assertEquals_(false, preflight.ok);
+    assertEquals_('config_sheet_missing_preflight', preflight.reason_code);
+    assertArrayEquals_([], preflight.duplicate_keys);
+    assertTrue_(String(preflight.user_message || '').indexOf('Setup / Verify Tabs') >= 0, 'expected setup guidance in user message');
+  } finally {
+    SpreadsheetApp = originalSpreadsheetApp;
+  }
+}
+
 function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_() {
   const configSheet = createFakeConfigSheet_([
     ['key', 'value'],

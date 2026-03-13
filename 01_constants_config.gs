@@ -482,6 +482,16 @@ function getConfig_() {
 
 function preflightConfigUniqueness_(context) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CONFIG);
+  if (!sheet) {
+    return {
+      ok: false,
+      reason_code: 'config_sheet_missing_preflight',
+      duplicate_keys: [],
+      message: 'Config sheet is missing. Run setup/reset to recreate managed tabs before running pipeline.',
+      user_message: 'Config sheet is missing.\n\nRun "Setup / Verify Tabs" (or "Re-create / Reset Workbook") once, then retry.',
+    };
+  }
+
   const values = sheet.getDataRange().getValues();
   const parsed = parseConfigRows_(values, {
     mode: 'warn_last_wins',
