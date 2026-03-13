@@ -210,8 +210,10 @@ Compact summary usage (paste-friendly for chat/incident updates):
 scripts/runtime_diagnostics_summary.py ./exports
 ```
 
-This emits exactly 5 deterministic lines:
+This emits exactly 7 deterministic lines:
 - run count + status breakdown,
+- daily status snapshot with business-friendly labels (`Runs completed`, `Runs degraded`, `Odds not actionable yet`, `Signals produced`),
+- a short `What changed since yesterday` delta block,
 - top non-zero reason codes,
 - stage duration min/avg/p95,
 - watchdog start/end trend delta,
@@ -222,7 +224,7 @@ Tuning flags:
 - `--max-stages` (default `8`),
 - `--warning-limit` (default `4`).
 
-For periodic planning/postmortem analysis, generate historical aggregate snapshots (without copying raw runtime logs) into a dedicated rollup directory:
+For periodic planning/postmortem analysis, generate historical aggregate snapshots (without copying raw runtime logs) into a dedicated rollup directory. These snapshots now include a `daily_status` section plus `what_changed_since_yesterday` deltas for quick day-over-day review:
 
 ```bash
 scripts/runtime_periodic_aggregates.py ./exports --snapshot-dir ./docs/baselines/runtime_rollups

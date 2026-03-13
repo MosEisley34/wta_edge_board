@@ -30,11 +30,22 @@ class RuntimePeriodicAggregatesTests(unittest.TestCase):
         self.assertEqual("opening_lag_blocked_count", first["blocker_mix"][0]["blocker"])
         self.assertEqual(6, first["blocker_mix"][0]["count"])
         self.assertEqual(600, first["stage_latency_trends"]["stageFetchOdds"]["avg_ms"])
+        self.assertEqual(1, first["daily_status"]["runs_completed"])
+        self.assertEqual(1, first["daily_status"]["runs_degraded"])
+        self.assertEqual(0, first["daily_status"]["odds_not_actionable_yet"])
+        self.assertEqual(0, first["daily_status"]["signals_produced"])
+        self.assertEqual("not enough history yet", first["what_changed_since_yesterday"])
 
         second = snapshot["rollups"][1]
         self.assertEqual("2026-03-11", second["period_start"])
         self.assertEqual(1, second["runs"])
         self.assertEqual(1.0, second["productivity"]["avg_ratio"])
+        self.assertEqual(1, second["daily_status"]["runs_completed"])
+        self.assertEqual(0, second["daily_status"]["runs_degraded"])
+        self.assertEqual(0, second["daily_status"]["odds_not_actionable_yet"])
+        self.assertEqual(0, second["daily_status"]["signals_produced"])
+        self.assertEqual("2026-03-10", second["what_changed_since_yesterday"]["from_period"])
+        self.assertEqual(0, second["what_changed_since_yesterday"]["runs_completed_delta"])
 
     def test_main_writes_dated_snapshot_artifact(self):
         fixture = ROOT / "scripts" / "fixtures" / "runtime_periodic_rollup_sample.json"

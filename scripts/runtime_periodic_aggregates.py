@@ -150,6 +150,7 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
     run_bucket: dict[str, str] = {}
     run_status: dict[str, str] = {}
     run_productivity: dict[str, tuple[float, int, int]] = {}
+    run_summary_metrics: dict[str, tuple[int, int]] = {}
     run_stage_ms: defaultdict[str, dict[str, int]] = defaultdict(dict)
     bucket_blockers: defaultdict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
 
@@ -215,6 +216,31 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
             else:
                 run_productivity[run_id] = (0.0, 0, 0)
 
+            reason_codes = record.get("reason_codes")
+            if isinstance(reason_codes, str):
+                parsed_reasons = _parse_json_like(reason_codes)
+                reason_codes = parsed_reasons if isinstance(parsed_reasons, dict) else None
+
+            odds_not_actionable = 0
+            signals_produced = 0
+            try:
+                odds_not_actionable = int(float(record.get("odds_not_actionable")))
+            except (TypeError, ValueError):
+                if isinstance(reason_codes, dict):
+                    try:
+                        odds_not_actionable = int(float(reason_codes.get("odds_non_actionable") or 0))
+                    except (TypeError, ValueError):
+                        odds_not_actionable = 0
+            try:
+                signals_produced = int(float(record.get("signals_found")))
+            except (TypeError, ValueError):
+                if isinstance(reason_codes, dict):
+                    try:
+                        signals_produced = int(float(reason_codes.get("signals_generated") or 0))
+                    except (TypeError, ValueError):
+                        signals_produced = 0
+            run_summary_metrics[run_id] = (max(0, odds_not_actionable), max(0, signals_produced))
+
             stage_summaries = record.get("stage_summaries")
             if isinstance(stage_summaries, str):
                 parsed = _parse_json_like(stage_summaries)
@@ -239,17 +265,26 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
         run_ids = sorted(bucket_runs[bucket])
         stage_values: defaultdict[str, list[int]] = defaultdict(list)
         success_runs = 0
+        degraded_runs = 0
         productivity_ratios: list[float] = []
         matched_total = 0
         unmatched_total = 0
+        odds_not_actionable_total = 0
+        signals_produced_total = 0
 
         for run_id in run_ids:
-            if run_status.get(run_id, "").lower() == "success":
+            status = run_status.get(run_id, "").lower()
+            if status == "success":
                 success_runs += 1
+            elif status in {"warning", "failed", "error", "notice"}:
+                degraded_runs += 1
             ratio, matched, unmatched = run_productivity.get(run_id, (0.0, 0, 0))
             productivity_ratios.append(ratio)
             matched_total += matched
             unmatched_total += unmatched
+            odds_not_actionable, signals_produced = run_summary_metrics.get(run_id, (0, 0))
+            odds_not_actionable_total += odds_not_actionable
+            signals_produced_total += signals_produced
 
             for stage_name, duration_ms in run_stage_ms.get(run_id, {}).items():
                 stage_values[stage_name].append(duration_ms)
@@ -288,10 +323,31 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
                     "matched_total": matched_total,
                     "unmatched_total": unmatched_total,
                 },
+                "daily_status": {
+                    "runs_completed": success_runs,
+                    "runs_degraded": degraded_runs,
+                    "odds_not_actionable_yet": odds_not_actionable_total,
+                    "signals_produced": signals_produced_total,
+                },
                 "blocker_mix": blocker_mix,
                 "stage_latency_trends": stage_latency,
             }
         )
+
+    for idx, rollup in enumerate(rollups):
+        if idx == 0:
+            rollup["what_changed_since_yesterday"] = "not enough history yet"
+            continue
+        prev = rollups[idx - 1]
+        cur_status = rollup.get("daily_status", {})
+        prev_status = prev.get("daily_status", {})
+        rollup["what_changed_since_yesterday"] = {
+            "from_period": prev.get("period_start"),
+            "runs_completed_delta": cur_status.get("runs_completed", 0) - prev_status.get("runs_completed", 0),
+            "runs_degraded_delta": cur_status.get("runs_degraded", 0) - prev_status.get("runs_degraded", 0),
+            "odds_not_actionable_yet_delta": cur_status.get("odds_not_actionable_yet", 0) - prev_status.get("odds_not_actionable_yet", 0),
+            "signals_produced_delta": cur_status.get("signals_produced", 0) - prev_status.get("signals_produced", 0),
+        }
 
     return {
         "schema": "runtime_periodic_rollup_v1",
