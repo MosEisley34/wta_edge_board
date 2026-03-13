@@ -14,7 +14,11 @@ from datetime import datetime
 from typing import Any
 import re
 
-from pipeline_log_adapter import adapt_run_log_record_for_legacy
+from pipeline_log_adapter import (
+    REASON_CODE_ALIAS_DICTIONARIES,
+    REASON_CODE_ALIAS_SCHEMA_ID,
+    adapt_run_log_record_for_legacy,
+)
 
 SUPPORTED_EXTENSIONS = (".csv", ".json")
 WATCHDOG_METRIC_KEYS = ("streak_count", "consecutive_empty_cycles", "diagnostics_counter")
@@ -156,6 +160,33 @@ def _coerce_positive_reason_map(reason_codes: Any) -> dict[str, float]:
     return normalized
 
 
+def _collect_fallback_aliases(record: dict[str, Any], message: dict[str, Any] | None) -> dict[str, str]:
+    fallback_aliases: dict[str, str] = {}
+
+    def _merge(obj: Any):
+        if not isinstance(obj, dict):
+            return
+        for alias, canonical in obj.items():
+            alias_text = str(alias)
+            canonical_text = str(canonical)
+            if alias_text and canonical_text:
+                fallback_aliases[alias_text] = canonical_text
+
+    if isinstance(message, dict):
+        _merge(message.get("fallback_aliases"))
+        reason_metadata = message.get("reason_metadata")
+        if isinstance(reason_metadata, dict):
+            _merge(reason_metadata.get("fallback_aliases"))
+    _merge(record.get("fallback_aliases"))
+    return fallback_aliases
+
+
+def _normalize_reason_code_for_display(code: str, fallback_aliases: dict[str, str]) -> tuple[str, bool]:
+    canonical_reason = fallback_aliases.get(code, code)
+    display_alias = (REASON_CODE_ALIAS_DICTIONARIES.get(REASON_CODE_ALIAS_SCHEMA_ID) or {}).get(canonical_reason, canonical_reason)
+    return display_alias, display_alias != code
+
+
 def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: int) -> list[str]:
     files, missing = _collect_files(paths)
     if missing:
@@ -167,6 +198,7 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
     run_last_status: dict[str, tuple[int, str]] = {}
     status_counts: Counter[str] = Counter()
     reason_totals: defaultdict[str, float] = defaultdict(float)
+    reason_code_normalization_applied = False
     fallback_reason_counts: Counter[str] = Counter()
     stage_durations: defaultdict[str, list[int]] = defaultdict(list)
     run_reason_maps: dict[str, dict[str, float]] = {}
@@ -232,14 +264,20 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
             message = _parse_json_like(record.get("message"))
             if not isinstance(reason_codes, dict) and isinstance(message, dict):
                 reason_codes = message.get("reason_codes") if isinstance(message.get("reason_codes"), dict) else None
+            fallback_aliases = _collect_fallback_aliases(record, message if isinstance(message, dict) else None)
             normalized_reasons = _coerce_positive_reason_map(reason_codes)
+            display_reasons: dict[str, float] = {}
+            for code, numeric in normalized_reasons.items():
+                display_code, changed = _normalize_reason_code_for_display(code, fallback_aliases)
+                display_reasons[display_code] = display_reasons.get(display_code, 0.0) + numeric
+                reason_code_normalization_applied = reason_code_normalization_applied or changed
             is_run_summary = row_type == "summary" or stage == "runEdgeBoard"
-            if run_id and normalized_reasons:
+            if run_id and display_reasons:
                 if is_run_summary:
-                    run_reason_maps[run_id] = normalized_reasons
+                    run_reason_maps[run_id] = display_reasons
                 elif row_type == "stage":
                     fallback_map = run_stage_reason_fallback[run_id]
-                    for code, numeric in normalized_reasons.items():
+                    for code, numeric in display_reasons.items():
                         fallback_map[code] = max(fallback_map.get(code, 0.0), numeric)
 
             start = _parse_timestamp(record.get("started_at"))
@@ -389,6 +427,11 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
             f"Odds not actionable yet={odds_not_actionable}, Signals produced={signals_produced}"
         ),
         delta_part,
+        (
+            "metadata "
+            f"reason_alias_normalization_applied={'true' if reason_code_normalization_applied else 'false'} "
+            "reason_alias_normalization_scope=presentation_only_historical_compat"
+        ),
         f"top_reason_codes {reason_part}",
         f"stage_duration_ms {stage_part}",
         f"watchdog_trend {watchdog_part}",
