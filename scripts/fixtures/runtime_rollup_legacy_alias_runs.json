@@ -1,0 +1,36 @@
+[
+  {
+    "row_type": "summary",
+    "run_id": "legacy-1",
+    "stage": "runEdgeBoard",
+    "status": "success",
+    "started_at": "2026-03-12T00:00:00Z",
+    "ended_at": "2026-03-12T00:00:01Z",
+    "message": {
+      "reason_codes": {
+        "UNK_OPEN_TS": 3
+      },
+      "fallback_aliases": {
+        "UNK_OPEN_TS": "missing_open_timestamp"
+      }
+    }
+  },
+  {
+    "row_type": "summary",
+    "run_id": "legacy-2",
+    "stage": "runEdgeBoard",
+    "status": "success",
+    "started_at": "2026-03-12T01:00:00Z",
+    "ended_at": "2026-03-12T01:00:01Z",
+    "message": {
+      "reason_codes": {
+        "UNK_OPEN_LAG": 2
+      },
+      "reason_metadata": {
+        "fallback_aliases": {
+          "UNK_OPEN_LAG": "opening_lag_exceeded"
+        }
+      }
+    }
+  }
+]

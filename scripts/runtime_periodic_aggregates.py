@@ -15,7 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pipeline_log_adapter import adapt_run_log_record_for_legacy
+from pipeline_log_adapter import (
+    REASON_CODE_ALIAS_DICTIONARIES,
+    REASON_CODE_ALIAS_SCHEMA_ID,
+    adapt_run_log_record_for_legacy,
+)
 
 SUPPORTED_EXTENSIONS = (".csv", ".json")
 
@@ -138,6 +142,33 @@ def _bucket_date(ts: datetime) -> str:
     return ts.date().isoformat()
 
 
+def _collect_fallback_aliases(record: dict[str, Any], message: dict[str, Any] | None) -> dict[str, str]:
+    fallback_aliases: dict[str, str] = {}
+
+    def _merge(obj: Any):
+        if not isinstance(obj, dict):
+            return
+        for alias, canonical in obj.items():
+            alias_text = str(alias)
+            canonical_text = str(canonical)
+            if alias_text and canonical_text:
+                fallback_aliases[alias_text] = canonical_text
+
+    if isinstance(message, dict):
+        _merge(message.get("fallback_aliases"))
+        reason_metadata = message.get("reason_metadata")
+        if isinstance(reason_metadata, dict):
+            _merge(reason_metadata.get("fallback_aliases"))
+    _merge(record.get("fallback_aliases"))
+    return fallback_aliases
+
+
+def _normalize_reason_code_for_display(code: str, fallback_aliases: dict[str, str]) -> tuple[str, bool]:
+    canonical_reason = fallback_aliases.get(code, code)
+    display_alias = (REASON_CODE_ALIAS_DICTIONARIES.get(REASON_CODE_ALIAS_SCHEMA_ID) or {}).get(canonical_reason, canonical_reason)
+    return display_alias, display_alias != code
+
+
 def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[str, Any]:
     files, missing = _collect_files(paths)
     if missing:
@@ -153,6 +184,8 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
     run_summary_metrics: dict[str, tuple[int, int]] = {}
     run_stage_ms: defaultdict[str, dict[str, int]] = defaultdict(dict)
     bucket_blockers: defaultdict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
+    run_reason_codes: dict[str, dict[str, float]] = {}
+    reason_alias_normalization_applied = False
 
     for path in files:
         iterator = _iter_csv_records(path) if path.lower().endswith(".csv") else _iter_json_records(path)
@@ -220,6 +253,25 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
             if isinstance(reason_codes, str):
                 parsed_reasons = _parse_json_like(reason_codes)
                 reason_codes = parsed_reasons if isinstance(parsed_reasons, dict) else None
+            message = _parse_json_like(record.get("message"))
+            if not isinstance(reason_codes, dict) and isinstance(message, dict):
+                reason_codes = message.get("reason_codes") if isinstance(message.get("reason_codes"), dict) else None
+
+            fallback_aliases = _collect_fallback_aliases(record, message if isinstance(message, dict) else None)
+            display_reason_codes: dict[str, float] = {}
+            if isinstance(reason_codes, dict):
+                for code, raw_value in reason_codes.items():
+                    try:
+                        numeric = float(raw_value)
+                    except (TypeError, ValueError):
+                        continue
+                    if numeric <= 0:
+                        continue
+                    display_code, changed = _normalize_reason_code_for_display(str(code), fallback_aliases)
+                    display_reason_codes[display_code] = display_reason_codes.get(display_code, 0.0) + numeric
+                    reason_alias_normalization_applied = reason_alias_normalization_applied or changed
+            if display_reason_codes:
+                run_reason_codes[run_id] = display_reason_codes
 
             odds_not_actionable = 0
             signals_produced = 0
@@ -271,6 +323,7 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
         unmatched_total = 0
         odds_not_actionable_total = 0
         signals_produced_total = 0
+        reason_totals: defaultdict[str, float] = defaultdict(float)
 
         for run_id in run_ids:
             status = run_status.get(run_id, "").lower()
@@ -285,6 +338,8 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
             odds_not_actionable, signals_produced = run_summary_metrics.get(run_id, (0, 0))
             odds_not_actionable_total += odds_not_actionable
             signals_produced_total += signals_produced
+            for code, numeric in (run_reason_codes.get(run_id) or {}).items():
+                reason_totals[code] += numeric
 
             for stage_name, duration_ms in run_stage_ms.get(run_id, {}).items():
                 stage_values[stage_name].append(duration_ms)
@@ -331,6 +386,13 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
                 },
                 "blocker_mix": blocker_mix,
                 "stage_latency_trends": stage_latency,
+                "top_reason_codes": [
+                    {
+                        "reason_code": code,
+                        "count": int(val) if float(val).is_integer() else round(val, 2),
+                    }
+                    for code, val in sorted(reason_totals.items(), key=lambda item: (-item[1], item[0]))[:6]
+                ],
             }
         )
 
@@ -356,6 +418,10 @@ def build_periodic_aggregates(paths: list[str], cadence: str = "daily") -> dict[
         "cadence": cadence,
         "rollups": rollups,
         "notes": "Historical rollups only; raw runtime logs remain outside this snapshot artifact.",
+        "metadata": {
+            "reason_alias_normalization_applied": reason_alias_normalization_applied,
+            "reason_alias_normalization_scope": "presentation_only_historical_compat",
+        },
     }
 
 
