@@ -277,6 +277,8 @@ const REASON_CODE_ALIAS_DICTIONARIES = {
     run_idempotency_overlap_skip: 'RUN_SKIP_IDEMP',
     run_rollup_emitted: 'RUN_ROLLUP',
     run_mode_gates: 'RUN_MODE',
+    started: 'RUN_START',
+    completed: 'RUN_DONE',
     trigger_noop: 'TRIG_NOOP',
     trigger_reinstalled: 'TRIG_REINST',
     trigger_removed: 'TRIG_REM',
@@ -295,6 +297,9 @@ const REASON_CODE_ALIAS_DICTIONARIES = {
     invalid_time_window_retry_failed: 'TIME_WIN_RETRY',
     invalid_time_window_recovered_relaxed_query: 'TIME_WIN_RELAX',
     credit_hard_limit_skip_odds: 'CREDIT_HARD_ODDS',
+    source_credit_saver_skip: 'SRC_CRED_SKIP',
+    schedule_window_fallback_no_odds: 'SCH_WIN_FB_NO',
+    credit_header_missing: 'CREDIT_HDR',
     within_window: 'IN_WIN',
   },
 };

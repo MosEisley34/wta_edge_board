@@ -7032,6 +7032,28 @@ function testSerializeCompactReasonCodesForLogEntry_unknownReasonsUseDeterminist
   );
 }
 
+function testSerializeCompactReasonCodesForLogEntry_recurringReasonsResolveToKnownAliasesWithoutFallback_() {
+  const normalized = serializeCompactReasonCodesForLogEntry_({
+    reason_codes: {
+      started: 1,
+      completed: 1,
+      source_credit_saver_skip: 1,
+      schedule_window_fallback_no_odds: 1,
+      credit_header_missing: 1,
+    },
+  }, REASON_CODE_ALIAS_SCHEMA_ID, { allow_canonical_passthrough: false });
+
+  const reasonCodes = normalized.reason_codes || {};
+  const aliases = Object.keys(reasonCodes);
+
+  assertTrue_(aliases.indexOf('RUN_START') !== -1);
+  assertTrue_(aliases.indexOf('RUN_DONE') !== -1);
+  assertTrue_(aliases.indexOf('SRC_CRED_SKIP') !== -1);
+  assertTrue_(aliases.indexOf('SCH_WIN_FB_NO') !== -1);
+  assertTrue_(aliases.indexOf('CREDIT_HDR') !== -1);
+  assertEquals_(undefined, normalized.fallback_aliases);
+}
+
 function testSerializeCompactReasonCodesForLogEntry_canAllowExplicitCanonicalPassthrough_() {
   const normalized = serializeCompactReasonCodesForLogEntry_({
     reason_codes: { totally_new_runtime_reason_code_xyz: 1 },

@@ -51,6 +51,11 @@ REASON_CODE_ALIAS_DICTIONARIES: dict[str, dict[str, str]] = {
         "raw_player_stats_upserts": "PSTATS_UPS",
         "raw_schedule_upserts": "SCH_UPS",
         "signals_upserts": "SIG_UPS",
+        "started": "RUN_START",
+        "completed": "RUN_DONE",
+        "source_credit_saver_skip": "SRC_CRED_SKIP",
+        "schedule_window_fallback_no_odds": "SCH_WIN_FB_NO",
+        "credit_header_missing": "CREDIT_HDR",
     }
 }
 ALIAS_TO_REASON_CODE_BY_SCHEMA = {

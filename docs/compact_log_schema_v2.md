@@ -174,5 +174,10 @@ The `reason_code_alias_v1` dictionary now explicitly aliases these frequently ob
 - `ta_matchmx_stale_fallback` → `TA_MX_STALE_FB`
 - `state_stale_payload_write_failed_non_fatal` → `STALE_WRITE_WARN`
 - `reason_code_alias_missing_fallback_emitted` → `RC_ALIAS_FALLBACK`
+- `started` → `RUN_START`
+- `completed` → `RUN_DONE`
+- `source_credit_saver_skip` → `SRC_CRED_SKIP`
+- `schedule_window_fallback_no_odds` → `SCH_WIN_FB_NO`
+- `credit_header_missing` → `CREDIT_HDR`
 
 These aliases are deterministic and unique, preserving existing alias keys for backward compatibility with `invertReasonCodeAliasDictionary_` collision checks.
