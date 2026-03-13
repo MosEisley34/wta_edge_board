@@ -517,6 +517,81 @@ function testRepairConfigDedupe_thenRunEdgeBoard_preflightClearsAndRunProceeds_(
 }
 
 
+
+function testMenuRecreateWorkbook_yes_skipsDuplicateScanAndResets_() {
+  const originalSpreadsheetApp = SpreadsheetApp;
+  const originalWarnConfigDuplicatesBeforeMenuMutation = warnConfigDuplicatesBeforeMenuMutation_;
+  const originalAppendLogRow = appendLogRow_;
+  const originalBuildRunId = buildRunId_;
+  const originalRecreateWorkbook = recreateWorkbook_;
+
+  const logs = [];
+  let recreateCalled = 0;
+
+  SpreadsheetApp = {
+    getUi: function () {
+      return {
+        Button: { YES: 'YES' },
+        ButtonSet: { YES_NO: 'YES_NO' },
+        alert: function (title, message, buttonSet) {
+          if (buttonSet === 'YES_NO') return 'YES';
+          return 'OK';
+        },
+      };
+    },
+  };
+  warnConfigDuplicatesBeforeMenuMutation_ = function () {
+    throw new Error('duplicate preflight should be skipped for reset');
+  };
+  appendLogRow_ = function (entry) { logs.push(entry); };
+  buildRunId_ = function () { return 'menu-recreate-run'; };
+  recreateWorkbook_ = function () { recreateCalled += 1; };
+
+  try {
+    menuRecreateWorkbook();
+
+    assertEquals_(1, recreateCalled);
+    const skippedPreflightRows = logs.filter(function (row) {
+      return row.stage === 'menuRecreateWorkbook_preflight_skipped';
+    });
+    assertEquals_(1, skippedPreflightRows.length);
+    assertEquals_('config_duplicate_scan_skipped_for_reset', skippedPreflightRows[0].reason_code);
+  } finally {
+    SpreadsheetApp = originalSpreadsheetApp;
+    warnConfigDuplicatesBeforeMenuMutation_ = originalWarnConfigDuplicatesBeforeMenuMutation;
+    appendLogRow_ = originalAppendLogRow;
+    buildRunId_ = originalBuildRunId;
+    recreateWorkbook_ = originalRecreateWorkbook;
+  }
+}
+
+function testMenuSetupVerifyTabs_stillRunsDuplicatePreflight_() {
+  const originalWarnConfigDuplicatesBeforeMenuMutation = warnConfigDuplicatesBeforeMenuMutation_;
+  const originalEnsureTabsAndConfig = ensureTabsAndConfig_;
+  const originalSpreadsheetApp = SpreadsheetApp;
+
+  const contexts = [];
+
+  warnConfigDuplicatesBeforeMenuMutation_ = function (context) { contexts.push(context); };
+  ensureTabsAndConfig_ = function () {};
+  SpreadsheetApp = {
+    getUi: function () {
+      return {
+        alert: function () {},
+      };
+    },
+  };
+
+  try {
+    menuSetupVerifyTabs();
+    assertArrayEquals_(['menuSetupVerifyTabs'], contexts);
+  } finally {
+    warnConfigDuplicatesBeforeMenuMutation_ = originalWarnConfigDuplicatesBeforeMenuMutation;
+    ensureTabsAndConfig_ = originalEnsureTabsAndConfig;
+    SpreadsheetApp = originalSpreadsheetApp;
+  }
+}
+
 function testNormalizeLogProfile_defaultsToCompactOnInvalidValue_() {
   assertEquals_('compact', normalizeLogProfile_(''));
   assertEquals_('compact', normalizeLogProfile_('noise'));

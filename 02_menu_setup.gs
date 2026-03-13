@@ -76,7 +76,6 @@ function menuApplyPresetFreeTierConservation() {
 
 
 function menuRecreateWorkbook() {
-  warnConfigDuplicatesBeforeMenuMutation_('menuRecreateWorkbook');
   const ui = SpreadsheetApp.getUi();
   const response = ui.alert(
     'Re-create / Reset Workbook',
@@ -95,6 +94,15 @@ function menuRecreateWorkbook() {
     });
     return;
   }
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: buildRunId_(),
+    stage: 'menuRecreateWorkbook_preflight_skipped',
+    status: 'info',
+    reason_code: 'config_duplicate_scan_skipped_for_reset',
+    message: 'Skipped Config duplicate preflight scan for destructive reset action.',
+  });
 
   recreateWorkbook_();
   ui.alert('Workbook reset complete. Tabs, defaults, and headers have been recreated.');
