@@ -159,3 +159,20 @@ When `msg` is JSON, the expected object shape is:
 1. Existing full-width run-log rows remain source-of-truth for historical records.
 2. Compact schema v2 is a projection layer; it does not rename or mutate source rows.
 3. Consumers must support mixed-mode history where old records have no `schema_version` and compact records carry `schema_version: 2`.
+
+## 7) Reason-code alias additions (fallback diagnostics)
+
+The `reason_code_alias_v1` dictionary now explicitly aliases these frequently observed fallback diagnostics reason codes so compact logs avoid `UNK_*` fallback aliases:
+
+- `missing_open_timestamp_fallback` → `OPEN_TS_FB`
+- `opening_lag_fallback_exemption_denied_source` → `OPEN_FB_DENY_SRC`
+- `opening_lag_fallback_exemption_denied_age` → `OPEN_FB_DENY_AGE`
+- `opening_lag_fallback_exemption_denied_cap` → `OPEN_FB_DENY_CAP`
+- `odds_api_success_sport_key_fallback` → `ODDS_API_SK_FB`
+- `schedule_api_success_sport_key_fallback` → `SCH_API_SK_FB`
+- `run_health_expected_temporary_no_odds` → `RH_TMP_NO_ODDS`
+- `ta_matchmx_stale_fallback` → `TA_MX_STALE_FB`
+- `state_stale_payload_write_failed_non_fatal` → `STALE_WRITE_WARN`
+- `reason_code_alias_missing_fallback_emitted` → `RC_ALIAS_FALLBACK`
+
+These aliases are deterministic and unique, preserving existing alias keys for backward compatibility with `invertReasonCodeAliasDictionary_` collision checks.
