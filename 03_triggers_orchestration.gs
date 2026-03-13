@@ -635,7 +635,13 @@ function runEdgeBoard() {
     const stageReasonCodeMaximaViolations = validateStageReasonCodeMaxima_(stageSummarySnapshots);
     const boundedCounterInvariantChecks = buildRunEdgeBoardBoundedCounterInvariantChecks_(scheduleStage.summary, matchStage);
     const boundedCounterInvariantViolations = assertDebugBoundedStageCounters_(config, boundedCounterInvariantChecks);
-    assertBoundedStageCounterInvariants_(boundedCounterInvariantChecks, 'runEdgeBoard');
+    const boundedCounterInvariantEnforcement = enforceInvariant_(config, {
+      invariant: 'bounded_stage_counter_invariant_exceeded',
+      context: 'runEdgeBoard',
+      violations: boundedCounterInvariantViolations,
+      hard_fail: false,
+      error_prefix: 'bounded_stage_counter_invariant_exceeded',
+    });
     if (stageReasonCodeMutationDiagnostics.mutated_stages.length > 0 || stageReasonCodeMaximaViolations.length > 0 || boundedCounterInvariantViolations.length > 0) {
       appendLogRow_({
         row_type: 'ops',
@@ -651,6 +657,7 @@ function runEdgeBoard() {
           reason_code_map_mutated_after_snapshot: stageReasonCodeMutationDiagnostics,
           reason_code_counter_exceeds_stage_max: stageReasonCodeMaximaViolations,
           bounded_stage_counter_invariant_exceeded: boundedCounterInvariantViolations,
+          invariant_enforcement: boundedCounterInvariantEnforcement,
         }),
       });
     }
@@ -833,6 +840,8 @@ function runEdgeBoard() {
       reason_code_accumulation_guard: {
         mutation_diagnostics: stageReasonCodeMutationDiagnostics,
         maxima_violations: stageReasonCodeMaximaViolations,
+        bounded_counter_violations: boundedCounterInvariantViolations,
+        bounded_counter_enforcement: boundedCounterInvariantEnforcement,
       },
       upstream_gate_reason: combinedReasonMetadata.upstream_gate_reason || '',
       run_health: {

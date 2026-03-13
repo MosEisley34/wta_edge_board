@@ -1072,13 +1072,59 @@ function assertDebugBoundedStageCounters_(config, checks) {
   return violations;
 }
 
-function assertBoundedStageCounterInvariants_(checks, contextLabel) {
+function getInvariantEnforcementLevel_(config) {
+  const safeConfig = config || {};
+  if (typeof normalizeInvariantEnforcementLevel_ === 'function') {
+    return normalizeInvariantEnforcementLevel_(safeConfig.INVARIANT_ENFORCEMENT_LEVEL);
+  }
+  const level = String(safeConfig.INVARIANT_ENFORCEMENT_LEVEL || 'warn').toLowerCase();
+  return level === 'strict' ? 'strict' : 'warn';
+}
+
+function enforceInvariant_(config, options) {
+  const safeOptions = options || {};
+  const violations = safeOptions.violations || [];
+  if (!violations.length) {
+    return { hard_failed: false, warning_emitted: false, enforcement_level: getInvariantEnforcementLevel_(config) };
+  }
+
+  const hardFail = !!safeOptions.hard_fail;
+  const enforcementLevel = getInvariantEnforcementLevel_(config);
+  const errorPayload = {
+    invariant: String(safeOptions.invariant || 'invariant_violation'),
+    context: String(safeOptions.context || ''),
+    violations: violations,
+    hard_fail: hardFail,
+    enforcement_level: enforcementLevel,
+  };
+
+  if (hardFail || enforcementLevel === 'strict') {
+    throw new Error(String(safeOptions.error_prefix || 'invariant_violation') + ':' + JSON.stringify(errorPayload));
+  }
+
+  if (typeof safeOptions.warn_logger === 'function') {
+    safeOptions.warn_logger(errorPayload);
+  }
+
+  return {
+    hard_failed: false,
+    warning_emitted: true,
+    enforcement_level: enforcementLevel,
+    payload: errorPayload,
+  };
+}
+
+function assertBoundedStageCounterInvariants_(config, checks, contextLabel) {
   const violations = assertDebugBoundedStageCounters_({ LOG_PROFILE: 'verbose' }, checks || []);
   if (violations.length === 0) return [];
-  throw new Error('bounded_stage_counter_invariant_exceeded:' + JSON.stringify({
-    context: String(contextLabel || ''),
+  enforceInvariant_(config, {
+    invariant: 'bounded_stage_counter_invariant_exceeded',
+    context: contextLabel,
     violations: violations,
-  }));
+    hard_fail: false,
+    error_prefix: 'bounded_stage_counter_invariant_exceeded',
+  });
+  return violations;
 }
 
 

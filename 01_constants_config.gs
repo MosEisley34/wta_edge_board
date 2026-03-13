@@ -61,6 +61,7 @@ const DEFAULT_CONFIG = {
   WTA_1000_ALIAS_MAP_JSON: '{"WTA_1000":["wta indian wells","indian wells","wta-1000","wta 1000","masters 1000"]}',
   COMPETITION_DENY_ALIAS_MAP_JSON: '{"WTA_125":["wta 125","wta125"],"WTA_250":["wta 250","wta250"],"ITF":["itf"]}',
   LOG_PROFILE: 'compact',
+  INVARIANT_ENFORCEMENT_LEVEL: 'warn',
   REASON_CODE_ALIAS_ALLOW_CANONICAL_PASSTHROUGH: 'false',
   VERBOSE_LOGGING: 'true',
   LOG_VERBOSITY_LEVEL: '2',
@@ -289,6 +290,9 @@ function getConfig_() {
     WTA_1000_ALIAS_MAP_JSON: String(config.WTA_1000_ALIAS_MAP_JSON || DEFAULT_CONFIG.WTA_1000_ALIAS_MAP_JSON),
     COMPETITION_DENY_ALIAS_MAP_JSON: String(config.COMPETITION_DENY_ALIAS_MAP_JSON || DEFAULT_CONFIG.COMPETITION_DENY_ALIAS_MAP_JSON),
     LOG_PROFILE: resolvedLogProfile,
+    INVARIANT_ENFORCEMENT_LEVEL: normalizeInvariantEnforcementLevel_(
+      config.INVARIANT_ENFORCEMENT_LEVEL || DEFAULT_CONFIG.INVARIANT_ENFORCEMENT_LEVEL
+    ),
     VERBOSE_LOGGING: resolvedVerboseLogging,
     LOG_VERBOSITY_LEVEL: Math.max(0, Math.min(3, toNumber_(config.LOG_VERBOSITY_LEVEL, defaultLogVerbosityLevel))),
     DUPLICATE_DEBOUNCE_MS: toNumber_(config.DUPLICATE_DEBOUNCE_MS, 90000),
@@ -460,4 +464,9 @@ function formatDuplicateConfigKeysError_(context, duplicateRowsByKey, firstRowBy
 function normalizeLogProfile_(value) {
   const normalized = String(value || DEFAULT_CONFIG.LOG_PROFILE || 'compact').toLowerCase();
   return normalized === 'verbose' ? 'verbose' : 'compact';
+}
+
+function normalizeInvariantEnforcementLevel_(value) {
+  const normalized = String(value || DEFAULT_CONFIG.INVARIANT_ENFORCEMENT_LEVEL || 'warn').toLowerCase();
+  return normalized === 'strict' ? 'strict' : 'warn';
 }
