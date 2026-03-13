@@ -2104,6 +2104,103 @@ function testUpdateEmptyProductiveOutputState_scheduleOnlyNoticeAboveThresholdPl
   }
 }
 
+
+function testResolveBootstrapEmptyCycleWatchdogEmission_downgradesOutsideWindowSteadyStateToInfo_() {
+  const emission = resolveBootstrapEmptyCycleWatchdogEmission_({
+    consecutive_empty_cycles: 5,
+    threshold: 3,
+    diagnostics_counter: 5,
+  }, {
+    reason_code: 'odds_refresh_skipped_outside_window',
+  });
+
+  assertEquals_('info', emission.status);
+  assertEquals_('outside_window_summary', emission.mode);
+  assertEquals_(true, emission.outside_window_expected_idle);
+  assertEquals_(false, emission.material_threshold_change);
+  assertEquals_(false, emission.watchdog_state_unexpected);
+}
+
+function testResolveBootstrapEmptyCycleWatchdogEmission_keepsWarningAtThresholdBoundaryOutsideWindow_() {
+  const emission = resolveBootstrapEmptyCycleWatchdogEmission_({
+    consecutive_empty_cycles: 3,
+    threshold: 3,
+    diagnostics_counter: 3,
+  }, {
+    reason_code: 'odds_refresh_skipped_outside_window',
+  });
+
+  assertEquals_('warning', emission.status);
+  assertEquals_('warning', emission.mode);
+  assertEquals_(true, emission.outside_window_expected_idle);
+  assertEquals_(true, emission.material_threshold_change);
+  assertEquals_(false, emission.watchdog_state_unexpected);
+}
+
+function testResolveBootstrapEmptyCycleWatchdogEmission_keepsWarningForActiveWindowRuns_() {
+  const emission = resolveBootstrapEmptyCycleWatchdogEmission_({
+    consecutive_empty_cycles: 5,
+    threshold: 3,
+    diagnostics_counter: 5,
+  }, {
+    reason_code: 'run_health_no_matches_from_odds',
+  });
+
+  assertEquals_('warning', emission.status);
+  assertEquals_('warning', emission.mode);
+  assertEquals_(false, emission.outside_window_expected_idle);
+}
+
+
+function testRunEdgeBoard_bootstrapEmptyCycleWatchdogUsesInfoForOutsideWindowSteadyIdle_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [],
+      oddsRows: [],
+      oddsReasonCodes: { odds_refresh_skipped_outside_window: 1 },
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchedCount: 0,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten: 0,
+      matchReasonCodes: {},
+      signalRows: [],
+      sentCount: 0,
+      bootstrapEmptyCycleState: {
+        reason_code: 'bootstrap_empty_cycle_detected',
+        warning_needed: true,
+        consecutive_empty_cycles: 5,
+        threshold: 3,
+        diagnostics_counter: 5,
+        last_non_empty_fetch_at: '',
+        last_non_empty_fetch_at_utc: '',
+      },
+    },
+  });
+
+  try {
+    runEdgeBoard();
+
+    const bootstrapWatchdog = harness.logs.filter(function (row) {
+      return row.row_type === 'ops' && row.stage === 'bootstrap_empty_cycle_watchdog';
+    })[0];
+
+    assertEquals_('info', bootstrapWatchdog.status);
+    const payload = JSON.parse(bootstrapWatchdog.message || '{}');
+    assertEquals_('outside_window_summary', payload.watchdog_emission_mode || '');
+    assertEquals_(true, !!payload.outside_window_expected_idle);
+    assertEquals_(false, !!payload.material_threshold_change);
+    assertEquals_(false, !!payload.watchdog_state_unexpected);
+    assertEquals_(5, Number(payload.diagnostics_counter || 0));
+  } finally {
+    harness.restore();
+  }
+}
+
 function testRunEdgeBoard_scheduleOnlyWatchdogNoticeIsLowSeverityExpectedIdleAndNoFailureEscalation_() {
   const harness = createRunEdgeBoardTestHarness_({
     nowMs: 1000000,
@@ -2842,6 +2939,9 @@ function createRunEdgeBoardTestHarness_(options) {
     };
     getTopReasonCodes_ = function () { return []; };
     updateBootstrapEmptyCycleState_ = function () {
+      if (opts.orchestrationScenario && opts.orchestrationScenario.bootstrapEmptyCycleState) {
+        return JSON.parse(JSON.stringify(opts.orchestrationScenario.bootstrapEmptyCycleState));
+      }
       return { reason_code: '', warning_needed: false };
     };
     updateEmptyProductiveOutputState_ = function () {
