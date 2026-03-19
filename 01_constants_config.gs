@@ -115,6 +115,7 @@ const DEFAULT_CONFIG = {
   PLAYER_STATS_FETCH_BACKOFF_MAX_MS: '4000',
   PLAYER_STATS_TA_REQUEST_DELAY_MS: '300',
   PLAYER_STATS_TA_REQUEST_JITTER_MS: '250',
+  PLAYER_STATS_MIN_ACCEPTABLE_COVERAGE_RATIO: '0',
   PLAYER_STATS_MAX_ROWS_PER_RUN: '200',
   PLAYER_STATS_ENABLE_H2H: 'true',
   H2H_BUMP_ENABLED: 'true',
@@ -124,6 +125,8 @@ const DEFAULT_CONFIG = {
   PLAYER_STATS_CACHE_TTL_MIN: '10',
   PLAYER_STATS_REFRESH_MIN: '5',
   PLAYER_STATS_FORCE_REFRESH: 'false',
+  RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER: '3',
+  RUN_HEALTH_SINGLE_RUN_CRITICAL_TRIGGER: 'true',
 };
 
 const CONFIG_PRESETS = {
@@ -206,6 +209,9 @@ const REASON_CODE_ALIAS_DICTIONARIES = {
     opening_lag_blocked: 'OPEN_LAG_BLOCK',
     missing_open_timestamp: 'OPEN_TS_MISS',
     run_health_no_matches_from_odds: 'RH_NO_MATCH',
+    run_health_no_matches_from_odds_consecutive: 'RH_NO_MATCH_STK',
+    run_health_no_matches_from_odds_waiting: 'RH_NO_MATCH_WAIT',
+    run_health_single_run_critical_triggered: 'RH_CRIT_1RUN',
     source_entity_domain_mismatch_non_tennis_sport_slug_football: 'SRC_DM_FOOT',
     source_entity_domain_mismatch: 'SRC_DM',
     match_map_diagnostic_records_written: 'MM_DIAG_WR',
@@ -491,6 +497,10 @@ function getConfig_() {
     PLAYER_STATS_FETCH_BACKOFF_MAX_MS: Math.max(0, toNumber_(config.PLAYER_STATS_FETCH_BACKOFF_MAX_MS, 4000)),
     PLAYER_STATS_TA_REQUEST_DELAY_MS: Math.max(0, toNumber_(config.PLAYER_STATS_TA_REQUEST_DELAY_MS, 300)),
     PLAYER_STATS_TA_REQUEST_JITTER_MS: Math.max(0, toNumber_(config.PLAYER_STATS_TA_REQUEST_JITTER_MS, 250)),
+    PLAYER_STATS_MIN_ACCEPTABLE_COVERAGE_RATIO: Math.min(1, Math.max(0, toNumber_(
+      config.PLAYER_STATS_MIN_ACCEPTABLE_COVERAGE_RATIO,
+      toNumber_(DEFAULT_CONFIG.PLAYER_STATS_MIN_ACCEPTABLE_COVERAGE_RATIO, 0)
+    ))),
     PLAYER_STATS_MAX_ROWS_PER_RUN: Math.max(1, toNumber_(config.PLAYER_STATS_MAX_ROWS_PER_RUN, 200)),
     PLAYER_STATS_ENABLE_H2H: toBoolean_(config.PLAYER_STATS_ENABLE_H2H, true),
     H2H_BUMP_ENABLED: toBoolean_(config.H2H_BUMP_ENABLED, true),
@@ -500,6 +510,14 @@ function getConfig_() {
     PLAYER_STATS_CACHE_TTL_MIN: toNumber_(config.PLAYER_STATS_CACHE_TTL_MIN, 10),
     PLAYER_STATS_REFRESH_MIN: toNumber_(config.PLAYER_STATS_REFRESH_MIN, 5),
     PLAYER_STATS_FORCE_REFRESH: toBoolean_(config.PLAYER_STATS_FORCE_REFRESH, false),
+    RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER: Math.max(1, toNumber_(
+      config.RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER,
+      toNumber_(DEFAULT_CONFIG.RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER, 3)
+    )),
+    RUN_HEALTH_SINGLE_RUN_CRITICAL_TRIGGER: toBoolean_(
+      config.RUN_HEALTH_SINGLE_RUN_CRITICAL_TRIGGER,
+      toBoolean_(DEFAULT_CONFIG.RUN_HEALTH_SINGLE_RUN_CRITICAL_TRIGGER, true)
+    ),
   };
 }
 

@@ -610,6 +610,7 @@ function runEdgeBoard() {
       schedule_reason_codes: scheduleStage.summary.reason_codes,
       match_reason_codes: matchStage.summary.reason_codes,
       signal_reason_codes: signalStage.summary.reason_codes,
+      player_stats_reason_codes: playerStatsStage.summary.reason_codes,
       opening_lag_blocked_count: Number((oddsStage.skipped_reason_codes && oddsStage.skipped_reason_codes.opening_lag_exceeded) || 0),
       schedule_only_seed_count: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.schedule_seed_no_odds) || 0),
       no_odds_stage_count: Number((matchStage.summary && matchStage.summary.reason_codes && matchStage.summary.reason_codes.no_odds_candidates) || 0),
@@ -618,9 +619,13 @@ function runEdgeBoard() {
       cooldown_suppressed_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.cooldown_suppressed) || 0),
     };
     const dataNotActionableState = updateRunHealthDataNotActionableState_(runId, runHealthMetrics, config);
+    const noMatchFromOddsState = updateRunHealthNoMatchFromOddsState_(runId, runHealthMetrics, config);
     const runHealthDiagnostics = evaluateRunHealthDiagnostics_(Object.assign({}, runHealthMetrics, {
       data_not_actionable_streak: Number(dataNotActionableState.consecutive_count || 0),
       data_not_actionable_escalation_threshold: Number(dataNotActionableState.threshold || 0),
+      no_match_from_odds_streak: Number(noMatchFromOddsState.consecutive_count || 0),
+      no_match_from_odds_degraded_trigger: Number(noMatchFromOddsState.threshold || 0),
+      single_run_critical_trigger_enabled: !!config.RUN_HEALTH_SINGLE_RUN_CRITICAL_TRIGGER,
     }));
 
     if (runHealthDiagnostics.warning_payload && runHealthDiagnostics.should_emit_warning) {
@@ -700,6 +705,9 @@ function runEdgeBoard() {
     }
     if (runHealthDiagnostics.degraded_reason_code) {
       combinedReasonCodes[runHealthDiagnostics.degraded_reason_code] = (combinedReasonCodes[runHealthDiagnostics.degraded_reason_code] || 0) + 1;
+    }
+    if (runHealthDiagnostics.summary_reason_code && runHealthDiagnostics.summary_reason_code !== runHealthDiagnostics.degraded_reason_code) {
+      combinedReasonCodes[runHealthDiagnostics.summary_reason_code] = (combinedReasonCodes[runHealthDiagnostics.summary_reason_code] || 0) + 1;
     }
     if (emptyCycleState.warning_needed) {
       const bootstrapWatchdogEmission = resolveBootstrapEmptyCycleWatchdogEmission_(emptyCycleState, runHealthDiagnostics);
@@ -1863,6 +1871,11 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const cooldownSuppressedCount = Number(metrics && metrics.cooldown_suppressed_count || 0);
   const dataNotActionableStreak = Math.max(0, Number(metrics && metrics.data_not_actionable_streak || 0));
   const dataNotActionableEscalationThreshold = Math.max(2, Number(metrics && metrics.data_not_actionable_escalation_threshold || 3));
+  const noMatchFromOddsStreak = Math.max(0, Number(metrics && metrics.no_match_from_odds_streak || 0));
+  const noMatchFromOddsDegradedTrigger = Math.max(1, Number(metrics && metrics.no_match_from_odds_degraded_trigger || 1));
+  const singleRunCriticalTriggerEnabled = (metrics && Object.prototype.hasOwnProperty.call(metrics, 'single_run_critical_trigger_enabled'))
+    ? !!metrics.single_run_critical_trigger_enabled
+    : true;
   const sampledBlockedOdds = sanitizeBlockedOddsSamples_((metrics && metrics.sample_blocked_odds_cases) || []);
   const outsideWindowOddsSkipped = Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0) > 0;
   const scheduleSkippedOutsideWindowCreditSaver = Number(scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver || 0) > 0;
@@ -2085,14 +2098,16 @@ function evaluateRunHealthDiagnostics_(metrics) {
     });
 
     return {
-      is_degraded: true,
-      status: 'degraded',
+      is_degraded: singleRunCriticalTriggerEnabled,
+      status: singleRunCriticalTriggerEnabled ? 'degraded' : 'warning_stats_zero_coverage',
       reason_code: 'stats_zero_coverage',
-      degraded_reason_code: 'stats_zero_coverage',
-      summary_status: 'degraded',
+      degraded_reason_code: singleRunCriticalTriggerEnabled ? 'stats_zero_coverage' : '',
+      summary_status: singleRunCriticalTriggerEnabled ? 'degraded' : 'success',
       summary_reason_code: 'stats_zero_coverage',
       summary_message: statsCoveragePayload.message,
-      warning_payload: statsCoveragePayload,
+      warning_payload: Object.assign({}, statsCoveragePayload, {
+        single_run_critical_trigger_enabled: singleRunCriticalTriggerEnabled,
+      }),
       should_emit_warning: true,
     };
   }
@@ -2132,16 +2147,27 @@ function evaluateRunHealthDiagnostics_(metrics) {
     fetched_schedule: fetchedSchedule,
     matched: matched,
     signals_found: signalsFound,
+    no_match_from_odds_streak: noMatchFromOddsStreak,
+    no_match_from_odds_degraded_trigger: noMatchFromOddsDegradedTrigger,
   });
+  const noMatchFromOddsEscalated = noMatchFromOddsStreak >= noMatchFromOddsDegradedTrigger;
+  const noMatchReasonCode = noMatchFromOddsEscalated
+    ? 'run_health_no_matches_from_odds_consecutive'
+    : 'run_health_no_matches_from_odds_waiting';
+  warningPayload.reason_code = noMatchReasonCode;
+  warningPayload.no_match_from_odds_streak = noMatchFromOddsStreak;
+  warningPayload.no_match_from_odds_degraded_trigger = noMatchFromOddsDegradedTrigger;
 
   return {
-    is_degraded: true,
-    status: 'degraded',
-    reason_code: warningPayload.reason_code,
-    degraded_reason_code: warningPayload.reason_code,
-    summary_status: 'degraded',
-    summary_reason_code: warningPayload.reason_code,
-    summary_message: 'Pipeline run completed with degraded run-health guard.',
+    is_degraded: noMatchFromOddsEscalated,
+    status: noMatchFromOddsEscalated ? 'degraded' : 'warning_no_matches_waiting_threshold',
+    reason_code: noMatchReasonCode,
+    degraded_reason_code: noMatchFromOddsEscalated ? noMatchReasonCode : '',
+    summary_status: noMatchFromOddsEscalated ? 'degraded' : 'success',
+    summary_reason_code: noMatchReasonCode,
+    summary_message: noMatchFromOddsEscalated
+      ? 'Pipeline run completed with degraded run-health guard.'
+      : 'Pipeline run completed; no-match streak has not reached degraded trigger yet.',
     warning_payload: warningPayload,
     should_emit_warning: true,
   };
@@ -2171,7 +2197,12 @@ function isRunHealthDataNotActionableYet_(metrics) {
 }
 
 function updateRunHealthDataNotActionableState_(runId, metrics, config) {
-  const threshold = Math.max(2, Number((config && config.RUN_HEALTH_DATA_NOT_ACTIONABLE_PERSIST_THRESHOLD) || 3));
+  const threshold = Math.max(
+    2,
+    Number((config && config.RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER)
+      || (config && config.RUN_HEALTH_DATA_NOT_ACTIONABLE_PERSIST_THRESHOLD)
+      || 3)
+  );
   const previous = getStateJson_('RUN_HEALTH_DATA_NOT_ACTIONABLE_STATE') || {};
   const isDataNotActionableYet = isRunHealthDataNotActionableYet_(metrics);
   const previousCount = Math.max(0, Number(previous.consecutive_count || 0));
@@ -2191,6 +2222,27 @@ function updateRunHealthDataNotActionableState_(runId, metrics, config) {
   return next;
 }
 
+function updateRunHealthNoMatchFromOddsState_(runId, metrics, config) {
+  const threshold = Math.max(1, Number((config && config.RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER) || 3));
+  const previous = getStateJson_('RUN_HEALTH_NO_MATCH_FROM_ODDS_STATE') || {};
+  const fetchedOdds = Number((metrics && metrics.fetched_odds) || 0);
+  const matched = Number((metrics && metrics.matched) || 0);
+  const isNoMatchFromOdds = fetchedOdds > 0 && matched === 0;
+  const previousCount = Math.max(0, Number(previous.consecutive_count || 0));
+  const consecutiveCount = isNoMatchFromOdds ? previousCount + 1 : 0;
+
+  const next = {
+    run_id: runId,
+    updated_at: formatLocalIso_(new Date()),
+    threshold: threshold,
+    consecutive_count: consecutiveCount,
+    is_no_match_from_odds: isNoMatchFromOdds,
+    escalated: isNoMatchFromOdds && consecutiveCount >= threshold,
+  };
+  setStateValue_('RUN_HEALTH_NO_MATCH_FROM_ODDS_STATE', JSON.stringify(next));
+  return next;
+}
+
 function buildRunHealthDegradedContract_(metrics) {
   const safe = metrics || {};
   const sampledBlockedRecords = (safe.sampled_blocked_odds || []).slice(0, 5);
@@ -2205,6 +2257,8 @@ function buildRunHealthDegradedContract_(metrics) {
   const lowEdgeSuppressedCount = Number(safe.low_edge_suppressed_count || 0);
   const cooldownSuppressedCount = Number(safe.cooldown_suppressed_count || 0);
   const statsZeroCoverageCount = Number(safe.stats_zero_coverage_count || 0);
+  const noMatchFromOddsStreak = Number(safe.no_match_from_odds_streak || 0);
+  const noMatchFromOddsDegradedTrigger = Number(safe.no_match_from_odds_degraded_trigger || 0);
 
   const blockerCounts = {
     opening_lag_blocked_count: openingLagBlockedCount,
@@ -2214,6 +2268,8 @@ function buildRunHealthDegradedContract_(metrics) {
     low_edge_suppressed_count: lowEdgeSuppressedCount,
     cooldown_suppressed_count: cooldownSuppressedCount,
     stats_zero_coverage_count: statsZeroCoverageCount,
+    no_match_from_odds_streak: noMatchFromOddsStreak,
+    no_match_from_odds_degraded_trigger: noMatchFromOddsDegradedTrigger,
   };
 
   return {
