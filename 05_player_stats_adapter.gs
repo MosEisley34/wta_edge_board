@@ -614,11 +614,16 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
 
   const statsByPlayer = normalizedStatsByPlayer;
   const forceReplaceNullOnlyStale = coverage.exceeds_threshold && staleLeadersCompleteness.has_rows && staleLeadersCompleteness.is_null_only;
-  const selectedReasonCode = Object.keys(statsByPlayer).length > 0
+  const parsedRowCount = Number(parseDiagnostics.parsed_row_count || 0);
+  const hasParsedRows = parsedRowCount > 0;
+  const hasResolvedScheduledPlayers = Object.keys(statsByPlayer).length > 0;
+  const selectedReasonCode = hasResolvedScheduledPlayers
     ? (coverageRatioReasonCode || (taHealthy ? 'ta_matchmx_ok' : qualityGate.reason_code))
-    : 'ta_matchmx_parse_failed';
+    : (hasParsedRows
+      ? (coverageReasonCode || coverageRatioReasonCode || qualityGate.reason_code || 'ta_matchmx_coverage_miss')
+      : 'ta_matchmx_parse_failed');
   return {
-    ok: Object.keys(statsByPlayer).length > 0,
+    ok: hasResolvedScheduledPlayers,
     reason_code: selectedReasonCode,
     stats_by_player: statsByPlayer,
     api_call_count: totalCalls,
