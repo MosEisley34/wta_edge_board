@@ -548,7 +548,11 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
   const playersWithNonNullStats = Number(statsCompleteness.players_with_non_null_stats || 0);
   const coverageRatio = canonicalPlayerCount > 0 ? playersWithNonNullStats / canonicalPlayerCount : 1;
   const minPlayersWithStatsThreshold = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_PLAYERS_WITH_STATS) || 2));
-  const configuredCoverageRatioThreshold = Number((config && config.PLAYER_STATS_TA_MIN_COVERAGE_RATIO) || 0);
+  const configuredCoverageRatioThreshold = Number(
+    (config && config.PLAYER_STATS_MIN_ACCEPTABLE_COVERAGE_RATIO)
+    || (config && config.PLAYER_STATS_TA_MIN_COVERAGE_RATIO)
+    || 0
+  );
   const minCoverageRatioThreshold = configuredCoverageRatioThreshold > 0
     ? Math.min(1, Math.max(0, configuredCoverageRatioThreshold))
     : (canonicalPlayerCount > 0 ? Math.min(1, minPlayersWithStatsThreshold / canonicalPlayerCount) : 0);
@@ -559,6 +563,7 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
     reason_code: coverageRatioReasonCode,
     coverage_ratio: roundNumber_(coverageRatio, 4),
     min_coverage_ratio_threshold: roundNumber_(minCoverageRatioThreshold, 4),
+    min_acceptable_coverage_ratio: roundNumber_(minCoverageRatioThreshold, 4),
     players_with_non_null_stats: playersWithNonNullStats,
     canonical_player_count: canonicalPlayerCount,
     min_players_with_non_null_stats: minPlayersWithStatsThreshold,
@@ -597,6 +602,7 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
       canonical_player_count: canonicalPlayerCount,
       coverage_ratio: roundNumber_(coverageRatio, 4),
       min_coverage_ratio_threshold: roundNumber_(minCoverageRatioThreshold, 4),
+      min_acceptable_coverage_ratio: roundNumber_(minCoverageRatioThreshold, 4),
       stale_rows: staleLeadersCompleteness.row_count,
       stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
     });
@@ -615,6 +621,7 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
         canonical_player_count: canonicalPlayerCount,
         coverage_ratio: roundNumber_(coverageRatio, 4),
         min_coverage_ratio_threshold: roundNumber_(minCoverageRatioThreshold, 4),
+        min_acceptable_coverage_ratio: roundNumber_(minCoverageRatioThreshold, 4),
         stale_rows: staleLeadersCompleteness.row_count,
         stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
         stale_null_only: staleLeadersCompleteness.is_null_only,
@@ -707,6 +714,7 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
       players_with_non_null_stats: playersWithNonNullStats,
       coverage_ratio: roundNumber_(coverageRatio, 4),
       min_coverage_ratio_threshold: roundNumber_(minCoverageRatioThreshold, 4),
+      min_acceptable_coverage_ratio: roundNumber_(minCoverageRatioThreshold, 4),
       stale_rows: staleLeadersCompleteness.row_count,
       stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
       stale_null_only: staleLeadersCompleteness.is_null_only,
