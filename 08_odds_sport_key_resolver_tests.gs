@@ -5905,6 +5905,46 @@ function testFetchPlayerStatsFromLeadersSource_failsFastWhenFreshRowsLargeButNoM
   }
 }
 
+function testFetchPlayerStatsFromLeadersSource_returnsDegradedCoverageSignalWhenRatioLow_() {
+  const originalFetch = UrlFetchApp.fetch;
+  const originalGetStateJson = getStateJson_;
+
+  try {
+    getStateJson_ = function () { return null; };
+    UrlFetchApp.fetch = function (url) {
+      if (url.indexOf('leaders_wta.cgi') >= 0) {
+        return {
+          getResponseCode: function () { return 200; },
+          getContentText: function () { return '<script src="/jsmatches/test_leadersource_wta.js"></script>'; },
+        };
+      }
+      return {
+        getResponseCode: function () { return 200; },
+        getContentText: function () {
+          return 'matchmx[0]=["2025-03-01","Doha","Hard","Iga Swiatek","Opponent","6-4 6-4",2,80,68,72,42,66,51,62,69,54,48,1.1,53];';
+        },
+      };
+    };
+
+    const result = fetchPlayerStatsFromLeadersSource_(['Iga Swiatek', 'Elise Mertens'], {
+      PLAYER_STATS_TA_MIN_COVERAGE_RATIO: 0.75,
+      PLAYER_STATS_TA_MIN_PLAYERS_WITH_STATS: 1,
+    }, new Date('2025-03-01T00:00:00.000Z'));
+
+    assertEquals_(true, result.ok);
+    assertEquals_('ta_matchmx_coverage_ratio_low', result.reason_code);
+    assertEquals_('fresh_degraded_coverage_ratio_low', result.selection_metadata.selection_reason);
+    assertEquals_(0.5, result.selection_metadata.coverage_ratio);
+    assertEquals_(0.75, result.selection_metadata.min_coverage_ratio_threshold);
+    assertEquals_(1, result.selection_metadata.players_with_non_null_stats);
+    assertEquals_(2, result.selection_metadata.canonical_player_count);
+    assertEquals_('ta_matchmx_coverage_ratio_low', result.selection_metadata.degraded_signal.reason_code);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+    getStateJson_ = originalGetStateJson;
+  }
+}
+
 function testResolveCompetitionTier_acceptsWtaIndianWellsAsWta1000_() {
   const resolverConfig = buildCompetitionTierResolverConfig_({
     ALLOW_WTA_250: true,

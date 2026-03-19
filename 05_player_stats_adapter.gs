@@ -481,6 +481,25 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
   });
   const parseDiagnostics = summarizeTaLeadersParseDiagnostics_(structuredRows, normalizedStatsByPlayer, extractedRows.diagnostics, canonicalPlayers);
   const statsCompleteness = summarizePlayerStatsCompleteness_(normalizedStatsByPlayer);
+  const canonicalPlayerCount = Math.max(0, Number((canonicalPlayers || []).length || 0));
+  const playersWithNonNullStats = Number(statsCompleteness.players_with_non_null_stats || 0);
+  const coverageRatio = canonicalPlayerCount > 0 ? playersWithNonNullStats / canonicalPlayerCount : 1;
+  const minPlayersWithStatsThreshold = Math.max(1, Number((config && config.PLAYER_STATS_TA_MIN_PLAYERS_WITH_STATS) || 2));
+  const configuredCoverageRatioThreshold = Number((config && config.PLAYER_STATS_TA_MIN_COVERAGE_RATIO) || 0);
+  const minCoverageRatioThreshold = configuredCoverageRatioThreshold > 0
+    ? Math.min(1, Math.max(0, configuredCoverageRatioThreshold))
+    : (canonicalPlayerCount > 0 ? Math.min(1, minPlayersWithStatsThreshold / canonicalPlayerCount) : 0);
+  const coverageRatioBelowThreshold = canonicalPlayerCount > 0
+    && (coverageRatio < minCoverageRatioThreshold || playersWithNonNullStats < minPlayersWithStatsThreshold);
+  const coverageRatioReasonCode = coverageRatioBelowThreshold ? 'ta_matchmx_coverage_ratio_low' : '';
+  const degradedCoverageSignal = coverageRatioBelowThreshold ? {
+    reason_code: coverageRatioReasonCode,
+    coverage_ratio: roundNumber_(coverageRatio, 4),
+    min_coverage_ratio_threshold: roundNumber_(minCoverageRatioThreshold, 4),
+    players_with_non_null_stats: playersWithNonNullStats,
+    canonical_player_count: canonicalPlayerCount,
+    min_players_with_non_null_stats: minPlayersWithStatsThreshold,
+  } : null;
   const coverage = evaluateTaLeadersParseCoverage_(parseDiagnostics, config);
   const hasCoverageMismatch = isTaLeadersCoverageMismatch_(parseDiagnostics);
   const coverageReasonCode = hasCoverageMismatch ? 'ta_parse_coverage_mismatch' : '';
@@ -511,7 +530,10 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
       fresh_rows: Number(parseDiagnostics.parsed_row_count || 0),
       parsed_player_key_count: Number(parseDiagnostics.parsed_player_key_count || 0),
       fresh_non_null_feature_total: Number(coverage.non_null_feature_total || 0),
-      players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
+      players_with_non_null_stats: playersWithNonNullStats,
+      canonical_player_count: canonicalPlayerCount,
+      coverage_ratio: roundNumber_(coverageRatio, 4),
+      min_coverage_ratio_threshold: roundNumber_(minCoverageRatioThreshold, 4),
       stale_rows: staleLeadersCompleteness.row_count,
       stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
     });
@@ -526,10 +548,14 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
         fresh_rows: Number(parseDiagnostics.parsed_row_count || 0),
         parsed_player_key_count: Number(parseDiagnostics.parsed_player_key_count || 0),
         fresh_non_null_feature_total: Number(coverage.non_null_feature_total || 0),
-        players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
+        players_with_non_null_stats: playersWithNonNullStats,
+        canonical_player_count: canonicalPlayerCount,
+        coverage_ratio: roundNumber_(coverageRatio, 4),
+        min_coverage_ratio_threshold: roundNumber_(minCoverageRatioThreshold, 4),
         stale_rows: staleLeadersCompleteness.row_count,
         stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
         stale_null_only: staleLeadersCompleteness.is_null_only,
+        degraded_signal: degradedCoverageSignal,
       },
     };
   }
@@ -588,24 +614,37 @@ function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) 
 
   const statsByPlayer = normalizedStatsByPlayer;
   const forceReplaceNullOnlyStale = coverage.exceeds_threshold && staleLeadersCompleteness.has_rows && staleLeadersCompleteness.is_null_only;
+  const selectedReasonCode = Object.keys(statsByPlayer).length > 0
+    ? (coverageRatioReasonCode || (taHealthy ? 'ta_matchmx_ok' : qualityGate.reason_code))
+    : 'ta_matchmx_parse_failed';
   return {
     ok: Object.keys(statsByPlayer).length > 0,
-    reason_code: Object.keys(statsByPlayer).length > 0 ? (taHealthy ? 'ta_matchmx_ok' : qualityGate.reason_code) : 'ta_matchmx_parse_failed',
+    reason_code: selectedReasonCode,
     stats_by_player: statsByPlayer,
     api_call_count: totalCalls,
     selection_metadata: {
       source_selected: 'fresh_payload',
-      selection_reason: forceReplaceNullOnlyStale ? 'fresh_healthy_overrode_null_only_stale' : (coverage.exceeds_threshold ? 'fresh_healthy_coverage' : 'fresh_default'),
+      selection_reason: forceReplaceNullOnlyStale
+        ? 'fresh_healthy_overrode_null_only_stale'
+        : (coverageRatioBelowThreshold
+          ? 'fresh_degraded_coverage_ratio_low'
+          : (coverage.exceeds_threshold ? 'fresh_healthy_coverage' : 'fresh_default')),
+      selection_reason_code: selectedReasonCode,
       fresh_rows: Number(parseDiagnostics.parsed_row_count || 0),
       fresh_non_null_feature_total: Number(coverage.non_null_feature_total || 0),
       fresh_coverage_threshold_rows: Number(coverage.row_threshold || 0),
       fresh_coverage_threshold_non_null_features: Number(coverage.non_null_threshold || 0),
       fresh_coverage_exceeds_threshold: coverage.exceeds_threshold,
+      canonical_player_count: canonicalPlayerCount,
+      players_with_non_null_stats: playersWithNonNullStats,
+      coverage_ratio: roundNumber_(coverageRatio, 4),
+      min_coverage_ratio_threshold: roundNumber_(minCoverageRatioThreshold, 4),
       stale_rows: staleLeadersCompleteness.row_count,
       stale_non_null_feature_total: staleLeadersCompleteness.non_null_feature_total,
       stale_null_only: staleLeadersCompleteness.is_null_only,
       cache_replacement_forced: forceReplaceNullOnlyStale,
       quality_gate: qualityGate,
+      degraded_signal: degradedCoverageSignal,
     },
   };
 }
