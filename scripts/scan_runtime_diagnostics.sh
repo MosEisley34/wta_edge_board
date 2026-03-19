@@ -53,6 +53,7 @@ RUN_HEALTH_REQUIRED_FIELDS = [
     "sampled_blocked_records",
     "sample_unmatched_events",
 ]
+PLAYER_STATS_OVERLAP_WARN_THRESHOLD = 0.6
 
 
 def is_supported_file(path: str) -> bool:
@@ -132,6 +133,42 @@ def normalize_record_text(record):
         return str(record)
 
 
+def normalize_reason_metadata(record):
+    reason_metadata = record.get('reason_metadata')
+    if isinstance(reason_metadata, dict):
+        return reason_metadata
+    if isinstance(reason_metadata, str) and reason_metadata.strip():
+        try:
+            parsed = json.loads(reason_metadata)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def ingest_player_stats_coverage(reason_metadata, coverage_rows):
+    if not isinstance(reason_metadata, dict):
+        return
+    try:
+        requested = int(float(reason_metadata.get('requested_player_count')))
+        resolved = int(float(reason_metadata.get('resolved_player_count')))
+        unresolved = int(float(reason_metadata.get('unresolved_player_count')))
+        overlap = float(reason_metadata.get('overlap_ratio'))
+    except (TypeError, ValueError):
+        return
+    if requested < 0 or resolved < 0 or unresolved < 0:
+        return
+    top_unresolved = reason_metadata.get('top_unresolved_player_samples')
+    coverage_rows.append({
+        'requested': requested,
+        'resolved': resolved,
+        'unresolved': unresolved,
+        'overlap': overlap,
+        'top_unresolved': top_unresolved if isinstance(top_unresolved, list) else [],
+    })
+
+
 def main():
     input_paths = sys.argv[1:]
     files, missing_paths = collect_files(input_paths)
@@ -155,6 +192,7 @@ def main():
     run_health_dominant = defaultdict(float)
     run_health_samples = []
     run_health_missing_fields = defaultdict(int)
+    player_stats_coverage_rows = []
     scanned_records = 0
 
     for path in files:
@@ -172,6 +210,22 @@ def main():
                             examples[key].append((path, row_num, preview))
 
                 stage = str(record.get('stage') or '')
+                if stage == 'stageFetchPlayerStats':
+                    ingest_player_stats_coverage(normalize_reason_metadata(record), player_stats_coverage_rows)
+                if stage == 'runEdgeBoard':
+                    stage_summaries = record.get('stage_summaries')
+                    if isinstance(stage_summaries, str):
+                        try:
+                            stage_summaries = json.loads(stage_summaries)
+                        except Exception:
+                            stage_summaries = None
+                    if isinstance(stage_summaries, list):
+                        for summary in stage_summaries:
+                            if not isinstance(summary, dict):
+                                continue
+                            if str(summary.get('stage') or '') != 'stageFetchPlayerStats':
+                                continue
+                            ingest_player_stats_coverage(normalize_reason_metadata(summary), player_stats_coverage_rows)
                 payload = None
                 if stage == 'run_health_guard':
                     message = record.get('message')
@@ -306,6 +360,29 @@ def main():
                 f"blocked_odds={json.dumps(blocked_preview, ensure_ascii=False, sort_keys=True)} "
                 f"unmatched={json.dumps(unmatched_preview, ensure_ascii=False, sort_keys=True)}"
             )
+    else:
+        print("- none")
+    print()
+
+    print("Player-stats acquisition coverage")
+    if player_stats_coverage_rows:
+        latest = player_stats_coverage_rows[-1]
+        low_overlap_rows = [row for row in player_stats_coverage_rows if row['overlap'] < PLAYER_STATS_OVERLAP_WARN_THRESHOLD]
+        avg_overlap = sum(row['overlap'] for row in player_stats_coverage_rows) / len(player_stats_coverage_rows)
+        print(f"- rows with coverage metadata: {len(player_stats_coverage_rows)}")
+        print(
+            f"- latest coverage requested={latest['requested']} resolved={latest['resolved']} "
+            f"unresolved={latest['unresolved']} overlap_ratio={latest['overlap']:.3f}"
+        )
+        print(
+            f"- overlap warning threshold={PLAYER_STATS_OVERLAP_WARN_THRESHOLD:.2f} "
+            f"rows_below_threshold={len(low_overlap_rows)} avg_overlap={avg_overlap:.3f}"
+        )
+        unresolved_samples = latest.get('top_unresolved') or []
+        print(
+            "- latest unresolved player samples: "
+            + (", ".join(str(name) for name in unresolved_samples[:5]) if unresolved_samples else "none")
+        )
     else:
         print("- none")
     print()

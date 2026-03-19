@@ -4918,6 +4918,7 @@ function runStageFetchPlayerStatsScenario_(options) {
       output_count: values.output_count,
       provider: values.provider,
       reason_codes: values.reason_codes,
+      reason_metadata: values.reason_metadata || {},
       api_credit_usage: values.api_credit_usage,
     };
   };
@@ -4996,6 +4997,11 @@ function testStageFetchPlayerStats_providerAvailableButEmptyTracksReason_() {
   assertEquals_(1, result.stage.summary.reason_codes.provider_returned_empty);
   assertEquals_(0, result.stage.summary.reason_codes.stats_enriched);
   assertEquals_(0, result.stage.summary.reason_codes.stats_fallback_model_used);
+  assertEquals_(2, result.stage.summary.reason_metadata.requested_player_count);
+  assertEquals_(0, result.stage.summary.reason_metadata.resolved_player_count);
+  assertEquals_(2, result.stage.summary.reason_metadata.unresolved_player_count);
+  assertEquals_(0, result.stage.summary.reason_metadata.overlap_ratio);
+  assertEquals_(2, result.stage.summary.reason_metadata.top_unresolved_player_samples.length);
 }
 
 function testStageFetchPlayerStats_providerReturnedNullFeaturesMarksFallbackMetadata_() {

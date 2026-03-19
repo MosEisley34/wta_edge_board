@@ -69,6 +69,27 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
 
   const statsBatch = fetchPlayerStatsBatch_(config, playersToFetch, normalizedAsOfTime);
   const statsByPlayer = statsBatch.stats_by_player || {};
+  const requestedUniquePlayers = [];
+  const requestedPlayerSet = {};
+  playersToFetch.forEach(function (playerName) {
+    const canonicalName = String(playerName || '').trim();
+    if (!canonicalName || requestedPlayerSet[canonicalName]) return;
+    requestedPlayerSet[canonicalName] = true;
+    requestedUniquePlayers.push(canonicalName);
+  });
+  const resolvedPlayerSet = {};
+  Object.keys(statsByPlayer).forEach(function (playerName) {
+    const canonicalName = String(playerName || '').trim();
+    if (!canonicalName || !requestedPlayerSet[canonicalName]) return;
+    resolvedPlayerSet[canonicalName] = true;
+  });
+  const unresolvedPlayers = requestedUniquePlayers.filter(function (playerName) {
+    return !resolvedPlayerSet[playerName];
+  });
+  const requestedPlayerCount = requestedUniquePlayers.length;
+  const resolvedPlayerCount = Object.keys(resolvedPlayerSet).length;
+  const unresolvedPlayerCount = unresolvedPlayers.length;
+  const overlapRatio = requestedPlayerCount > 0 ? resolvedPlayerCount / requestedPlayerCount : 0;
   const statsCompleteness = summarizePlayerStatsCompleteness_(statsByPlayer);
   const providerUnavailable = statsBatch.provider_available === false;
   const providerNullFeatures = String(statsBatch.reason_code || '') === 'provider_returned_null_features';
@@ -144,6 +165,11 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
       players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
       players_with_null_only_stats: Number(statsCompleteness.players_with_null_only_stats || 0),
       player_stats_data_available: !!statsCompleteness.has_stats,
+      requested_player_count: requestedPlayerCount,
+      resolved_player_count: resolvedPlayerCount,
+      unresolved_player_count: unresolvedPlayerCount,
+      overlap_ratio: roundNumber_(overlapRatio, 3),
+      top_unresolved_player_samples: unresolvedPlayers.slice(0, 20),
     },
   });
 
@@ -163,6 +189,13 @@ function buildSkippedPlayerStatsStage_(runId, reasonCode) {
     api_credit_usage: 0,
     reason_codes: {
       skipped_schedule_only_no_odds: reasonCode === 'skipped_schedule_only_no_odds' ? 1 : 0,
+    },
+    reason_metadata: {
+      requested_player_count: 0,
+      resolved_player_count: 0,
+      unresolved_player_count: 0,
+      overlap_ratio: 0,
+      top_unresolved_player_samples: [],
     },
   });
 
