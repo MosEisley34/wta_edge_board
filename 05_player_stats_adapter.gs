@@ -231,44 +231,107 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     };
   }
 
-  const disableSofascore = !!config.DISABLE_SOFASCORE;
-  if (!disableSofascore) {
-    const sofascoreFallback = fetchPlayerStatsFromSofascore_(config, players, asOfTime);
-    totalApiCalls += Number(sofascoreFallback.api_call_count || 0);
-    if (sofascoreFallback.ok) {
-      return {
-        ok: true,
-        reason_code: sofascoreFallback.reason_code || 'player_stats_sofascore_success',
-        detail: attempts.join(','),
-        stats_by_player: sofascoreFallback.stats_by_player || {},
-        api_credit_usage: 0,
-        api_call_count: totalApiCalls,
-        scrape_call_count: 0,
-        selection_metadata: {
-          source_count: 1,
-          merge_diagnostics: buildPlayerStatsMergeDiagnostics_([{ source_name: 'sofascore', stats_by_player: sofascoreFallback.stats_by_player || {}, endpoint_feature_sources_by_player: sofascoreFallback.endpoint_feature_sources_by_player || {} }], sofascoreFallback.stats_by_player || {}, players, [{
-            source_name: 'sofascore',
-            attempted_endpoints: sofascoreFallback.attempted_endpoints || [],
-            missing_fields: sofascoreFallback.missing_fields || [],
-          }]),
-        },
-      };
-    }
-  } else {
-    attempts.push('player_stats_sofascore_disabled');
-  }
-
   const leadersSource = fetchPlayerStatsFromLeadersSource_(players, config, asOfTime);
   if (leadersSource.ok) {
+    const taStatsByPlayer = leadersSource.stats_by_player || {};
+    const unresolvedPlayers = players.filter(function (playerName) {
+      return !playerStatsHasNonNullFeatures_(taStatsByPlayer[playerName]);
+    });
+    const finalStatsByPlayer = Object.assign({}, taStatsByPlayer);
+    const fallbackDiagnostics = {
+      unresolved_player_count: unresolvedPlayers.length,
+      unresolved_players_sample: unresolvedPlayers.slice(0, 20),
+      fallback_reasons_by_player: {},
+      fallback_source_by_player: {},
+      fallback_attempts: [],
+      fallback_calls: { sofascore: 0, scrape: 0 },
+      fallback_resolved_counts: { sofascore: 0, scrape: 0 },
+    };
+    unresolvedPlayers.forEach(function (playerName) {
+      fallbackDiagnostics.fallback_reasons_by_player[playerName] = 'ta_null_only';
+    });
+
+    let unresolvedAfterSofascore = unresolvedPlayers.slice();
+    const disableSofascore = !!config.DISABLE_SOFASCORE;
+    if (!disableSofascore && unresolvedAfterSofascore.length) {
+      const sofascoreFallback = fetchPlayerStatsFromSofascore_(config, unresolvedAfterSofascore, asOfTime);
+      totalApiCalls += Number(sofascoreFallback.api_call_count || 0);
+      fallbackDiagnostics.fallback_calls.sofascore += 1;
+      fallbackDiagnostics.fallback_attempts.push({
+        source_name: 'sofascore',
+        reason_code: sofascoreFallback.reason_code || '',
+        requested_player_count: unresolvedAfterSofascore.length,
+        attempted_endpoints: sofascoreFallback.attempted_endpoints || [],
+        missing_fields: sofascoreFallback.missing_fields || [],
+      });
+      const sofascoreStatsByPlayer = sofascoreFallback.stats_by_player || {};
+      unresolvedAfterSofascore = unresolvedAfterSofascore.filter(function (playerName) {
+        const fallbackStats = sofascoreStatsByPlayer[playerName];
+        if (playerStatsHasNonNullFeatures_(fallbackStats)) {
+          finalStatsByPlayer[playerName] = fallbackStats;
+          fallbackDiagnostics.fallback_source_by_player[playerName] = 'sofascore';
+          fallbackDiagnostics.fallback_resolved_counts.sofascore += 1;
+          return false;
+        }
+        return true;
+      });
+    } else if (disableSofascore) {
+      fallbackDiagnostics.fallback_attempts.push({
+        source_name: 'sofascore',
+        reason_code: 'player_stats_sofascore_disabled',
+        requested_player_count: unresolvedAfterSofascore.length,
+      });
+    }
+
+    let unresolvedAfterScrape = unresolvedAfterSofascore.slice();
+    if (unresolvedAfterScrape.length) {
+      const scraped = fetchPlayerStatsFromScrapeSources_(config, unresolvedAfterScrape);
+      totalApiCalls += Number(scraped.api_call_count || 0);
+      fallbackDiagnostics.fallback_calls.scrape += 1;
+      fallbackDiagnostics.fallback_attempts.push({
+        source_name: 'scrape',
+        reason_code: scraped.reason_code || '',
+        requested_player_count: unresolvedAfterScrape.length,
+      });
+      const scrapedStatsByPlayer = scraped.stats_by_player || {};
+      unresolvedAfterScrape = unresolvedAfterScrape.filter(function (playerName) {
+        const fallbackStats = scrapedStatsByPlayer[playerName];
+        if (playerStatsHasNonNullFeatures_(fallbackStats)) {
+          finalStatsByPlayer[playerName] = fallbackStats;
+          fallbackDiagnostics.fallback_source_by_player[playerName] = 'scrape';
+          fallbackDiagnostics.fallback_resolved_counts.scrape += 1;
+          return false;
+        }
+        return true;
+      });
+    }
+
+    fallbackDiagnostics.unresolved_after_fallback_count = unresolvedAfterScrape.length;
+    fallbackDiagnostics.unresolved_after_fallback_sample = unresolvedAfterScrape.slice(0, 20);
+    const baseSelectionMetadata = leadersSource.selection_metadata && typeof leadersSource.selection_metadata === 'object'
+      ? leadersSource.selection_metadata
+      : {};
+    const playerSourceByPlayer = Object.assign({}, baseSelectionMetadata.player_source_by_player || {});
+    players.forEach(function (playerName) {
+      if (fallbackDiagnostics.fallback_source_by_player[playerName]) {
+        playerSourceByPlayer[playerName] = fallbackDiagnostics.fallback_source_by_player[playerName];
+      } else if (!playerSourceByPlayer[playerName]) {
+        playerSourceByPlayer[playerName] = 'tennis_abstract';
+      }
+    });
+
     return {
       ok: true,
       reason_code: leadersSource.reason_code || 'ta_matchmx_ok',
       detail: attempts.join(','),
-      stats_by_player: leadersSource.stats_by_player || {},
+      stats_by_player: finalStatsByPlayer,
       api_credit_usage: 0,
       api_call_count: totalApiCalls + Number(leadersSource.api_call_count || 0),
-      scrape_call_count: 0,
-      selection_metadata: leadersSource.selection_metadata || null,
+      scrape_call_count: Number(fallbackDiagnostics.fallback_calls.scrape || 0),
+      selection_metadata: Object.assign({}, baseSelectionMetadata, {
+        fallback_diagnostics: fallbackDiagnostics,
+        player_source_by_player: playerSourceByPlayer,
+      }),
     };
   }
 
