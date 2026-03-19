@@ -23,6 +23,7 @@ from pipeline_log_adapter import (
 SUPPORTED_EXTENSIONS = (".csv", ".json")
 WATCHDOG_METRIC_KEYS = ("streak_count", "consecutive_empty_cycles", "diagnostics_counter")
 NON_SUCCESS_STATUSES = {"warning", "failed", "error", "notice"}
+PLAYER_STATS_OVERLAP_WARN_THRESHOLD = 0.6
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -160,6 +161,27 @@ def _coerce_positive_reason_map(reason_codes: Any) -> dict[str, float]:
     return normalized
 
 
+def _extract_player_stats_coverage(reason_metadata: Any) -> dict[str, Any] | None:
+    metadata = _parse_json_like(reason_metadata)
+    if not isinstance(metadata, dict):
+        return None
+    try:
+        requested = int(float(metadata.get("requested_player_count")))
+        resolved = int(float(metadata.get("resolved_player_count")))
+        unresolved = int(float(metadata.get("unresolved_player_count")))
+        overlap_ratio = float(metadata.get("overlap_ratio"))
+    except (TypeError, ValueError):
+        return None
+    unresolved_samples = metadata.get("top_unresolved_player_samples")
+    return {
+        "requested": max(0, requested),
+        "resolved": max(0, resolved),
+        "unresolved": max(0, unresolved),
+        "overlap_ratio": overlap_ratio,
+        "samples": unresolved_samples if isinstance(unresolved_samples, list) else [],
+    }
+
+
 def _collect_fallback_aliases(record: dict[str, Any], message: dict[str, Any] | None) -> dict[str, str]:
     fallback_aliases: dict[str, str] = {}
 
@@ -212,6 +234,7 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
     bucket_runs_degraded: Counter[str] = Counter()
     bucket_odds_not_actionable: Counter[str] = Counter()
     bucket_signals_produced: Counter[str] = Counter()
+    player_stats_coverage_by_run: dict[str, dict[str, Any]] = {}
 
     row_idx = 0
     for path in files:
@@ -309,6 +332,10 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
                             continue
                     if duration_ms >= 0:
                         run_stage_duration_from_summaries[run_id][summary_stage] = duration_ms
+                    if summary_stage == "stageFetchPlayerStats":
+                        coverage = _extract_player_stats_coverage(summary.get("reason_metadata"))
+                        if coverage:
+                            player_stats_coverage_by_run[run_id] = coverage
 
             is_watchdog = "watchdog" in stage or reason_code == "watchdog_recovered"
             if is_watchdog:
@@ -387,6 +414,17 @@ def build_summary(paths: list[str], top_n: int, max_stages: int, warning_limit: 
         points = sorted(watchdog_points, key=lambda item: item[0])
         if points[-1][1] - points[0][1] > 0:
             warning_bits.append("watchdog_trend_up")
+    coverage_rows = [player_stats_coverage_by_run[run_id] for run_id in run_status_source if run_id in player_stats_coverage_by_run]
+    if coverage_rows:
+        low_overlap_runs = sum(1 for row in coverage_rows if row["overlap_ratio"] < PLAYER_STATS_OVERLAP_WARN_THRESHOLD)
+        if low_overlap_runs > 0:
+            warning_bits.append(f"player_stats_overlap_low:runs={low_overlap_runs}")
+        latest_coverage = coverage_rows[-1]
+        warning_bits.append(
+            "player_stats_coverage_latest="
+            f"{latest_coverage['resolved']}/{latest_coverage['requested']}"
+            f"(unresolved={latest_coverage['unresolved']},overlap={latest_coverage['overlap_ratio']:.3f})"
+        )
     warnings_part = ";".join(warning_bits) if warning_bits else "none"
 
     latest_bucket = "unknown"
