@@ -4,6 +4,8 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
   const start = Date.now();
   const toleranceMin = config.MATCH_TIME_TOLERANCE_MIN;
   const fallbackMin = config.MATCH_FALLBACK_EXPANSION_MIN;
+  const identityMissingRateThreshold = Math.max(0, Math.min(1, Number(config.MATCHER_PLAYER_IDENTITY_MISSING_RATE_BLOCK_THRESHOLD || 0.6)));
+  const identityMissingMinRows = Math.max(1, Number(config.MATCHER_PLAYER_IDENTITY_MISSING_MIN_ROWS || 3));
   const aliasMap = buildPlayerAliasMap_(config.PLAYER_ALIAS_MAP_JSON);
   const reasonCounts = {};
   const rows = [];
@@ -49,6 +51,88 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
       rejectedCount: 0,
       diagnosticRecordsWritten,
       unmatchedCount: 0,
+      unmatched,
+      canonicalizationExamples,
+    };
+  }
+
+  const scheduleIdentityHealth = assessSchedulePlayerIdentityHealth_(scheduleEvents);
+  const shouldBlockMatcherForIdentityCoverage = !!(
+    oddsEvents && oddsEvents.length
+    && scheduleIdentityHealth.total_schedule_rows > 0
+    && scheduleIdentityHealth.missing_identity_rows >= identityMissingMinRows
+    && scheduleIdentityHealth.missing_identity_rate >= identityMissingRateThreshold
+  );
+
+  if (shouldBlockMatcherForIdentityCoverage) {
+    (oddsEvents || []).forEach((odds) => {
+      const eventId = String((odds && odds.event_id) || '');
+      rows.push({
+        key: ['schedule_missing_player_identity', eventId].join('|'),
+        odds_event_id: eventId,
+        schedule_event_id: '',
+        match_type: '',
+        rejection_code: 'schedule_missing_player_identity',
+        time_diff_min: '',
+        competition_tier: '',
+        odds_players_raw: JSON.stringify([String((odds && odds.player_1) || ''), String((odds && odds.player_2) || '')]),
+        odds_players_normalized: JSON.stringify([]),
+        candidate_players_raw: JSON.stringify([]),
+        candidate_players_normalized: JSON.stringify([]),
+        similarity_scores: JSON.stringify({}),
+        primary_time_delta_min: '',
+        fallback_time_delta_min: '',
+        rejection_discriminator: 'schedule_player_identity_precheck_blocked',
+        updated_at: new Date().toISOString(),
+      });
+      unmatched.push({
+        odds_event_id: eventId,
+        competition: String((odds && odds.competition) || ''),
+        player_1: String((odds && odds.player_1) || ''),
+        player_2: String((odds && odds.player_2) || ''),
+        commence_time: odds && odds.commence_time && typeof odds.commence_time.toISOString === 'function' ? odds.commence_time.toISOString() : '',
+        rejection_code: 'schedule_missing_player_identity',
+        normalized_odds_players: [],
+        normalized_schedule_players: [],
+        nearest_schedule_candidate: null,
+        primary_time_delta_min: '',
+        fallback_time_delta_min: '',
+      });
+    });
+
+    reasonCounts.schedule_missing_player_identity = Number((oddsEvents || []).length || 0);
+    rejectedCount = Number((oddsEvents || []).length || 0);
+    diagnosticRecordsWritten = Number((oddsEvents || []).length || 0);
+
+    const blockedSummary = buildStageSummary_(runId, 'stageMatchEvents', start, {
+      input_count: Number((oddsEvents || []).length || 0),
+      output_count: 0,
+      provider: 'internal_matcher',
+      api_credit_usage: 0,
+      reason_codes: Object.assign({}, reasonCounts, {
+        matched_count: 0,
+        rejected_count: rejectedCount,
+        diagnostic_records_written: diagnosticRecordsWritten,
+      }),
+      reason_metadata: {
+        matcher_precheck_blocked: true,
+        matcher_precheck_reason: 'schedule_missing_player_identity',
+        total_schedule_rows: scheduleIdentityHealth.total_schedule_rows,
+        missing_identity_rows: scheduleIdentityHealth.missing_identity_rows,
+        missing_identity_rate: scheduleIdentityHealth.missing_identity_rate,
+        missing_identity_rate_threshold: identityMissingRateThreshold,
+        missing_identity_min_rows_threshold: identityMissingMinRows,
+        sampled_missing_schedule_event_ids: (scheduleIdentityHealth.sampled_missing_schedule_event_ids || []).slice(0, 5),
+      },
+    });
+
+    return {
+      rows,
+      summary: blockedSummary,
+      matchedCount: 0,
+      rejectedCount,
+      diagnosticRecordsWritten,
+      unmatchedCount: rejectedCount,
       unmatched,
       canonicalizationExamples,
     };
@@ -159,6 +243,44 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
     unmatched,
     canonicalizationExamples,
   };
+}
+
+function assessSchedulePlayerIdentityHealth_(scheduleEvents) {
+  const events = Array.isArray(scheduleEvents) ? scheduleEvents : [];
+  let missingIdentityRows = 0;
+  const sampledMissingScheduleEventIds = [];
+
+  events.forEach((event, idx) => {
+    const hasPlayerOneIdentity = hasSchedulePlayerIdentityValue_(event, 1);
+    const hasPlayerTwoIdentity = hasSchedulePlayerIdentityValue_(event, 2);
+    if (hasPlayerOneIdentity && hasPlayerTwoIdentity) return;
+    missingIdentityRows += 1;
+    if (sampledMissingScheduleEventIds.length < 5) {
+      sampledMissingScheduleEventIds.push(String((event && event.event_id) || ('schedule_row_' + idx)));
+    }
+  });
+
+  const totalRows = events.length;
+  return {
+    total_schedule_rows: totalRows,
+    missing_identity_rows: missingIdentityRows,
+    missing_identity_rate: totalRows > 0 ? Number((missingIdentityRows / totalRows).toFixed(4)) : 0,
+    sampled_missing_schedule_event_ids: sampledMissingScheduleEventIds,
+  };
+}
+
+function hasSchedulePlayerIdentityValue_(event, playerIndex) {
+  if (!event) return false;
+  const suffix = String(playerIndex || '');
+  const valueCandidates = [
+    event['matcher_player_' + suffix + '_canonical'],
+    event['matcher_player_' + suffix + '_raw'],
+    event['player_' + suffix],
+  ];
+  for (let i = 0; i < valueCandidates.length; i += 1) {
+    if (String(valueCandidates[i] || '').trim()) return true;
+  }
+  return false;
 }
 
 function buildMatchRejectionDiagnostics_(result) {

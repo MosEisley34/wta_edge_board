@@ -5488,6 +5488,70 @@ function testStageMatchEvents_countsFullyUnmatchedOddsAsRejected_() {
   assertEquals_(5, Number(stage.unmatched[0].fallback_time_delta_min || 0));
 }
 
+function testStageMatchEvents_blocksWhenSchedulePlayerIdentityCoverageIsTooLow_() {
+  const oddsEvents = [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }, {
+    event_id: 'odds_2',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player Three',
+    player_2: 'Player Four',
+    commence_time: new Date('2025-03-01T13:00:00.000Z'),
+  }];
+
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: '',
+    player_2: '',
+    matcher_player_1_raw: '',
+    matcher_player_2_raw: '',
+    matcher_player_1_canonical: '',
+    matcher_player_2_canonical: '',
+    start_time: new Date('2025-03-01T12:05:00.000Z'),
+  }, {
+    event_id: 'sched_2',
+    canonical_tier: 'WTA_500',
+    player_1: '',
+    player_2: '',
+    matcher_player_1_raw: '',
+    matcher_player_2_raw: '',
+    matcher_player_1_canonical: '',
+    matcher_player_2_canonical: '',
+    start_time: new Date('2025-03-01T13:05:00.000Z'),
+  }, {
+    event_id: 'sched_3',
+    canonical_tier: 'WTA_500',
+    player_1: '',
+    player_2: '',
+    matcher_player_1_raw: '',
+    matcher_player_2_raw: '',
+    matcher_player_1_canonical: '',
+    matcher_player_2_canonical: '',
+    start_time: new Date('2025-03-01T14:05:00.000Z'),
+  }];
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+    MATCHER_PLAYER_IDENTITY_MISSING_RATE_BLOCK_THRESHOLD: 0.6,
+    MATCHER_PLAYER_IDENTITY_MISSING_MIN_ROWS: 3,
+  }, oddsEvents, scheduleEvents);
+
+  assertEquals_(0, stage.matchedCount);
+  assertEquals_(2, stage.rejectedCount);
+  assertEquals_(2, stage.summary.reason_codes.schedule_missing_player_identity || 0);
+  assertEquals_(2, stage.summary.reason_codes.rejected_count || 0);
+  assertEquals_(true, !!((stage.summary.reason_metadata || {}).matcher_precheck_blocked));
+  assertEquals_(1, Number((stage.summary.reason_metadata || {}).missing_identity_rate || 0));
+  assertEquals_('schedule_missing_player_identity', stage.rows[0].rejection_code);
+}
+
 function testStageMatchEvents_countsPartialMatchesAndRejectionsSeparately_() {
   const oddsEvents = [{
     event_id: 'odds_1',
