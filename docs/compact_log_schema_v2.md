@@ -181,3 +181,8 @@ The `reason_code_alias_v1` dictionary now explicitly aliases these frequently ob
 - `credit_header_missing` → `CREDIT_HDR`
 
 These aliases are deterministic and unique, preserving existing alias keys for backward compatibility with `invertReasonCodeAliasDictionary_` collision checks.
+
+For backward-compatible diagnostics normalization, recurring legacy fallback aliases are also canonicalized during post-run analysis:
+
+- `UNK_OPEN_TS` → `missing_open_timestamp` → `OPEN_TS_MISS`
+- `UNK_OPEN_LAG` → `opening_lag_exceeded` → `OPEN_LAG_HI`

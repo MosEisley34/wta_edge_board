@@ -7,6 +7,10 @@ import json
 from typing import Any
 
 REASON_CODE_ALIAS_SCHEMA_ID = "reason_code_alias_v1"
+LEGACY_UNK_REASON_CODE_CANONICAL_MAP: dict[str, str] = {
+    "UNK_OPEN_TS": "missing_open_timestamp",
+    "UNK_OPEN_LAG": "opening_lag_exceeded",
+}
 REASON_CODE_ALIAS_DICTIONARIES: dict[str, dict[str, str]] = {
     REASON_CODE_ALIAS_SCHEMA_ID: {
         "competition_allowed": "CMP_ALLOW",
@@ -196,7 +200,8 @@ def _expand_reason_map(
 ) -> dict[str, float]:
     expanded: dict[str, float] = {}
     alias_to_reason_code = ALIAS_TO_REASON_CODE_BY_SCHEMA.get(schema_id) or {}
-    fallback_alias_map = {str(k): str(v) for k, v in (fallback_aliases or {}).items() if str(k) and str(v)}
+    fallback_alias_map = dict(LEGACY_UNK_REASON_CODE_CANONICAL_MAP)
+    fallback_alias_map.update({str(k): str(v) for k, v in (fallback_aliases or {}).items() if str(k) and str(v)})
     for alias_or_code, raw_value in (reason_map or {}).items():
         alias_or_code_text = str(alias_or_code)
         reason_code = fallback_alias_map.get(alias_or_code_text) or alias_to_reason_code.get(alias_or_code_text, alias_or_code_text)

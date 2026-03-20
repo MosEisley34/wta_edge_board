@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline_log_adapter import (
+    LEGACY_UNK_REASON_CODE_CANONICAL_MAP,
     REASON_CODE_ALIAS_DICTIONARIES,
     REASON_CODE_ALIAS_SCHEMA_ID,
     adapt_run_log_record_for_legacy,
@@ -143,7 +144,7 @@ def _bucket_date(ts: datetime) -> str:
 
 
 def _collect_fallback_aliases(record: dict[str, Any], message: dict[str, Any] | None) -> dict[str, str]:
-    fallback_aliases: dict[str, str] = {}
+    fallback_aliases: dict[str, str] = dict(LEGACY_UNK_REASON_CODE_CANONICAL_MAP)
 
     def _merge(obj: Any):
         if not isinstance(obj, dict):
