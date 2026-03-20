@@ -2667,8 +2667,13 @@ function mergePlayerStatsMaps_(sourcePayloads, canonicalPlayers, config) {
       featureSelection[feature] = selectMetricWithProvenanceBySourcePriority_(sourceMaps, player, feature, preferredSources);
     });
 
+    const resolvedRanking = resolveCanonicalRanking_(sourceMaps, player, featureSelection.ranking.value);
     const mergedRow = {
-      ranking: featureSelection.ranking.value,
+      ranking: resolvedRanking.resolved_rank,
+      resolved_rank: resolvedRanking.resolved_rank,
+      rank_source: resolvedRanking.rank_source,
+      rank_confidence: resolvedRanking.rank_confidence,
+      is_top100: resolvedRanking.resolved_rank !== null && resolvedRanking.resolved_rank <= 100,
       recent_form: featureSelection.recent_form.value,
       recent_form_last_10: featureSelection.recent_form_last_10.value,
       surface_win_rate: featureSelection.surface_win_rate.value,
@@ -2736,6 +2741,9 @@ function mergePlayerStatsMaps_(sourcePayloads, canonicalPlayers, config) {
       cohort_policy_mode: cohortPolicy.mode,
       cohort_top_rank_max: cohortPolicy.top_rank_max,
       cohort_rank_value: cohortDecision.rank_value,
+      rank_source: mergedRow.rank_source,
+      rank_confidence: mergedRow.rank_confidence,
+      is_top100: mergedRow.is_top100,
       cohort_fallback_allowed: cohortPolicy.allow_out_of_cohort_fallback,
       cohort_reason_code: cohortDecision.reason_code,
     });
@@ -2765,7 +2773,7 @@ function buildPlayerStatsCohortPolicy_(config) {
 
 function classifyPlayerStatsCohort_(mergedRow, cohortPolicy) {
   const policy = cohortPolicy || buildPlayerStatsCohortPolicy_({});
-  const rawRank = mergedRow ? mergedRow.ranking : null;
+  const rawRank = mergedRow ? (mergedRow.resolved_rank !== undefined ? mergedRow.resolved_rank : mergedRow.ranking) : null;
   const numericRank = Number(rawRank);
   const hasNumericRank = Number.isFinite(numericRank) && numericRank > 0;
   const rankValue = hasNumericRank ? numericRank : null;
@@ -2780,6 +2788,68 @@ function classifyPlayerStatsCohort_(mergedRow, cohortPolicy) {
     return { classification: 'in_cohort', reason_code: 'cohort_rank_within_threshold', rank_value: numericRank };
   }
   return { classification: 'out_of_cohort', reason_code: 'cohort_rank_outside_threshold', rank_value: numericRank };
+}
+
+
+function resolveCanonicalRanking_(sourceMaps, player, mergedRankingCandidate) {
+  const preferredSources = ['wta_stats_zone', 'itf', 'tennis_abstract', 'tennis_explorer', 'sofascore'];
+  const sourceRankConfidence = {
+    wta_stats_zone: 'high',
+    itf: 'high',
+    tennis_abstract: 'medium',
+    tennis_explorer: 'low',
+    sofascore: 'low',
+    merged: 'low',
+  };
+  const preferredBySource = {};
+  preferredSources.forEach(function (sourceName) {
+    preferredBySource[sourceName] = null;
+  });
+
+  (sourceMaps || []).forEach(function (entry) {
+    const sourceName = canonicalizeStatsProviderName_(entry && entry.source_name);
+    if (!Object.prototype.hasOwnProperty.call(preferredBySource, sourceName)) return;
+    const row = entry && entry.stats_map ? entry.stats_map[player] : null;
+    if (!row || typeof row !== 'object') return;
+    const normalized = normalizeCanonicalRankingValue_(row.ranking);
+    if (normalized === null) return;
+    preferredBySource[sourceName] = normalized;
+  });
+
+  for (let i = 0; i < preferredSources.length; i += 1) {
+    const sourceName = preferredSources[i];
+    if (preferredBySource[sourceName] === null) continue;
+    return {
+      resolved_rank: preferredBySource[sourceName],
+      rank_source: sourceName,
+      rank_confidence: sourceRankConfidence[sourceName] || 'medium',
+    };
+  }
+
+  const mergedCandidate = normalizeCanonicalRankingValue_(mergedRankingCandidate);
+  if (mergedCandidate !== null) {
+    return {
+      resolved_rank: mergedCandidate,
+      rank_source: 'merged',
+      rank_confidence: sourceRankConfidence.merged,
+    };
+  }
+
+  return {
+    resolved_rank: null,
+    rank_source: '',
+    rank_confidence: 'none',
+  };
+}
+
+function normalizeCanonicalRankingValue_(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const rounded = Math.round(numeric);
+  if (Math.abs(numeric - rounded) > 0.000001) return null;
+  if (rounded < 1 || rounded > 5000) return null;
+  return rounded;
 }
 
 function resolvePreferredSourcesForFeature_(feature) {
