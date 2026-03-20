@@ -5439,6 +5439,10 @@ function testStageMatchEvents_countsFullyUnmatchedOddsAsRejected_() {
   assertEquals_(0, stage.summary.output_count);
   assertEquals_(1, stage.summary.reason_codes.rejected_count);
   assertEquals_(1, stage.summary.reason_codes.no_player_match);
+  assertEquals_('player one', (stage.unmatched[0].normalized_odds_players || [])[0] || '');
+  assertEquals_('different', ((stage.unmatched[0].nearest_schedule_candidate || {}).normalized_players || [])[0] || '');
+  assertEquals_(5, Number(stage.unmatched[0].primary_time_delta_min || 0));
+  assertEquals_(5, Number(stage.unmatched[0].fallback_time_delta_min || 0));
 }
 
 function testStageMatchEvents_countsPartialMatchesAndRejectionsSeparately_() {
@@ -5479,6 +5483,61 @@ function testStageMatchEvents_countsPartialMatchesAndRejectionsSeparately_() {
   assertEquals_(1, stage.summary.reason_codes.rejected_count);
   assertEquals_(1, stage.summary.reason_codes.primary_match);
   assertEquals_(1, stage.summary.reason_codes.no_player_match);
+}
+
+function testStageMatchEvents_matchesOnInitialSurnameCanonicalization_() {
+  const oddsEvents = [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'A Sabalenka',
+    player_2: 'I Swiatek',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }];
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: 'Aryna Sabalenka',
+    player_2: 'Iga Swiatek',
+    start_time: new Date('2025-03-01T12:06:00.000Z'),
+  }];
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, oddsEvents, scheduleEvents);
+
+  assertEquals_(1, stage.matchedCount);
+  assertEquals_(0, stage.rejectedCount);
+  assertEquals_('sched_1', stage.rows[0].schedule_event_id);
+}
+
+function testStageMatchEvents_reportsPrimaryAndFallbackWindowDeltasWhenFallbackExhausted_() {
+  const oddsEvents = [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }];
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    start_time: new Date('2025-03-01T16:00:00.000Z'),
+  }];
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, oddsEvents, scheduleEvents);
+
+  assertEquals_(1, stage.rejectedCount);
+  assertEquals_('fallback_exhausted', stage.unmatched[0].rejection_code);
+  assertEquals_(240, Number(stage.unmatched[0].primary_time_delta_min || 0));
+  assertEquals_(240, Number(stage.unmatched[0].fallback_time_delta_min || 0));
 }
 
 function testExtractLeadersJsUrl_matchesLeadersourceWtaScript_() {
