@@ -2493,6 +2493,7 @@ function deriveStageSkippedReasonCounts_(reasonCodeMaps) {
       || code === 'missing_open_timestamp'
       || code === 'schedule_seed_no_odds'
       || code === 'schedule_enrichment_no_schedule_events'
+      || code === 'schedule_missing_player_identity'
       || code === 'no_player_match') {
       counts[code] = value;
     }
@@ -2549,12 +2550,14 @@ function resolveDominantRunHealthBlockers_(oddsReasonCodes, scheduleReasonCodes,
     cooldown_suppressed: 0,
     stats_zero_coverage: 0,
     no_player_match: 0,
+    schedule_missing_player_identity: 0,
     schedule_unavailable: 0,
     no_schedule_candidates: 0,
     no_odds_candidates: 0,
     outside_window_idle_skip: 0,
   }, explicitCounts || {});
   counts.no_player_match += Number((matchReasonCodes && matchReasonCodes.no_player_match) || 0);
+  counts.schedule_missing_player_identity += Number((matchReasonCodes && matchReasonCodes.schedule_missing_player_identity) || 0);
   counts.schedule_unavailable += Number((scheduleReasonCodes && scheduleReasonCodes.schedule_enrichment_no_schedule_events) || 0);
   counts.no_schedule_candidates += Number((matchReasonCodes && matchReasonCodes.no_schedule_candidates) || 0);
   counts.no_odds_candidates += Number((matchReasonCodes && matchReasonCodes.no_odds_candidates) || 0);
