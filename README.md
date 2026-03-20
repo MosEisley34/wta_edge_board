@@ -8,6 +8,40 @@ If the custom menu does not appear (for example due to simple-trigger binding/de
 * Run `rebuildMenuNow` once from the editor
 * Reload spreadsheet and verify menu presence
 
+## Apps Script file reconciliation (live project vs repo)
+
+Use `scripts/apps_script_reconcile.py` to compare the live Apps Script project file list against canonical repo modules and optionally remove stale modules from the live project.
+
+Dry-run comparison (no live writes):
+
+```bash
+python3 scripts/apps_script_reconcile.py \
+  --script-id "${APPS_SCRIPT_ID}" \
+  --access-token "${GOOGLE_ACCESS_TOKEN}"
+```
+
+Apply cleanup in the live project:
+
+```bash
+# delete stale SERVER_JS files from the live project
+python3 scripts/apps_script_reconcile.py \
+  --script-id "${APPS_SCRIPT_ID}" \
+  --access-token "${GOOGLE_ACCESS_TOKEN}" \
+  --apply-delete
+
+# or archive stale SERVER_JS files (prefixes with ARCHIVE_YYYYMMDD_)
+python3 scripts/apps_script_reconcile.py \
+  --script-id "${APPS_SCRIPT_ID}" \
+  --access-token "${GOOGLE_ACCESS_TOKEN}" \
+  --apply-archive
+```
+
+The script reports:
+- duplicate/legacy files present only in live Apps Script,
+- near-duplicate module names (for example `constant` vs `constants`),
+- canonical modules missing in the live Apps Script project,
+- duplicate top-level globals in canonical repo modules.
+
 ## Secrets rotation and safe usage
 
 ### 1) Rotate/revoke The Odds API key
