@@ -1,6 +1,6 @@
 // Canonical Matchstat row schema index map for the Apps Script project.
-// Keep MATCHMX_ROW_IDX declared only in this module (project-wide canonical declaration).
-const MATCHMX_ROW_IDX = {
+// Keep PLAYER_STATS_MATCHMX_ROW_IDX declared only in this module (project-wide canonical declaration).
+const PLAYER_STATS_MATCHMX_ROW_IDX = {
   DATE: 0,
   EVENT: 1,
   SURFACE: 2,
@@ -21,7 +21,7 @@ const MATCHMX_ROW_IDX = {
   DOMINANCE_RATIO: 17,
   TOTAL_POINTS_WON_PCT: 18,
 };
-const MATCHMX_MIN_FIELD_COUNT = MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT + 1;
+const PLAYER_STATS_MATCHMX_MIN_FIELD_COUNT = PLAYER_STATS_MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT + 1;
 
 const PLAYER_STATS_H2H_CACHE_KEY = 'PLAYER_STATS_H2H_DATASET';
 const PLAYER_STATS_LEADERS_CACHE_KEY = 'PLAYER_STATS_TA_LEADERS_PAYLOAD';
@@ -1039,7 +1039,7 @@ function extractMatchMxRowsFromStructuredAssignment_(payloadText) {
   const container = findRowsContainerInMatchMxValue_(parsed, 'matchmx');
   const rawRows = Array.isArray(container.rows) ? container.rows : [];
   const tokenRows = rawRows
-    .filter(function (row) { return Array.isArray(row) && row.length >= MATCHMX_MIN_FIELD_COUNT; })
+    .filter(function (row) { return Array.isArray(row) && row.length >= PLAYER_STATS_MATCHMX_MIN_FIELD_COUNT; })
     .map(function (row) { return row.map(function (cell) { return cell === null || cell === undefined ? '' : String(cell); }); });
   const schema = detectMatchMxSchema_(tokenRows);
   const rows = [];
@@ -1203,39 +1203,39 @@ function detectMatchMxSchema_(tokenRows) {
     schema_source: 'detected',
     candidate_player_name_col: bestNameCol,
     candidate_player_name_ratio: roundNumber_(bestNameRatio, 3),
-    selected_player_name_col: bestNameRatio >= 0.45 ? bestNameCol : MATCHMX_ROW_IDX.PLAYER_NAME,
+    selected_player_name_col: bestNameRatio >= 0.45 ? bestNameCol : PLAYER_STATS_MATCHMX_ROW_IDX.PLAYER_NAME,
   };
   mapping.player_name = diagnostics.selected_player_name_col;
-  mapping.opponent = findBestNameLikeColumn_(rows, maxColumns, mapping.player_name, 0.25, MATCHMX_ROW_IDX.OPPONENT);
-  mapping.score = findBestScoreColumn_(rows, maxColumns, MATCHMX_ROW_IDX.SCORE);
-  mapping.ranking = findBestNumericColumn_(rows, maxColumns, function (n) { return n >= 1 && n <= 5000; }, MATCHMX_ROW_IDX.RANKING, [mapping.player_name, mapping.opponent, mapping.score]);
+  mapping.opponent = findBestNameLikeColumn_(rows, maxColumns, mapping.player_name, 0.25, PLAYER_STATS_MATCHMX_ROW_IDX.OPPONENT);
+  mapping.score = findBestScoreColumn_(rows, maxColumns, PLAYER_STATS_MATCHMX_ROW_IDX.SCORE);
+  mapping.ranking = findBestNumericColumn_(rows, maxColumns, function (n) { return n >= 1 && n <= 5000; }, PLAYER_STATS_MATCHMX_ROW_IDX.RANKING, [mapping.player_name, mapping.opponent, mapping.score]);
 
   const used = [mapping.player_name, mapping.opponent, mapping.score, mapping.ranking];
   const pctMatcher = function (n) { return n >= 0 && n <= 100.5; };
-  mapping.recent_form = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.RECENT_FORM, used);
+  mapping.recent_form = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.RECENT_FORM, used);
   used.push(mapping.recent_form);
-  mapping.surface_win_rate = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.SURFACE_WIN_RATE, used);
+  mapping.surface_win_rate = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.SURFACE_WIN_RATE, used);
   used.push(mapping.surface_win_rate);
-  mapping.hold_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.HOLD_PCT, used);
+  mapping.hold_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.HOLD_PCT, used);
   used.push(mapping.hold_pct);
-  mapping.break_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.BREAK_PCT, used);
+  mapping.break_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.BREAK_PCT, used);
   used.push(mapping.break_pct);
 
-  mapping.bp_saved_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.BP_SAVED_PCT, used);
+  mapping.bp_saved_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.BP_SAVED_PCT, used);
   used.push(mapping.bp_saved_pct);
-  mapping.bp_conv_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.BP_CONV_PCT, used);
+  mapping.bp_conv_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.BP_CONV_PCT, used);
   used.push(mapping.bp_conv_pct);
-  mapping.first_serve_in_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.FIRST_SERVE_IN_PCT, used);
+  mapping.first_serve_in_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.FIRST_SERVE_IN_PCT, used);
   used.push(mapping.first_serve_in_pct);
-  mapping.first_serve_points_won_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.FIRST_SERVE_POINTS_WON_PCT, used);
+  mapping.first_serve_points_won_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.FIRST_SERVE_POINTS_WON_PCT, used);
   used.push(mapping.first_serve_points_won_pct);
-  mapping.second_serve_points_won_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.SECOND_SERVE_POINTS_WON_PCT, used);
+  mapping.second_serve_points_won_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.SECOND_SERVE_POINTS_WON_PCT, used);
   used.push(mapping.second_serve_points_won_pct);
-  mapping.return_points_won_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.RETURN_POINTS_WON_PCT, used);
+  mapping.return_points_won_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.RETURN_POINTS_WON_PCT, used);
   used.push(mapping.return_points_won_pct);
-  mapping.dr = findBestNumericColumn_(rows, maxColumns, function (n) { return n >= 0 && n <= 5; }, MATCHMX_ROW_IDX.DOMINANCE_RATIO, used);
+  mapping.dr = findBestNumericColumn_(rows, maxColumns, function (n) { return n >= 0 && n <= 5; }, PLAYER_STATS_MATCHMX_ROW_IDX.DOMINANCE_RATIO, used);
   used.push(mapping.dr);
-  mapping.tpw_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT, used);
+  mapping.tpw_pct = findBestNumericColumn_(rows, maxColumns, pctMatcher, PLAYER_STATS_MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT, used);
 
   diagnostics.mapping = mapping;
   return { mapping: mapping, diagnostics: diagnostics };
@@ -1243,25 +1243,25 @@ function detectMatchMxSchema_(tokenRows) {
 
 function buildDefaultMatchMxSchema_() {
   return {
-    date: MATCHMX_ROW_IDX.DATE,
-    event: MATCHMX_ROW_IDX.EVENT,
-    surface: MATCHMX_ROW_IDX.SURFACE,
-    player_name: MATCHMX_ROW_IDX.PLAYER_NAME,
-    opponent: MATCHMX_ROW_IDX.OPPONENT,
-    score: MATCHMX_ROW_IDX.SCORE,
-    ranking: MATCHMX_ROW_IDX.RANKING,
-    recent_form: MATCHMX_ROW_IDX.RECENT_FORM,
-    surface_win_rate: MATCHMX_ROW_IDX.SURFACE_WIN_RATE,
-    hold_pct: MATCHMX_ROW_IDX.HOLD_PCT,
-    break_pct: MATCHMX_ROW_IDX.BREAK_PCT,
-    bp_saved_pct: MATCHMX_ROW_IDX.BP_SAVED_PCT,
-    bp_conv_pct: MATCHMX_ROW_IDX.BP_CONV_PCT,
-    first_serve_in_pct: MATCHMX_ROW_IDX.FIRST_SERVE_IN_PCT,
-    first_serve_points_won_pct: MATCHMX_ROW_IDX.FIRST_SERVE_POINTS_WON_PCT,
-    second_serve_points_won_pct: MATCHMX_ROW_IDX.SECOND_SERVE_POINTS_WON_PCT,
-    return_points_won_pct: MATCHMX_ROW_IDX.RETURN_POINTS_WON_PCT,
-    dr: MATCHMX_ROW_IDX.DOMINANCE_RATIO,
-    tpw_pct: MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT,
+    date: PLAYER_STATS_MATCHMX_ROW_IDX.DATE,
+    event: PLAYER_STATS_MATCHMX_ROW_IDX.EVENT,
+    surface: PLAYER_STATS_MATCHMX_ROW_IDX.SURFACE,
+    player_name: PLAYER_STATS_MATCHMX_ROW_IDX.PLAYER_NAME,
+    opponent: PLAYER_STATS_MATCHMX_ROW_IDX.OPPONENT,
+    score: PLAYER_STATS_MATCHMX_ROW_IDX.SCORE,
+    ranking: PLAYER_STATS_MATCHMX_ROW_IDX.RANKING,
+    recent_form: PLAYER_STATS_MATCHMX_ROW_IDX.RECENT_FORM,
+    surface_win_rate: PLAYER_STATS_MATCHMX_ROW_IDX.SURFACE_WIN_RATE,
+    hold_pct: PLAYER_STATS_MATCHMX_ROW_IDX.HOLD_PCT,
+    break_pct: PLAYER_STATS_MATCHMX_ROW_IDX.BREAK_PCT,
+    bp_saved_pct: PLAYER_STATS_MATCHMX_ROW_IDX.BP_SAVED_PCT,
+    bp_conv_pct: PLAYER_STATS_MATCHMX_ROW_IDX.BP_CONV_PCT,
+    first_serve_in_pct: PLAYER_STATS_MATCHMX_ROW_IDX.FIRST_SERVE_IN_PCT,
+    first_serve_points_won_pct: PLAYER_STATS_MATCHMX_ROW_IDX.FIRST_SERVE_POINTS_WON_PCT,
+    second_serve_points_won_pct: PLAYER_STATS_MATCHMX_ROW_IDX.SECOND_SERVE_POINTS_WON_PCT,
+    return_points_won_pct: PLAYER_STATS_MATCHMX_ROW_IDX.RETURN_POINTS_WON_PCT,
+    dr: PLAYER_STATS_MATCHMX_ROW_IDX.DOMINANCE_RATIO,
+    tpw_pct: PLAYER_STATS_MATCHMX_ROW_IDX.TOTAL_POINTS_WON_PCT,
   };
 }
 
@@ -1697,7 +1697,7 @@ function extractTopLevelArrayLiteralBody_(text, openingIndex) {
 }
 
 function hasMinimumMatchMxSchemaColumns_(tokens) {
-  return Array.isArray(tokens) && tokens.length >= MATCHMX_MIN_FIELD_COUNT;
+  return Array.isArray(tokens) && tokens.length >= PLAYER_STATS_MATCHMX_MIN_FIELD_COUNT;
 }
 
 function buildStructuredMatchMxRow_(tokens, schemaMapping) {
