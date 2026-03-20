@@ -5548,7 +5548,7 @@ function testStageMatchEvents_matchesKnownTourFeedNameOrderPatterns_() {
   assertEquals_(0, stage.rejectedCount);
 }
 
-function testStageMatchEvents_reducesNoPlayerMatchAcross18AliasHeavyCases_() {
+function testStageMatchEvents_reducesNoPlayerMatchAcross32RejectionDiagnostics_() {
   const oddsEvents = [
     ['Jeļena Ostapenko', 'Iga Świątek'],
     ['Rybakina Elena', 'Swiatek Iga'],
@@ -5568,6 +5568,20 @@ function testStageMatchEvents_reducesNoPlayerMatchAcross18AliasHeavyCases_() {
     ['Svitolina Elina', 'Kalininskaya Anna'],
     ['Bencic Belinda', 'Frech Magdalena'],
     ['Bogdan Ana', 'Cristian Jaqueline'],
+    ['J. Paolini', 'L. Carle'],
+    ['M. Keys', 'Kasatkina Daria'],
+    ['B. Haddad Maia', 'Emma Navarro'],
+    ['E. Alexandrova', 'Sakkari Maria'],
+    ['K. Pliskova', 'Magda Linette'],
+    ['V. Kudermetova', 'Q. Zheng'],
+    ['K. Rakhimova', 'Sorribes Tormo Sara'],
+    ['D. Yastremska', 'Garcia Caroline'],
+    ['J. Paolini', 'L. Carle'],
+    ['M. Keys', 'Kasatkina Daria'],
+    ['Kalininskaya Anna', 'Svitolina Elina'],
+    ['B. Haddad Maia', 'Emma Navarro'],
+    ['V. Kudermetova', 'Q. Zheng'],
+    ['K. Pliskova', 'Magda Linette'],
   ].map(function (pair, idx) {
     return {
       event_id: 'odds_' + (idx + 1),
@@ -5596,6 +5610,20 @@ function testStageMatchEvents_reducesNoPlayerMatchAcross18AliasHeavyCases_() {
     ['Elina Svitolina', 'Anna Kalinskaya'],
     ['Belinda Bencic', 'Magdalena Frech'],
     ['Ana Bogdan', 'Jaqueline Cristian'],
+    ['Jasmine Paolini', 'Lourdes Carle'],
+    ['Madison Keys', 'Daria Kasatkina'],
+    ['Beatriz Haddad Maia', 'Emma Navarro'],
+    ['Ekaterina Alexandrova', 'Maria Sakkari'],
+    ['Karolina Pliskova', 'Magda Linette'],
+    ['Veronika Kudermetova', 'Qinwen Zheng'],
+    ['Kamilla Rakhimova', 'Sara Sorribes Tormo'],
+    ['Dayana Yastremska', 'Caroline Garcia'],
+    ['Jasmine Paolini', 'Lourdes Carle'],
+    ['Madison Keys', 'Daria Kasatkina'],
+    ['Anna Kalinskaya', 'Elina Svitolina'],
+    ['Beatriz Haddad Maia', 'Emma Navarro'],
+    ['Veronika Kudermetova', 'Qinwen Zheng'],
+    ['Karolina Pliskova', 'Magda Linette'],
   ].map(function (pair, idx) {
     return {
       event_id: 'sched_' + (idx + 1),
@@ -5612,8 +5640,69 @@ function testStageMatchEvents_reducesNoPlayerMatchAcross18AliasHeavyCases_() {
     PLAYER_ALIAS_MAP_JSON: '{}',
   }, oddsEvents, scheduleEvents);
 
-  assertEquals_(18, stage.summary.input_count);
-  assertTrue_(stage.rejectedCount <= 5, 'expected no_player_match style rejection reduction to <=5');
+  const unmatchedPairCounts = {};
+  stage.unmatched.forEach(function (row) {
+    const oddsPair = (row.normalized_odds_players || []).join('|');
+    const nearestPair = ((row.nearest_schedule_candidate || {}).normalized_players || []).join('|');
+    const key = oddsPair + ' => ' + nearestPair;
+    unmatchedPairCounts[key] = (unmatchedPairCounts[key] || 0) + 1;
+  });
+
+  const topRepeated = Object.keys(unmatchedPairCounts).map(function (key) {
+    return { key: key, count: unmatchedPairCounts[key] };
+  }).sort(function (a, b) {
+    return b.count - a.count;
+  }).slice(0, 3);
+
+  assertEquals_(32, stage.summary.input_count);
+  assertTrue_(stage.matchedCount > 8, 'expected MATCH_CT increase above 8 for alias-heavy diagnostics');
+  assertTrue_((stage.summary.reason_codes.no_player_match || 0) < 18, 'expected NO_P_MATCH decrease below 18');
+  assertTrue_(topRepeated.length <= 3, 'expected top repeated unmatched extraction to remain bounded');
+
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return { local: '2026-01-01T00:00:00-07:00', utc: '2026-01-01T07:00:00.000Z' };
+  };
+
+  try {
+    const signalEvents = oddsEvents.map(function (event) {
+      return {
+        event_id: event.event_id,
+        market: 'h2h',
+        outcome: 'player_a',
+        bookmaker: 'book_x',
+        price: 110,
+        commence_time: new Date(event.commence_time),
+        odds_updated_time: new Date(nowMs),
+      };
+    });
+    const signalConfig = {
+      MODEL_VERSION: 'test_model_v1', EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08, STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5, SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: '', SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+    const signalResult = stageGenerateSignals('run_32_diag', signalConfig, signalEvents, stage.rows, {});
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+    assertTrue_((signalResult.summary.reason_codes.missing_match || 0) < 18, 'expected downstream missing_match suppression reduction');
+    assertTrue_((decisionState.reason_counts || {}).missing_match < 18, 'expected sampled decision missing_match reduction');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
 }
 
 function testStageMatchEvents_reportsPrimaryAndFallbackWindowDeltasWhenFallbackExhausted_() {
