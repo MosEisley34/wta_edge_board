@@ -207,7 +207,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
   });
 
   if (sourcePayloads.length) {
-    const merged = mergePlayerStatsMaps_(sourcePayloads, players);
+    const merged = mergePlayerStatsMaps_(sourcePayloads, players, config);
     const mergeDiagnostics = buildPlayerStatsMergeDiagnostics_(sourcePayloads, merged, players, sourceAttemptDiagnostics);
     const mergedHasData = Number((mergeDiagnostics.final || {}).players_with_non_null_stats || 0) > 0;
     const finalSelection = mergeDiagnostics.final || {};
@@ -2649,9 +2649,10 @@ function extractStatsFromScrapeContent_(content, playerName) {
   return normalized[canonicalizePlayerName_(playerName, {})] || null;
 }
 
-function mergePlayerStatsMaps_(sourcePayloads, canonicalPlayers) {
+function mergePlayerStatsMaps_(sourcePayloads, canonicalPlayers, config) {
   const merged = {};
   const players = dedupePlayerNames_(canonicalPlayers || []);
+  const cohortPolicy = buildPlayerStatsCohortPolicy_(config);
   const sourceMaps = (sourcePayloads || []).map(function (entry) {
     return {
       source_name: canonicalizeStatsProviderName_(entry && entry.source_name),
@@ -2728,11 +2729,57 @@ function mergePlayerStatsMaps_(sourcePayloads, canonicalPlayers) {
       mergedRow.stats_confidence = 0;
       mergedRow.stats_confidence_band = 'none';
     }
+
+    const cohortDecision = classifyPlayerStatsCohort_(mergedRow, cohortPolicy);
+    mergedRow.reason_metadata = Object.assign({}, mergedRow.reason_metadata || {}, {
+      cohort_decision: cohortDecision.classification,
+      cohort_policy_mode: cohortPolicy.mode,
+      cohort_top_rank_max: cohortPolicy.top_rank_max,
+      cohort_rank_value: cohortDecision.rank_value,
+      cohort_fallback_allowed: cohortPolicy.allow_out_of_cohort_fallback,
+      cohort_reason_code: cohortDecision.reason_code,
+    });
+    mergedRow.cohort = cohortDecision.classification;
+    mergedRow.cohort_reason_code = cohortDecision.reason_code;
+    mergedRow.allow_out_of_cohort_fallback = cohortPolicy.allow_out_of_cohort_fallback;
     mergedRow.fallback_mode = rankingOnlyFallback ? 'ranking_only' : '';
     merged[player] = mergedRow;
   });
 
   return merged;
+}
+
+function buildPlayerStatsCohortPolicy_(config) {
+  const rawMode = String((config && config.PLAYER_STATS_COHORT_MODE) || 'leadersource').toLowerCase().trim();
+  const mode = rawMode === 'top100' || rawMode === 'all' || rawMode === 'leadersource'
+    ? rawMode
+    : 'leadersource';
+  return {
+    mode: mode,
+    top_rank_max: Math.max(1, Number((config && config.PLAYER_STATS_TOP_RANK_MAX) || 100)),
+    allow_out_of_cohort_fallback: config && config.PLAYER_STATS_ALLOW_OUT_OF_COHORT_FALLBACK !== undefined
+      ? !!config.PLAYER_STATS_ALLOW_OUT_OF_COHORT_FALLBACK
+      : true,
+  };
+}
+
+function classifyPlayerStatsCohort_(mergedRow, cohortPolicy) {
+  const policy = cohortPolicy || buildPlayerStatsCohortPolicy_({});
+  const rawRank = mergedRow ? mergedRow.ranking : null;
+  const numericRank = Number(rawRank);
+  const hasNumericRank = Number.isFinite(numericRank) && numericRank > 0;
+  const rankValue = hasNumericRank ? numericRank : null;
+
+  if (policy.mode === 'all') {
+    return { classification: 'in_cohort', reason_code: 'cohort_mode_all', rank_value: rankValue };
+  }
+  if (!hasNumericRank) {
+    return { classification: 'unknown_rank', reason_code: 'cohort_rank_unknown', rank_value: null };
+  }
+  if (numericRank <= policy.top_rank_max) {
+    return { classification: 'in_cohort', reason_code: 'cohort_rank_within_threshold', rank_value: numericRank };
+  }
+  return { classification: 'out_of_cohort', reason_code: 'cohort_rank_outside_threshold', rank_value: numericRank };
 }
 
 function resolvePreferredSourcesForFeature_(feature) {
@@ -2914,6 +2961,9 @@ function buildPlayerStatsMergeDiagnostics_(sourcePayloads, mergedStatsByPlayer, 
   });
 
   const finalSummary = summarizePlayerStatsCompleteness_(mergedStatsByPlayer || {});
+  const cohortSummary = summarizePlayerStatsCohort_(mergedStatsByPlayer || {});
+  finalSummary.cohort_summary = cohortSummary;
+  finalSummary.cohort_summary_reason_codes = cohortSummary.reason_codes;
   const diagnostics = {
     per_source_players_parsed: perSourcePlayersParsed,
     per_feature_non_null_contributions: perFeatureContributions,
@@ -3280,9 +3330,38 @@ function playerStatsHasNonNullFeatures_(stats) {
 function resolvePlayerStatsAggregateReasonCode_(baseReasonCode, completeness) {
   const reasonCode = String(baseReasonCode || '');
   const metrics = completeness || { has_stats: false, players_with_null_only_stats: 0 };
+  const cohortSummary = metrics.cohort_summary || {};
+  if (Number(cohortSummary.out_of_cohort || 0) > 0 && Number(cohortSummary.in_cohort || 0) === 0) {
+    return 'player_stats_out_of_cohort_only';
+  }
+  if (Number(cohortSummary.unknown_rank || 0) > 0 && Number(cohortSummary.in_cohort || 0) === 0 && !metrics.has_stats) {
+    return 'player_stats_unknown_rank_only';
+  }
   if (metrics.has_stats) return reasonCode;
   if (Number(metrics.players_with_null_only_stats || 0) > 0) return 'provider_returned_null_features';
   return reasonCode || 'provider_returned_empty';
+}
+
+function summarizePlayerStatsCohort_(statsByPlayer) {
+  const summary = {
+    in_cohort: 0,
+    out_of_cohort: 0,
+    unknown_rank: 0,
+    reason_codes: {},
+  };
+  const players = statsByPlayer && typeof statsByPlayer === 'object' ? Object.keys(statsByPlayer) : [];
+  players.forEach(function (player) {
+    const row = statsByPlayer[player] || {};
+    const classification = String(row.cohort || 'unknown_rank');
+    if (classification === 'in_cohort' || classification === 'out_of_cohort' || classification === 'unknown_rank') {
+      summary[classification] += 1;
+    } else {
+      summary.unknown_rank += 1;
+    }
+    const reasonCode = String(row.cohort_reason_code || '');
+    if (reasonCode) summary.reason_codes[reasonCode] = Number(summary.reason_codes[reasonCode] || 0) + 1;
+  });
+  return summary;
 }
 
 function getTaH2hRowForCanonicalPair_(config, playerA, playerB) {
