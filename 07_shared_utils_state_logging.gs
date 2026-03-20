@@ -109,7 +109,11 @@ function stagePersist(runId, payload) {
 
   upsertSheetRows_(SHEETS.MATCH_MAP, [
     'key', 'odds_event_id', 'schedule_event_id', 'match_type',
-    'rejection_code', 'time_diff_min', 'competition_tier', 'updated_at',
+    'rejection_code', 'time_diff_min', 'competition_tier',
+    'odds_players_raw', 'odds_players_normalized',
+    'candidate_players_raw', 'candidate_players_normalized',
+    'similarity_scores', 'primary_time_delta_min', 'fallback_time_delta_min',
+    'rejection_discriminator', 'updated_at',
   ], payload.matchMap);
 
   upsertSheetRows_(SHEETS.SIGNALS, [

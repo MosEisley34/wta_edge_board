@@ -76,6 +76,7 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
     });
 
   finalResults.forEach((result) => {
+    const rejectionDiagnostics = buildMatchRejectionDiagnostics_(result);
     if (result.matched) {
       rows.push({
         key: result.odds.event_id,
@@ -85,6 +86,14 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
         rejection_code: '',
         time_diff_min: result.time_diff_min,
         competition_tier: result.competition_tier,
+        odds_players_raw: '',
+        odds_players_normalized: '',
+        candidate_players_raw: '',
+        candidate_players_normalized: '',
+        similarity_scores: '',
+        primary_time_delta_min: '',
+        fallback_time_delta_min: '',
+        rejection_discriminator: '',
         updated_at: new Date().toISOString(),
       });
       matchedCount += 1;
@@ -100,6 +109,14 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
       rejection_code: result.rejection_code,
       time_diff_min: '',
       competition_tier: '',
+      odds_players_raw: JSON.stringify(rejectionDiagnostics.odds_players_raw),
+      odds_players_normalized: JSON.stringify(rejectionDiagnostics.odds_players_normalized),
+      candidate_players_raw: JSON.stringify(rejectionDiagnostics.candidate_players_raw),
+      candidate_players_normalized: JSON.stringify(rejectionDiagnostics.candidate_players_normalized),
+      similarity_scores: JSON.stringify(rejectionDiagnostics.similarity_scores),
+      primary_time_delta_min: rejectionDiagnostics.primary_time_delta_min,
+      fallback_time_delta_min: rejectionDiagnostics.fallback_time_delta_min,
+      rejection_discriminator: rejectionDiagnostics.rejection_discriminator,
       updated_at: new Date().toISOString(),
     });
     reasonCounts[result.rejection_code] = (reasonCounts[result.rejection_code] || 0) + 1;
@@ -141,6 +158,35 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
     unmatchedCount: rejectedCount,
     unmatched,
     canonicalizationExamples,
+  };
+}
+
+function buildMatchRejectionDiagnostics_(result) {
+  const nearest = result.nearest_schedule_candidate || null;
+  const oddsPlayer1 = String((result.odds || {}).player_1 || '');
+  const oddsPlayer2 = String((result.odds || {}).player_2 || '');
+  const normalizedOddsPlayers = Array.isArray(result.normalized_odds_players) ? result.normalized_odds_players.slice(0, 2) : [];
+  const oddsKey = normalizedOddsPlayers.join('|');
+  const candidateNormalizedPlayers = nearest && Array.isArray(nearest.normalized_players) ? nearest.normalized_players.slice(0, 2) : [];
+  const candidateKey = candidateNormalizedPlayers.join('|');
+  const playerDistance = Number.isFinite(Number((nearest || {}).player_distance)) ? Number(nearest.player_distance) : '';
+  const maxKeyLen = Math.max(oddsKey.length, candidateKey.length);
+  const normalizedSimilarityScore = maxKeyLen > 0 && playerDistance !== ''
+    ? Number((1 - (playerDistance / maxKeyLen)).toFixed(6))
+    : '';
+  return {
+    odds_players_raw: [oddsPlayer1, oddsPlayer2],
+    odds_players_normalized: normalizedOddsPlayers,
+    candidate_players_raw: nearest ? [String(nearest.player_1 || ''), String(nearest.player_2 || '')] : [],
+    candidate_players_normalized: candidateNormalizedPlayers,
+    similarity_scores: {
+      player_distance: playerDistance,
+      normalized_similarity: normalizedSimilarityScore,
+      initial_key_match: nearest ? !!nearest.initial_key_match : false,
+    },
+    primary_time_delta_min: result.primary_time_delta_min === '' ? '' : Number(result.primary_time_delta_min || 0),
+    fallback_time_delta_min: result.fallback_time_delta_min === '' ? '' : Number(result.fallback_time_delta_min || 0),
+    rejection_discriminator: String(result.rejection_code || ''),
   };
 }
 
