@@ -15,6 +15,7 @@ from typing import Any
 import re
 
 from pipeline_log_adapter import (
+    LEGACY_UNK_REASON_CODE_CANONICAL_MAP,
     REASON_CODE_ALIAS_DICTIONARIES,
     REASON_CODE_ALIAS_SCHEMA_ID,
     adapt_run_log_record_for_legacy,
@@ -183,7 +184,7 @@ def _extract_player_stats_coverage(reason_metadata: Any) -> dict[str, Any] | Non
 
 
 def _collect_fallback_aliases(record: dict[str, Any], message: dict[str, Any] | None) -> dict[str, str]:
-    fallback_aliases: dict[str, str] = {}
+    fallback_aliases: dict[str, str] = dict(LEGACY_UNK_REASON_CODE_CANONICAL_MAP)
 
     def _merge(obj: Any):
         if not isinstance(obj, dict):

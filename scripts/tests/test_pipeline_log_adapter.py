@@ -169,6 +169,26 @@ class PipelineLogAdapterTests(unittest.TestCase):
         self.assertEqual(1, message["reason_codes"]["schedule_window_fallback_no_odds"])
         self.assertEqual(1, message["reason_codes"]["credit_header_missing"])
 
+    def test_compact_v2_normalizes_recurring_legacy_unk_aliases_without_fallback_metadata(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "schema_version": 2,
+                "et": "summary",
+                "rid": "run-v2-legacy-unk",
+                "st": "runEdgeBoard",
+                "msg": {
+                    "schema_id": "reason_code_alias_v1",
+                    "reason_codes": {
+                        "UNK_OPEN_TS": 2,
+                        "UNK_OPEN_LAG": 1,
+                    },
+                },
+            }
+        )
+        message = json.loads(adapted["message"])
+        self.assertEqual(2, message["reason_codes"]["missing_open_timestamp"])
+        self.assertEqual(1, message["reason_codes"]["opening_lag_exceeded"])
+
 
 
 if __name__ == "__main__":
