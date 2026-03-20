@@ -55,7 +55,7 @@ const GROUPS = {
     'testCanonicalizePlayerName_handlesDiacriticsAndTourFormattingVariants_',
     'testCanonicalizePlayerName_handlesInitialsAndCompoundSurnames_',
     'testStageMatchEvents_matchesKnownTourFeedNameOrderPatterns_',
-    'testStageMatchEvents_reducesNoPlayerMatchAcross18AliasHeavyCases_',
+    'testStageMatchEvents_reducesNoPlayerMatchAcross32RejectionDiagnostics_',
   ],
 };
 

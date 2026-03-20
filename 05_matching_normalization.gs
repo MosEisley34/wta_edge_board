@@ -696,6 +696,22 @@ function normalizePlayerNameAliasRules_(normalized) {
     's kartal': 'sonay kartal',
     'kartal sonay': 'sonay kartal',
     'sonay kartal': 'sonay kartal',
+    'j paolini': 'jasmine paolini',
+    'paolini j': 'jasmine paolini',
+    'm keys': 'madison keys',
+    'keys m': 'madison keys',
+    'b haddad maia': 'beatriz haddad maia',
+    'haddad maia b': 'beatriz haddad maia',
+    'e alexandrova': 'ekaterina alexandrova',
+    'alexandrova e': 'ekaterina alexandrova',
+    'k pliskova': 'karolina pliskova',
+    'pliskova k': 'karolina pliskova',
+    'v kudermetova': 'veronika kudermetova',
+    'k rakhimova': 'kamilla rakhimova',
+    'd yastremska': 'dayana yastremska',
+    'q zheng': 'qinwen zheng',
+    'kalininskaya anna': 'anna kalinskaya',
+    'anna kalininskaya': 'anna kalinskaya',
   };
   if (aliasRules[value]) return aliasRules[value];
 
