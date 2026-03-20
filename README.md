@@ -196,6 +196,23 @@ First-pass diagnosis should always start with the scanner's **Run-health degrade
 
 Manual 3-step flow is still available when needed:
 
+### Run-ID precheck gate before comparison scripts
+
+After exporting to `./exports_live`, run a dedicated precheck before any run-vs-run comparison:
+
+```bash
+python3 scripts/precheck_run_ids.py <run_id_a> <run_id_b> --export-dir ./exports_live
+```
+
+Behavior contract:
+- scans `./exports_live/*Run_Log*.json` and `./exports_live/*Run_Log*.csv` (recursive),
+- confirms both target run IDs are present,
+- exits non-zero when either run ID is missing.
+
+If precheck fails, **stop triage and re-export from the sheet before further analysis**.
+Only proceed to comparison scripts once both run IDs are confirmed present.
+
+
 1. **Export artifacts to a known directory** (`./exports` by default).
 2. **Run diagnostics scan/triage** against that export directory.
 3. **Interpret grouped counts + row previews** to identify the dominant failure mode.
