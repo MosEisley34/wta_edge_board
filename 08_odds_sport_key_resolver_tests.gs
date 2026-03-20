@@ -3529,6 +3529,74 @@ function testStageGenerateSignals_scoresNullFeaturesFallbackAndTracksReason_() {
   }
 }
 
+function testStageGenerateSignals_blocksOutOfCohortWhenUsableCoverageIsZero_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+
+  try {
+    const events = [{
+      event_id: 'evt_out_of_cohort', market: 'h2h', outcome: 'player_a', bookmaker: 'book_x', price: 150,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs),
+    }];
+    const matches = [{ odds_event_id: 'evt_out_of_cohort', schedule_event_id: 'sched_evt_out_of_cohort', competition_tier: 'WTA_500' }];
+    const stats = {
+      evt_out_of_cohort: {
+        player_a: {
+          has_stats: true,
+          usable_stats: false,
+          cohort: 'out_of_cohort',
+          allow_out_of_cohort_fallback: false,
+          features: { ranking: 170, recent_form: 0.52, surface_win_rate: 0.5, hold_pct: 0.61, break_pct: 0.29 },
+        },
+        player_b: {
+          has_stats: true,
+          usable_stats: false,
+          cohort: 'out_of_cohort',
+          allow_out_of_cohort_fallback: false,
+          features: { ranking: 180, recent_form: 0.5, surface_win_rate: 0.48, hold_pct: 0.6, break_pct: 0.28 },
+        },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1', EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08, STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5, SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: '', SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_out_of_cohort_block', config, events, matches, stats, {
+      upstream_gate_reason: 'stats_zero_coverage',
+      upstream_gate_inputs: {
+        resolved_with_usable_stats_count: 0,
+        cohort_policy_outcome: 'blocked_out_of_cohort',
+      },
+    });
+    assertEquals_(0, result.rows.length);
+    assertEquals_(1, Number(result.summary.reason_codes.missing_stats || 0));
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
 
 function testStageGenerateSignals_recordsMixedUpstreamOutcomesAndDecisionSamples_() {
   const originalDateNow = Date.now;
@@ -4853,6 +4921,50 @@ function testStageFetchPlayerStats_partialMissingIncrementsReasonCodes_() {
   assertEquals_(null, bundle.player_b.features.ranking);
 }
 
+function testStageFetchPlayerStats_tracksUsableResolutionAndOutOfCohortCounts_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    batchResult: {
+      stats_by_player: {
+        'player one': {
+          ranking: 140,
+          recent_form: 0,
+          surface_win_rate: 0,
+          hold_pct: 0,
+          break_pct: 0,
+          placeholder_feature_count: 5,
+          trusted_feature_count: 0,
+          cohort: 'out_of_cohort',
+          allow_out_of_cohort_fallback: false,
+          cohort_reason_code: 'cohort_rank_outside_threshold',
+        },
+        'player two': {
+          ranking: 24,
+          recent_form: 0.58,
+          surface_win_rate: 0.55,
+          hold_pct: 0.64,
+          break_pct: 0.31,
+          placeholder_feature_count: 0,
+          trusted_feature_count: 5,
+          cohort: 'in_cohort',
+          allow_out_of_cohort_fallback: false,
+          cohort_reason_code: 'cohort_rank_within_threshold',
+        },
+      },
+      provider_available: true,
+      api_credit_usage: 1,
+      reason_code: 'player_stats_api_success',
+    },
+  });
+
+  const meta = result.stage.summary.reason_metadata || {};
+  const bundle = result.stage.byOddsEventId.odds_evt_1;
+  assertEquals_(2, Number(meta.resolved_name_count || 0));
+  assertEquals_(1, Number(meta.resolved_with_usable_stats_count || 0));
+  assertEquals_(1, Number(meta.out_of_cohort_count || 0));
+  assertEquals_(false, bundle.player_a.has_stats);
+  assertEquals_(true, bundle.player_b.has_stats);
+}
+
 function testStageFetchPlayerStats_providerUnavailableFallsBackDeterministically_() {
   const first = runStageFetchPlayerStatsScenario_({
     batchResult: {
@@ -4878,6 +4990,7 @@ function testStageFetchPlayerStats_providerUnavailableFallsBackDeterministically
 
 function runStageFetchPlayerStatsScenario_(options) {
   const opts = options || {};
+  const originalDateNow = Date.now;
   const originalFetchPlayerStatsBatch = fetchPlayerStatsBatch_;
   const originalBuildStageSummary = buildStageSummary_;
   const originalGetStateJson = getStateJson_;

@@ -114,8 +114,8 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
       schedule_event_id: event.event_id,
     };
 
-    const playerAStats = resolvePlayerStatsPayload_(playerA, statsByPlayer, providerUnavailable, event, effectiveMatch, 'a', reasonCounts);
-    const playerBStats = resolvePlayerStatsPayload_(playerB, statsByPlayer, providerUnavailable, event, effectiveMatch, 'b', reasonCounts);
+    const playerAStats = resolvePlayerStatsPayload_(playerA, statsByPlayer, providerUnavailable, event, effectiveMatch, 'a', reasonCounts, config);
+    const playerBStats = resolvePlayerStatsPayload_(playerB, statsByPlayer, providerUnavailable, event, effectiveMatch, 'b', reasonCounts, config);
 
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerA, source, featureTimestamp, playerAStats));
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerB, source, featureTimestamp, playerBStats));
@@ -138,22 +138,42 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
         canonical_name: playerA,
         features: playerAStats.features,
         has_stats: playerAStats.has_stats,
+        usable_stats: playerAStats.usable_stats !== undefined ? !!playerAStats.usable_stats : !!playerAStats.has_stats,
         stats_confidence: resolvePlayerStatsConfidence_(playerAStats),
         stats_fallback_mode: playerAStats.stats_fallback_mode || '',
         provenance: playerAStats.provenance || source,
         source_used: playerAStats.source_used || source,
+        cohort: playerAStats.cohort || '',
+        cohort_reason_code: playerAStats.cohort_reason_code || '',
+        allow_out_of_cohort_fallback: playerAStats.allow_out_of_cohort_fallback !== false,
       },
       player_b: {
         canonical_name: playerB,
         features: playerBStats.features,
         has_stats: playerBStats.has_stats,
+        usable_stats: playerBStats.usable_stats !== undefined ? !!playerBStats.usable_stats : !!playerBStats.has_stats,
         stats_confidence: resolvePlayerStatsConfidence_(playerBStats),
         stats_fallback_mode: playerBStats.stats_fallback_mode || '',
         provenance: playerBStats.provenance || source,
         source_used: playerBStats.source_used || source,
+        cohort: playerBStats.cohort || '',
+        cohort_reason_code: playerBStats.cohort_reason_code || '',
+        allow_out_of_cohort_fallback: playerBStats.allow_out_of_cohort_fallback !== false,
       },
     };
   });
+
+  const resolvedWithUsableStatsCount = requestedUniquePlayers.reduce(function (count, playerName) {
+    if (!resolvedPlayerSet[playerName]) return count;
+    const stats = statsByPlayer[playerName];
+    const usability = evaluateProviderStatsUsability_(stats, config);
+    return count + (usability.usable ? 1 : 0);
+  }, 0);
+  const outOfCohortCount = requestedUniquePlayers.reduce(function (count, playerName) {
+    if (!resolvedPlayerSet[playerName]) return count;
+    const stats = statsByPlayer[playerName] || {};
+    return count + (String(stats.cohort || '') === 'out_of_cohort' ? 1 : 0);
+  }, 0);
 
   const summary = buildStageSummary_(runId, 'stageFetchPlayerStats', start, {
     input_count: statsInputEvents.length,
@@ -164,10 +184,13 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     reason_metadata: {
       players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
       players_with_null_only_stats: Number(statsCompleteness.players_with_null_only_stats || 0),
-      player_stats_data_available: !!statsCompleteness.has_stats,
+      player_stats_data_available: resolvedWithUsableStatsCount > 0,
       requested_player_count: requestedPlayerCount,
       resolved_player_count: resolvedPlayerCount,
+      resolved_name_count: resolvedPlayerCount,
+      resolved_with_usable_stats_count: resolvedWithUsableStatsCount,
       unresolved_player_count: unresolvedPlayerCount,
+      out_of_cohort_count: outOfCohortCount,
       overlap_ratio: roundNumber_(overlapRatio, 3),
       top_unresolved_player_samples: unresolvedPlayers.slice(0, 20),
     },
@@ -212,23 +235,26 @@ function buildSkippedPlayerStatsStage_(runId, reasonCode) {
   };
 }
 
-function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, providerUnavailable, event, match, slot, reasonCounts) {
+function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, providerUnavailable, event, match, slot, reasonCounts, config) {
   const providerStats = statsByPlayer[canonicalPlayerName];
 
   if (providerStats) {
-    const hasProviderStats = providerStats.ranking !== null
-      || providerStats.recent_form !== null
-      || providerStats.surface_win_rate !== null
-      || providerStats.hold_pct !== null
-      || providerStats.break_pct !== null;
+    const statsUsability = evaluateProviderStatsUsability_(providerStats, config);
+    const hasProviderStats = statsUsability.has_data;
 
     if (hasProviderStats) {
       return {
-        has_stats: true,
+        has_stats: statsUsability.usable,
+        usable_stats: statsUsability.usable,
         stats_fallback_mode: '',
         provenance: 'player_stats_provider_v1',
         source_used: providerStats.source_used || 'player_stats_provider_v1',
         fallback_mode: providerStats.fallback_mode || '',
+        cohort: providerStats.cohort || '',
+        cohort_reason_code: providerStats.cohort_reason_code || '',
+        allow_out_of_cohort_fallback: providerStats.allow_out_of_cohort_fallback !== undefined
+          ? !!providerStats.allow_out_of_cohort_fallback
+          : true,
         features: {
           ranking: providerStats.ranking,
           recent_form: providerStats.recent_form,
@@ -241,10 +267,16 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
 
     return {
       has_stats: false,
+      usable_stats: false,
       stats_fallback_mode: 'null_features',
       provenance: 'player_stats_provider_v1',
       source_used: providerStats.source_used || 'player_stats_provider_v1',
       fallback_mode: providerStats.fallback_mode || 'null_features',
+      cohort: providerStats.cohort || '',
+      cohort_reason_code: providerStats.cohort_reason_code || '',
+      allow_out_of_cohort_fallback: providerStats.allow_out_of_cohort_fallback !== undefined
+        ? !!providerStats.allow_out_of_cohort_fallback
+        : true,
       features: {
         ranking: null,
         recent_form: null,
@@ -264,11 +296,12 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
     return pseudo;
   }
 
-  return {
-    has_stats: false,
-    stats_fallback_mode: 'missing_row',
-    provenance: 'player_stats_provider_v1',
-    source_used: 'player_stats_provider_v1',
+    return {
+      has_stats: false,
+      usable_stats: false,
+      stats_fallback_mode: 'missing_row',
+      provenance: 'player_stats_provider_v1',
+      source_used: 'player_stats_provider_v1',
     fallback_mode: 'missing_row',
     features: {
       ranking: null,
@@ -277,6 +310,37 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
       hold_pct: null,
       break_pct: null,
     },
+  };
+}
+
+function evaluateProviderStatsUsability_(providerStats, config) {
+  const stats = providerStats || {};
+  const hasProviderStats = stats.ranking !== null
+    || stats.recent_form !== null
+    || stats.surface_win_rate !== null
+    || stats.hold_pct !== null
+    || stats.break_pct !== null;
+  if (!hasProviderStats) return { has_data: false, usable: false };
+
+  const trustedFeatureCount = Number(stats.trusted_feature_count || 0);
+  const placeholderFeatureCount = Number(stats.placeholder_feature_count || 0);
+  const hasOnlyPlaceholderStats = placeholderFeatureCount > 0 && trustedFeatureCount === 0;
+  const numericValues = [stats.ranking, stats.recent_form, stats.surface_win_rate, stats.hold_pct, stats.break_pct]
+    .filter(function (value) { return value !== null && value !== undefined && value !== ''; })
+    .map(function (value) { return Number(value); })
+    .filter(function (value) { return Number.isFinite(value); });
+  const hasZeroOnlyStats = numericValues.length > 0 && numericValues.every(function (value) { return value === 0; });
+  const allowPlaceholderFallback = !!(config && config.PLAYER_STATS_ALLOW_PLACEHOLDER_FALLBACK);
+  const allowZeroOnlyFallback = !!(config && config.PLAYER_STATS_ALLOW_ZERO_ONLY_FALLBACK);
+  const outOfCohortBlocked = String(stats.cohort || '') === 'out_of_cohort'
+    && stats.allow_out_of_cohort_fallback === false;
+
+  const usable = !outOfCohortBlocked
+    && (!hasOnlyPlaceholderStats || allowPlaceholderFallback)
+    && (!hasZeroOnlyStats || allowZeroOnlyFallback);
+  return {
+    has_data: true,
+    usable: usable,
   };
 }
 
@@ -304,6 +368,7 @@ function computePseudoPlayerStats_(canonicalPlayerName, event, match, slot) {
   if (!available) {
     return {
       has_stats: false,
+      usable_stats: false,
       features: {
         ranking: null,
         recent_form: null,
@@ -316,6 +381,7 @@ function computePseudoPlayerStats_(canonicalPlayerName, event, match, slot) {
 
   return {
     has_stats: true,
+    usable_stats: true,
     features: {
       ranking: 1 + (seed % 220),
       recent_form: roundNumber_(0.35 + ((seed % 56) / 100), 3),
@@ -384,6 +450,20 @@ function resolveStatsBundleConfidence_(playerAStats, playerBStats, providerUnava
   if (providerUnavailable) confidence *= 0.1;
   if (providerNullFeatures) confidence *= 0.5;
   return roundNumber_(Math.max(0, Math.min(1, confidence)), 4);
+}
+
+function resolveStatsBundleCohortPolicyOutcome_(statsBundle, upstreamOutcome) {
+  const defaultOutcome = String(upstreamOutcome || '');
+  if (!statsBundle || !statsBundle.player_a || !statsBundle.player_b) return defaultOutcome || 'unknown';
+  const playerA = statsBundle.player_a || {};
+  const playerB = statsBundle.player_b || {};
+  const blockedA = String(playerA.cohort || '') === 'out_of_cohort' && playerA.allow_out_of_cohort_fallback === false;
+  const blockedB = String(playerB.cohort || '') === 'out_of_cohort' && playerB.allow_out_of_cohort_fallback === false;
+  if (blockedA || blockedB) return 'blocked_out_of_cohort';
+  const usableA = playerA.usable_stats !== undefined ? !!playerA.usable_stats : !!playerA.has_stats;
+  const usableB = playerB.usable_stats !== undefined ? !!playerB.usable_stats : !!playerB.has_stats;
+  if (usableA && usableB) return 'eligible';
+  return defaultOutcome || 'unknown';
 }
 
 function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
@@ -502,6 +582,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     : {};
   const normalizedUpstreamGateReason = normalizeUpstreamGateReason_(upstreamGateReason);
   const fallbackOnlyMode = upstreamGateReason === 'stats_zero_coverage';
+  const upstreamResolvedUsableStatsCount = Number(upstreamGateInputs.resolved_with_usable_stats_count || 0);
+  const upstreamCohortPolicyOutcome = String(upstreamGateInputs.cohort_policy_outcome || '');
   const rows = [];
   const sampledDecisions = [];
   let lastH2hDecision = null;
@@ -588,9 +670,12 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     const statsBundle = (playerStatsByOddsEventId || {})[event.event_id] || null;
     const enrichedStatsBundle = attachH2hStatsContext_(statsBundle, event);
     const hasStatsBundleRows = !!(statsBundle && statsBundle.player_a && statsBundle.player_b);
-    const hasPlayerStats = !!(hasStatsBundleRows
-      && statsBundle.player_a.has_stats
-      && statsBundle.player_b.has_stats);
+    const hasUsableStats = !!(hasStatsBundleRows
+      && (statsBundle.player_a.usable_stats !== undefined ? statsBundle.player_a.usable_stats : statsBundle.player_a.has_stats)
+      && (statsBundle.player_b.usable_stats !== undefined ? statsBundle.player_b.usable_stats : statsBundle.player_b.has_stats));
+    const cohortPolicyOutcome = resolveStatsBundleCohortPolicyOutcome_(statsBundle, upstreamCohortPolicyOutcome);
+    const cohortBlocked = cohortPolicyOutcome === 'blocked_out_of_cohort';
+    const upstreamZeroCoverageBlocked = upstreamResolvedUsableStatsCount === 0 && upstreamCohortPolicyOutcome === 'blocked_out_of_cohort';
     const nullFeaturesFallback = !!(hasStatsBundleRows
       && statsBundle.player_a.has_stats === false
       && statsBundle.player_b.has_stats === false
@@ -598,9 +683,11 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         || statsBundle.player_b.stats_fallback_mode === 'null_features'
         || statsBundle.stats_fallback_mode === 'null_features'));
 
-    if (!hasPlayerStats && !nullFeaturesFallback) {
+    if ((!hasUsableStats || cohortBlocked || upstreamZeroCoverageBlocked) && !nullFeaturesFallback) {
       captureDecision_(event, match, 'missing_stats', {
         scored: false,
+        cohort_policy_outcome: cohortPolicyOutcome,
+        resolved_with_usable_stats_count: upstreamResolvedUsableStatsCount,
       });
       return;
     }
@@ -618,7 +705,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       );
 
     const modelVersion = statsBundle && statsBundle.player_a && statsBundle.player_b
-      && statsBundle.player_a.has_stats && statsBundle.player_b.has_stats
+      && (statsBundle.player_a.usable_stats !== undefined ? statsBundle.player_a.usable_stats : statsBundle.player_a.has_stats)
+      && (statsBundle.player_b.usable_stats !== undefined ? statsBundle.player_b.usable_stats : statsBundle.player_b.has_stats)
       ? config.MODEL_VERSION
       : config.MODEL_VERSION + '_fallback';
 
