@@ -51,6 +51,12 @@ const GROUPS = {
     'testBuildRunEdgeBoardBoundedCounterInvariantChecks_oddsAbsentScheduleSeedMode_',
     'testBuildRunEdgeBoardBoundedCounterInvariantChecks_mixedDiagnosticAndMatchedMode_',
   ],
+  alias_normalization: [
+    'testCanonicalizePlayerName_handlesDiacriticsAndTourFormattingVariants_',
+    'testCanonicalizePlayerName_handlesInitialsAndCompoundSurnames_',
+    'testStageMatchEvents_matchesKnownTourFeedNameOrderPatterns_',
+    'testStageMatchEvents_reducesNoPlayerMatchAcross18AliasHeavyCases_',
+  ],
 };
 
 function loadContext() {
@@ -91,6 +97,9 @@ function loadContext() {
       fetch: () => {
         throw new Error('UrlFetchApp.fetch stub invoked unexpectedly in this test harness');
       },
+    },
+    Logger: {
+      log: () => {},
     },
 
     SpreadsheetApp: {

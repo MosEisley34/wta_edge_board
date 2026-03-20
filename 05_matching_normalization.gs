@@ -538,7 +538,13 @@ function buildInitialSurnameKey_(canonicalName) {
   const surname = tokens[tokens.length - 1];
   const first = tokens[0] || '';
   const initial = first ? first.charAt(0) : '';
-  return (initial + ' ' + surname).trim();
+  const primary = (initial + ' ' + surname).trim();
+  if (tokens.length !== 2) return primary;
+  const reverseInitial = surname ? surname.charAt(0) : '';
+  const reverseSurname = first;
+  const reverse = (reverseInitial + ' ' + reverseSurname).trim();
+  if (!reverse || reverse === primary) return primary;
+  return [primary, reverse].sort().join('||');
 }
 
 function buildNearestScheduleCandidate_(odds, scheduleEvents, oddsPlayersPair, aliasMap) {
@@ -619,6 +625,18 @@ function normalizePlayerNameAliasRules_(normalized) {
   const value = String(normalized || '').trim();
   if (!value) return '';
 
+  const knownGivenNames = {
+    alexandra: true, alina: true, alycia: true, amanda: true, anastasia: true, anna: true, anhelina: true, aryna: true,
+    barbora: true, beatriz: true, belinda: true, caroline: true, clara: true, coco: true, danka: true, daria: true,
+    dayana: true, diana: true, ekaterina: true, elena: true, elina: true, elisabetta: true, elise: true, emma: true,
+    eva: true, iga: true, irina: true, jasmine: true, jelena: true, jessica: true, julia: true, karolina: true,
+    katarina: true, katerina: true, katie: true, klara: true, leylah: true, linda: true, liudmila: true, lucia: true,
+    ludmilla: true, lourdes: true, magda: true, magdalena: true, maria: true, marie: true, marta: true, mayar: true, mirra: true,
+    naomi: true, olga: true, ons: true, paula: true, petra: true, qinwen: true, sara: true, simona: true,
+    sloane: true, sofia: true, sonay: true, sorana: true, svetlana: true, tatjana: true, veronika: true, victoria: true,
+    yulia: true, zheng: true,
+  };
+
   const aliasRules = {
     'i swiatek': 'iga swiatek',
     'swiatek iga': 'iga swiatek',
@@ -635,14 +653,29 @@ function normalizePlayerNameAliasRules_(normalized) {
   };
   if (aliasRules[value]) return aliasRules[value];
 
+  const tokens = value.split(' ').filter(function (token) { return token; });
+  if (tokens.length === 2) {
+    const first = tokens[0];
+    const second = tokens[1];
+    const firstLooksGiven = knownGivenNames[first] === true || first.length === 1;
+    const secondLooksGiven = knownGivenNames[second] === true || second.length === 1;
+    if (!firstLooksGiven && secondLooksGiven) return second + ' ' + first;
+  }
+
   const surnameParticles = ['de', 'del', 'della', 'da', 'di', 'van', 'von', 'la', 'le', 'st', 'saint'];
-  const tokens = value.split(' ');
   if (tokens.length >= 3) {
     for (let i = 1; i < tokens.length - 1; i += 1) {
       if (surnameParticles.indexOf(tokens[i]) >= 0) {
         const merged = tokens.slice(0, i).concat([tokens.slice(i).join(' ')]).join(' ').trim();
         if (merged) return merged;
       }
+    }
+    const firstToken = tokens[0];
+    const lastToken = tokens[tokens.length - 1];
+    const firstLooksGiven = knownGivenNames[firstToken] === true || firstToken.length === 1;
+    const lastLooksGiven = knownGivenNames[lastToken] === true || lastToken.length === 1;
+    if (!firstLooksGiven && lastLooksGiven) {
+      return [lastToken].concat(tokens.slice(0, tokens.length - 1)).join(' ');
     }
   }
 

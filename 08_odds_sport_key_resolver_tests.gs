@@ -5512,6 +5512,110 @@ function testStageMatchEvents_matchesOnInitialSurnameCanonicalization_() {
   assertEquals_('sched_1', stage.rows[0].schedule_event_id);
 }
 
+function testCanonicalizePlayerName_handlesDiacriticsAndTourFormattingVariants_() {
+  const aliasMap = {};
+  assertEquals_('jelena ostapenko', canonicalizePlayerName_('Jeļena Ostapenko', aliasMap));
+  assertEquals_('beatriz haddad maia', canonicalizePlayerName_('Beatriz Haddad-Maia', aliasMap));
+}
+
+function testCanonicalizePlayerName_handlesInitialsAndCompoundSurnames_() {
+  const aliasMap = {};
+  assertEquals_('iga swiatek', canonicalizePlayerName_('I Swiatek', aliasMap));
+  assertEquals_('lourdes carle', canonicalizePlayerName_('Carle Lourdes', aliasMap));
+  assertEquals_('sara sorribes tormo', canonicalizePlayerName_('Sorribes Tormo Sara', aliasMap));
+}
+
+function testStageMatchEvents_matchesKnownTourFeedNameOrderPatterns_() {
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'Rybakina Elena',
+    player_2: 'Swiatek Iga',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }], [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: 'Elena Rybakina',
+    player_2: 'Iga Swiatek',
+    start_time: new Date('2025-03-01T12:08:00.000Z'),
+  }]);
+
+  assertEquals_(1, stage.matchedCount);
+  assertEquals_(0, stage.rejectedCount);
+}
+
+function testStageMatchEvents_reducesNoPlayerMatchAcross18AliasHeavyCases_() {
+  const oddsEvents = [
+    ['Jeļena Ostapenko', 'Iga Świątek'],
+    ['Rybakina Elena', 'Swiatek Iga'],
+    ['M. Kostyuk', 'S. Kartal'],
+    ['Carle Lourdes', 'Paolini Jasmine'],
+    ['Sorribes Tormo Sara', 'Rakhimova Kamilla'],
+    ['Kalinina Anhelina', 'Dolehide Caroline'],
+    ['A. Sabalenka', 'Jabeur Ons'],
+    ['Qinwen Zheng', 'Kudermetova Veronika'],
+    ['Kasatkina Daria', 'M. Keys'],
+    ['Navarro Emma', 'B. Haddad Maia'],
+    ['Sakkari Maria', 'Alexandrova Ekaterina'],
+    ['Andreeva Mirra', 'Potapova Anastasia'],
+    ['Garcia Caroline', 'Yastremska Dayana'],
+    ['Boulter Katie', 'Noskova Linda'],
+    ['Linette Magda', 'Pliskova Karolina'],
+    ['Svitolina Elina', 'Kalininskaya Anna'],
+    ['Bencic Belinda', 'Frech Magdalena'],
+    ['Bogdan Ana', 'Cristian Jaqueline'],
+  ].map(function (pair, idx) {
+    return {
+      event_id: 'odds_' + (idx + 1),
+      competition: 'WTA 500 Doha',
+      player_1: pair[0],
+      player_2: pair[1],
+      commence_time: new Date('2025-03-01T12:' + String(idx).padStart(2, '0') + ':00.000Z'),
+    };
+  });
+  const scheduleEvents = [
+    ['Jelena Ostapenko', 'Iga Swiatek'],
+    ['Elena Rybakina', 'Iga Swiatek'],
+    ['Marta Kostyuk', 'Sonay Kartal'],
+    ['Lourdes Carle', 'Jasmine Paolini'],
+    ['Sara Sorribes Tormo', 'Kamilla Rakhimova'],
+    ['Anhelina Kalinina', 'Caroline Dolehide'],
+    ['Aryna Sabalenka', 'Ons Jabeur'],
+    ['Zheng Qinwen', 'Veronika Kudermetova'],
+    ['Daria Kasatkina', 'Madison Keys'],
+    ['Emma Navarro', 'Beatriz Haddad Maia'],
+    ['Maria Sakkari', 'Ekaterina Alexandrova'],
+    ['Mirra Andreeva', 'Anastasia Potapova'],
+    ['Caroline Garcia', 'Dayana Yastremska'],
+    ['Katie Boulter', 'Linda Noskova'],
+    ['Magda Linette', 'Karolina Pliskova'],
+    ['Elina Svitolina', 'Anna Kalinskaya'],
+    ['Belinda Bencic', 'Magdalena Frech'],
+    ['Ana Bogdan', 'Jaqueline Cristian'],
+  ].map(function (pair, idx) {
+    return {
+      event_id: 'sched_' + (idx + 1),
+      canonical_tier: 'WTA_500',
+      player_1: pair[0],
+      player_2: pair[1],
+      start_time: new Date('2025-03-01T12:' + String(idx).padStart(2, '0') + ':00.000Z'),
+    };
+  });
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, oddsEvents, scheduleEvents);
+
+  assertEquals_(18, stage.summary.input_count);
+  assertTrue_(stage.rejectedCount <= 5, 'expected no_player_match style rejection reduction to <=5');
+}
+
 function testStageMatchEvents_reportsPrimaryAndFallbackWindowDeltasWhenFallbackExhausted_() {
   const oddsEvents = [{
     event_id: 'odds_1',
