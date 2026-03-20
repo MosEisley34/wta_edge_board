@@ -311,6 +311,7 @@ const REASON_CODE_ALIAS_DICTIONARIES = {
     reason_code_map_mutated_after_snapshot: 'RC_MUTATE_SNAP',
     reason_code_counter_exceeds_stage_max: 'RC_GT_STAGE_MAX',
     reason_code_alias_missing_fallback_emitted: 'RC_ALIAS_FALLBACK',
+    opening_lag_fallback_exemption_allowed: 'OPEN_FB_ALLOW',
     run_health_expected_temporary_no_odds: 'RH_TMP_NO_ODDS',
     opening_lag_fallback_exemption_denied_source: 'OPEN_FB_DENY_SRC',
     opening_lag_fallback_exemption_denied_age: 'OPEN_FB_DENY_AGE',

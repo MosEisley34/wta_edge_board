@@ -165,6 +165,7 @@ When `msg` is JSON, the expected object shape is:
 The `reason_code_alias_v1` dictionary now explicitly aliases these frequently observed fallback diagnostics reason codes so compact logs avoid `UNK_*` fallback aliases:
 
 - `missing_open_timestamp_fallback` → `OPEN_TS_FB`
+- `opening_lag_fallback_exemption_allowed` → `OPEN_FB_ALLOW`
 - `opening_lag_fallback_exemption_denied_source` → `OPEN_FB_DENY_SRC`
 - `opening_lag_fallback_exemption_denied_age` → `OPEN_FB_DENY_AGE`
 - `opening_lag_fallback_exemption_denied_cap` → `OPEN_FB_DENY_CAP`
@@ -186,3 +187,7 @@ For backward-compatible diagnostics normalization, recurring legacy fallback ali
 
 - `UNK_OPEN_TS` → `missing_open_timestamp` → `OPEN_TS_MISS`
 - `UNK_OPEN_LAG` → `opening_lag_exceeded` → `OPEN_LAG_HI`
+- `UNK_7FLM53` → `opening_lag_fallback_exemption_allowed` → `OPEN_FB_ALLOW`
+- `UNK_X5ZLHC` → `opening_lag_fallback_exemption_denied_source` → `OPEN_FB_DENY_SRC`
+- `UNK_OYX5QE` → `opening_lag_fallback_exemption_denied_age` → `OPEN_FB_DENY_AGE`
+- `UNK_OYX4DV` → `opening_lag_fallback_exemption_denied_cap` → `OPEN_FB_DENY_CAP`
