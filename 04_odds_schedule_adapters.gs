@@ -484,6 +484,12 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
       competition: event.competition,
       player_1: event.player_1,
       player_2: event.player_2,
+      matcher_player_1_raw: pickEventValue_(event, ['matcher_player_1_raw']),
+      matcher_player_2_raw: pickEventValue_(event, ['matcher_player_2_raw']),
+      matcher_player_1_canonical: pickEventValue_(event, ['matcher_player_1_canonical']),
+      matcher_player_2_canonical: pickEventValue_(event, ['matcher_player_2_canonical']),
+      matcher_identifiers_ready: pickEventValue_(event, ['matcher_identifiers_ready']),
+      matcher_enrichment_source: pickEventValue_(event, ['matcher_enrichment_source']),
       player_1_hold_pct: pickEventValue_(event, ['player_1_hold_pct']),
       player_2_hold_pct: pickEventValue_(event, ['player_2_hold_pct']),
       player_1_break_pct: pickEventValue_(event, ['player_1_break_pct']),
@@ -529,6 +535,12 @@ function stageFetchSchedule(runId, config, oddsEvents, opts) {
         canonical_tier: canonical,
         player_1: event.player_1,
         player_2: event.player_2,
+        matcher_player_1_raw: pickEventValue_(event, ['matcher_player_1_raw']),
+        matcher_player_2_raw: pickEventValue_(event, ['matcher_player_2_raw']),
+        matcher_player_1_canonical: pickEventValue_(event, ['matcher_player_1_canonical']),
+        matcher_player_2_canonical: pickEventValue_(event, ['matcher_player_2_canonical']),
+        matcher_identifiers_ready: pickEventValue_(event, ['matcher_identifiers_ready']),
+        matcher_enrichment_source: pickEventValue_(event, ['matcher_enrichment_source']),
         surface: pickEventValue_(event, ['surface', 'court_surface']),
       });
     }
@@ -712,7 +724,7 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
   const scheduleEvents = events || [];
   if (!scheduleEvents.length) {
     return {
-      events: scheduleEvents,
+      events: attachMatcherPlayerIdentifiersToScheduleEvents_(scheduleEvents, 'schedule_enrichment_no_schedule_events'),
       reason_code: 'schedule_enrichment_no_schedule_events',
       stats_reason_code: '',
       h2h_reason_code: '',
@@ -746,8 +758,10 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
   try {
     const canonicalPlayers = buildCanonicalSchedulePlayers_(scheduleEvents, Date.now());
     if (!canonicalPlayers.length) {
+      const matcherIdentifierEvents = attachMatcherPlayerIdentifiersToScheduleEvents_(scheduleEvents, 'schedule_enrichment_no_upcoming_players');
+      logScheduleEnrichmentNoUpcomingPlayersDiagnostics_(config, matcherIdentifierEvents, 'schedule_enrichment_no_upcoming_players');
       return {
-        events: scheduleEvents,
+        events: matcherIdentifierEvents,
         reason_code: 'schedule_enrichment_no_upcoming_players',
         stats_reason_code: '',
         h2h_reason_code: '',
@@ -886,8 +900,13 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       return merged;
     });
 
+    const enrichedEventsWithMatcherIds = attachMatcherPlayerIdentifiersToScheduleEvents_(
+      enrichedEvents,
+      (statsBatch && statsBatch.source) || 'ta_enrichment'
+    );
+
     return {
-      events: enrichedEvents,
+      events: enrichedEventsWithMatcherIds,
       reason_code: 'schedule_enrichment_ta_completed',
       stats_reason_code: statsBatch.reason_code || '',
       h2h_reason_code: h2hSummaryReasonCode,
@@ -906,8 +925,12 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       error: '',
     };
   } catch (error) {
+    const fallbackEventsWithMatcherIds = attachMatcherPlayerIdentifiersToScheduleEvents_(
+      scheduleEvents,
+      'schedule_enrichment_ta_failed_non_fatal'
+    );
     return {
-      events: scheduleEvents,
+      events: fallbackEventsWithMatcherIds,
       reason_code: 'schedule_enrichment_ta_failed_non_fatal',
       stats_reason_code: '',
       h2h_reason_code: '',
@@ -937,6 +960,49 @@ function enrichScheduleEventsFromTennisAbstract_(config, events) {
       error: String(error && error.message ? error.message : error),
     };
   }
+}
+
+function attachMatcherPlayerIdentifiersToScheduleEvents_(events, enrichmentSource) {
+  return (events || []).map(function (event) {
+    const merged = Object.assign({}, event || {});
+    const rawPlayer1 = String(merged.player_1 || merged.home_team || '').trim();
+    const rawPlayer2 = String(merged.player_2 || merged.away_team || '').trim();
+    const canonicalPlayer1 = canonicalizePlayerName_(rawPlayer1, {});
+    const canonicalPlayer2 = canonicalizePlayerName_(rawPlayer2, {});
+
+    merged.player_1 = rawPlayer1;
+    merged.player_2 = rawPlayer2;
+    merged.matcher_player_1_raw = rawPlayer1;
+    merged.matcher_player_2_raw = rawPlayer2;
+    merged.matcher_player_1_canonical = canonicalPlayer1;
+    merged.matcher_player_2_canonical = canonicalPlayer2;
+    merged.matcher_identifiers_ready = !!(canonicalPlayer1 && canonicalPlayer2 && canonicalPlayer1 !== canonicalPlayer2);
+    merged.matcher_enrichment_source = String(enrichmentSource || merged.stats_source || merged.h2h_source || '');
+    return merged;
+  });
+}
+
+function logScheduleEnrichmentNoUpcomingPlayersDiagnostics_(config, events, reasonCode) {
+  const payloadEvents = (events || []).map(function (event) {
+    const startIso = event && event.start_time instanceof Date && event.start_time.toISOString
+      ? event.start_time.toISOString()
+      : String((event && event.start_time) || '');
+    return {
+      event_id: String((event && event.event_id) || ''),
+      commence_time: startIso,
+      enrichment_source: String((event && event.matcher_enrichment_source) || ''),
+      player_1_raw: String((event && event.matcher_player_1_raw) || ''),
+      player_2_raw: String((event && event.matcher_player_2_raw) || ''),
+      player_1_canonical: String((event && event.matcher_player_1_canonical) || ''),
+      player_2_canonical: String((event && event.matcher_player_2_canonical) || ''),
+      matcher_identifiers_ready: !!(event && event.matcher_identifiers_ready),
+    };
+  });
+  logDiagnosticEvent_(config, 'stageFetchSchedule_schedule_enrichment_no_upcoming_players_matcher_fields', {
+    reason_code: String(reasonCode || 'schedule_enrichment_no_upcoming_players'),
+    event_count: payloadEvents.length,
+    events: payloadEvents,
+  }, 1);
 }
 
 function classifyScheduleEnrichmentH2hMissingReason_(reasonCode) {
