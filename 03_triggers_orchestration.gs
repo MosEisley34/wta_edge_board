@@ -1774,13 +1774,23 @@ function deriveSignalUpstreamGateReason_(oddsStage, scheduleStage, matchStage, p
   const scheduleReasonCodes = (scheduleStage && scheduleStage.summary && scheduleStage.summary.reason_codes) || {};
   const matchedCount = Number((matchStage && matchStage.matchedCount) || 0);
   const matchReasonCodes = (matchStage && matchStage.summary && matchStage.summary.reason_codes) || {};
-  const playersWithNonNullStats = Number(
+  const resolvedWithUsableStatsCount = Number(
     playerStatsStage
     && playerStatsStage.summary
     && playerStatsStage.summary.reason_metadata
-    && playerStatsStage.summary.reason_metadata.players_with_non_null_stats
+    && playerStatsStage.summary.reason_metadata.resolved_with_usable_stats_count
     || 0
   );
+  const outOfCohortCount = Number(
+    playerStatsStage
+    && playerStatsStage.summary
+    && playerStatsStage.summary.reason_metadata
+    && playerStatsStage.summary.reason_metadata.out_of_cohort_count
+    || 0
+  );
+  const cohortPolicyOutcome = resolvedWithUsableStatsCount === 0 && outOfCohortCount > 0
+    ? 'blocked_out_of_cohort'
+    : (resolvedWithUsableStatsCount > 0 ? 'eligible' : 'unknown');
 
   const upstreamInputs = {
     odds_stage_reason: resolvePrimaryStageGateReason_(oddsReasonCodes, [
@@ -1796,6 +1806,9 @@ function deriveSignalUpstreamGateReason_(oddsStage, scheduleStage, matchStage, p
       'no_schedule_candidates',
       'no_odds_candidates',
     ]),
+    resolved_with_usable_stats_count: resolvedWithUsableStatsCount,
+    out_of_cohort_count: outOfCohortCount,
+    cohort_policy_outcome: cohortPolicyOutcome,
   };
 
   if (upstreamInputs.odds_stage_reason) {
@@ -1826,7 +1839,7 @@ function deriveSignalUpstreamGateReason_(oddsStage, scheduleStage, matchStage, p
     };
   }
 
-  if (matchedCount > 0 && playersWithNonNullStats === 0) {
+  if (matchedCount > 0 && resolvedWithUsableStatsCount === 0) {
     return {
       reason: 'stats_zero_coverage',
       inputs: upstreamInputs,
