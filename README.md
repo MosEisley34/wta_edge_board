@@ -1,5 +1,13 @@
 # wta_edge_board
 
+## Troubleshooting: menu missing after open
+
+If the custom menu does not appear (for example due to simple-trigger binding/deployment mismatch), use this recovery flow:
+
+* Open **Extensions → Apps Script**
+* Run `rebuildMenuNow` once from the editor
+* Reload spreadsheet and verify menu presence
+
 ## Secrets rotation and safe usage
 
 ### 1) Rotate/revoke The Odds API key
