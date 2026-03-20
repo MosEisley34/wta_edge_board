@@ -237,6 +237,20 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     const unresolvedPlayers = players.filter(function (playerName) {
       return !playerStatsHasNonNullFeatures_(taStatsByPlayer[playerName]);
     });
+    const cohortPolicy = buildPlayerStatsCohortPolicy_(config);
+    const taSelectionMetadata = leadersSource.selection_metadata && typeof leadersSource.selection_metadata === 'object'
+      ? leadersSource.selection_metadata
+      : {};
+    const taCoverageRatio = Number(taSelectionMetadata.coverage_ratio || 0);
+    const taCoverageThreshold = Number(
+      taSelectionMetadata.min_coverage_ratio_threshold !== undefined
+        ? taSelectionMetadata.min_coverage_ratio_threshold
+        : taSelectionMetadata.min_acceptable_coverage_ratio
+    );
+    const hasCoverageGate = Number.isFinite(taCoverageRatio) && Number.isFinite(taCoverageThreshold);
+    const coverageBelowThreshold = hasCoverageGate
+      ? taCoverageRatio < taCoverageThreshold
+      : true;
     const finalStatsByPlayer = Object.assign({}, taStatsByPlayer);
     const fallbackDiagnostics = {
       unresolved_player_count: unresolvedPlayers.length,
@@ -244,14 +258,38 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       fallback_reasons_by_player: {},
       fallback_source_by_player: {},
       fallback_attempts: [],
+      fallback_attempted_players_by_reason: {},
       fallback_calls: { sofascore: 0, scrape: 0 },
       fallback_resolved_counts: { sofascore: 0, scrape: 0 },
+      ta_coverage_ratio: hasCoverageGate ? roundNumber_(taCoverageRatio, 4) : null,
+      ta_min_coverage_ratio_threshold: hasCoverageGate ? roundNumber_(taCoverageThreshold, 4) : null,
+      ta_coverage_below_threshold: hasCoverageGate ? coverageBelowThreshold : null,
+      mode_gate_skipped_fallback: false,
     };
-    unresolvedPlayers.forEach(function (playerName) {
-      fallbackDiagnostics.fallback_reasons_by_player[playerName] = 'ta_null_only';
+    const fallbackCandidates = unresolvedPlayers.filter(function (playerName) {
+      const taRow = taStatsByPlayer[playerName] || {};
+      const cohortDecision = classifyPlayerStatsCohort_(taRow, cohortPolicy);
+      const cohortClass = String(cohortDecision.classification || '');
+      const isUnknownRank = cohortClass === 'unknown_rank';
+      const isOutOfCohort = cohortClass === 'out_of_cohort';
+      const reason = isUnknownRank ? 'rank_unknown' : (isOutOfCohort ? 'out_of_cohort' : 'ta_null_only');
+      fallbackDiagnostics.fallback_reasons_by_player[playerName] = reason;
+      if (cohortPolicy.mode === 'leadersource' && !coverageBelowThreshold) return false;
+      if (cohortPolicy.mode === 'top100' && isOutOfCohort) return false;
+      return true;
+    });
+    const skippedByModeGate = unresolvedPlayers.filter(function (playerName) {
+      return fallbackCandidates.indexOf(playerName) === -1;
+    });
+    fallbackDiagnostics.mode_gate_skipped_fallback = skippedByModeGate.length > 0;
+    fallbackDiagnostics.skipped_by_mode_gate_count = skippedByModeGate.length;
+    fallbackDiagnostics.skipped_by_mode_gate_sample = skippedByModeGate.slice(0, 20);
+    fallbackCandidates.forEach(function (playerName) {
+      const reason = String(fallbackDiagnostics.fallback_reasons_by_player[playerName] || 'ta_null_only');
+      fallbackDiagnostics.fallback_attempted_players_by_reason[reason] = Number(fallbackDiagnostics.fallback_attempted_players_by_reason[reason] || 0) + 1;
     });
 
-    let unresolvedAfterSofascore = unresolvedPlayers.slice();
+    let unresolvedAfterSofascore = fallbackCandidates.slice();
     const disableSofascore = !!config.DISABLE_SOFASCORE;
     if (!disableSofascore && unresolvedAfterSofascore.length) {
       const sofascoreFallback = fetchPlayerStatsFromSofascore_(config, unresolvedAfterSofascore, asOfTime);
@@ -261,6 +299,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
         source_name: 'sofascore',
         reason_code: sofascoreFallback.reason_code || '',
         requested_player_count: unresolvedAfterSofascore.length,
+        requested_players_by_reason: Object.assign({}, fallbackDiagnostics.fallback_attempted_players_by_reason),
         attempted_endpoints: sofascoreFallback.attempted_endpoints || [],
         missing_fields: sofascoreFallback.missing_fields || [],
       });
@@ -280,6 +319,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
         source_name: 'sofascore',
         reason_code: 'player_stats_sofascore_disabled',
         requested_player_count: unresolvedAfterSofascore.length,
+        requested_players_by_reason: Object.assign({}, fallbackDiagnostics.fallback_attempted_players_by_reason),
       });
     }
 
@@ -292,6 +332,7 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
         source_name: 'scrape',
         reason_code: scraped.reason_code || '',
         requested_player_count: unresolvedAfterScrape.length,
+        requested_players_by_reason: Object.assign({}, fallbackDiagnostics.fallback_attempted_players_by_reason),
       });
       const scrapedStatsByPlayer = scraped.stats_by_player || {};
       unresolvedAfterScrape = unresolvedAfterScrape.filter(function (playerName) {
@@ -306,8 +347,9 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       });
     }
 
-    fallbackDiagnostics.unresolved_after_fallback_count = unresolvedAfterScrape.length;
-    fallbackDiagnostics.unresolved_after_fallback_sample = unresolvedAfterScrape.slice(0, 20);
+    const unresolvedAfterAllFallback = unresolvedAfterScrape.concat(skippedByModeGate);
+    fallbackDiagnostics.unresolved_after_fallback_count = unresolvedAfterAllFallback.length;
+    fallbackDiagnostics.unresolved_after_fallback_sample = unresolvedAfterAllFallback.slice(0, 20);
     const baseSelectionMetadata = leadersSource.selection_metadata && typeof leadersSource.selection_metadata === 'object'
       ? leadersSource.selection_metadata
       : {};

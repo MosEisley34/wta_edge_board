@@ -220,6 +220,92 @@ function testGetTaH2hCoverageForCanonicalPair_datasetUnavailableReturnsUpstreamF
   }
 }
 
+function testFetchPlayerStatsFromProvider_top100FallbackFiltersOutOfCohort_() {
+  const originalParseSources = parsePlayerStatsSourceConfigs_;
+  const originalFetchLeaders = fetchPlayerStatsFromLeadersSource_;
+  const originalFetchSofascore = fetchPlayerStatsFromSofascore_;
+  const originalFetchScrape = fetchPlayerStatsFromScrapeSources_;
+  parsePlayerStatsSourceConfigs_ = function () { return []; };
+  fetchPlayerStatsFromLeadersSource_ = function () {
+    return {
+      ok: true,
+      reason_code: 'ta_matchmx_ok',
+      stats_by_player: {
+        'Ranked Outside 100': { ranking: null, recent_form: null, hold_pct: null, break_pct: null, resolved_rank: 150 },
+        'Unknown Rank': { ranking: null, recent_form: null, hold_pct: null, break_pct: null },
+      },
+      selection_metadata: { coverage_ratio: 0.25, min_coverage_ratio_threshold: 0.6 },
+      api_call_count: 0,
+    };
+  };
+  const capturedSofascoreRequests = [];
+  fetchPlayerStatsFromSofascore_ = function (config, players) {
+    capturedSofascoreRequests.push((players || []).slice());
+    return { ok: true, reason_code: 'player_stats_sofascore_no_matches', stats_by_player: {}, api_call_count: 0 };
+  };
+  fetchPlayerStatsFromScrapeSources_ = function () {
+    return { ok: true, reason_code: 'player_stats_scrape_no_matches', stats_by_player: {}, api_call_count: 0 };
+  };
+
+  try {
+    const result = fetchPlayerStatsFromProvider_({ PLAYER_STATS_COHORT_MODE: 'top100' }, ['Ranked Outside 100', 'Unknown Rank'], new Date());
+    const fallback = (result.selection_metadata || {}).fallback_diagnostics || {};
+    assertEquals_(1, capturedSofascoreRequests.length);
+    assertEquals_('Unknown Rank', capturedSofascoreRequests[0][0]);
+    assertEquals_('out_of_cohort', fallback.fallback_reasons_by_player['Ranked Outside 100']);
+    assertEquals_('rank_unknown', fallback.fallback_reasons_by_player['Unknown Rank']);
+    assertEquals_(1, Number((fallback.fallback_attempted_players_by_reason || {}).rank_unknown || 0));
+  } finally {
+    parsePlayerStatsSourceConfigs_ = originalParseSources;
+    fetchPlayerStatsFromLeadersSource_ = originalFetchLeaders;
+    fetchPlayerStatsFromSofascore_ = originalFetchSofascore;
+    fetchPlayerStatsFromScrapeSources_ = originalFetchScrape;
+  }
+}
+
+function testFetchPlayerStatsFromProvider_leadersourceCoverageGateSkipsFallbackWhenHealthy_() {
+  const originalParseSources = parsePlayerStatsSourceConfigs_;
+  const originalFetchLeaders = fetchPlayerStatsFromLeadersSource_;
+  const originalFetchSofascore = fetchPlayerStatsFromSofascore_;
+  const originalFetchScrape = fetchPlayerStatsFromScrapeSources_;
+  parsePlayerStatsSourceConfigs_ = function () { return []; };
+  fetchPlayerStatsFromLeadersSource_ = function () {
+    return {
+      ok: true,
+      reason_code: 'ta_matchmx_ok',
+      stats_by_player: {
+        'Null Player': { ranking: null, recent_form: null, hold_pct: null, break_pct: null },
+      },
+      selection_metadata: { coverage_ratio: 0.8, min_coverage_ratio_threshold: 0.6 },
+      api_call_count: 0,
+    };
+  };
+  let sofascoreCalls = 0;
+  let scrapeCalls = 0;
+  fetchPlayerStatsFromSofascore_ = function () {
+    sofascoreCalls += 1;
+    return { ok: true, reason_code: 'unused', stats_by_player: {}, api_call_count: 0 };
+  };
+  fetchPlayerStatsFromScrapeSources_ = function () {
+    scrapeCalls += 1;
+    return { ok: true, reason_code: 'unused', stats_by_player: {}, api_call_count: 0 };
+  };
+
+  try {
+    const result = fetchPlayerStatsFromProvider_({ PLAYER_STATS_COHORT_MODE: 'leadersource' }, ['Null Player'], new Date());
+    const fallback = (result.selection_metadata || {}).fallback_diagnostics || {};
+    assertEquals_(0, sofascoreCalls);
+    assertEquals_(0, scrapeCalls);
+    assertEquals_(true, fallback.mode_gate_skipped_fallback);
+    assertEquals_(1, Number(fallback.skipped_by_mode_gate_count || 0));
+  } finally {
+    parsePlayerStatsSourceConfigs_ = originalParseSources;
+    fetchPlayerStatsFromLeadersSource_ = originalFetchLeaders;
+    fetchPlayerStatsFromSofascore_ = originalFetchSofascore;
+    fetchPlayerStatsFromScrapeSources_ = originalFetchScrape;
+  }
+}
+
 
 function testGetTaH2hCoverageForCanonicalPair_datasetUnavailableUsesDedicatedReasonWithoutUpstreamFailure_() {
   const originalGetTaH2hDataset = getTaH2hDataset_;
