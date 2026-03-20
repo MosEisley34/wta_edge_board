@@ -7595,10 +7595,23 @@ function testSerializeCompactReasonCodesForLogEntry_recurringReasonsResolveToKno
       source_credit_saver_skip: 1,
       schedule_window_fallback_no_odds: 1,
       credit_header_missing: 1,
+      missing_b: 1,
+      missing_repeat: 1,
     },
+    message: JSON.stringify({
+      reason_codes: {
+        started: 1,
+        completed: 1,
+        source_credit_saver_skip: 1,
+        schedule_window_fallback_no_odds: 1,
+        credit_header_missing: 1,
+        missing_b: 1,
+        missing_repeat: 1,
+      },
+    }),
   }, REASON_CODE_ALIAS_SCHEMA_ID, { allow_canonical_passthrough: false });
 
-  const reasonCodes = normalized.reason_codes || {};
+  const reasonCodes = (JSON.parse(normalized.message || '{}').reason_codes || {});
   const aliases = Object.keys(reasonCodes);
 
   assertTrue_(aliases.indexOf('RUN_START') !== -1);
@@ -7606,7 +7619,9 @@ function testSerializeCompactReasonCodesForLogEntry_recurringReasonsResolveToKno
   assertTrue_(aliases.indexOf('SRC_CRED_SKIP') !== -1);
   assertTrue_(aliases.indexOf('SCH_WIN_FB_NO') !== -1);
   assertTrue_(aliases.indexOf('CREDIT_HDR') !== -1);
-  assertEquals_(undefined, normalized.fallback_aliases);
+  assertTrue_(aliases.indexOf('MISS_B') !== -1);
+  assertTrue_(aliases.indexOf('MISS_REPEAT') !== -1);
+  assertEquals_(undefined, JSON.parse(normalized.message || '{}').fallback_aliases);
 }
 
 function testSerializeCompactReasonCodesForLogEntry_canAllowExplicitCanonicalPassthrough_() {
@@ -7670,14 +7685,19 @@ function testMaybeEmitReasonAliasFallbackWarningOpsLog_groupsWarningsPerRunSumma
         aliases: ['UNK_A'],
       },
     });
+    const mappedAliasWarning = serializeCompactReasonCodesForLogEntry_({
+      reason_codes: { missing_b: 1 },
+    }, REASON_CODE_ALIAS_SCHEMA_ID, { allow_canonical_passthrough: false }).__reason_alias_fallback_warning;
+    assertEquals_(undefined, mappedAliasWarning);
+
     maybeEmitReasonAliasFallbackWarningOpsLog_({
       row_type: 'summary',
       run_id: 'run-1',
       stage: 'runEdgeBoard',
       __reason_alias_fallback_warning: {
         schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
-        aliases: ['UNK_B'],
-        canonical_reasons: { UNK_B: 'missing_b' },
+        aliases: ['MISS_B'],
+        canonical_reasons: { MISS_B: 'missing_b' },
       },
     });
 
@@ -7724,14 +7744,19 @@ function testMaybeEmitReasonAliasFallbackWarningOpsLog_rollsUpRepeatedSetsOnCade
   };
 
   try {
+    const mappedRepeatWarning = serializeCompactReasonCodesForLogEntry_({
+      reason_codes: { missing_repeat: 1 },
+    }, REASON_CODE_ALIAS_SCHEMA_ID, { allow_canonical_passthrough: false }).__reason_alias_fallback_warning;
+    assertEquals_(undefined, mappedRepeatWarning);
+
     maybeEmitReasonAliasFallbackWarningOpsLog_({
       row_type: 'summary',
       run_id: 'run-1',
       stage: 'runEdgeBoard',
       __reason_alias_fallback_warning: {
         schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
-        aliases: ['UNK_REPEAT'],
-        canonical_reasons: { UNK_REPEAT: 'missing_repeat' },
+        aliases: ['MISS_REPEAT', 'UNK_REPEAT'],
+        canonical_reasons: { MISS_REPEAT: 'missing_repeat', UNK_REPEAT: 'still_unmapped_repeat' },
       },
     });
     maybeEmitReasonAliasFallbackWarningOpsLog_({
@@ -7740,8 +7765,8 @@ function testMaybeEmitReasonAliasFallbackWarningOpsLog_rollsUpRepeatedSetsOnCade
       stage: 'runEdgeBoard',
       __reason_alias_fallback_warning: {
         schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
-        aliases: ['UNK_REPEAT'],
-        canonical_reasons: { UNK_REPEAT: 'missing_repeat' },
+        aliases: ['MISS_REPEAT', 'UNK_REPEAT'],
+        canonical_reasons: { MISS_REPEAT: 'missing_repeat', UNK_REPEAT: 'still_unmapped_repeat' },
       },
     });
     maybeEmitReasonAliasFallbackWarningOpsLog_({
@@ -7750,8 +7775,8 @@ function testMaybeEmitReasonAliasFallbackWarningOpsLog_rollsUpRepeatedSetsOnCade
       stage: 'runEdgeBoard',
       __reason_alias_fallback_warning: {
         schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
-        aliases: ['UNK_REPEAT'],
-        canonical_reasons: { UNK_REPEAT: 'missing_repeat' },
+        aliases: ['MISS_REPEAT', 'UNK_REPEAT'],
+        canonical_reasons: { MISS_REPEAT: 'missing_repeat', UNK_REPEAT: 'still_unmapped_repeat' },
       },
     });
 
@@ -7760,7 +7785,8 @@ function testMaybeEmitReasonAliasFallbackWarningOpsLog_rollsUpRepeatedSetsOnCade
     assertEquals_('reason_code_alias_missing_fallback_repeat_rollup', appended[1][6]);
     const summaryPayload = JSON.parse(appended[1][7] || '{}');
     assertEquals_(2, Number(summaryPayload.repeat_count || 0));
-    assertEquals_('missing_repeat', (summaryPayload.canonical_reasons || {}).UNK_REPEAT || '');
+    assertEquals_('still_unmapped_repeat', (summaryPayload.canonical_reasons || {}).UNK_REPEAT || '');
+    assertEquals_(undefined, (summaryPayload.canonical_reasons || {}).MISS_REPEAT);
   } finally {
     SpreadsheetApp.getActiveSpreadsheet = originalGetActiveSpreadsheet;
     getConfig_ = originalGetConfig;

@@ -257,6 +257,8 @@ const REASON_CODE_ALIAS_DICTIONARIES = {
     odds_rows_emitted: 'ODDS_ROWS',
     outside_window: 'OUT_WIN',
     outside_window_idle_skip: 'OUT_WIN_IDLE',
+    missing_b: 'MISS_B',
+    missing_repeat: 'MISS_REPEAT',
     provider_returned_empty: 'PROV_EMPTY',
     runtime_mode_soft_degraded: 'RT_SOFT',
     schedule_seed_no_odds: 'SCH_SEED_NO_ODDS',
