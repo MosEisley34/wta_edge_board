@@ -21,6 +21,10 @@ function buildWtaPipelineOpsMenu_() {
     .addToUi();
 }
 
+function rebuildMenuNow() {
+  buildWtaPipelineOpsMenu_();
+}
+
 function onOpen() {
   buildWtaPipelineOpsMenu_();
 }
