@@ -2084,8 +2084,9 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const degraded = fetchedOdds > 0 && matched === 0;
   const statsZeroCoverageDegraded = matched > 0 && playersWithNonNullStats === 0;
   if (statsZeroCoverageDegraded) {
+    const statsCoverageReasonCode = resolveStatsCoverageRunHealthReason_(playerStatsReasonCodes);
     const statsCoveragePayload = Object.assign(buildRunHealthDegradedContract_({
-      reason_code: 'stats_zero_coverage',
+      reason_code: statsCoverageReasonCode,
       odds_reason_codes: oddsReasonCodes,
       schedule_reason_codes: scheduleReasonCodes,
       match_reason_codes: matchReasonCodes,
@@ -2101,7 +2102,7 @@ function evaluateRunHealthDiagnostics_(metrics) {
       sampled_blocked_odds: sampledBlockedOdds,
       sample_unmatched_cases: sampleUnmatchedCases,
     }), {
-      reason_code: 'stats_zero_coverage',
+      reason_code: statsCoverageReasonCode,
       fetched_odds: fetchedOdds,
       fetched_schedule: fetchedSchedule,
       matched: matched,
@@ -2113,10 +2114,10 @@ function evaluateRunHealthDiagnostics_(metrics) {
     return {
       is_degraded: singleRunCriticalTriggerEnabled,
       status: singleRunCriticalTriggerEnabled ? 'degraded' : 'warning_stats_zero_coverage',
-      reason_code: 'stats_zero_coverage',
-      degraded_reason_code: singleRunCriticalTriggerEnabled ? 'stats_zero_coverage' : '',
+      reason_code: statsCoverageReasonCode,
+      degraded_reason_code: singleRunCriticalTriggerEnabled ? statsCoverageReasonCode : '',
       summary_status: singleRunCriticalTriggerEnabled ? 'degraded' : 'success',
-      summary_reason_code: 'stats_zero_coverage',
+      summary_reason_code: statsCoverageReasonCode,
       summary_message: statsCoveragePayload.message,
       warning_payload: Object.assign({}, statsCoveragePayload, {
         single_run_critical_trigger_enabled: singleRunCriticalTriggerEnabled,
@@ -2254,6 +2255,14 @@ function updateRunHealthNoMatchFromOddsState_(runId, metrics, config) {
   };
   setStateValue_('RUN_HEALTH_NO_MATCH_FROM_ODDS_STATE', JSON.stringify(next));
   return next;
+}
+
+function resolveStatsCoverageRunHealthReason_(playerStatsReasonCodes) {
+  const reasonCodes = playerStatsReasonCodes || {};
+  if (Number(reasonCodes.stats_top100_filter_excluded || 0) > 0) return 'stats_top100_filter_excluded';
+  if (Number(reasonCodes.stats_out_of_cohort || 0) > 0) return 'stats_out_of_cohort';
+  if (Number(reasonCodes.stats_rank_unknown || 0) > 0) return 'stats_rank_unknown';
+  return 'stats_zero_coverage';
 }
 
 function buildRunHealthDegradedContract_(metrics) {

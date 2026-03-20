@@ -12,6 +12,10 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     low_confidence_stats_scored: 0,
     full_confidence_stats_scored: 0,
     null_features_low_confidence_scored: 0,
+    stats_out_of_cohort: 0,
+    stats_rank_unknown: 0,
+    stats_top100_filter_excluded: 0,
+    stats_top100_fallback_applied: 0,
   };
 
   const matchByOddsEventId = {};
@@ -174,6 +178,28 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     const stats = statsByPlayer[playerName] || {};
     return count + (String(stats.cohort || '') === 'out_of_cohort' ? 1 : 0);
   }, 0);
+  const unknownRankCount = requestedUniquePlayers.reduce(function (count, playerName) {
+    if (!resolvedPlayerSet[playerName]) return count;
+    const stats = statsByPlayer[playerName] || {};
+    return count + (String(stats.cohort || '') === 'unknown_rank' ? 1 : 0);
+  }, 0);
+  const statsSelectionMetadata = statsBatch.selection_metadata && typeof statsBatch.selection_metadata === 'object'
+    ? statsBatch.selection_metadata
+    : {};
+  const fallbackDiagnostics = statsSelectionMetadata.fallback_diagnostics && typeof statsSelectionMetadata.fallback_diagnostics === 'object'
+    ? statsSelectionMetadata.fallback_diagnostics
+    : {};
+  const cohortMode = String(config && config.PLAYER_STATS_COHORT_MODE || '').toLowerCase();
+  const top100FilterExcludedCount = cohortMode === 'top100'
+    ? Number(fallbackDiagnostics.skipped_by_mode_gate_count || 0)
+    : 0;
+  const top100FallbackAppliedCount = cohortMode === 'top100'
+    ? Object.keys(fallbackDiagnostics.fallback_source_by_player || {}).length
+    : 0;
+  reasonCounts.stats_out_of_cohort = outOfCohortCount;
+  reasonCounts.stats_rank_unknown = unknownRankCount;
+  reasonCounts.stats_top100_filter_excluded = top100FilterExcludedCount;
+  reasonCounts.stats_top100_fallback_applied = top100FallbackAppliedCount;
 
   const summary = buildStageSummary_(runId, 'stageFetchPlayerStats', start, {
     input_count: statsInputEvents.length,
@@ -191,6 +217,9 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
       resolved_with_usable_stats_count: resolvedWithUsableStatsCount,
       unresolved_player_count: unresolvedPlayerCount,
       out_of_cohort_count: outOfCohortCount,
+      rank_unknown_count: unknownRankCount,
+      top100_filter_excluded_count: top100FilterExcludedCount,
+      top100_fallback_applied_count: top100FallbackAppliedCount,
       overlap_ratio: roundNumber_(overlapRatio, 3),
       top_unresolved_player_samples: unresolvedPlayers.slice(0, 20),
     },
