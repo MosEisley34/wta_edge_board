@@ -1,3 +1,5 @@
+// Canonical Matchstat row schema index map for the Apps Script project.
+// Keep MATCHMX_ROW_IDX declared only in this module.
 const MATCHMX_ROW_IDX = {
   DATE: 0,
   EVENT: 1,
