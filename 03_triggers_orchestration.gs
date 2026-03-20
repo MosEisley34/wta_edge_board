@@ -1,16 +1,17 @@
 function installOrUpdateTriggers() {
   ensureTabsAndConfig_();
   const config = getConfig_();
+  const scriptProps = PropertiesService.getScriptProperties();
+  const triggerCadence = resolveTriggerCadence_(config, scriptProps);
 
   const spec = {
     version: 1,
     functionName: 'runEdgeBoard',
     type: 'clock',
-    everyMinutes: Math.max(1, Number(config.PIPELINE_TRIGGER_EVERY_MIN || 15)),
+    everyMinutes: triggerCadence.effective_every_minutes,
   };
 
   const signature = JSON.stringify(spec);
-  const scriptProps = PropertiesService.getScriptProperties();
   const existingSignature = scriptProps.getProperty(PROPS.PIPELINE_TRIGGER_SIGNATURE);
   const existingPipelineTriggers = ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === spec.functionName);
   const runId = buildRunId_();
@@ -28,6 +29,9 @@ function installOrUpdateTriggers() {
         action: 'install_noop',
         trigger_count: verification.trigger_count,
         next_run_estimate: verification.next_run_estimate,
+        configured_schedule_minutes: triggerCadence.configured_every_minutes,
+        recommended_schedule_minutes: triggerCadence.recommended_every_minutes,
+        schedule_tuned: triggerCadence.schedule_tuned,
         lock_clear: verification.lock_clear,
         debounce_clear: verification.debounce_clear,
       }),
@@ -54,6 +58,9 @@ function installOrUpdateTriggers() {
       action: 'install_or_refresh',
       trigger_count: verification.trigger_count || currentTriggerCount,
       schedule_minutes: spec.everyMinutes,
+      configured_schedule_minutes: triggerCadence.configured_every_minutes,
+      recommended_schedule_minutes: triggerCadence.recommended_every_minutes,
+      schedule_tuned: triggerCadence.schedule_tuned,
       next_run_estimate: verification.next_run_estimate,
       lock_clear: verification.lock_clear,
       debounce_clear: verification.debounce_clear,
@@ -244,6 +251,7 @@ function buildMenuTriggerActionResult_(action, verification) {
 function runEdgeBoard() {
   const runId = buildRunId_();
   const startedAt = new Date();
+  const startedAtMs = startedAt.getTime();
   const scriptProps = PropertiesService.getScriptProperties();
 
   if (scriptProps.getProperty(PROPS.WORKBOOK_RESET_IN_PROGRESS) === 'true') {
@@ -274,8 +282,12 @@ function runEdgeBoard() {
 
   const lock = LockService.getScriptLock();
   let lifecycleContext = null;
+  let lockAcquired = false;
+  let lockAcquiredAtMs = 0;
+  const lockAttemptStartedMs = Date.now();
 
-  if (!tryLock_(lock, 5000)) {
+  lockAcquired = tryLock_(lock, 5000);
+  if (!lockAcquired) {
     const prevented = incrementDuplicatePreventedCount_();
     appendLogRow_({
       row_type: 'summary',
@@ -289,8 +301,34 @@ function runEdgeBoard() {
       lock_event: 'run_locked_skip',
       duplicate_suppressed: prevented,
     });
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: runId,
+      stage: 'run_lock',
+      status: 'skipped',
+      reason_code: 'run_locked_skip',
+      message: JSON.stringify({
+        lock_event: 'run_locked_skip',
+        lock_wait_ms: Math.max(0, Date.now() - lockAttemptStartedMs),
+      }),
+      lock_event: 'run_locked_skip',
+    });
     return;
   }
+  lockAcquiredAtMs = Date.now();
+  scriptProps.setProperty(PROPS.LAST_PIPELINE_START_TS, String(lockAcquiredAtMs));
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: runId,
+    stage: 'run_lock',
+    status: 'success',
+    reason_code: 'run_lock_acquired',
+    message: JSON.stringify({
+      lock_event: 'run_lock_acquired',
+      lock_wait_ms: Math.max(0, lockAcquiredAtMs - lockAttemptStartedMs),
+    }),
+    lock_event: 'run_lock_acquired',
+  });
 
   try {
     const preflight = preflightConfigUniqueness_('runEdgeBoard preflight');
@@ -348,7 +386,16 @@ function runEdgeBoard() {
     appendRunStartConfigAuditLog_(runId, config, startedAt);
 
     const nowMs = Date.now();
-    const debounceMs = config.DUPLICATE_DEBOUNCE_MS;
+    const cadenceControl = resolveCadenceControl_(config, scriptProps, nowMs);
+    appendLogRow_({
+      row_type: 'ops',
+      run_id: runId,
+      stage: 'cadence_control',
+      status: cadenceControl.tuned ? 'warning' : 'ok',
+      reason_code: cadenceControl.tuned ? 'cadence_autotuned' : 'cadence_configured',
+      message: JSON.stringify(cadenceControl),
+    });
+    const debounceMs = cadenceControl.effective_debounce_ms;
     const lastRunTs = Number(scriptProps.getProperty(PROPS.LAST_PIPELINE_RUN_TS) || 0);
     if (nowMs - lastRunTs < debounceMs) {
       const prevented = incrementDuplicatePreventedCount_();
@@ -984,9 +1031,87 @@ function runEdgeBoard() {
     });
     throw error;
   } finally {
+    if (lockAcquired) {
+      const finishedAtMs = Date.now();
+      updateRuntimeTelemetry_(scriptProps, startedAtMs, finishedAtMs);
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'run_lock',
+        status: 'success',
+        reason_code: 'run_lock_released',
+        message: JSON.stringify({
+          lock_event: 'run_lock_released',
+          lock_held_ms: Math.max(0, finishedAtMs - lockAcquiredAtMs),
+        }),
+        lock_event: 'run_lock_released',
+      });
+    }
     releaseRunLifecycleLease_(scriptProps, lifecycleContext, runId);
-    lock.releaseLock();
+    if (lockAcquired) {
+      lock.releaseLock();
+    }
   }
+}
+
+function resolveCadenceControl_(config, scriptProps, nowMs) {
+  const configuredDebounceMs = Math.max(0, Number(config.DUPLICATE_DEBOUNCE_MS || 0));
+  const triggerEveryMinutes = Math.max(1, Number(config.PIPELINE_TRIGGER_EVERY_MIN || 15));
+  const triggerIntervalMs = triggerEveryMinutes * 60 * 1000;
+  const maxSafeDebounceMs = Math.max(0, Math.floor(triggerIntervalMs * 0.8));
+  const observedRuntimeMs = Math.max(0, Number(scriptProps.getProperty(PROPS.PIPELINE_RUNTIME_EWMA_MS) || 0));
+  const runtimeGuardMs = observedRuntimeMs > 0
+    ? Math.round(observedRuntimeMs + Math.max(10000, observedRuntimeMs * 0.25))
+    : 0;
+  const overlapWindowMs = Math.max(0, runtimeGuardMs - triggerIntervalMs);
+  const tunedDebounceMs = runtimeGuardMs > 0
+    ? Math.min(maxSafeDebounceMs, runtimeGuardMs)
+    : configuredDebounceMs;
+  const effectiveDebounceMs = Math.max(0, Math.min(maxSafeDebounceMs, Math.max(configuredDebounceMs, tunedDebounceMs)));
+  const lastStartTs = Number(scriptProps.getProperty(PROPS.LAST_PIPELINE_START_TS) || 0);
+  const lastStartAgeMs = lastStartTs > 0 ? Math.max(0, nowMs - lastStartTs) : -1;
+  const manualOverlapWindowMs = observedRuntimeMs > 0 ? observedRuntimeMs : 0;
+
+  return {
+    configured_debounce_ms: configuredDebounceMs,
+    effective_debounce_ms: effectiveDebounceMs,
+    max_safe_debounce_ms: maxSafeDebounceMs,
+    trigger_interval_ms: triggerIntervalMs,
+    observed_avg_runtime_ms: observedRuntimeMs,
+    expected_overlap_window_ms: overlapWindowMs,
+    manual_overlap_window_ms: manualOverlapWindowMs,
+    last_start_age_ms: lastStartAgeMs,
+    tuned: effectiveDebounceMs !== configuredDebounceMs,
+  };
+}
+
+function resolveTriggerCadence_(config, scriptProps) {
+  const configuredEveryMinutes = Math.max(1, Number(config.PIPELINE_TRIGGER_EVERY_MIN || 15));
+  const observedRuntimeMs = Math.max(0, Number(scriptProps.getProperty(PROPS.PIPELINE_RUNTIME_EWMA_MS) || 0));
+  const recommendedEveryMinutes = observedRuntimeMs > 0
+    ? Math.max(configuredEveryMinutes, Math.ceil((observedRuntimeMs * 1.25) / 60000))
+    : configuredEveryMinutes;
+  return {
+    configured_every_minutes: configuredEveryMinutes,
+    recommended_every_minutes: recommendedEveryMinutes,
+    effective_every_minutes: recommendedEveryMinutes,
+    observed_avg_runtime_ms: observedRuntimeMs,
+    schedule_tuned: recommendedEveryMinutes !== configuredEveryMinutes,
+  };
+}
+
+function updateRuntimeTelemetry_(scriptProps, startedAtMs, endedAtMs) {
+  const durationMs = Math.max(0, Number(endedAtMs || 0) - Number(startedAtMs || 0));
+  const previousEwmaMs = Math.max(0, Number(scriptProps.getProperty(PROPS.PIPELINE_RUNTIME_EWMA_MS) || 0));
+  const previousCount = Math.max(0, Number(scriptProps.getProperty(PROPS.PIPELINE_RUNTIME_SAMPLE_COUNT) || 0));
+  const nextCount = previousCount + 1;
+  const smoothing = previousCount > 0 ? 0.2 : 1;
+  const nextEwmaMs = Math.round(previousEwmaMs > 0
+    ? ((smoothing * durationMs) + ((1 - smoothing) * previousEwmaMs))
+    : durationMs);
+
+  scriptProps.setProperty(PROPS.PIPELINE_RUNTIME_EWMA_MS, String(nextEwmaMs));
+  scriptProps.setProperty(PROPS.PIPELINE_RUNTIME_SAMPLE_COUNT, String(nextCount));
 }
 
 function resolveBootstrapEmptyCycleWatchdogEmission_(emptyCycleState, runHealthDiagnostics) {
