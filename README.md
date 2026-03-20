@@ -8,6 +8,21 @@ If the custom menu does not appear (for example due to simple-trigger binding/de
 * Run `rebuildMenuNow` once from the editor
 * Reload spreadsheet and verify menu presence
 
+### Parser cleanup loop for "already declared" errors
+
+When the Apps Script editor reports parser-level duplicate declaration errors, use this repeatable loop:
+
+1. Save all files in Apps Script.
+2. Run `onOpen`.
+3. If a new `Identifier 'X' has already been declared` error appears, search that exact identifier with:
+
+   ```regex
+   ^(const|let|var)\s+<IDENTIFIER>\b
+   ```
+
+4. Remove duplicated declarations and repeat until no syntax errors remain.
+5. When parser errors are clear, refresh the spreadsheet and verify the **WTA Edge Board** custom menu appears.
+
 ## Apps Script file reconciliation (live project vs repo)
 
 Use `scripts/apps_script_reconcile.py` to compare the live Apps Script project file list against canonical repo modules and optionally remove stale modules from the live project.
