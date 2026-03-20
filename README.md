@@ -212,6 +212,14 @@ Behavior contract:
 If precheck fails, **stop triage and re-export from the sheet before further analysis**.
 Only proceed to comparison scripts once both run IDs are confirmed present.
 
+Comparison scripts should use positional run IDs (with optional `--export-dir`), for example:
+
+```bash
+python3 scripts/compare_run_diagnostics.py <run_success> <run_degraded> --export-dir ./exports_live
+```
+
+Avoid legacy/incorrect flag patterns such as `--run-log` or `--require`; run IDs are positional arguments.
+
 
 1. **Export artifacts to a known directory** (`./exports` by default).
 2. **Run diagnostics scan/triage** against that export directory.

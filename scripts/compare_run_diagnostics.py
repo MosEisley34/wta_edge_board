@@ -175,11 +175,23 @@ def compare_rows(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description='Compare diagnostics between two run ids')
-    ap.add_argument('run_success')
-    ap.add_argument('run_degraded')
-    ap.add_argument('--export-dir', default='runtime_exports')
-    ap.add_argument('--out', default='')
+    ap = argparse.ArgumentParser(
+        description='Compare diagnostics between two run IDs from exported Run_Log artifacts.',
+        epilog=(
+            'Usage: python3 scripts/compare_run_diagnostics.py <run_success> <run_degraded> '
+            '[--export-dir ./exports_live] [--out ./tmp/run_diff.md]\n'
+            'Note: run IDs are positional arguments; do not pass legacy flags like --run-log/--require.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument('run_success', help='Baseline/healthy run ID (positional).')
+    ap.add_argument('run_degraded', help='Candidate degraded run ID (positional).')
+    ap.add_argument(
+        '--export-dir',
+        default='runtime_exports',
+        help='Directory containing exported runtime artifacts (default: runtime_exports).',
+    )
+    ap.add_argument('--out', default='', help='Optional markdown output path.')
     args = ap.parse_args()
 
     rows = load_rows(args.export_dir)
