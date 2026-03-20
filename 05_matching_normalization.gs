@@ -68,6 +68,9 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
         fallback.match_type = 'fallback_match';
         return fallback;
       }
+      fallback.primary_time_delta_min = res.best_time_delta_min;
+      fallback.fallback_time_delta_min = fallback.best_time_delta_min;
+      fallback.nearest_schedule_candidate = fallback.nearest_schedule_candidate || res.nearest_schedule_candidate || null;
       fallback.rejection_code = fallback.rejection_code === 'outside_time_tolerance' ? 'fallback_exhausted' : fallback.rejection_code;
       return fallback;
     });
@@ -109,6 +112,11 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
       player_2: result.odds.player_2,
       commence_time: result.odds.commence_time.toISOString(),
       rejection_code: result.rejection_code,
+      normalized_odds_players: result.normalized_odds_players || [],
+      normalized_schedule_players: result.nearest_schedule_candidate ? (result.nearest_schedule_candidate.normalized_players || []) : [],
+      nearest_schedule_candidate: result.nearest_schedule_candidate || null,
+      primary_time_delta_min: result.primary_time_delta_min,
+      fallback_time_delta_min: result.fallback_time_delta_min,
     });
   });
 
@@ -419,7 +427,9 @@ function isAllowedTournament(canonical, config) {
 }
 
 function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, canonicalizationExamples) {
-  const oddsPlayers = normalizePlayers_(odds.player_1, odds.player_2, aliasMap);
+  const oddsPlayersPair = normalizePlayerPair_(odds.player_1, odds.player_2, aliasMap);
+  const oddsPlayers = oddsPlayersPair.key;
+  const oddsInitialKey = oddsPlayersPair.initial_key;
   canonicalizationExamples.push({
     sample_type: 'odds',
     raw_players: [odds.player_1, odds.player_2],
@@ -427,8 +437,11 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
   });
 
   const samePlayers = [];
+  const samePlayersByInitial = [];
+  const nearestScheduleCandidate = buildNearestScheduleCandidate_(odds, scheduleEvents, oddsPlayersPair, aliasMap);
   scheduleEvents.forEach((sched) => {
-    const schedPlayers = normalizePlayers_(sched.player_1, sched.player_2, aliasMap);
+    const schedPlayersPair = normalizePlayerPair_(sched.player_1, sched.player_2, aliasMap);
+    const schedPlayers = schedPlayersPair.key;
     if (canonicalizationExamples.length < 25) {
       canonicalizationExamples.push({
         sample_type: 'schedule',
@@ -437,11 +450,24 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
       });
     }
     if (oddsPlayers === schedPlayers) samePlayers.push(sched);
+    if (oddsInitialKey && schedPlayersPair.initial_key && oddsInitialKey === schedPlayersPair.initial_key) samePlayersByInitial.push(sched);
   });
 
-  if (!samePlayers.length) return { odds, matched: false, rejection_code: 'no_player_match' };
+  const candidates = samePlayers.length ? samePlayers : samePlayersByInitial;
+  if (!candidates.length) {
+    return {
+      odds,
+      matched: false,
+      rejection_code: 'no_player_match',
+      normalized_odds_players: oddsPlayersPair.players,
+      nearest_schedule_candidate: nearestScheduleCandidate,
+      best_time_delta_min: nearestScheduleCandidate ? nearestScheduleCandidate.time_delta_min : '',
+      primary_time_delta_min: '',
+      fallback_time_delta_min: '',
+    };
+  }
 
-  const inTolerance = samePlayers
+  const inTolerance = candidates
     .map((sched) => ({
       sched,
       diffMin: Math.abs(odds.commence_time.getTime() - sched.start_time.getTime()) / 60000,
@@ -449,9 +475,32 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
     .filter((candidate) => candidate.diffMin <= maxToleranceMin)
     .sort((a, b) => a.diffMin - b.diffMin);
 
-  if (!inTolerance.length) return { odds, matched: false, rejection_code: 'outside_time_tolerance' };
+  const bestTimeDeltaMin = candidates.length
+    ? candidates.map((sched) => Math.abs(odds.commence_time.getTime() - sched.start_time.getTime()) / 60000).sort((a, b) => a - b)[0]
+    : '';
+  if (!inTolerance.length) {
+    return {
+      odds,
+      matched: false,
+      rejection_code: 'outside_time_tolerance',
+      normalized_odds_players: oddsPlayersPair.players,
+      nearest_schedule_candidate: nearestScheduleCandidate,
+      best_time_delta_min: Number.isFinite(bestTimeDeltaMin) ? Math.round(bestTimeDeltaMin) : '',
+      primary_time_delta_min: '',
+      fallback_time_delta_min: '',
+    };
+  }
   if (inTolerance.length > 1 && inTolerance[0].diffMin === inTolerance[1].diffMin) {
-    return { odds, matched: false, rejection_code: 'ambiguous_candidate' };
+    return {
+      odds,
+      matched: false,
+      rejection_code: 'ambiguous_candidate',
+      normalized_odds_players: oddsPlayersPair.players,
+      nearest_schedule_candidate: nearestScheduleCandidate,
+      best_time_delta_min: Number.isFinite(bestTimeDeltaMin) ? Math.round(bestTimeDeltaMin) : '',
+      primary_time_delta_min: '',
+      fallback_time_delta_min: '',
+    };
   }
 
   const winner = inTolerance[0];
@@ -462,11 +511,94 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
     schedule_event_id: winner.sched.event_id,
     competition_tier: winner.sched.canonical_tier,
     time_diff_min: Math.round(winner.diffMin),
+    normalized_odds_players: oddsPlayersPair.players,
+    nearest_schedule_candidate: nearestScheduleCandidate,
+    best_time_delta_min: Number.isFinite(bestTimeDeltaMin) ? Math.round(bestTimeDeltaMin) : '',
+    primary_time_delta_min: '',
+    fallback_time_delta_min: '',
   };
 }
 
 function normalizePlayers_(a, b, aliasMap) {
-  return [canonicalizePlayerName_(a, aliasMap), canonicalizePlayerName_(b, aliasMap)].sort().join('|');
+  return normalizePlayerPair_(a, b, aliasMap).key;
+}
+
+function normalizePlayerPair_(a, b, aliasMap) {
+  const players = [canonicalizePlayerName_(a, aliasMap), canonicalizePlayerName_(b, aliasMap)].sort();
+  return {
+    players: players,
+    key: players.join('|'),
+    initial_key: players.map(buildInitialSurnameKey_).sort().join('|'),
+  };
+}
+
+function buildInitialSurnameKey_(canonicalName) {
+  const tokens = String(canonicalName || '').trim().split(' ').filter(function (token) { return token; });
+  if (!tokens.length) return '';
+  const surname = tokens[tokens.length - 1];
+  const first = tokens[0] || '';
+  const initial = first ? first.charAt(0) : '';
+  return (initial + ' ' + surname).trim();
+}
+
+function buildNearestScheduleCandidate_(odds, scheduleEvents, oddsPlayersPair, aliasMap) {
+  if (!scheduleEvents || !scheduleEvents.length) return null;
+  const scored = scheduleEvents.map(function (sched) {
+    const schedPlayersPair = normalizePlayerPair_(sched.player_1, sched.player_2, aliasMap);
+    const playerDistance = computePairKeyDistance_(oddsPlayersPair.key, schedPlayersPair.key);
+    const timeDeltaMin = Math.abs(odds.commence_time.getTime() - sched.start_time.getTime()) / 60000;
+    const sameInitial = oddsPlayersPair.initial_key && oddsPlayersPair.initial_key === schedPlayersPair.initial_key;
+    return {
+      sched: sched,
+      normalizedPlayers: schedPlayersPair.players,
+      playerDistance: playerDistance,
+      timeDeltaMin: timeDeltaMin,
+      sameInitial: sameInitial,
+    };
+  });
+  scored.sort(function (a, b) {
+    if (a.playerDistance !== b.playerDistance) return a.playerDistance - b.playerDistance;
+    if (a.sameInitial !== b.sameInitial) return a.sameInitial ? -1 : 1;
+    if (a.timeDeltaMin !== b.timeDeltaMin) return a.timeDeltaMin - b.timeDeltaMin;
+    return String((a.sched || {}).event_id || '').localeCompare(String((b.sched || {}).event_id || ''));
+  });
+  const winner = scored[0];
+  return {
+    event_id: winner.sched.event_id || '',
+    player_1: winner.sched.player_1 || '',
+    player_2: winner.sched.player_2 || '',
+    normalized_players: winner.normalizedPlayers,
+    start_time: winner.sched.start_time && winner.sched.start_time.toISOString ? winner.sched.start_time.toISOString() : '',
+    player_distance: winner.playerDistance,
+    time_delta_min: Math.round(winner.timeDeltaMin),
+    initial_key_match: winner.sameInitial,
+  };
+}
+
+function computePairKeyDistance_(a, b) {
+  const source = String(a || '');
+  const target = String(b || '');
+  if (source === target) return 0;
+  if (!source || !target) return Math.max(source.length, target.length);
+  const rows = source.length + 1;
+  const cols = target.length + 1;
+  const dp = [];
+  for (let i = 0; i < rows; i += 1) {
+    dp[i] = [];
+    dp[i][0] = i;
+  }
+  for (let j = 0; j < cols; j += 1) dp[0][j] = j;
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const cost = source.charAt(i - 1) === target.charAt(j - 1) ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[source.length][target.length];
 }
 
 function canonicalizePlayerName_(name, aliasMap) {

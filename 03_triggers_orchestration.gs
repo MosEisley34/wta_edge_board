@@ -2470,6 +2470,11 @@ function buildRunHealthDegradedContract_(metrics) {
         competition: entry.competition,
         player_1: entry.player_1,
         player_2: entry.player_2,
+        normalized_odds_players: entry.normalized_odds_players || [],
+        normalized_schedule_players: entry.normalized_schedule_players || [],
+        nearest_schedule_candidate: entry.nearest_schedule_candidate || null,
+        primary_time_delta_min: entry.primary_time_delta_min,
+        fallback_time_delta_min: entry.fallback_time_delta_min,
         commence_time: entry.commence_time,
         rejection_code: entry.rejection_code,
       };
