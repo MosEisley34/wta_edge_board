@@ -125,6 +125,9 @@ const DEFAULT_CONFIG = {
   PLAYER_STATS_CACHE_TTL_MIN: '10',
   PLAYER_STATS_REFRESH_MIN: '5',
   PLAYER_STATS_FORCE_REFRESH: 'false',
+  PLAYER_STATS_COHORT_MODE: 'leadersource',
+  PLAYER_STATS_TOP_RANK_MAX: '100',
+  PLAYER_STATS_ALLOW_OUT_OF_COHORT_FALLBACK: 'true',
   RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER: '3',
   RUN_HEALTH_SINGLE_RUN_CRITICAL_TRIGGER: 'true',
 };
@@ -214,6 +217,8 @@ const REASON_CODE_ALIAS_DICTIONARIES = {
     run_health_single_run_critical_triggered: 'RH_CRIT_1RUN',
     source_entity_domain_mismatch_non_tennis_sport_slug_football: 'SRC_DM_FOOT',
     source_entity_domain_mismatch: 'SRC_DM',
+    player_stats_out_of_cohort_only: 'PSTATS_OUT_COH',
+    player_stats_unknown_rank_only: 'PSTATS_UNK_RNK',
     match_map_diagnostic_records_written: 'MM_DIAG_WR',
     match_map_upserts: 'MM_UPS',
     match_map_upserts_matched: 'MM_UPS_MT',
@@ -510,6 +515,15 @@ function getConfig_() {
     PLAYER_STATS_CACHE_TTL_MIN: toNumber_(config.PLAYER_STATS_CACHE_TTL_MIN, 10),
     PLAYER_STATS_REFRESH_MIN: toNumber_(config.PLAYER_STATS_REFRESH_MIN, 5),
     PLAYER_STATS_FORCE_REFRESH: toBoolean_(config.PLAYER_STATS_FORCE_REFRESH, false),
+    PLAYER_STATS_COHORT_MODE: normalizePlayerStatsCohortMode_(config.PLAYER_STATS_COHORT_MODE || DEFAULT_CONFIG.PLAYER_STATS_COHORT_MODE),
+    PLAYER_STATS_TOP_RANK_MAX: Math.max(1, toNumber_(
+      config.PLAYER_STATS_TOP_RANK_MAX,
+      toNumber_(DEFAULT_CONFIG.PLAYER_STATS_TOP_RANK_MAX, 100)
+    )),
+    PLAYER_STATS_ALLOW_OUT_OF_COHORT_FALLBACK: toBoolean_(
+      config.PLAYER_STATS_ALLOW_OUT_OF_COHORT_FALLBACK,
+      toBoolean_(DEFAULT_CONFIG.PLAYER_STATS_ALLOW_OUT_OF_COHORT_FALLBACK, true)
+    ),
     RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER: Math.max(1, toNumber_(
       config.RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER,
       toNumber_(DEFAULT_CONFIG.RUN_HEALTH_CONSECUTIVE_RUN_DEGRADED_TRIGGER, 3)
@@ -616,6 +630,12 @@ function formatDuplicateConfigKeysError_(context, duplicateRowsByKey, firstRowBy
     + ' (' + duplicateKeyCount + ' duplicate key(s)): ' + details + '. '
     + 'Why this fails: duplicate keys make runtime config resolution ambiguous. '
     + 'How to fix safely: run dedupeConfigSheet_() exactly once from the menu or Apps Script editor.';
+}
+
+function normalizePlayerStatsCohortMode_(raw) {
+  const mode = String(raw || '').trim().toLowerCase();
+  if (mode === 'leadersource' || mode === 'top100' || mode === 'all') return mode;
+  return String(DEFAULT_CONFIG.PLAYER_STATS_COHORT_MODE || 'leadersource').toLowerCase();
 }
 
 
