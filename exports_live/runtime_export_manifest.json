@@ -1,0 +1,21 @@
+{
+  "generated_at_utc": "2026-03-20T20:59:09.455868+00:00",
+  "expected_patterns": [
+    "*Run_Log*.csv",
+    "*Run_Log*.json",
+    "*State*.csv",
+    "*State*.json"
+  ],
+  "files": [
+    {
+      "path": "./exports_live/Run_Log.json",
+      "size_bytes": 22598,
+      "modified_at_utc": "2026-03-20T20:59:08.099639+00:00"
+    },
+    {
+      "path": "./exports_live/State.json",
+      "size_bytes": 28983,
+      "modified_at_utc": "2026-03-20T20:59:08.103639+00:00"
+    }
+  ]
+}
