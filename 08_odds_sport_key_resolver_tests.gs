@@ -4414,6 +4414,49 @@ function testEnrichScheduleEventsFromTennisAbstract_nonFatalOnFailure_() {
   }
 }
 
+function testEnrichScheduleEventsFromTennisAbstract_noUpcomingPlayers_logsMatcherFields_() {
+  const originalDateNow = Date.now;
+  const originalLogDiagnosticEvent = logDiagnosticEvent_;
+
+  const capturedDiagnostics = [];
+  Date.now = function () { return Date.parse('2025-03-01T00:00:00.000Z'); };
+  logDiagnosticEvent_ = function (config, eventName, payload) {
+    capturedDiagnostics.push({
+      event_name: eventName,
+      payload: payload,
+    });
+  };
+
+  try {
+    const result = enrichScheduleEventsFromTennisAbstract_({}, [{
+      event_id: 'sched_past_only',
+      start_time: new Date('2025-02-28T23:00:00.000Z'),
+      player_1: 'Iga Swiatek',
+      player_2: 'Aryna Sabalenka',
+    }]);
+
+    assertEquals_('schedule_enrichment_no_upcoming_players', result.reason_code);
+    assertEquals_(1, result.events.length);
+    assertEquals_('iga swiatek', result.events[0].matcher_player_1_canonical);
+    assertEquals_('aryna sabalenka', result.events[0].matcher_player_2_canonical);
+    assertEquals_(true, !!result.events[0].matcher_identifiers_ready);
+    assertEquals_('schedule_enrichment_no_upcoming_players', result.events[0].matcher_enrichment_source);
+
+    const diag = capturedDiagnostics.filter(function (entry) {
+      return entry.event_name === 'stageFetchSchedule_schedule_enrichment_no_upcoming_players_matcher_fields';
+    })[0];
+    assertEquals_(true, !!diag);
+    assertEquals_('schedule_enrichment_no_upcoming_players', diag.payload.reason_code);
+    assertEquals_(1, Number(diag.payload.event_count || 0));
+    assertEquals_('sched_past_only', String(diag.payload.events[0].event_id || ''));
+    assertEquals_('iga swiatek', String(diag.payload.events[0].player_1_canonical || ''));
+    assertEquals_('aryna sabalenka', String(diag.payload.events[0].player_2_canonical || ''));
+  } finally {
+    Date.now = originalDateNow;
+    logDiagnosticEvent_ = originalLogDiagnosticEvent;
+  }
+}
+
 function testEnrichScheduleEventsFromTennisAbstract_h2hEmptyTableAddsReasonAndImpact_() {
   const originalFetchPlayerStatsBatch = fetchPlayerStatsBatch_;
   const originalGetStateJson = getStateJson_;
