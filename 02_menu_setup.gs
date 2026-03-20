@@ -1,6 +1,6 @@
 function buildWtaPipelineOpsMenu_() {
   SpreadsheetApp.getUi()
-    .createMenu('WTA Pipeline Ops')
+    .createMenu('WTA Edge Board')
     .addItem('Setup / Verify Tabs', 'menuSetupVerifyTabs')
     .addItem('Deduplicate Config Sheet', 'menuDedupeConfigSheet')
     .addItem('Repair Config (dedupe)', 'menuRepairConfig')

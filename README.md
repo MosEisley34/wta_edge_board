@@ -76,7 +76,7 @@ Use this preset when you want to stay inside lower Odds API daily budgets with g
 
 You can apply it from the spreadsheet menu:
 
-- `WTA Pipeline Ops` → `Apply Preset: Free-Tier Conservation`
+- `WTA Edge Board` → `Apply Preset: Free-Tier Conservation`
 
 Preset values written to the `Config` tab:
 
