@@ -1343,12 +1343,18 @@ function maybeEmitReasonAliasFallbackWarningOpsLog_(entry) {
   summaryKeys.forEach((pendingKey) => {
     const mergedWarning = REASON_ALIAS_FALLBACK_WARNING_PENDING[pendingKey] || {};
     delete REASON_ALIAS_FALLBACK_WARNING_PENDING[pendingKey];
-    const fallbackAliases = Object.keys((mergedWarning && mergedWarning.fallback_aliases) || {}).sort();
+    const fallbackAliases = Object.keys((mergedWarning && mergedWarning.fallback_aliases) || {}).filter((alias) => {
+      return String(alias || '').indexOf('UNK_') === 0;
+    }).sort();
     if (!fallbackAliases.length) return;
+    const canonicalReasons = {};
+    fallbackAliases.forEach((alias) => {
+      canonicalReasons[alias] = String((mergedWarning.fallback_aliases || {})[alias] || '');
+    });
     const aggregateEntry = registerReasonAliasFallbackWarningSet_(aggregateState, {
       schema_id: String(mergedWarning.schema_id || REASON_CODE_ALIAS_SCHEMA_ID || ''),
       fallback_aliases: fallbackAliases,
-      canonical_reasons: mergedWarning.fallback_aliases || {},
+      canonical_reasons: canonicalReasons,
       allow_canonical_passthrough: !!mergedWarning.allow_canonical_passthrough,
       now: now,
     });
