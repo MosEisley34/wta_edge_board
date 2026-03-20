@@ -1,3 +1,5 @@
+// NOTE: Keep PLAYER_STATS_*_CACHE_* constants declared only in 05_player_stats_adapter.gs.
+// If this matcher needs those values, reference the shared global constants instead of redeclaring.
 function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
   const start = Date.now();
   const toleranceMin = config.MATCH_TIME_TOLERANCE_MIN;
