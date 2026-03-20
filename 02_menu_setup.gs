@@ -1,4 +1,4 @@
-function onOpen() {
+function buildWtaPipelineOpsMenu_() {
   SpreadsheetApp.getUi()
     .createMenu('WTA Pipeline Ops')
     .addItem('Setup / Verify Tabs', 'menuSetupVerifyTabs')
@@ -19,6 +19,14 @@ function onOpen() {
     .addItem('Refresh H2H Cache', 'menuRefreshH2hCache')
     .addItem('Preview Player Stats Mapping', 'menuPreviewPlayerStatsMapping')
     .addToUi();
+}
+
+function onOpen() {
+  buildWtaPipelineOpsMenu_();
+}
+
+function onInstall(e) {
+  onOpen(e);
 }
 
 function menuSetupVerifyTabs() {
