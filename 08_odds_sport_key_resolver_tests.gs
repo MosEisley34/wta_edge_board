@@ -2732,7 +2732,7 @@ function testApplyOpeningLagActionabilityGate_boundedWindowTierRelaxesFallbackAg
     assertEquals_('opening_lag_fallback_exemption_allowed', gated.rows[0].fallback_exemption_reason_code);
     assertEquals_('fallback_cached_stale_bounded_window', gated.rows[0].opening_lag_policy_tier_applied);
     assertEquals_(240, Number(gated.rows[0].opening_lag_fallback_exemption_max_age_minutes || 0));
-    assertEquals_(1, Number((gated.summary.reason_metadata.fallback_exemption_age_bucket_summary || {})['>180'] || 0));
+    assertEquals_(1, Number((gated.summary.reason_metadata.fallback_exemption_age_bucket_summary || {})['181-300'] || 0));
   });
 }
 
@@ -2785,7 +2785,7 @@ function testApplyOpeningLagActionabilityGate_emitsPolicyTuningAgeBucketSummary_
     const summary = gated.summary.reason_metadata.fallback_exemption_age_bucket_summary || {};
     assertEquals_(1, Number(summary['<=60'] || 0));
     assertEquals_(1, Number(summary['61-180'] || 0));
-    assertEquals_(1, Number(summary['>180'] || 0));
+    assertEquals_(1, Number(summary['181-300'] || 0));
   });
 }
 
