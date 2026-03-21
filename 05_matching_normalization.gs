@@ -4,6 +4,7 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
   const start = Date.now();
   const toleranceMin = config.MATCH_TIME_TOLERANCE_MIN;
   const fallbackMin = config.MATCH_FALLBACK_EXPANSION_MIN;
+  const fallbackHardMaxDeltaMin = Math.max(0, Number(config.MATCH_FALLBACK_HARD_MAX_DELTA_MIN || 1440));
   const identityMissingRateThreshold = Math.max(0, Math.min(1, Number(config.MATCHER_PLAYER_IDENTITY_MISSING_RATE_BLOCK_THRESHOLD || 0.6)));
   const identityMissingMinRows = Math.max(1, Number(config.MATCHER_PLAYER_IDENTITY_MISSING_MIN_ROWS || 3));
   const aliasMap = buildPlayerAliasMap_(config.PLAYER_ALIAS_MAP_JSON);
@@ -138,7 +139,14 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
     };
   }
 
-  const primary = oddsEvents.map((odds) => matchSingleOddsEvent_(odds, scheduleEvents, toleranceMin, aliasMap, canonicalizationExamples));
+  const primary = oddsEvents.map((odds) => matchSingleOddsEvent_(
+    odds,
+    scheduleEvents,
+    toleranceMin,
+    aliasMap,
+    canonicalizationExamples,
+    { is_fallback_attempt: false, fallback_hard_max_delta_min: fallbackHardMaxDeltaMin }
+  ));
   const unmatchedPrimary = primary.filter((res) => !res.matched);
 
   if (unmatchedPrimary.length === 0) reasonCounts.fallback_short_circuit = (reasonCounts.fallback_short_circuit || 0) + 1;
@@ -147,7 +155,14 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
     ? primary
     : primary.map((res) => {
       if (res.matched) return res;
-      const fallback = matchSingleOddsEvent_(res.odds, scheduleEvents, toleranceMin + fallbackMin, aliasMap, canonicalizationExamples);
+      const fallback = matchSingleOddsEvent_(
+        res.odds,
+        scheduleEvents,
+        toleranceMin + fallbackMin,
+        aliasMap,
+        canonicalizationExamples,
+        { is_fallback_attempt: true, fallback_hard_max_delta_min: fallbackHardMaxDeltaMin }
+      );
       if (fallback.matched) {
         fallback.match_type = 'fallback_match';
         return fallback;
@@ -594,7 +609,11 @@ function isAllowedTournament(canonical, config) {
   return { allowed: false, reason_code: 'rejected_unknown_competition' };
 }
 
-function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, canonicalizationExamples) {
+function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, canonicalizationExamples, options) {
+  const opts = options || {};
+  const isFallbackAttempt = !!opts.is_fallback_attempt;
+  const fallbackHardMaxDeltaMin = Number(opts.fallback_hard_max_delta_min);
+  const enforceFallbackHardCeiling = isFallbackAttempt && Number.isFinite(fallbackHardMaxDeltaMin) && fallbackHardMaxDeltaMin >= 0;
   const oddsPlayersPair = normalizePlayerPair_(odds.player_1, odds.player_2, aliasMap);
   const oddsPlayers = oddsPlayersPair.key;
   const oddsInitialKey = oddsPlayersPair.initial_key;
@@ -623,10 +642,13 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
 
   const candidates = samePlayers.length ? samePlayers : samePlayersByInitial;
   if (!candidates.length) {
+    const exceededDayWindow = enforceFallbackHardCeiling
+      && nearestScheduleCandidate
+      && Number(nearestScheduleCandidate.time_delta_min || 0) > fallbackHardMaxDeltaMin;
     return {
       odds,
       matched: false,
-      rejection_code: 'no_player_match',
+      rejection_code: exceededDayWindow ? 'candidate_out_of_day_window' : 'no_player_match',
       normalized_odds_players: oddsPlayersPair.players,
       nearest_schedule_candidate: nearestScheduleCandidate,
       best_time_delta_min: nearestScheduleCandidate ? nearestScheduleCandidate.time_delta_min : '',
@@ -646,6 +668,18 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
   const bestTimeDeltaMin = candidates.length
     ? candidates.map((sched) => Math.abs(odds.commence_time.getTime() - sched.start_time.getTime()) / 60000).sort((a, b) => a - b)[0]
     : '';
+  if (enforceFallbackHardCeiling && Number.isFinite(bestTimeDeltaMin) && bestTimeDeltaMin > fallbackHardMaxDeltaMin) {
+    return {
+      odds,
+      matched: false,
+      rejection_code: 'candidate_out_of_day_window',
+      normalized_odds_players: oddsPlayersPair.players,
+      nearest_schedule_candidate: nearestScheduleCandidate,
+      best_time_delta_min: Number.isFinite(bestTimeDeltaMin) ? Math.round(bestTimeDeltaMin) : '',
+      primary_time_delta_min: '',
+      fallback_time_delta_min: '',
+    };
+  }
   if (!inTolerance.length) {
     return {
       odds,
