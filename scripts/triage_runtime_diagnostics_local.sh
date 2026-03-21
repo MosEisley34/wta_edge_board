@@ -15,5 +15,7 @@ if ! find "$EXPORT_DIR" -maxdepth 1 -type f \( -iname '*run*log*.csv' -o -iname 
   exit 1
 fi
 
+python3 scripts/verify_run_log_parity.py --export-dir "$EXPORT_DIR"
+
 echo "[triage] First pass: prioritize the Run-health degraded contract section."
 scripts/scan_runtime_diagnostics.sh "$EXPORT_DIR"

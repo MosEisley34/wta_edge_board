@@ -31,6 +31,9 @@ class ParityError(RuntimeError):
     pass
 
 
+REMEDIATION_HINT = "Remediation: re-export source batch."
+
+
 def _parse_timestamp(raw: Any) -> dt.datetime | None:
     if raw is None:
         return None
@@ -134,8 +137,7 @@ def verify_run_log_parity(export_dir: str) -> None:
     if not json_files or not csv_files:
         raise ParityError(
             "Run log parity check failed: expected both Run_Log JSON and CSV artifacts in the export batch. "
-            f"Found json={len(json_files)} csv={len(csv_files)} under {export_dir}. "
-            "Remediation: re-export both live_runtime/Run_Log.json and live_runtime/Run_Log.csv, then rerun export."
+            f"Found json={len(json_files)} csv={len(csv_files)} under {export_dir}."
         )
 
     json_rows: list[dict[str, Any]] = []
@@ -180,8 +182,7 @@ def verify_run_log_parity(export_dir: str) -> None:
         joined = "\n - ".join(errors)
         raise ParityError(
             "Run log parity check failed for export batch; aborting publish to avoid partial artifacts.\n"
-            f" - {joined}\n"
-            "Remediation: regenerate Run_Log.csv and Run_Log.json from the same run window and rerun export."
+            f" - {joined}"
         )
 
 
@@ -201,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         verify_run_log_parity(args.export_dir)
     except ParityError as exc:
         print(str(exc), file=sys.stderr)
+        print(REMEDIATION_HINT, file=sys.stderr)
         return 1
     print(f"Run log parity check passed for {args.export_dir}.")
     return 0
