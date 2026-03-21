@@ -18,6 +18,10 @@ REQUIRED_STAGE_CHAIN = (
     "stageGenerateSignals",
     "stagePersist",
 )
+DEBUG_WATERMARK = (
+    "### NON-APPROVAL DEBUG OUTPUT ### "
+    "gate failed; verdict publication remains blocked."
+)
 
 
 def _parse_message(value: Any) -> Dict[str, Any]:
@@ -115,6 +119,35 @@ def _validate_run_pair(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> No
             "Comparison auto-failed: replacement run IDs required before producing pre/post verdict. "
             f"Details: {'; '.join(failures)}."
         )
+
+
+def _debug_gate_failure_report(
+    rows: List[Dict[str, Any]],
+    run_success: str,
+    run_degraded: str,
+    gate_report: Dict[str, Any],
+) -> str:
+    lines: List[str] = [DEBUG_WATERMARK]
+    lines.append("# gate_report")
+    lines.append(json.dumps(gate_report, indent=2, sort_keys=True))
+    for run_id in (run_success, run_degraded):
+        lines.append(f"\n## run={run_id} stage_chain_presence")
+        stage_chain = _run_stage_chain(rows, run_id)
+        if stage_chain:
+            lines.append(f"present_stages: {', '.join(stage_chain)}")
+        else:
+            lines.append("present_stages: none")
+        missing_stages = [stage for stage in REQUIRED_STAGE_CHAIN if stage not in stage_chain]
+        lines.append(f"missing_required_stages: {', '.join(missing_stages) if missing_stages else 'none'}")
+
+        lines.append(f"\n## run={run_id} reason_code_distributions")
+        for stage in TARGETS:
+            counts = reason_distribution(rows, run_id, stage)
+            lines.append(f"{stage}: {json.dumps(dict(sorted(counts.items())), sort_keys=True)}")
+
+        lines.append(f"\n## run={run_id} discovered_coverage_metadata_payload")
+        lines.append(json.dumps(_extract_reason_metadata(rows, run_id), indent=2, sort_keys=True))
+    return "\n".join(lines)
 
 
 def reason_distribution(rows: List[Dict[str, Any]], run_id: str, stage: str) -> Counter:
@@ -408,6 +441,14 @@ def main() -> int:
         default=int(os.getenv('PLAYER_STATS_MAX_MISSING_SIDE_INCREASE', '0')),
         help='Maximum allowed increase in STATS_MISS_A/STATS_MISS_B vs baseline (default: 0).',
     )
+    ap.add_argument(
+        '--emit-debug-on-gate-fail',
+        action='store_true',
+        help=(
+            'Emit non-verdict diagnostics when player-stats gate fails. '
+            'Output is explicitly non-approval and verdict publication remains blocked.'
+        ),
+    )
     ap.add_argument('--out', default='', help='Optional markdown output path.')
     args = ap.parse_args()
 
@@ -421,7 +462,10 @@ def main() -> int:
         )
         gate_report = evaluate_player_stats_gate(rows, args.run_success, args.run_degraded, gate_config)
         if gate_report.get('status') == 'fail':
-            print(json.dumps(gate_report, indent=2, sort_keys=True))
+            if args.emit_debug_on_gate_fail:
+                print(_debug_gate_failure_report(rows, args.run_success, args.run_degraded, gate_report))
+            else:
+                print(json.dumps(gate_report, indent=2, sort_keys=True))
             raise SystemExit(
                 'Player-stats coverage gate failed; aborting pre/post verdict publication. '
                 'Use --player-stats-gate-override-reason with an incident reference when explicitly approved.'

@@ -18,6 +18,10 @@ REQUIRED_STAGE_CHAIN = (
     "stageGenerateSignals",
     "stagePersist",
 )
+DEBUG_WATERMARK = (
+    "### NON-APPROVAL DEBUG OUTPUT ### "
+    "gate failed; verdict publication remains blocked."
+)
 
 
 def _parse_json(value: Any, fallback: Any) -> Any:
@@ -240,6 +244,70 @@ def _validate_run_pair(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> No
         )
 
 
+def _reason_distributions(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Dict[str, int]]:
+    by_stage: Dict[str, Counter] = {}
+    for row in _run_rows(rows, run_id):
+        stage = str(row.get("stage", "")).strip()
+        if not stage:
+            continue
+        by_stage.setdefault(stage, Counter())
+        reason = str(row.get("reason_code", "")).strip()
+        if reason:
+            by_stage[stage][reason] += 1
+        message = _parse_json(row.get("message"), {})
+        if isinstance(message, dict):
+            reason_codes = message.get("reason_codes")
+            if isinstance(reason_codes, dict):
+                for reason_code, count in reason_codes.items():
+                    try:
+                        by_stage[stage][str(reason_code)] += int(float(count))
+                    except (TypeError, ValueError):
+                        continue
+    return {
+        stage: {reason: int(counter[reason]) for reason in sorted(counter.keys())}
+        for stage, counter in sorted(by_stage.items())
+    }
+
+
+def _discover_coverage_metadata_payloads(rows: List[Dict[str, Any]], run_id: str) -> List[Dict[str, Any]]:
+    payloads: List[Dict[str, Any]] = []
+    for row in _run_rows(rows, run_id):
+        stage = str(row.get("stage", "")).strip()
+        if stage != "stageFetchPlayerStats":
+            continue
+        message = _parse_json(row.get("message"), {})
+        if isinstance(message, dict):
+            metadata = _parse_reason_metadata(message.get("reason_metadata"))
+            if metadata:
+                payloads.append(metadata)
+
+    summary = _pick_run_summary(rows, run_id)
+    stage_metadata = _extract_stage_fetch_player_stats_metadata(summary)
+    if stage_metadata:
+        payloads.append(stage_metadata)
+    return payloads
+
+
+def _debug_gate_failure_report(
+    rows: List[Dict[str, Any]],
+    run_a: str,
+    run_b: str,
+    gate_report: Dict[str, Any],
+) -> str:
+    lines = [DEBUG_WATERMARK, "# gate_report", json.dumps(gate_report, indent=2, sort_keys=True)]
+    for run_id in (run_a, run_b):
+        stage_chain = _run_stage_chain(rows, run_id)
+        missing = [stage for stage in REQUIRED_STAGE_CHAIN if stage not in stage_chain]
+        lines.append(f"\n## run={run_id} stage_chain_presence")
+        lines.append(f"present_stages: {', '.join(stage_chain) if stage_chain else 'none'}")
+        lines.append(f"missing_required_stages: {', '.join(missing) if missing else 'none'}")
+        lines.append(f"\n## run={run_id} reason_code_distributions")
+        lines.append(json.dumps(_reason_distributions(rows, run_id), indent=2, sort_keys=True))
+        lines.append(f"\n## run={run_id} discovered_coverage_metadata_payloads")
+        lines.append(json.dumps(_discover_coverage_metadata_payloads(rows, run_id), indent=2, sort_keys=True))
+    return "\n".join(lines)
+
+
 def _format_side_by_side(title: str, run_a: str, run_b: str, values_a: Dict[str, float], values_b: Dict[str, float]) -> List[str]:
     keys = sorted(set(values_a.keys()) | set(values_b.keys()))
     if not keys:
@@ -392,6 +460,14 @@ def parse_args() -> argparse.Namespace:
         default=int(os.getenv("PLAYER_STATS_MAX_MISSING_SIDE_INCREASE", "0")),
         help="Maximum allowed increase in STATS_MISS_A/STATS_MISS_B vs baseline (default: 0).",
     )
+    parser.add_argument(
+        "--emit-debug-on-gate-fail",
+        action="store_true",
+        help=(
+            "Emit non-verdict diagnostics when player-stats gate fails. "
+            "Output is explicitly non-approval and verdict publication remains blocked."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -408,7 +484,10 @@ def main() -> int:
         )
         gate_report = evaluate_player_stats_gate(rows, args.run_a, args.run_b, gate_config)
         if gate_report.get("status") == "fail":
-            print(json.dumps(gate_report, indent=2, sort_keys=True))
+            if args.emit_debug_on_gate_fail:
+                print(_debug_gate_failure_report(rows, args.run_a, args.run_b, gate_report))
+            else:
+                print(json.dumps(gate_report, indent=2, sort_keys=True))
             raise SystemExit(
                 "Player-stats coverage gate failed; aborting pre/post verdict publication. "
                 "Use --player-stats-gate-override-reason with approved incident context to bypass."
