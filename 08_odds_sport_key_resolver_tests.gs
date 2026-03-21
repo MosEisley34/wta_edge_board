@@ -1520,6 +1520,9 @@ function testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_() {
     assertEquals_('run_health_no_matches_from_odds', summary.reason_code);
     assertEquals_(1, summary.fetched_odds);
     assertEquals_(0, summary.matched);
+    assertEquals_(0, summary.opening_lag_blocked_count);
+    assertEquals_(0, summary.schedule_only_seed_count);
+    assertEquals_(1, summary.odds_non_actionable_count);
 
     const warningPayload = JSON.parse(healthWarning.message || '{}');
     assertEquals_('run_health_no_matches_from_odds', warningPayload.reason_code);
