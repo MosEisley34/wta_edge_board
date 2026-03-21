@@ -5840,6 +5840,35 @@ function testStageMatchEvents_reportsPrimaryAndFallbackWindowDeltasWhenFallbackE
   assertEquals_(240, Number(stage.unmatched[0].fallback_time_delta_min || 0));
 }
 
+function testStageMatchEvents_rejectsFallbackCandidateOutsideSameDayWindow_() {
+  const oddsEvents = [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }];
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: 'Completely Different',
+    player_2: 'Another Name',
+    start_time: new Date('2025-03-03T12:30:00.000Z'),
+  }];
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    MATCH_FALLBACK_HARD_MAX_DELTA_MIN: 1440,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, oddsEvents, scheduleEvents);
+
+  assertEquals_(1, stage.rejectedCount);
+  assertEquals_('candidate_out_of_day_window', stage.unmatched[0].rejection_code);
+  assertEquals_(1, Number(stage.summary.reason_codes.candidate_out_of_day_window || 0));
+  assertEquals_(2910, Number(stage.unmatched[0].fallback_time_delta_min || 0));
+}
+
 function testExtractLeadersJsUrl_matchesLeadersourceWtaScript_() {
   const html = '<html><script src="/jsmatches/abc_leadersource_latest_wta.js"></script></html>';
   const result = extractLeadersJsUrl_(html, 'https://www.tennisabstract.com/cgi-bin/leaders_wta.cgi?players=top');
