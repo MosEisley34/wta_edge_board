@@ -25,6 +25,7 @@ class BatchView:
     window_start_iso: str
     window_end_iso: str
     summary_presence: dict[str, bool]
+    required_stage_presence: dict[str, dict[str, bool]]
 
 
 class ParityError(RuntimeError):
@@ -82,6 +83,36 @@ def _load_csv_rows(path: str) -> list[dict[str, Any]]:
         return list(csv.DictReader(handle))
 
 
+def _parse_json_like(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _extract_stage_summaries(row: dict[str, Any]) -> list[dict[str, Any]]:
+    payload = _parse_json_like(row.get("stage_summaries"))
+    if isinstance(payload, list):
+        return [entry for entry in payload if isinstance(entry, dict)]
+    if isinstance(payload, dict):
+        nested = payload.get("stage_summaries")
+        if isinstance(nested, list):
+            return [entry for entry in nested if isinstance(entry, dict)]
+    message_payload = _parse_json_like(row.get("message"))
+    if isinstance(message_payload, dict):
+        nested = message_payload.get("stage_summaries")
+        if isinstance(nested, list):
+            return [entry for entry in nested if isinstance(entry, dict)]
+    return []
+
+
 def _build_batch_view(source: str, rows: list[dict[str, Any]]) -> BatchView:
     timestamped_rows: list[tuple[dt.datetime, dict[str, Any]]] = []
     for row in rows:
@@ -114,12 +145,20 @@ def _build_batch_view(source: str, rows: list[dict[str, Any]]) -> BatchView:
     end_ts = max(ts for ts, _ in batch_rows)
 
     summary_presence = {run_id: False for run_id in sorted(latest_run_ids)}
+    required_stage_presence = {
+        run_id: {"stageFetchPlayerStats": False}
+        for run_id in sorted(latest_run_ids)
+    }
     for _, row in batch_rows:
         run_id = str(row.get("run_id") or "").strip()
         stage = str(row.get("stage") or "").strip()
         row_type = str(row.get("row_type") or "").strip()
         if row_type == "summary" and stage == "runEdgeBoard":
             summary_presence[run_id] = True
+            for stage_summary in _extract_stage_summaries(row):
+                stage_name = str(stage_summary.get("stage") or "").strip()
+                if stage_name in required_stage_presence[run_id]:
+                    required_stage_presence[run_id][stage_name] = True
 
     return BatchView(
         source=source,
@@ -128,6 +167,7 @@ def _build_batch_view(source: str, rows: list[dict[str, Any]]) -> BatchView:
         window_start_iso=start_ts.isoformat(),
         window_end_iso=end_ts.isoformat(),
         summary_presence=summary_presence,
+        required_stage_presence=required_stage_presence,
     )
 
 
@@ -176,6 +216,32 @@ def verify_run_log_parity(export_dir: str) -> None:
         errors.append(
             "runEdgeBoard summary presence mismatch for latest batch run_id(s): "
             f"json={json_batch.summary_presence} csv={csv_batch.summary_presence}"
+        )
+    if json_batch.required_stage_presence != csv_batch.required_stage_presence:
+        errors.append(
+            "stage summary availability mismatch for latest batch run_id(s): "
+            f"json={json_batch.required_stage_presence} csv={csv_batch.required_stage_presence}"
+        )
+
+    missing_stage_summaries_json = {
+        run_id: stage_map
+        for run_id, stage_map in json_batch.required_stage_presence.items()
+        if not all(stage_map.values())
+    }
+    if missing_stage_summaries_json:
+        errors.append(
+            "missing required stage summaries in Run_Log.json latest batch: "
+            f"{missing_stage_summaries_json}"
+        )
+    missing_stage_summaries_csv = {
+        run_id: stage_map
+        for run_id, stage_map in csv_batch.required_stage_presence.items()
+        if not all(stage_map.values())
+    }
+    if missing_stage_summaries_csv:
+        errors.append(
+            "missing required stage summaries in Run_Log.csv latest batch: "
+            f"{missing_stage_summaries_csv}"
         )
 
     if errors:

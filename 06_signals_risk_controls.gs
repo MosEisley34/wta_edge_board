@@ -241,7 +241,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
       players_found_ta: resolutionSourceSummary.players_found_ta,
       players_fallback_provider: resolutionSourceSummary.players_fallback_provider,
       players_fallback_model: resolutionSourceSummary.players_fallback_model,
-      players_unresolved: unresolvedPlayerCount,
+      players_unresolved: resolutionSourceSummary.players_unresolved,
       player_a_source: aggregatePlayerSlotSourceLabel_(playerSlotSourceLabels.a),
       player_b_source: aggregatePlayerSlotSourceLabel_(playerSlotSourceLabels.b),
       player_resolution_source_by_player: playerResolutionSourceByPlayer,
@@ -402,20 +402,25 @@ function summarizePlayerResolutionSourceMap_(sourceByPlayer) {
     players_found_ta: 0,
     players_fallback_provider: 0,
     players_fallback_model: 0,
+    players_unresolved: 0,
   };
   Object.keys(sourceByPlayer || {}).forEach(function (playerName) {
-    const sourceLabel = String(sourceByPlayer[playerName] || '').toLowerCase();
+    const sourceLabel = String(sourceByPlayer[playerName] || '').toLowerCase().trim();
     if (!sourceLabel) return;
     if (sourceLabel.indexOf('tennis_abstract') >= 0 || sourceLabel.indexOf('ta_') === 0) {
       summary.players_found_ta += 1;
       return;
     }
-    if (sourceLabel === 'sofascore' || sourceLabel === 'scrape') {
+    if (isAlternatePlayerStatsProviderSource_(sourceLabel)) {
       summary.players_fallback_provider += 1;
       return;
     }
     if (sourceLabel.indexOf('derived_player_stats_v1_fallback') >= 0) {
       summary.players_fallback_model += 1;
+      return;
+    }
+    if (sourceLabel === 'unresolved') {
+      summary.players_unresolved += 1;
     }
   });
   return summary;
