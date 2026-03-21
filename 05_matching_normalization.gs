@@ -15,6 +15,7 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
   let rejectedCount = 0;
   let diagnosticRecordsWritten = 0;
   const canonicalizationExamples = [];
+  const scheduleDateAlignment = assessScheduleDateAlignmentWithOdds_(oddsEvents, scheduleEvents, config);
 
   if ((!oddsEvents || !oddsEvents.length) && scheduleEvents && scheduleEvents.length) {
     scheduleEvents.forEach((event) => {
@@ -124,6 +125,75 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
         missing_identity_rate_threshold: identityMissingRateThreshold,
         missing_identity_min_rows_threshold: identityMissingMinRows,
         sampled_missing_schedule_event_ids: (scheduleIdentityHealth.sampled_missing_schedule_event_ids || []).slice(0, 5),
+      },
+    });
+
+    return {
+      rows,
+      summary: blockedSummary,
+      matchedCount: 0,
+      rejectedCount,
+      diagnosticRecordsWritten,
+      unmatchedCount: rejectedCount,
+      unmatched,
+      canonicalizationExamples,
+    };
+  }
+
+  if (scheduleDateAlignment.blocked) {
+    (oddsEvents || []).forEach((odds) => {
+      const eventId = String((odds && odds.event_id) || '');
+      rows.push({
+        key: ['schedule_date_misaligned_with_odds', eventId].join('|'),
+        odds_event_id: eventId,
+        schedule_event_id: '',
+        match_type: '',
+        rejection_code: 'schedule_date_misaligned_with_odds',
+        time_diff_min: '',
+        competition_tier: '',
+        odds_players_raw: JSON.stringify([String((odds && odds.player_1) || ''), String((odds && odds.player_2) || '')]),
+        odds_players_normalized: JSON.stringify([]),
+        candidate_players_raw: JSON.stringify([]),
+        candidate_players_normalized: JSON.stringify([]),
+        similarity_scores: JSON.stringify({}),
+        primary_time_delta_min: '',
+        fallback_time_delta_min: '',
+        rejection_discriminator: 'schedule_date_window_precheck_blocked',
+        updated_at: new Date().toISOString(),
+      });
+      unmatched.push({
+        odds_event_id: eventId,
+        competition: String((odds && odds.competition) || ''),
+        player_1: String((odds && odds.player_1) || ''),
+        player_2: String((odds && odds.player_2) || ''),
+        commence_time: odds && odds.commence_time && typeof odds.commence_time.toISOString === 'function' ? odds.commence_time.toISOString() : '',
+        rejection_code: 'schedule_date_misaligned_with_odds',
+        normalized_odds_players: [],
+        normalized_schedule_players: [],
+        nearest_schedule_candidate: null,
+        primary_time_delta_min: '',
+        fallback_time_delta_min: '',
+      });
+    });
+
+    reasonCounts.schedule_date_misaligned_with_odds = Number((oddsEvents || []).length || 0);
+    rejectedCount = Number((oddsEvents || []).length || 0);
+    diagnosticRecordsWritten = Number((oddsEvents || []).length || 0);
+
+    const blockedSummary = buildStageSummary_(runId, 'stageMatchEvents', start, {
+      input_count: Number((oddsEvents || []).length || 0),
+      output_count: 0,
+      provider: 'internal_matcher',
+      api_credit_usage: 0,
+      reason_codes: Object.assign({}, reasonCounts, {
+        matched_count: 0,
+        rejected_count: rejectedCount,
+        diagnostic_records_written: diagnosticRecordsWritten,
+      }),
+      reason_metadata: {
+        matcher_precheck_blocked: true,
+        matcher_precheck_reason: 'schedule_date_misaligned_with_odds',
+        schedule_date_alignment: scheduleDateAlignment.metadata,
       },
     });
 
@@ -257,6 +327,54 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
     unmatchedCount: rejectedCount,
     unmatched,
     canonicalizationExamples,
+  };
+}
+
+function assessScheduleDateAlignmentWithOdds_(oddsEvents, scheduleEvents, config) {
+  const odds = Array.isArray(oddsEvents) ? oddsEvents : [];
+  const schedule = Array.isArray(scheduleEvents) ? scheduleEvents : [];
+  if (!odds.length || !schedule.length) return { blocked: false, metadata: { skipped: true, reason: 'missing_inputs' } };
+
+  const alignmentBufferMin = Math.max(0, Number((config && config.MATCH_SCHEDULE_DATE_ALIGNMENT_BUFFER_MIN) || 720));
+  const alignmentBufferMs = alignmentBufferMin * 60000;
+
+  const oddsTimes = odds
+    .map(function (event) { return event && event.commence_time; })
+    .filter(function (value) { return value instanceof Date && !Number.isNaN(value.getTime()); })
+    .map(function (value) { return value.getTime(); });
+  const scheduleTimes = schedule
+    .map(function (event) { return event && event.start_time; })
+    .filter(function (value) { return value instanceof Date && !Number.isNaN(value.getTime()); })
+    .map(function (value) { return value.getTime(); });
+
+  if (!oddsTimes.length || !scheduleTimes.length) {
+    return {
+      blocked: false,
+      metadata: {
+        skipped: true,
+        reason: 'missing_valid_dates',
+        valid_odds_timestamps: oddsTimes.length,
+        valid_schedule_timestamps: scheduleTimes.length,
+      },
+    };
+  }
+
+  const oddsMinMs = Math.min.apply(null, oddsTimes);
+  const oddsMaxMs = Math.max.apply(null, oddsTimes);
+  const scheduleMinMs = Math.min.apply(null, scheduleTimes);
+  const scheduleMaxMs = Math.max.apply(null, scheduleTimes);
+  const blocked = (scheduleMaxMs + alignmentBufferMs) < oddsMinMs || (oddsMaxMs + alignmentBufferMs) < scheduleMinMs;
+
+  return {
+    blocked: blocked,
+    metadata: {
+      alignment_buffer_min: alignmentBufferMin,
+      odds_range_start: new Date(oddsMinMs).toISOString(),
+      odds_range_end: new Date(oddsMaxMs).toISOString(),
+      schedule_range_start: new Date(scheduleMinMs).toISOString(),
+      schedule_range_end: new Date(scheduleMaxMs).toISOString(),
+      ranges_overlap_with_buffer: !blocked,
+    },
   };
 }
 
