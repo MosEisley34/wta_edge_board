@@ -56,7 +56,20 @@ if [[ "${#inputs[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-scripts/export_runtime_artifacts.sh --out-dir "$out_dir" "${inputs[@]}"
+out_parent="$(dirname "$out_dir")"
+out_base="$(basename "$out_dir")"
+staging_dir="$(mktemp -d "${out_parent}/.${out_base}.staging.XXXXXX")"
+cleanup_staging_dir() {
+  rm -rf "$staging_dir"
+}
+trap cleanup_staging_dir EXIT
+
+scripts/export_runtime_artifacts.sh --out-dir "$staging_dir" "${inputs[@]}"
+python3 scripts/verify_run_log_parity.py --export-dir "$staging_dir"
+
+rm -rf "$out_dir"
+mkdir -p "$out_dir"
+cp -a "$staging_dir"/. "$out_dir"/
 
 mapfile -t matched_files < <(
   find "$out_dir" -maxdepth 1 -type f \
