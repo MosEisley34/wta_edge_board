@@ -240,6 +240,16 @@ scripts/prepare_runtime_exports.sh --out-dir ./exports ./runtime/Run_Log.csv ./r
 
 This pre-step copies matching `Run_Log`/`State` CSV/JSON files into `./exports` and then validates exports before scanning.
 
+Preferred diagnostics artifact source order:
+- `Run_Log.csv`
+- `Run_Log.json` (fallback when CSV is unavailable)
+- `State.csv`
+- `State.json` **only** when it is object/record JSON (not list-style key/value dumps)
+
+`State.json` schema expectation for scanner compatibility:
+- preferred shape: a JSON object or NDJSON/object records with runtime diagnostic fields (for example `stage`, `message`, `reason_code`),
+- unsupported shape: list-style state export (`[{"key":"...","value":"..."}]`), which is now ignored with a warning and scanner falls back to `State.csv` when present.
+
 Expected files (at least one must exist):
 - `./exports/*Run_Log*.csv`
 - `./exports/*Run_Log*.json`
