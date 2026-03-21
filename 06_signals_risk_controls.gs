@@ -16,6 +16,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     stats_rank_unknown: 0,
     stats_top100_filter_excluded: 0,
     stats_top100_fallback_applied: 0,
+    stats_zero_coverage: 0,
   };
 
   const matchByOddsEventId = {};
@@ -130,11 +131,17 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerA, source, featureTimestamp, playerAStats));
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerB, source, featureTimestamp, playerBStats));
 
-    if (playerAStats.has_stats) reasonCounts.stats_enriched += 1;
-    else reasonCounts.stats_missing_player_a += 1;
-
-    if (playerBStats.has_stats) reasonCounts.stats_enriched += 1;
-    else reasonCounts.stats_missing_player_b += 1;
+    const zeroCoverage = Number(statsCompleteness.players_with_non_null_stats || 0) === 0;
+    const playerATerminalReasonCode = resolvePlayerTerminalReasonCode_('a', playerAStats, {
+      zero_coverage: zeroCoverage,
+      player_source: String(playerAStats.source_used || ''),
+    });
+    const playerBTerminalReasonCode = resolvePlayerTerminalReasonCode_('b', playerBStats, {
+      zero_coverage: zeroCoverage,
+      player_source: String(playerBStats.source_used || ''),
+    });
+    reasonCounts[playerATerminalReasonCode] = Number(reasonCounts[playerATerminalReasonCode] || 0) + 1;
+    reasonCounts[playerBTerminalReasonCode] = Number(reasonCounts[playerBTerminalReasonCode] || 0) + 1;
 
     byOddsEventId[event.event_id] = {
       source,
@@ -207,7 +214,6 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
   reasonCounts.stats_out_of_cohort = outOfCohortCount;
   reasonCounts.stats_rank_unknown = unknownRankCount;
   reasonCounts.stats_top100_filter_excluded = top100FilterExcludedCount;
-  reasonCounts.stats_top100_fallback_applied = top100FallbackAppliedCount;
 
   const summary = buildStageSummary_(runId, 'stageFetchPlayerStats', start, {
     input_count: statsInputEvents.length,
@@ -317,53 +323,45 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
         },
       };
     }
-
-    return {
-      has_stats: false,
-      usable_stats: false,
-      stats_fallback_mode: 'null_features',
-      provenance: 'player_stats_provider_v1',
-      source_used: providerStats.source_used || 'player_stats_provider_v1',
-      fallback_mode: providerStats.fallback_mode || 'null_features',
-      cohort: providerStats.cohort || '',
-      cohort_reason_code: providerStats.cohort_reason_code || '',
-      allow_out_of_cohort_fallback: providerStats.allow_out_of_cohort_fallback !== undefined
-        ? !!providerStats.allow_out_of_cohort_fallback
-        : true,
-      features: {
-        ranking: null,
-        recent_form: null,
-        surface_win_rate: null,
-        hold_pct: null,
-        break_pct: null,
-      },
-    };
   }
 
-  if (providerUnavailable) {
-    reasonCounts.stats_fallback_model_used += 1;
-    const pseudo = computePseudoPlayerStats_(canonicalPlayerName, event, match, slot);
-    pseudo.stats_fallback_mode = 'provider_unavailable';
-    pseudo.provenance = 'derived_player_stats_v1_fallback';
-    pseudo.source_used = 'derived_player_stats_v1_fallback';
-    return pseudo;
+  const pseudo = computePseudoPlayerStats_(canonicalPlayerName, event, match, slot);
+  pseudo.stats_fallback_mode = providerUnavailable
+    ? 'provider_unavailable'
+    : (providerStats ? 'null_features' : 'missing_row');
+  pseudo.provenance = 'derived_player_stats_v1_fallback';
+  pseudo.source_used = 'derived_player_stats_v1_fallback';
+  pseudo.fallback_mode = pseudo.stats_fallback_mode;
+  return pseudo;
+}
+
+function resolvePlayerTerminalReasonCode_(slot, playerPayload, context) {
+  const payload = playerPayload || {};
+  const terminalContext = context || {};
+  const sourceUsed = String(terminalContext.player_source || payload.source_used || '').toLowerCase();
+  const zeroCoverage = terminalContext.zero_coverage === true;
+
+  if (payload.has_stats) {
+    if (sourceUsed.indexOf('derived_player_stats_v1_fallback') >= 0 || String(payload.stats_fallback_mode || '') === 'provider_unavailable') {
+      return 'stats_fallback_model_used';
+    }
+    if (isAlternatePlayerStatsProviderSource_(sourceUsed)) {
+      return 'stats_top100_fallback_applied';
+    }
+    return 'stats_enriched';
   }
 
-    return {
-      has_stats: false,
-      usable_stats: false,
-      stats_fallback_mode: 'missing_row',
-      provenance: 'player_stats_provider_v1',
-      source_used: 'player_stats_provider_v1',
-    fallback_mode: 'missing_row',
-    features: {
-      ranking: null,
-      recent_form: null,
-      surface_win_rate: null,
-      hold_pct: null,
-      break_pct: null,
-    },
-  };
+  if (zeroCoverage) return 'stats_zero_coverage';
+  return slot === 'a' ? 'stats_missing_player_a' : 'stats_missing_player_b';
+}
+
+function isAlternatePlayerStatsProviderSource_(sourceLabel) {
+  const normalized = String(sourceLabel || '').toLowerCase();
+  if (!normalized) return false;
+  if (normalized.indexOf('tennis_abstract') >= 0 || normalized.indexOf('ta_') === 0) return false;
+  if (normalized.indexOf('player_stats_provider_v1') >= 0) return false;
+  if (normalized.indexOf('derived_player_stats_v1_fallback') >= 0) return false;
+  return normalized === 'sofascore' || normalized === 'scrape' || normalized === 'itf' || normalized === 'wta_stats_zone' || normalized === 'tennis_explorer';
 }
 
 function buildPlayerResolutionSourceMap_(requestedPlayers, statsByPlayer, statsSelectionMetadata, providerUnavailable) {
