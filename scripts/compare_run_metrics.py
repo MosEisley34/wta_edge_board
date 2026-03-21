@@ -37,6 +37,24 @@ def _parse_json(value: Any, fallback: Any) -> Any:
     return fallback
 
 
+def _normalize_stage_summaries_payload(value: Any) -> List[Dict[str, Any]]:
+    parsed = _parse_json(value, None)
+    if isinstance(parsed, list):
+        return [row for row in parsed if isinstance(row, dict)]
+    if isinstance(parsed, dict):
+        nested = parsed.get("stage_summaries")
+        if isinstance(nested, list):
+            return [row for row in nested if isinstance(row, dict)]
+    return []
+
+
+def _extract_stage_summaries(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    stage_summaries = _normalize_stage_summaries_payload(summary.get("stage_summaries"))
+    if stage_summaries:
+        return stage_summaries
+    return _normalize_stage_summaries_payload(summary.get("message"))
+
+
 def load_rows(path: Path) -> List[Dict[str, Any]]:
     if path.suffix.lower() == ".json":
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -98,13 +116,9 @@ def _suppression_counts(summary: Dict[str, Any]) -> Dict[str, int]:
 
 
 def _stage_durations(summary: Dict[str, Any]) -> Dict[str, int]:
-    stage_summaries = _parse_json(summary.get("stage_summaries"), [])
+    stage_summaries = _extract_stage_summaries(summary)
     durations: Dict[str, int] = {}
-    if not isinstance(stage_summaries, list):
-        return durations
     for stage in stage_summaries:
-        if not isinstance(stage, dict):
-            continue
         name = str(stage.get("stage") or "").strip()
         if not name:
             continue
@@ -118,12 +132,7 @@ def _parse_reason_metadata(value: Any) -> Dict[str, Any]:
 
 
 def _extract_stage_fetch_player_stats_metadata(summary: Dict[str, Any]) -> Dict[str, Any]:
-    stage_summaries = _parse_json(summary.get("stage_summaries"), [])
-    if not isinstance(stage_summaries, list):
-        return {}
-    for stage in stage_summaries:
-        if not isinstance(stage, dict):
-            continue
+    for stage in _extract_stage_summaries(summary):
         if str(stage.get("stage") or "").strip() != "stageFetchPlayerStats":
             continue
         metadata = _parse_reason_metadata(stage.get("reason_metadata"))
@@ -212,12 +221,7 @@ def _run_stage_chain(rows: List[Dict[str, Any]], run_id: str) -> List[str]:
         return stages
 
     summary = _pick_run_summary(rows, run_id)
-    stage_summaries = _parse_json(summary.get("stage_summaries"), [])
-    if not isinstance(stage_summaries, list):
-        return []
-    for stage_summary in stage_summaries:
-        if not isinstance(stage_summary, dict):
-            continue
+    for stage_summary in _extract_stage_summaries(summary):
         stage = str(stage_summary.get("stage", "")).strip()
         if stage and stage not in stages:
             stages.append(stage)

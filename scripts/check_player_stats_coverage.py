@@ -44,6 +44,24 @@ def _parse_json_like(value: Any, fallback: Any) -> Any:
     return fallback
 
 
+def _normalize_stage_summaries_payload(value: Any) -> list[dict[str, Any]]:
+    parsed = _parse_json_like(value, None)
+    if isinstance(parsed, list):
+        return [row for row in parsed if isinstance(row, dict)]
+    if isinstance(parsed, dict):
+        nested = parsed.get("stage_summaries")
+        if isinstance(nested, list):
+            return [row for row in nested if isinstance(row, dict)]
+    return []
+
+
+def _extract_stage_summaries(summary_row: dict[str, Any]) -> list[dict[str, Any]]:
+    stage_summaries = _normalize_stage_summaries_payload(summary_row.get("stage_summaries"))
+    if stage_summaries:
+        return stage_summaries
+    return _normalize_stage_summaries_payload(summary_row.get("message"))
+
+
 def _iter_run_log_paths(export_dir_or_file: str) -> list[str]:
     candidate_path = Path(export_dir_or_file)
     if candidate_path.is_file():
@@ -111,21 +129,6 @@ def _metric_reason_codes(summary_row: dict[str, Any]) -> dict[str, int]:
     return out
 
 
-def _extract_stage_summaries(summary_row: dict[str, Any]) -> list[dict[str, Any]]:
-    stage_summaries = _parse_json_like(summary_row.get("stage_summaries"), [])
-    if not isinstance(stage_summaries, list):
-        stage_summaries = []
-    if stage_summaries:
-        return [row for row in stage_summaries if isinstance(row, dict)]
-
-    message = _parse_json_like(summary_row.get("message"), {})
-    if isinstance(message, dict):
-        message_summaries = message.get("stage_summaries")
-        if isinstance(message_summaries, list):
-            return [row for row in message_summaries if isinstance(row, dict)]
-    return []
-
-
 def _extract_player_stats_stage_summary(summary_row: dict[str, Any]) -> dict[str, Any]:
     for stage in _extract_stage_summaries(summary_row):
         if str(stage.get("stage") or "") == "stageFetchPlayerStats":
@@ -133,7 +136,7 @@ def _extract_player_stats_stage_summary(summary_row: dict[str, Any]) -> dict[str
     return {}
 
 
-def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, int]:
+def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any]:
     stage_summary = _extract_player_stats_stage_summary(summary_row)
     metadata = _parse_json_like(stage_summary.get("reason_metadata"), {})
     if not isinstance(metadata, dict):
@@ -142,26 +145,58 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, int
     if not isinstance(coverage, dict):
         coverage = {}
 
-    resolved = max(0, _pick_int(coverage, ("resolved", "resolved_players", "resolved_player_count", "resolved_players_count")))
-    requested = max(0, _pick_int(coverage, ("requested", "requested_players", "requested_player_count", "total_player_count", "total_players_count")))
-    unresolved_total = max(0, _pick_int(coverage, ("unresolved", "unresolved_players", "unresolved_player_count", "unresolved_players_count")))
+    def _pick_int_optional(values: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+        for key in keys:
+            value = values.get(key)
+            try:
+                return max(0, int(float(value)))
+            except (TypeError, ValueError):
+                continue
+        return None
 
-    if resolved == 0:
-        resolved = max(0, _pick_int(metadata, ("resolved_player_count", "resolved_players_count", "resolved_name_count")))
-    if requested == 0:
-        requested = max(0, _pick_int(metadata, ("requested_player_count", "total_player_count", "total_players_count", "players_total")))
-    if unresolved_total == 0:
-        unresolved_total = max(0, _pick_int(metadata, ("unresolved_player_count", "unresolved_players_count", "players_unresolved")))
+    def _pick_float_optional(values: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+        for key in keys:
+            value = values.get(key)
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
 
-    if requested == 0:
+    has_nested_coverage = any(
+        key in coverage
+        for key in ("requested", "resolved", "unresolved", "resolved_rate")
+    )
+
+    resolved_rate: float | None = None
+    if has_nested_coverage:
+        requested = _pick_int_optional(coverage, ("requested",))
+        resolved = _pick_int_optional(coverage, ("resolved",))
+        unresolved_total = _pick_int_optional(coverage, ("unresolved",))
+        resolved_rate = _pick_float_optional(coverage, ("resolved_rate",))
+    else:
+        requested = _pick_int_optional(metadata, ("requested_player_count", "players_total"))
+        resolved = _pick_int_optional(metadata, ("resolved_player_count", "resolved_with_usable_stats_count"))
+        unresolved_total = _pick_int_optional(metadata, ("unresolved_player_count", "players_unresolved"))
+
+    if requested is None and resolved is not None and unresolved_total is not None:
         requested = resolved + unresolved_total
-    if requested > 0 and unresolved_total == 0:
+    if unresolved_total is None and requested is not None and resolved is not None:
         unresolved_total = max(0, requested - resolved)
+    if resolved is None and requested is not None and unresolved_total is not None:
+        resolved = max(0, requested - unresolved_total)
+    if requested is None and resolved is not None and resolved_rate and resolved_rate > 0:
+        requested = max(resolved, int(round(resolved / resolved_rate)))
+
+    resolved = resolved or 0
+    requested = requested or 0
+    unresolved_total = unresolved_total or 0
 
     return {
         "resolved": resolved,
         "requested": requested,
         "unresolved_total": unresolved_total,
+        "resolved_rate": resolved_rate,
     }
 
 
@@ -175,7 +210,8 @@ def _run_snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
     unresolved_total = coverage["unresolved_total"]
 
     reason_codes = _metric_reason_codes(summary)
-    rate = (resolved / requested) if requested else 0.0
+    inferred_rate = coverage.get("resolved_rate")
+    rate = float(inferred_rate) if isinstance(inferred_rate, (int, float)) else ((resolved / requested) if requested else 0.0)
 
     return {
         "run_id": run_id,

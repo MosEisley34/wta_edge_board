@@ -39,6 +39,40 @@ def _parse_message(value: Any) -> Dict[str, Any]:
         return {}
 
 
+def _parse_json(value: Any, fallback: Any) -> Any:
+    if value is None or value == "":
+        return fallback
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return fallback
+        try:
+            return json.loads(text)
+        except Exception:
+            return fallback
+    return fallback
+
+
+def _normalize_stage_summaries_payload(value: Any) -> List[Dict[str, Any]]:
+    parsed = _parse_json(value, None)
+    if isinstance(parsed, list):
+        return [row for row in parsed if isinstance(row, dict)]
+    if isinstance(parsed, dict):
+        nested = parsed.get("stage_summaries")
+        if isinstance(nested, list):
+            return [row for row in nested if isinstance(row, dict)]
+    return []
+
+
+def _extract_stage_summaries(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    stage_summaries = _normalize_stage_summaries_payload(row.get("stage_summaries"))
+    if stage_summaries:
+        return stage_summaries
+    return _normalize_stage_summaries_payload(row.get("message"))
+
+
 def _read_rows(path: str) -> List[Dict[str, Any]]:
     if path.lower().endswith('.json'):
         payload = json.load(open(path, 'r', encoding='utf-8'))
@@ -89,13 +123,7 @@ def _run_stage_chain(rows: List[Dict[str, Any]], run_id: str) -> List[str]:
     for row in _run_rows(rows, run_id):
         if str(row.get("row_type") or "") != "summary" or str(row.get("stage") or "") != "runEdgeBoard":
             continue
-        message = _parse_message(row.get("message"))
-        stage_summaries = message.get("stage_summaries")
-        if not isinstance(stage_summaries, list):
-            continue
-        for summary in stage_summaries:
-            if not isinstance(summary, dict):
-                continue
+        for summary in _extract_stage_summaries(row):
             stage = str(summary.get("stage") or "").strip()
             if stage and stage not in stages:
                 stages.append(stage)
@@ -169,16 +197,14 @@ def reason_distribution(rows: List[Dict[str, Any]], run_id: str, stage: str) -> 
                     counts[str(k)] += int(v)
                 except Exception:
                     pass
-        summaries = msg.get('stage_summaries') if isinstance(msg, dict) else None
-        if isinstance(summaries, list):
-            for s in summaries:
-                if not isinstance(s, dict) or str(s.get('stage') or '') != stage:
-                    continue
-                for k, v in (s.get('reason_codes') or {}).items():
-                    try:
-                        counts[str(k)] += int(v)
-                    except Exception:
-                        pass
+        for s in _extract_stage_summaries(r):
+            if str(s.get('stage') or '') != stage:
+                continue
+            for k, v in (s.get('reason_codes') or {}).items():
+                try:
+                    counts[str(k)] += int(v)
+                except Exception:
+                    pass
     return counts
 
 
@@ -221,13 +247,7 @@ def _extract_reason_metadata(rows: List[Dict[str, Any]], run_id: str) -> Dict[st
     for row in _run_rows(rows, run_id):
         if str(row.get("row_type") or "") != "summary" or str(row.get("stage") or "") != "runEdgeBoard":
             continue
-        message = _parse_message(row.get("message"))
-        stage_summaries = message.get("stage_summaries")
-        if not isinstance(stage_summaries, list):
-            continue
-        for stage_summary in stage_summaries:
-            if not isinstance(stage_summary, dict):
-                continue
+        for stage_summary in _extract_stage_summaries(row):
             if str(stage_summary.get("stage") or "") != "stageFetchPlayerStats":
                 continue
             metadata = stage_summary.get("reason_metadata")
