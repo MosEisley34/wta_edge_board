@@ -5552,6 +5552,51 @@ function testStageMatchEvents_blocksWhenSchedulePlayerIdentityCoverageIsTooLow_(
   assertEquals_('schedule_missing_player_identity', stage.rows[0].rejection_code);
 }
 
+function testStageMatchEvents_blocksWhenScheduleDateWindowMisalignedWithOdds_() {
+  const oddsEvents = [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    commence_time: new Date('2025-03-05T12:00:00.000Z'),
+  }, {
+    event_id: 'odds_2',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player Three',
+    player_2: 'Player Four',
+    commence_time: new Date('2025-03-05T14:00:00.000Z'),
+  }];
+
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    start_time: new Date('2025-03-03T09:00:00.000Z'),
+  }, {
+    event_id: 'sched_2',
+    canonical_tier: 'WTA_500',
+    player_1: 'Player Three',
+    player_2: 'Player Four',
+    start_time: new Date('2025-03-03T11:00:00.000Z'),
+  }];
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    MATCH_SCHEDULE_DATE_ALIGNMENT_BUFFER_MIN: 180,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, oddsEvents, scheduleEvents);
+
+  assertEquals_(0, stage.matchedCount);
+  assertEquals_(2, stage.rejectedCount);
+  assertEquals_(2, stage.summary.reason_codes.schedule_date_misaligned_with_odds || 0);
+  assertEquals_('schedule_date_misaligned_with_odds', stage.rows[0].rejection_code);
+  assertEquals_(true, !!((stage.summary.reason_metadata || {}).matcher_precheck_blocked));
+  assertEquals_('schedule_date_misaligned_with_odds', String((stage.summary.reason_metadata || {}).matcher_precheck_reason || ''));
+  assertEquals_(false, !!(((stage.summary.reason_metadata || {}).schedule_date_alignment || {}).ranges_overlap_with_buffer));
+}
+
 function testStageMatchEvents_countsPartialMatchesAndRejectionsSeparately_() {
   const oddsEvents = [{
     event_id: 'odds_1',
