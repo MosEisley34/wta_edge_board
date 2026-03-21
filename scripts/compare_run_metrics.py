@@ -6,6 +6,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 METRICS = ["MATCH_CT", "NO_P_MATCH", "REJ_CT", "STATS_ENR", "STATS_MISS_A", "STATS_MISS_B"]
+DISALLOWED_RUN_REASON_CODES = {"run_debounced_skip", "run_locked_skip"}
+REQUIRED_STAGE_CHAIN = (
+    "stageFetchOdds",
+    "stageFetchSchedule",
+    "stageMatchEvents",
+    "stageFetchPlayerStats",
+    "stageGenerateSignals",
+    "stagePersist",
+)
 
 
 def _parse_json(value: Any, fallback: Any) -> Any:
@@ -41,6 +50,18 @@ def _pick_run_summary(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Any]
         if str(row.get("row_type", "")) == "summary" and str(row.get("stage", "")) == "runEdgeBoard":
             last = row
     return last or {}
+
+
+def _run_rows(rows: List[Dict[str, Any]], run_id: str) -> List[Dict[str, Any]]:
+    return [row for row in rows if str(row.get("run_id", "")) == run_id]
+
+
+def _run_has_disallowed_skip(rows: List[Dict[str, Any]], run_id: str) -> str | None:
+    for row in _run_rows(rows, run_id):
+        reason_code = str(row.get("reason_code", "")).strip().lower()
+        if reason_code in DISALLOWED_RUN_REASON_CODES:
+            return reason_code
+    return None
 
 
 def _metric_counts(summary: Dict[str, Any]) -> Dict[str, int]:
@@ -84,6 +105,48 @@ def _stage_durations(summary: Dict[str, Any]) -> Dict[str, int]:
     return durations
 
 
+def _run_stage_chain(rows: List[Dict[str, Any]], run_id: str) -> List[str]:
+    stages: List[str] = []
+    for row in _run_rows(rows, run_id):
+        stage = str(row.get("stage", "")).strip()
+        if stage and stage != "runEdgeBoard" and stage not in stages:
+            stages.append(stage)
+    if stages:
+        return stages
+
+    summary = _pick_run_summary(rows, run_id)
+    stage_summaries = _parse_json(summary.get("stage_summaries"), [])
+    if not isinstance(stage_summaries, list):
+        return []
+    for stage_summary in stage_summaries:
+        if not isinstance(stage_summary, dict):
+            continue
+        stage = str(stage_summary.get("stage", "")).strip()
+        if stage and stage not in stages:
+            stages.append(stage)
+    return stages
+
+
+def _validate_run_pair(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> None:
+    failures: List[str] = []
+    for run_id in (run_a, run_b):
+        disallowed_reason = _run_has_disallowed_skip(rows, run_id)
+        if disallowed_reason:
+            failures.append(f"{run_id}: disallowed reason_code `{disallowed_reason}`")
+        stage_chain = _run_stage_chain(rows, run_id)
+        missing_stage_names = [stage for stage in REQUIRED_STAGE_CHAIN if stage not in stage_chain]
+        if missing_stage_names:
+            failures.append(
+                f"{run_id}: missing stage chain entries ({', '.join(missing_stage_names)})"
+            )
+    if failures:
+        details = "; ".join(failures)
+        raise ValueError(
+            "Comparison auto-failed: replacement run IDs required before producing pre/post verdict. "
+            f"Details: {details}."
+        )
+
+
 def _format_side_by_side(title: str, run_a: str, run_b: str, values_a: Dict[str, int], values_b: Dict[str, int]) -> List[str]:
     keys = sorted(set(values_a.keys()) | set(values_b.keys()))
     if not keys:
@@ -103,6 +166,7 @@ def _format_side_by_side(title: str, run_a: str, run_b: str, values_a: Dict[str,
 
 
 def build_report(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
+    _validate_run_pair(rows, run_a, run_b)
     summary_a = _pick_run_summary(rows, run_a)
     summary_b = _pick_run_summary(rows, run_b)
 

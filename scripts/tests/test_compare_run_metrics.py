@@ -31,8 +31,12 @@ class CompareRunMetricsTests(unittest.TestCase):
                     }
                 },
                 "stage_summaries": [
+                    {"stage": "stageFetchOdds", "duration_ms": 50},
+                    {"stage": "stageFetchSchedule", "duration_ms": 75},
                     {"stage": "stageMatchEvents", "duration_ms": 100},
                     {"stage": "stageFetchPlayerStats", "duration_ms": 200},
+                    {"stage": "stageGenerateSignals", "duration_ms": 30},
+                    {"stage": "stagePersist", "duration_ms": 40},
                 ],
             },
             {
@@ -54,8 +58,12 @@ class CompareRunMetricsTests(unittest.TestCase):
                     }
                 },
                 "stage_summaries": [
+                    {"stage": "stageFetchOdds", "duration_ms": 45},
+                    {"stage": "stageFetchSchedule", "duration_ms": 70},
                     {"stage": "stageMatchEvents", "duration_ms": 90},
                     {"stage": "stageFetchPlayerStats", "duration_ms": 230},
+                    {"stage": "stageGenerateSignals", "duration_ms": 35},
+                    {"stage": "stagePersist", "duration_ms": 42},
                 ],
             },
         ]
@@ -75,6 +83,85 @@ class CompareRunMetricsTests(unittest.TestCase):
     def test_build_report_fails_when_missing_run(self):
         with self.assertRaises(ValueError):
             build_report([], "run-a", "run-b")
+
+    def test_build_report_fails_when_run_has_disallowed_skip_reason(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": [
+                    {"stage": "stageFetchOdds", "duration_ms": 10},
+                    {"stage": "stageFetchSchedule", "duration_ms": 10},
+                    {"stage": "stageMatchEvents", "duration_ms": 10},
+                    {"stage": "stageFetchPlayerStats", "duration_ms": 10},
+                    {"stage": "stageGenerateSignals", "duration_ms": 10},
+                    {"stage": "stagePersist", "duration_ms": 10},
+                ],
+            },
+            {
+                "row_type": "diag",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_code": "run_locked_skip",
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": [
+                    {"stage": "stageFetchOdds", "duration_ms": 10},
+                    {"stage": "stageFetchSchedule", "duration_ms": 10},
+                    {"stage": "stageMatchEvents", "duration_ms": 10},
+                    {"stage": "stageFetchPlayerStats", "duration_ms": 10},
+                    {"stage": "stageGenerateSignals", "duration_ms": 10},
+                    {"stage": "stagePersist", "duration_ms": 10},
+                ],
+            },
+        ]
+
+        with self.assertRaisesRegex(ValueError, "replacement run IDs required"):
+            build_report(rows, "run-a", "run-b")
+
+    def test_build_report_fails_when_run_is_missing_required_stage_chain(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": [
+                    {"stage": "stageFetchOdds", "duration_ms": 10},
+                    {"stage": "stageFetchSchedule", "duration_ms": 10},
+                    {"stage": "stageMatchEvents", "duration_ms": 10},
+                    {"stage": "stageFetchPlayerStats", "duration_ms": 10},
+                    {"stage": "stageGenerateSignals", "duration_ms": 10},
+                    {"stage": "stagePersist", "duration_ms": 10},
+                ],
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": [
+                    {"stage": "stageFetchOdds", "duration_ms": 10},
+                    {"stage": "stageFetchSchedule", "duration_ms": 10},
+                    {"stage": "stageMatchEvents", "duration_ms": 10},
+                    {"stage": "stageFetchPlayerStats", "duration_ms": 10},
+                    {"stage": "stagePersist", "duration_ms": 10},
+                ],
+            },
+        ]
+
+        with self.assertRaisesRegex(ValueError, "missing stage chain entries"):
+            build_report(rows, "run-a", "run-b")
 
 
 if __name__ == "__main__":
