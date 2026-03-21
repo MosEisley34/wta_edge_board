@@ -3,6 +3,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+from collections import Counter
 from typing import Any, Dict, List, Tuple
 
 METRICS = ["MATCH_CT", "NO_P_MATCH", "REJ_CT", "STATS_ENR", "STATS_MISS_A", "STATS_MISS_B"]
@@ -105,6 +106,96 @@ def _stage_durations(summary: Dict[str, Any]) -> Dict[str, int]:
     return durations
 
 
+def _parse_reason_metadata(value: Any) -> Dict[str, Any]:
+    parsed = _parse_json(value, {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _extract_stage_fetch_player_stats_metadata(summary: Dict[str, Any]) -> Dict[str, Any]:
+    stage_summaries = _parse_json(summary.get("stage_summaries"), [])
+    if not isinstance(stage_summaries, list):
+        return {}
+    for stage in stage_summaries:
+        if not isinstance(stage, dict):
+            continue
+        if str(stage.get("stage") or "").strip() != "stageFetchPlayerStats":
+            continue
+        metadata = _parse_reason_metadata(stage.get("reason_metadata"))
+        if metadata:
+            return metadata
+    return {}
+
+
+def _pick_int(metadata: Dict[str, Any], keys: Tuple[str, ...]) -> int:
+    for key in keys:
+        value = metadata.get(key)
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _pick_reason_map(metadata: Dict[str, Any], keys: Tuple[str, ...]) -> Dict[str, int]:
+    for key in keys:
+        candidate = metadata.get(key)
+        if not isinstance(candidate, dict):
+            continue
+        out: Dict[str, int] = {}
+        for code in sorted(candidate.keys(), key=lambda item: str(item)):
+            try:
+                out[str(code)] = int(float(candidate[code]))
+            except (TypeError, ValueError):
+                continue
+        if out:
+            return out
+    return {}
+
+
+def _player_stats_comparator(summary: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = _extract_stage_fetch_player_stats_metadata(summary)
+    resolved = max(0, _pick_int(metadata, ("resolved_player_count", "resolved_players_count")))
+    requested = max(0, _pick_int(metadata, ("requested_player_count", "total_player_count", "total_players_count")))
+    if requested == 0:
+        requested = resolved + max(0, _pick_int(metadata, ("unresolved_player_count", "unresolved_players_count")))
+    unresolved_total = max(0, requested - resolved)
+    ta_resolved = max(0, _pick_int(metadata, ("resolved_via_ta_count", "ta_resolved_count")))
+    provider_fallback = max(
+        0,
+        _pick_int(
+            metadata,
+            (
+                "resolved_via_provider_fallback_count",
+                "provider_fallback_resolved_count",
+                "resolved_via_source_fallback_count",
+            ),
+        ),
+    )
+    model_fallback = max(0, _pick_int(metadata, ("resolved_via_model_fallback_count", "model_fallback_resolved_count")))
+    unresolved_a = max(0, _pick_int(metadata, ("unresolved_player_a_count", "unresolved_side_a_count")))
+    unresolved_b = max(0, _pick_int(metadata, ("unresolved_player_b_count", "unresolved_side_b_count")))
+    top_reasons = _pick_reason_map(
+        metadata,
+        (
+            "fallback_reason_counts",
+            "top_fallback_reason_counts",
+            "fallback_reasons",
+            "fallback_reason_breakdown",
+        ),
+    )
+    return {
+        "resolved": resolved,
+        "requested": requested,
+        "ta_resolved": ta_resolved,
+        "provider_fallback_resolved": provider_fallback,
+        "model_fallback_resolved": model_fallback,
+        "unresolved_player_a": unresolved_a,
+        "unresolved_player_b": unresolved_b,
+        "unresolved_total": unresolved_total,
+        "fallback_reason_counts": top_reasons,
+    }
+
+
 def _run_stage_chain(rows: List[Dict[str, Any]], run_id: str) -> List[str]:
     stages: List[str] = []
     for row in _run_rows(rows, run_id):
@@ -147,7 +238,7 @@ def _validate_run_pair(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> No
         )
 
 
-def _format_side_by_side(title: str, run_a: str, run_b: str, values_a: Dict[str, int], values_b: Dict[str, int]) -> List[str]:
+def _format_side_by_side(title: str, run_a: str, run_b: str, values_a: Dict[str, float], values_b: Dict[str, float]) -> List[str]:
     keys = sorted(set(values_a.keys()) | set(values_b.keys()))
     if not keys:
         keys = ["none"]
@@ -159,9 +250,17 @@ def _format_side_by_side(title: str, run_a: str, run_b: str, values_a: Dict[str,
     b_width = max(len(run_b), 10)
     lines = [f"\n[{title}]", f"{'metric':<{key_width}}  {run_a:>{a_width}}  {run_b:>{b_width}}  {'delta':>8}"]
     for key in keys:
-        left = int(values_a.get(key, 0) or 0)
-        right = int(values_b.get(key, 0) or 0)
-        lines.append(f"{key:<{key_width}}  {left:>{a_width}}  {right:>{b_width}}  {right-left:>+8}")
+        left = float(values_a.get(key, 0) or 0)
+        right = float(values_b.get(key, 0) or 0)
+        if left.is_integer() and right.is_integer():
+            left_text = str(int(left))
+            right_text = str(int(right))
+            delta_text = f"{int(right - left):+d}"
+        else:
+            left_text = f"{left:.2f}"
+            right_text = f"{right:.2f}"
+            delta_text = f"{(right - left):+.2f}"
+        lines.append(f"{key:<{key_width}}  {left_text:>{a_width}}  {right_text:>{b_width}}  {delta_text:>8}")
     return lines
 
 
@@ -182,6 +281,68 @@ def build_report(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
     lines.extend(_format_side_by_side("core_metrics", run_a, run_b, _metric_counts(summary_a), _metric_counts(summary_b)))
     lines.extend(_format_side_by_side("signal_suppression_reasons", run_a, run_b, _suppression_counts(summary_a), _suppression_counts(summary_b)))
     lines.extend(_format_side_by_side("per_stage_duration_ms", run_a, run_b, _stage_durations(summary_a), _stage_durations(summary_b)))
+    player_stats_a = _player_stats_comparator(summary_a)
+    player_stats_b = _player_stats_comparator(summary_b)
+
+    lines.extend(
+        _format_side_by_side(
+            "player_stats_coverage_pct",
+            run_a,
+            run_b,
+            {"coverage_pct": round(100.0 * player_stats_a["resolved"] / player_stats_a["requested"], 2) if player_stats_a["requested"] else 0.0},
+            {"coverage_pct": round(100.0 * player_stats_b["resolved"] / player_stats_b["requested"], 2) if player_stats_b["requested"] else 0.0},
+        )
+    )
+    lines.extend(
+        _format_side_by_side(
+            "player_stats_source_mix_counts",
+            run_a,
+            run_b,
+            {
+                "ta_resolved": player_stats_a["ta_resolved"],
+                "provider_fallback_resolved": player_stats_a["provider_fallback_resolved"],
+                "model_fallback_resolved": player_stats_a["model_fallback_resolved"],
+            },
+            {
+                "ta_resolved": player_stats_b["ta_resolved"],
+                "provider_fallback_resolved": player_stats_b["provider_fallback_resolved"],
+                "model_fallback_resolved": player_stats_b["model_fallback_resolved"],
+            },
+        )
+    )
+    lines.extend(
+        _format_side_by_side(
+            "player_stats_unresolved_by_side",
+            run_a,
+            run_b,
+            {
+                "unresolved_player_a": player_stats_a["unresolved_player_a"],
+                "unresolved_player_b": player_stats_a["unresolved_player_b"],
+                "unresolved_total": player_stats_a["unresolved_total"],
+            },
+            {
+                "unresolved_player_a": player_stats_b["unresolved_player_a"],
+                "unresolved_player_b": player_stats_b["unresolved_player_b"],
+                "unresolved_total": player_stats_b["unresolved_total"],
+            },
+        )
+    )
+    top_reasons_a = Counter(player_stats_a["fallback_reason_counts"])
+    top_reasons_b = Counter(player_stats_b["fallback_reason_counts"])
+    union_reasons = sorted(set(top_reasons_a) | set(top_reasons_b), key=lambda code: (-(top_reasons_a[code] + top_reasons_b[code]), code))
+    if not union_reasons:
+        union_reasons = ["none"]
+        top_reasons_a["none"] = 0
+        top_reasons_b["none"] = 0
+    lines.extend(
+        _format_side_by_side(
+            "player_stats_top_fallback_reason_deltas",
+            run_a,
+            run_b,
+            {code: int(top_reasons_a[code]) for code in union_reasons[:10]},
+            {code: int(top_reasons_b[code]) for code in union_reasons[:10]},
+        )
+    )
     return "\n".join(lines)
 
 
