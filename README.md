@@ -212,6 +212,29 @@ Behavior contract:
 If precheck fails, **stop triage and re-export from the sheet before further analysis**.
 Only proceed to comparison scripts once both run IDs are confirmed present.
 
+### Player-stats coverage gate (runs after precheck, before verdict publication)
+
+Run the player-stats gate immediately after precheck and before any comparison/verdict script output is published:
+
+```bash
+python3 scripts/check_player_stats_coverage.py <run_id_baseline> <run_id_candidate> --export-dir ./exports_live
+```
+
+Default gate thresholds:
+- `player_stats_resolved_rate` (candidate resolved/requested) must be `>= 0.60`,
+- candidate `unresolved_player_count` must be `<= 8`,
+- `STATS_MISS_A` and `STATS_MISS_B` may not increase above baseline (`max increase = 0` per side).
+
+Threshold overrides (when explicitly approved for an incident) are available via flags or env vars:
+- `--min-resolved-rate` / `PLAYER_STATS_MIN_RESOLVED_RATE`
+- `--max-unresolved-players` / `PLAYER_STATS_MAX_UNRESOLVED_PLAYERS`
+- `--max-missing-side-increase` / `PLAYER_STATS_MAX_MISSING_SIDE_INCREASE`
+- `--override-reason` / `PLAYER_STATS_COVERAGE_GATE_OVERRIDE` (non-empty value records an override and allows exit 0).
+
+Comparison scripts are now wired to enforce this same gate by default before they print reports. To bypass for emergency/manual debugging only, use:
+- `--skip-player-stats-coverage-gate`, or
+- `--player-stats-gate-override-reason <incident-reference>`.
+
 Comparison scripts should use positional run IDs (with optional `--export-dir`), for example:
 
 ```bash

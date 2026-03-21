@@ -2,6 +2,7 @@
 import argparse, csv, glob, json, os, re
 from collections import Counter, defaultdict
 from typing import Any, Dict, Iterable, List, Tuple
+from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate
 
 TARGETS = {
     "stageMatchEvents": ["MATCH_CT", "NO_P_MATCH", "REJ_CT"],
@@ -379,10 +380,56 @@ def main() -> int:
         default='runtime_exports',
         help='Directory containing exported runtime artifacts (default: runtime_exports).',
     )
+    ap.add_argument(
+        '--skip-player-stats-coverage-gate',
+        action='store_true',
+        help='Skip player-stats coverage gate (not recommended; intended for emergency/manual debugging only).',
+    )
+    ap.add_argument(
+        '--player-stats-gate-override-reason',
+        default=os.getenv('PLAYER_STATS_COVERAGE_GATE_OVERRIDE', ''),
+        help='Override reason for player-stats gate failures; non-empty value allows report publication.',
+    )
+    ap.add_argument(
+        '--player-stats-min-resolved-rate',
+        type=float,
+        default=float(os.getenv('PLAYER_STATS_MIN_RESOLVED_RATE', '0.60')),
+        help='Minimum candidate resolved rate for player-stats gate (default: 0.60).',
+    )
+    ap.add_argument(
+        '--player-stats-max-unresolved-players',
+        type=int,
+        default=int(os.getenv('PLAYER_STATS_MAX_UNRESOLVED_PLAYERS', '8')),
+        help='Maximum candidate unresolved players for player-stats gate (default: 8).',
+    )
+    ap.add_argument(
+        '--player-stats-max-missing-side-increase',
+        type=int,
+        default=int(os.getenv('PLAYER_STATS_MAX_MISSING_SIDE_INCREASE', '0')),
+        help='Maximum allowed increase in STATS_MISS_A/STATS_MISS_B vs baseline (default: 0).',
+    )
     ap.add_argument('--out', default='', help='Optional markdown output path.')
     args = ap.parse_args()
 
     rows = load_rows(args.export_dir)
+    if not args.skip_player_stats_coverage_gate:
+        gate_config = GateConfig(
+            min_resolved_rate=max(0.0, min(1.0, float(args.player_stats_min_resolved_rate))),
+            max_unresolved_players=max(0, int(args.player_stats_max_unresolved_players)),
+            max_missing_side_increase=max(0, int(args.player_stats_max_missing_side_increase)),
+            override_reason=str(args.player_stats_gate_override_reason or '').strip(),
+        )
+        gate_report = evaluate_player_stats_gate(rows, args.run_success, args.run_degraded, gate_config)
+        if gate_report.get('status') == 'fail':
+            print(json.dumps(gate_report, indent=2, sort_keys=True))
+            raise SystemExit(
+                'Player-stats coverage gate failed; aborting pre/post verdict publication. '
+                'Use --player-stats-gate-override-reason with an incident reference when explicitly approved.'
+            )
+        if gate_report.get('status') == 'override':
+            print('# player_stats_coverage_gate: override active')
+            print(json.dumps(gate_report, indent=2, sort_keys=True))
+
     report = compare_rows(rows, args.run_success, args.run_degraded)
     if args.out:
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
