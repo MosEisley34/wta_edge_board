@@ -8,6 +8,15 @@ TARGETS = {
     "stageFetchPlayerStats": ["STATS_ENR", "STATS_MISS_A", "STATS_MISS_B"],
     "stageGenerateSignals": ["missing_match", "missing_stats", "EDGE_LOW"],
 }
+DISALLOWED_RUN_REASON_CODES = {"run_debounced_skip", "run_locked_skip"}
+REQUIRED_STAGE_CHAIN = (
+    "stageFetchOdds",
+    "stageFetchSchedule",
+    "stageMatchEvents",
+    "stageFetchPlayerStats",
+    "stageGenerateSignals",
+    "stagePersist",
+)
 
 
 def _parse_message(value: Any) -> Dict[str, Any]:
@@ -49,6 +58,62 @@ def load_rows(export_dir: str) -> List[Dict[str, Any]]:
         seen.add(p)
         rows.extend(_read_rows(p))
     return rows
+
+
+def _run_rows(rows: List[Dict[str, Any]], run_id: str) -> List[Dict[str, Any]]:
+    return [row for row in rows if str(row.get("run_id") or "") == run_id]
+
+
+def _run_has_disallowed_skip(rows: List[Dict[str, Any]], run_id: str) -> str | None:
+    for row in _run_rows(rows, run_id):
+        reason = str(row.get("reason_code") or "").strip().lower()
+        if reason in DISALLOWED_RUN_REASON_CODES:
+            return reason
+    return None
+
+
+def _run_stage_chain(rows: List[Dict[str, Any]], run_id: str) -> List[str]:
+    stages: List[str] = []
+    for row in _run_rows(rows, run_id):
+        stage = str(row.get("stage") or "").strip()
+        if stage and stage != "runEdgeBoard" and stage not in stages:
+            stages.append(stage)
+    if stages:
+        return stages
+
+    for row in _run_rows(rows, run_id):
+        if str(row.get("row_type") or "") != "summary" or str(row.get("stage") or "") != "runEdgeBoard":
+            continue
+        message = _parse_message(row.get("message"))
+        stage_summaries = message.get("stage_summaries")
+        if not isinstance(stage_summaries, list):
+            continue
+        for summary in stage_summaries:
+            if not isinstance(summary, dict):
+                continue
+            stage = str(summary.get("stage") or "").strip()
+            if stage and stage not in stages:
+                stages.append(stage)
+    return stages
+
+
+def _validate_run_pair(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> None:
+    failures: List[str] = []
+    for run_id in (run_a, run_b):
+        disallowed_reason = _run_has_disallowed_skip(rows, run_id)
+        if disallowed_reason:
+            failures.append(f"{run_id}: disallowed reason_code `{disallowed_reason}`")
+        stage_chain = _run_stage_chain(rows, run_id)
+        missing_stages = [stage for stage in REQUIRED_STAGE_CHAIN if stage not in stage_chain]
+        if missing_stages:
+            failures.append(
+                f"{run_id}: missing stage chain entries ({', '.join(missing_stages)})"
+            )
+    if failures:
+        raise ValueError(
+            "Comparison auto-failed: replacement run IDs required before producing pre/post verdict. "
+            f"Details: {'; '.join(failures)}."
+        )
 
 
 def reason_distribution(rows: List[Dict[str, Any]], run_id: str, stage: str) -> Counter:
@@ -112,6 +177,7 @@ def canonical_counts(counter: Counter, expected: Iterable[str]) -> Dict[str, int
 
 
 def compare_rows(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
+    _validate_run_pair(rows, run_a, run_b)
     lines = []
     lines.append(f"# Run diff report: {run_a} vs {run_b}")
     total_a = sum(1 for r in rows if str(r.get('run_id') or '') == run_a)
