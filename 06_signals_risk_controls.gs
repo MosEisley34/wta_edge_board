@@ -222,6 +222,7 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
     api_credit_usage: Number(statsBatch.api_credit_usage || 0),
     reason_codes: reasonCounts,
     reason_metadata: {
+      coverage: buildPlayerStatsCoverageMetadata_(requestedPlayerCount, resolvedPlayerCount, unresolvedPlayerCount),
       players_with_non_null_stats: Number(statsCompleteness.players_with_non_null_stats || 0),
       players_with_null_only_stats: Number(statsCompleteness.players_with_null_only_stats || 0),
       player_stats_data_available: resolvedWithUsableStatsCount > 0,
@@ -265,6 +266,7 @@ function buildSkippedPlayerStatsStage_(runId, reasonCode) {
       skipped_schedule_only_no_odds: reasonCode === 'skipped_schedule_only_no_odds' ? 1 : 0,
     },
     reason_metadata: {
+      coverage: buildPlayerStatsCoverageMetadata_(0, 0, 0),
       requested_player_count: 0,
       resolved_player_count: 0,
       unresolved_player_count: 0,
@@ -291,6 +293,18 @@ function buildSkippedPlayerStatsStage_(runId, reasonCode) {
     rows: [],
     byOddsEventId: {},
     summary: summary,
+  };
+}
+
+function buildPlayerStatsCoverageMetadata_(requestedPlayerCount, resolvedPlayerCount, unresolvedPlayerCount) {
+  const requested = Math.max(0, Number(requestedPlayerCount || 0));
+  const resolved = Math.max(0, Number(resolvedPlayerCount || 0));
+  const unresolved = Math.max(0, Number(unresolvedPlayerCount || 0));
+  return {
+    requested: requested,
+    resolved: resolved,
+    unresolved: unresolved,
+    resolved_rate: requested > 0 ? roundNumber_(resolved / requested, 4) : 0,
   };
 }
 

@@ -98,27 +98,6 @@ def _pick_int(metadata: dict[str, Any], keys: tuple[str, ...]) -> int:
     return 0
 
 
-def _stage_fetch_player_stats_metadata(summary_row: dict[str, Any]) -> dict[str, Any]:
-    stage_summaries = _parse_json_like(summary_row.get("stage_summaries"), [])
-    if not isinstance(stage_summaries, list):
-        stage_summaries = []
-
-    if not stage_summaries:
-        message = _parse_json_like(summary_row.get("message"), {})
-        if isinstance(message, dict):
-            stage_summaries = message.get("stage_summaries") if isinstance(message.get("stage_summaries"), list) else []
-
-    for stage in stage_summaries:
-        if not isinstance(stage, dict):
-            continue
-        if str(stage.get("stage") or "") != "stageFetchPlayerStats":
-            continue
-        metadata = _parse_json_like(stage.get("reason_metadata"), {})
-        if isinstance(metadata, dict):
-            return metadata
-    return {}
-
-
 def _metric_reason_codes(summary_row: dict[str, Any]) -> dict[str, int]:
     parsed = _parse_json_like(summary_row.get("reason_codes"), {})
     if not isinstance(parsed, dict):
@@ -132,19 +111,68 @@ def _metric_reason_codes(summary_row: dict[str, Any]) -> dict[str, int]:
     return out
 
 
-def _run_snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
-    summary = _pick_run_summary(rows, run_id)
-    if not summary:
-        raise ValueError(f"Missing runEdgeBoard summary row for run_id={run_id}")
-    metadata = _stage_fetch_player_stats_metadata(summary)
+def _extract_stage_summaries(summary_row: dict[str, Any]) -> list[dict[str, Any]]:
+    stage_summaries = _parse_json_like(summary_row.get("stage_summaries"), [])
+    if not isinstance(stage_summaries, list):
+        stage_summaries = []
+    if stage_summaries:
+        return [row for row in stage_summaries if isinstance(row, dict)]
 
-    resolved = max(0, _pick_int(metadata, ("resolved_player_count", "resolved_players_count")))
-    requested = max(0, _pick_int(metadata, ("requested_player_count", "total_player_count", "total_players_count")))
-    unresolved_total = max(0, _pick_int(metadata, ("unresolved_player_count", "unresolved_players_count")))
+    message = _parse_json_like(summary_row.get("message"), {})
+    if isinstance(message, dict):
+        message_summaries = message.get("stage_summaries")
+        if isinstance(message_summaries, list):
+            return [row for row in message_summaries if isinstance(row, dict)]
+    return []
+
+
+def _extract_player_stats_stage_summary(summary_row: dict[str, Any]) -> dict[str, Any]:
+    for stage in _extract_stage_summaries(summary_row):
+        if str(stage.get("stage") or "") == "stageFetchPlayerStats":
+            return stage
+    return {}
+
+
+def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, int]:
+    stage_summary = _extract_player_stats_stage_summary(summary_row)
+    metadata = _parse_json_like(stage_summary.get("reason_metadata"), {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    coverage = _parse_json_like(metadata.get("coverage"), {})
+    if not isinstance(coverage, dict):
+        coverage = {}
+
+    resolved = max(0, _pick_int(coverage, ("resolved", "resolved_players", "resolved_player_count", "resolved_players_count")))
+    requested = max(0, _pick_int(coverage, ("requested", "requested_players", "requested_player_count", "total_player_count", "total_players_count")))
+    unresolved_total = max(0, _pick_int(coverage, ("unresolved", "unresolved_players", "unresolved_player_count", "unresolved_players_count")))
+
+    if resolved == 0:
+        resolved = max(0, _pick_int(metadata, ("resolved_player_count", "resolved_players_count", "resolved_name_count")))
+    if requested == 0:
+        requested = max(0, _pick_int(metadata, ("requested_player_count", "total_player_count", "total_players_count", "players_total")))
+    if unresolved_total == 0:
+        unresolved_total = max(0, _pick_int(metadata, ("unresolved_player_count", "unresolved_players_count", "players_unresolved")))
+
     if requested == 0:
         requested = resolved + unresolved_total
     if requested > 0 and unresolved_total == 0:
         unresolved_total = max(0, requested - resolved)
+
+    return {
+        "resolved": resolved,
+        "requested": requested,
+        "unresolved_total": unresolved_total,
+    }
+
+
+def _run_snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
+    summary = _pick_run_summary(rows, run_id)
+    if not summary:
+        raise ValueError(f"Missing runEdgeBoard summary row for run_id={run_id}")
+    coverage = _extract_player_stats_coverage(summary)
+    resolved = coverage["resolved"]
+    requested = coverage["requested"]
+    unresolved_total = coverage["unresolved_total"]
 
     reason_codes = _metric_reason_codes(summary)
     rate = (resolved / requested) if requested else 0.0
