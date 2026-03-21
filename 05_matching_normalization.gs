@@ -215,7 +215,13 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
     toleranceMin,
     aliasMap,
     canonicalizationExamples,
-    { is_fallback_attempt: false, fallback_hard_max_delta_min: fallbackHardMaxDeltaMin }
+    {
+      is_fallback_attempt: false,
+      fallback_hard_max_delta_min: fallbackHardMaxDeltaMin,
+      nearest_candidate_min_similarity: Number.isFinite(Number(config.MATCH_NEAREST_CANDIDATE_MIN_SIMILARITY))
+        ? Number(config.MATCH_NEAREST_CANDIDATE_MIN_SIMILARITY)
+        : Number(DEFAULT_CONFIG.MATCH_NEAREST_CANDIDATE_MIN_SIMILARITY || 0.55),
+    }
   ));
   const unmatchedPrimary = primary.filter((res) => !res.matched);
 
@@ -231,7 +237,13 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
         toleranceMin + fallbackMin,
         aliasMap,
         canonicalizationExamples,
-        { is_fallback_attempt: true, fallback_hard_max_delta_min: fallbackHardMaxDeltaMin }
+        {
+          is_fallback_attempt: true,
+          fallback_hard_max_delta_min: fallbackHardMaxDeltaMin,
+          nearest_candidate_min_similarity: Number.isFinite(Number(config.MATCH_NEAREST_CANDIDATE_MIN_SIMILARITY))
+            ? Number(config.MATCH_NEAREST_CANDIDATE_MIN_SIMILARITY)
+            : Number(DEFAULT_CONFIG.MATCH_NEAREST_CANDIDATE_MIN_SIMILARITY || 0.55),
+        }
       );
       if (fallback.matched) {
         fallback.match_type = 'fallback_match';
@@ -240,6 +252,9 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
       fallback.primary_time_delta_min = res.best_time_delta_min;
       fallback.fallback_time_delta_min = fallback.best_time_delta_min;
       fallback.nearest_schedule_candidate = fallback.nearest_schedule_candidate || res.nearest_schedule_candidate || null;
+      fallback.nearest_schedule_candidate_diagnostics = fallback.nearest_schedule_candidate_diagnostics
+        || res.nearest_schedule_candidate_diagnostics
+        || null;
       fallback.rejection_code = fallback.rejection_code === 'outside_time_tolerance' ? 'fallback_exhausted' : fallback.rejection_code;
       return fallback;
     });
@@ -301,6 +316,7 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
       normalized_odds_players: result.normalized_odds_players || [],
       normalized_schedule_players: result.nearest_schedule_candidate ? (result.nearest_schedule_candidate.normalized_players || []) : [],
       nearest_schedule_candidate: result.nearest_schedule_candidate || null,
+      nearest_schedule_candidate_diagnostics: result.nearest_schedule_candidate_diagnostics || null,
       primary_time_delta_min: result.primary_time_delta_min,
       fallback_time_delta_min: result.fallback_time_delta_min,
     });
@@ -418,17 +434,28 @@ function hasSchedulePlayerIdentityValue_(event, playerIndex) {
 
 function buildMatchRejectionDiagnostics_(result) {
   const nearest = result.nearest_schedule_candidate || null;
+  const nearestDiagnostics = result.nearest_schedule_candidate_diagnostics || null;
   const oddsPlayer1 = String((result.odds || {}).player_1 || '');
   const oddsPlayer2 = String((result.odds || {}).player_2 || '');
   const normalizedOddsPlayers = Array.isArray(result.normalized_odds_players) ? result.normalized_odds_players.slice(0, 2) : [];
   const oddsKey = normalizedOddsPlayers.join('|');
-  const candidateNormalizedPlayers = nearest && Array.isArray(nearest.normalized_players) ? nearest.normalized_players.slice(0, 2) : [];
+  const candidateNormalizedPlayers = nearest && Array.isArray(nearest.normalized_players)
+    ? nearest.normalized_players.slice(0, 2)
+    : (nearestDiagnostics && Array.isArray(nearestDiagnostics.normalized_schedule_players)
+      ? nearestDiagnostics.normalized_schedule_players.slice(0, 2)
+      : []);
   const candidateKey = candidateNormalizedPlayers.join('|');
   const playerDistance = Number.isFinite(Number((nearest || {}).player_distance)) ? Number(nearest.player_distance) : '';
-  const maxKeyLen = Math.max(oddsKey.length, candidateKey.length);
-  const normalizedSimilarityScore = maxKeyLen > 0 && playerDistance !== ''
-    ? Number((1 - (playerDistance / maxKeyLen)).toFixed(6))
-    : '';
+  const normalizedSimilarityScore = Number.isFinite(Number((nearest || {}).similarity_score))
+    ? Number(nearest.similarity_score)
+    : (Number.isFinite(Number((nearestDiagnostics || {}).similarity_score))
+      ? Number(nearestDiagnostics.similarity_score)
+      : (function () {
+        const maxKeyLen = Math.max(oddsKey.length, candidateKey.length);
+        return maxKeyLen > 0 && playerDistance !== ''
+          ? Number((1 - (playerDistance / maxKeyLen)).toFixed(6))
+          : '';
+      })());
   return {
     odds_players_raw: [oddsPlayer1, oddsPlayer2],
     odds_players_normalized: normalizedOddsPlayers,
@@ -439,6 +466,7 @@ function buildMatchRejectionDiagnostics_(result) {
       normalized_similarity: normalizedSimilarityScore,
       initial_key_match: nearest ? !!nearest.initial_key_match : false,
     },
+    nearest_candidate_diagnostics: nearestDiagnostics || {},
     primary_time_delta_min: result.primary_time_delta_min === '' ? '' : Number(result.primary_time_delta_min || 0),
     fallback_time_delta_min: result.fallback_time_delta_min === '' ? '' : Number(result.fallback_time_delta_min || 0),
     rejection_discriminator: String(result.rejection_code || ''),
@@ -731,6 +759,9 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
   const opts = options || {};
   const isFallbackAttempt = !!opts.is_fallback_attempt;
   const fallbackHardMaxDeltaMin = Number(opts.fallback_hard_max_delta_min);
+  const nearestCandidateMinSimilarity = Number.isFinite(Number(opts.nearest_candidate_min_similarity))
+    ? Math.max(0, Math.min(1, Number(opts.nearest_candidate_min_similarity)))
+    : 0;
   const enforceFallbackHardCeiling = isFallbackAttempt && Number.isFinite(fallbackHardMaxDeltaMin) && fallbackHardMaxDeltaMin >= 0;
   const oddsPlayersPair = normalizePlayerPair_(odds.player_1, odds.player_2, aliasMap);
   const oddsPlayers = oddsPlayersPair.key;
@@ -743,7 +774,15 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
 
   const samePlayers = [];
   const samePlayersByInitial = [];
-  const nearestScheduleCandidate = buildNearestScheduleCandidate_(odds, scheduleEvents, oddsPlayersPair, aliasMap);
+  const nearestScheduleAssessment = buildNearestScheduleCandidateAssessment_(
+    odds,
+    scheduleEvents,
+    oddsPlayersPair,
+    aliasMap,
+    nearestCandidateMinSimilarity
+  );
+  const nearestScheduleCandidate = nearestScheduleAssessment.candidate;
+  const nearestScheduleDiagnostics = nearestScheduleAssessment.diagnostics;
   scheduleEvents.forEach((sched) => {
     const schedPlayersPair = normalizePlayerPair_(sched.player_1, sched.player_2, aliasMap);
     const schedPlayers = schedPlayersPair.key;
@@ -769,6 +808,7 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
       rejection_code: exceededDayWindow ? 'candidate_out_of_day_window' : 'no_player_match',
       normalized_odds_players: oddsPlayersPair.players,
       nearest_schedule_candidate: nearestScheduleCandidate,
+      nearest_schedule_candidate_diagnostics: nearestScheduleDiagnostics,
       best_time_delta_min: nearestScheduleCandidate ? nearestScheduleCandidate.time_delta_min : '',
       primary_time_delta_min: '',
       fallback_time_delta_min: '',
@@ -793,6 +833,7 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
       rejection_code: 'candidate_out_of_day_window',
       normalized_odds_players: oddsPlayersPair.players,
       nearest_schedule_candidate: nearestScheduleCandidate,
+      nearest_schedule_candidate_diagnostics: nearestScheduleDiagnostics,
       best_time_delta_min: Number.isFinite(bestTimeDeltaMin) ? Math.round(bestTimeDeltaMin) : '',
       primary_time_delta_min: '',
       fallback_time_delta_min: '',
@@ -805,6 +846,7 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
       rejection_code: 'outside_time_tolerance',
       normalized_odds_players: oddsPlayersPair.players,
       nearest_schedule_candidate: nearestScheduleCandidate,
+      nearest_schedule_candidate_diagnostics: nearestScheduleDiagnostics,
       best_time_delta_min: Number.isFinite(bestTimeDeltaMin) ? Math.round(bestTimeDeltaMin) : '',
       primary_time_delta_min: '',
       fallback_time_delta_min: '',
@@ -817,6 +859,7 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
       rejection_code: 'ambiguous_candidate',
       normalized_odds_players: oddsPlayersPair.players,
       nearest_schedule_candidate: nearestScheduleCandidate,
+      nearest_schedule_candidate_diagnostics: nearestScheduleDiagnostics,
       best_time_delta_min: Number.isFinite(bestTimeDeltaMin) ? Math.round(bestTimeDeltaMin) : '',
       primary_time_delta_min: '',
       fallback_time_delta_min: '',
@@ -833,6 +876,7 @@ function matchSingleOddsEvent_(odds, scheduleEvents, maxToleranceMin, aliasMap, 
     time_diff_min: Math.round(winner.diffMin),
     normalized_odds_players: oddsPlayersPair.players,
     nearest_schedule_candidate: nearestScheduleCandidate,
+    nearest_schedule_candidate_diagnostics: nearestScheduleDiagnostics,
     best_time_delta_min: Number.isFinite(bestTimeDeltaMin) ? Math.round(bestTimeDeltaMin) : '',
     primary_time_delta_min: '',
     fallback_time_delta_min: '',
@@ -867,19 +911,22 @@ function buildInitialSurnameKey_(canonicalName) {
   return [primary, reverse].sort().join('||');
 }
 
-function buildNearestScheduleCandidate_(odds, scheduleEvents, oddsPlayersPair, aliasMap) {
-  if (!scheduleEvents || !scheduleEvents.length) return null;
+function buildNearestScheduleCandidateAssessment_(odds, scheduleEvents, oddsPlayersPair, aliasMap, minSimilarityThreshold) {
+  if (!scheduleEvents || !scheduleEvents.length) return { candidate: null, diagnostics: null };
   const scored = scheduleEvents.map(function (sched) {
     const schedPlayersPair = normalizePlayerPair_(sched.player_1, sched.player_2, aliasMap);
     const playerDistance = computePairKeyDistance_(oddsPlayersPair.key, schedPlayersPair.key);
     const timeDeltaMin = Math.abs(odds.commence_time.getTime() - sched.start_time.getTime()) / 60000;
     const sameInitial = oddsPlayersPair.initial_key && oddsPlayersPair.initial_key === schedPlayersPair.initial_key;
+    const maxKeyLen = Math.max(String(oddsPlayersPair.key || '').length, String(schedPlayersPair.key || '').length);
+    const normalizedSimilarity = maxKeyLen > 0 ? Number((1 - (playerDistance / maxKeyLen)).toFixed(6)) : 0;
     return {
       sched: sched,
       normalizedPlayers: schedPlayersPair.players,
       playerDistance: playerDistance,
       timeDeltaMin: timeDeltaMin,
       sameInitial: sameInitial,
+      normalizedSimilarity: normalizedSimilarity,
     };
   });
   scored.sort(function (a, b) {
@@ -889,16 +936,28 @@ function buildNearestScheduleCandidate_(odds, scheduleEvents, oddsPlayersPair, a
     return String((a.sched || {}).event_id || '').localeCompare(String((b.sched || {}).event_id || ''));
   });
   const winner = scored[0];
-  return {
+  const candidate = {
     event_id: winner.sched.event_id || '',
     player_1: winner.sched.player_1 || '',
     player_2: winner.sched.player_2 || '',
     normalized_players: winner.normalizedPlayers,
     start_time: winner.sched.start_time && winner.sched.start_time.toISOString ? winner.sched.start_time.toISOString() : '',
     player_distance: winner.playerDistance,
+    similarity_score: winner.normalizedSimilarity,
     time_delta_min: Math.round(winner.timeDeltaMin),
     initial_key_match: winner.sameInitial,
   };
+  const similarityThreshold = Number.isFinite(Number(minSimilarityThreshold)) ? Number(minSimilarityThreshold) : 0;
+  const isViable = winner.normalizedSimilarity >= similarityThreshold;
+  const diagnostics = {
+    viability: isViable ? 'accepted' : 'rejected_similarity_threshold',
+    normalized_odds_players: Array.isArray(oddsPlayersPair.players) ? oddsPlayersPair.players.slice(0, 2) : [],
+    normalized_schedule_players: winner.normalizedPlayers.slice(0, 2),
+    similarity_score: winner.normalizedSimilarity,
+    similarity_threshold: similarityThreshold,
+    time_delta_min: Math.round(winner.timeDeltaMin),
+  };
+  return { candidate: isViable ? candidate : null, diagnostics: diagnostics };
 }
 
 function computePairKeyDistance_(a, b) {

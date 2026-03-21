@@ -5488,6 +5488,41 @@ function testStageMatchEvents_countsFullyUnmatchedOddsAsRejected_() {
   assertEquals_(5, Number(stage.unmatched[0].fallback_time_delta_min || 0));
 }
 
+function testStageMatchEvents_rejectsNearestCandidateBelowSimilarityThresholdWithDiagnostics_() {
+  const oddsEvents = [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }];
+
+  const scheduleEvents = [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    player_1: 'Different',
+    player_2: 'Names',
+    start_time: new Date('2025-03-01T12:05:00.000Z'),
+  }];
+
+  const stage = stageMatchEvents('run_test', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    MATCH_NEAREST_CANDIDATE_MIN_SIMILARITY: 0.8,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, oddsEvents, scheduleEvents);
+
+  assertEquals_(0, stage.matchedCount);
+  assertEquals_(1, stage.rejectedCount);
+  assertEquals_(null, stage.unmatched[0].nearest_schedule_candidate);
+  const diagnostics = stage.unmatched[0].nearest_schedule_candidate_diagnostics || {};
+  assertEquals_('rejected_similarity_threshold', diagnostics.viability);
+  assertEquals_('player one', (diagnostics.normalized_odds_players || [])[0] || '');
+  assertEquals_('different', (diagnostics.normalized_schedule_players || [])[0] || '');
+  assertEquals_(5, Number(diagnostics.time_delta_min || 0));
+  assertTrue_(Number(diagnostics.similarity_score || 0) < Number(diagnostics.similarity_threshold || 0));
+}
+
 function testStageMatchEvents_blocksWhenSchedulePlayerIdentityCoverageIsTooLow_() {
   const oddsEvents = [{
     event_id: 'odds_1',
