@@ -176,6 +176,88 @@ def canonical_counts(counter: Counter, expected: Iterable[str]) -> Dict[str, int
     return out
 
 
+def _extract_reason_metadata(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Any]:
+    candidates: List[Dict[str, Any]] = []
+    for row in _run_rows(rows, run_id):
+        if str(row.get("stage") or "") != "stageFetchPlayerStats":
+            continue
+        message = _parse_message(row.get("message"))
+        if isinstance(message.get("reason_metadata"), dict):
+            candidates.append(message["reason_metadata"])
+    for row in _run_rows(rows, run_id):
+        if str(row.get("row_type") or "") != "summary" or str(row.get("stage") or "") != "runEdgeBoard":
+            continue
+        message = _parse_message(row.get("message"))
+        stage_summaries = message.get("stage_summaries")
+        if not isinstance(stage_summaries, list):
+            continue
+        for stage_summary in stage_summaries:
+            if not isinstance(stage_summary, dict):
+                continue
+            if str(stage_summary.get("stage") or "") != "stageFetchPlayerStats":
+                continue
+            metadata = stage_summary.get("reason_metadata")
+            if isinstance(metadata, str):
+                metadata = _parse_message(metadata)
+            if isinstance(metadata, dict):
+                candidates.append(metadata)
+    return candidates[-1] if candidates else {}
+
+
+def _pick_int(meta: Dict[str, Any], keys: Tuple[str, ...]) -> int:
+    for key in keys:
+        try:
+            return int(float(meta.get(key)))
+        except Exception:
+            continue
+    return 0
+
+
+def _pick_reason_counts(meta: Dict[str, Any]) -> Dict[str, int]:
+    for key in (
+        "fallback_reason_counts",
+        "top_fallback_reason_counts",
+        "fallback_reason_breakdown",
+        "fallback_reasons",
+    ):
+        value = meta.get(key)
+        if not isinstance(value, dict):
+            continue
+        out: Dict[str, int] = {}
+        for reason in sorted(value, key=lambda v: str(v)):
+            try:
+                out[str(reason)] = int(float(value[reason]))
+            except Exception:
+                continue
+        if out:
+            return out
+    return {}
+
+
+def _player_stats_snapshot(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Any]:
+    meta = _extract_reason_metadata(rows, run_id)
+    resolved = max(0, _pick_int(meta, ("resolved_player_count", "resolved_players_count")))
+    total = max(0, _pick_int(meta, ("requested_player_count", "total_player_count", "total_players_count")))
+    unresolved_total = max(0, _pick_int(meta, ("unresolved_player_count", "unresolved_players_count")))
+    if total == 0:
+        total = resolved + unresolved_total
+    ta = max(0, _pick_int(meta, ("resolved_via_ta_count", "ta_resolved_count")))
+    provider_fb = max(0, _pick_int(meta, ("resolved_via_provider_fallback_count", "provider_fallback_resolved_count")))
+    model_fb = max(0, _pick_int(meta, ("resolved_via_model_fallback_count", "model_fallback_resolved_count")))
+    unresolved_a = max(0, _pick_int(meta, ("unresolved_player_a_count", "unresolved_side_a_count")))
+    unresolved_b = max(0, _pick_int(meta, ("unresolved_player_b_count", "unresolved_side_b_count")))
+    return {
+        "resolved": resolved,
+        "total": total,
+        "ta": ta,
+        "provider_fb": provider_fb,
+        "model_fb": model_fb,
+        "unresolved_a": unresolved_a,
+        "unresolved_b": unresolved_b,
+        "reasons": _pick_reason_counts(meta),
+    }
+
+
 def compare_rows(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
     _validate_run_pair(rows, run_a, run_b)
     lines = []
@@ -236,6 +318,46 @@ def compare_rows(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
 
     if not delta_pairs:
         lines.append("| - | - | - | - | - | - | - | 0 |")
+
+    stats_a = _player_stats_snapshot(rows, run_a)
+    stats_b = _player_stats_snapshot(rows, run_b)
+    cov_a = (100.0 * stats_a["resolved"] / stats_a["total"]) if stats_a["total"] else 0.0
+    cov_b = (100.0 * stats_b["resolved"] / stats_b["total"]) if stats_b["total"] else 0.0
+
+    lines.append("\n## stageFetchPlayerStats coverage")
+    lines.append("| metric | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    lines.append(f"| resolved/total | {stats_a['resolved']}/{stats_a['total']} | {stats_b['resolved']}/{stats_b['total']} | - |")
+    lines.append(f"| coverage_pct | {cov_a:.2f}% | {cov_b:.2f}% | {cov_b-cov_a:+.2f} pp |")
+
+    lines.append("\n## stageFetchPlayerStats source mix deltas")
+    lines.append("| source_bucket | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    for bucket in ("ta", "provider_fb", "model_fb"):
+        lines.append(f"| {bucket} | {stats_a[bucket]} | {stats_b[bucket]} | {stats_b[bucket]-stats_a[bucket]:+d} |")
+
+    lines.append("\n## stageFetchPlayerStats unresolved players by side")
+    lines.append("| side | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    for side_key, label in (("unresolved_a", "player_a"), ("unresolved_b", "player_b")):
+        lines.append(
+            f"| {label} | {stats_a[side_key]} | {stats_b[side_key]} | {stats_b[side_key]-stats_a[side_key]:+d} |"
+        )
+
+    reason_a = Counter(stats_a["reasons"])
+    reason_b = Counter(stats_b["reasons"])
+    top_reason_codes = sorted(
+        set(reason_a) | set(reason_b),
+        key=lambda code: (-(reason_a[code] + reason_b[code]), code),
+    )[:10]
+    lines.append("\n## stageFetchPlayerStats top fallback reason deltas")
+    lines.append("| reason | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    if top_reason_codes:
+        for code in top_reason_codes:
+            lines.append(f"| {code} | {reason_a[code]} | {reason_b[code]} | {reason_b[code]-reason_a[code]:+d} |")
+    else:
+        lines.append("| none | 0 | 0 | +0 |")
 
     return "\n".join(lines)
 

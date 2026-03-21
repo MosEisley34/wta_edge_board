@@ -34,7 +34,20 @@ class CompareRunMetricsTests(unittest.TestCase):
                     {"stage": "stageFetchOdds", "duration_ms": 50},
                     {"stage": "stageFetchSchedule", "duration_ms": 75},
                     {"stage": "stageMatchEvents", "duration_ms": 100},
-                    {"stage": "stageFetchPlayerStats", "duration_ms": 200},
+                    {
+                        "stage": "stageFetchPlayerStats",
+                        "duration_ms": 200,
+                        "reason_metadata": {
+                            "requested_player_count": 10,
+                            "resolved_player_count": 8,
+                            "resolved_via_ta_count": 6,
+                            "resolved_via_provider_fallback_count": 1,
+                            "resolved_via_model_fallback_count": 1,
+                            "unresolved_player_a_count": 1,
+                            "unresolved_player_b_count": 1,
+                            "fallback_reason_counts": {"ta_h2h_empty_table": 2},
+                        },
+                    },
                     {"stage": "stageGenerateSignals", "duration_ms": 30},
                     {"stage": "stagePersist", "duration_ms": 40},
                 ],
@@ -61,7 +74,20 @@ class CompareRunMetricsTests(unittest.TestCase):
                     {"stage": "stageFetchOdds", "duration_ms": 45},
                     {"stage": "stageFetchSchedule", "duration_ms": 70},
                     {"stage": "stageMatchEvents", "duration_ms": 90},
-                    {"stage": "stageFetchPlayerStats", "duration_ms": 230},
+                    {
+                        "stage": "stageFetchPlayerStats",
+                        "duration_ms": 230,
+                        "reason_metadata": {
+                            "requested_player_count": 10,
+                            "resolved_player_count": 7,
+                            "resolved_via_ta_count": 4,
+                            "resolved_via_provider_fallback_count": 2,
+                            "resolved_via_model_fallback_count": 1,
+                            "unresolved_player_a_count": 2,
+                            "unresolved_player_b_count": 1,
+                            "fallback_reason_counts": {"ta_h2h_empty_table": 3, "provider_timeout": 1},
+                        },
+                    },
                     {"stage": "stageGenerateSignals", "duration_ms": 35},
                     {"stage": "stagePersist", "duration_ms": 42},
                 ],
@@ -79,6 +105,10 @@ class CompareRunMetricsTests(unittest.TestCase):
         self.assertIn("stale_odds_skip", report)
         self.assertIn("[per_stage_duration_ms]", report)
         self.assertIn("stageFetchPlayerStats", report)
+        self.assertIn("[player_stats_coverage_pct]", report)
+        self.assertIn("[player_stats_source_mix_counts]", report)
+        self.assertIn("[player_stats_unresolved_by_side]", report)
+        self.assertIn("[player_stats_top_fallback_reason_deltas]", report)
 
     def test_build_report_fails_when_missing_run(self):
         with self.assertRaises(ValueError):

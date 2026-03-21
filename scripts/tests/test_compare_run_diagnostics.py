@@ -38,6 +38,62 @@ class CompareRunDiagnosticsValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing stage chain entries"):
             compare_rows(rows, "run-a", "run-b")
 
+    def test_compare_rows_emits_player_stats_metadata_sections(self):
+        rows = _full_stage_rows("run-a") + _full_stage_rows("run-b")
+        rows.extend(
+            [
+                {
+                    "run_id": "run-a",
+                    "stage": "runEdgeBoard",
+                    "row_type": "summary",
+                    "message": {
+                        "stage_summaries": [
+                            {
+                                "stage": "stageFetchPlayerStats",
+                                "reason_metadata": {
+                                    "requested_player_count": 10,
+                                    "resolved_player_count": 8,
+                                    "resolved_via_ta_count": 6,
+                                    "resolved_via_provider_fallback_count": 1,
+                                    "resolved_via_model_fallback_count": 1,
+                                    "unresolved_player_a_count": 1,
+                                    "unresolved_player_b_count": 1,
+                                    "fallback_reason_counts": {"ta_h2h_empty_table": 2},
+                                },
+                            }
+                        ]
+                    },
+                },
+                {
+                    "run_id": "run-b",
+                    "stage": "runEdgeBoard",
+                    "row_type": "summary",
+                    "message": {
+                        "stage_summaries": [
+                            {
+                                "stage": "stageFetchPlayerStats",
+                                "reason_metadata": {
+                                    "requested_player_count": 10,
+                                    "resolved_player_count": 7,
+                                    "resolved_via_ta_count": 5,
+                                    "resolved_via_provider_fallback_count": 1,
+                                    "resolved_via_model_fallback_count": 1,
+                                    "unresolved_player_a_count": 2,
+                                    "unresolved_player_b_count": 1,
+                                    "fallback_reason_counts": {"ta_h2h_empty_table": 3},
+                                },
+                            }
+                        ]
+                    },
+                },
+            ]
+        )
+        report = compare_rows(rows, "run-a", "run-b")
+        self.assertIn("stageFetchPlayerStats coverage", report)
+        self.assertIn("source mix deltas", report)
+        self.assertIn("unresolved players by side", report)
+        self.assertIn("top fallback reason deltas", report)
+
 
 if __name__ == "__main__":
     unittest.main()
