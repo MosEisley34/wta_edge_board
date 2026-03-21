@@ -5159,6 +5159,10 @@ function testStageFetchPlayerStats_providerAvailableButEmptyTracksReason_() {
   assertEquals_(2, result.stage.summary.reason_metadata.requested_player_count);
   assertEquals_(0, result.stage.summary.reason_metadata.resolved_player_count);
   assertEquals_(2, result.stage.summary.reason_metadata.unresolved_player_count);
+  assertEquals_(2, Number(((result.stage.summary.reason_metadata.coverage || {}).requested) || 0));
+  assertEquals_(0, Number(((result.stage.summary.reason_metadata.coverage || {}).resolved) || 0));
+  assertEquals_(2, Number(((result.stage.summary.reason_metadata.coverage || {}).unresolved) || 0));
+  assertEquals_(0, Number(((result.stage.summary.reason_metadata.coverage || {}).resolved_rate) || 0));
   assertEquals_(0, result.stage.summary.reason_metadata.overlap_ratio);
   assertEquals_(2, result.stage.summary.reason_metadata.players_total);
   assertEquals_(0, result.stage.summary.reason_metadata.players_found_ta);
@@ -5195,6 +5199,10 @@ function testStageFetchPlayerStats_providerReturnedNullFeaturesMarksFallbackMeta
 function testBuildSkippedPlayerStatsStage_emitsStructuredReasonMetadataDefaults_() {
   const stage = buildSkippedPlayerStatsStage_('run_skip_meta', 'skipped_schedule_only_no_odds');
   const meta = stage.summary.reason_metadata || {};
+  assertEquals_(0, Number((meta.coverage || {}).requested || 0));
+  assertEquals_(0, Number((meta.coverage || {}).resolved || 0));
+  assertEquals_(0, Number((meta.coverage || {}).unresolved || 0));
+  assertEquals_(0, Number((meta.coverage || {}).resolved_rate || 0));
   assertEquals_(0, Number(meta.players_total || 0));
   assertEquals_(0, Number(meta.players_found_ta || 0));
   assertEquals_(0, Number(meta.players_fallback_provider || 0));
