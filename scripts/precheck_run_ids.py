@@ -22,7 +22,22 @@ class RunLogSource:
 
 
 def _iter_run_log_sources(export_dir: str) -> list[RunLogSource]:
-    """Find Run_Log.json / Run_Log.csv artifacts under the export directory."""
+    """Find Run_Log.json / Run_Log.csv artifacts under the export directory or direct file path."""
+    if os.path.isfile(export_dir):
+        norm_path = os.path.normpath(export_dir)
+        lower = norm_path.lower()
+        if lower.endswith("run_log.json"):
+            try:
+                return [RunLogSource(path=norm_path, kind="json", mtime=os.path.getmtime(norm_path))]
+            except OSError:
+                return []
+        if lower.endswith("run_log.csv"):
+            try:
+                return [RunLogSource(path=norm_path, kind="csv", mtime=os.path.getmtime(norm_path))]
+            except OSError:
+                return []
+        return []
+
     patterns = (("json", "**/Run_Log.json"), ("csv", "**/Run_Log.csv"))
     sources: list[RunLogSource] = []
     seen: set[str] = set()
@@ -85,14 +100,17 @@ def main() -> int:
     parser.add_argument(
         "--export-dir",
         default="./exports_live",
-        help="Directory containing exported runtime artifacts (default: ./exports_live).",
+        help=(
+            "Directory containing exported runtime artifacts, or a direct Run_Log.csv/Run_Log.json path "
+            "(default: ./exports_live)."
+        ),
     )
     args = parser.parse_args()
 
     sources = _iter_run_log_sources(args.export_dir)
     if not sources:
         print(f"Precheck failed: no Run_Log artifacts found under {args.export_dir}.")
-        print("Expected at least one file matching **/Run_Log.{json,csv}.")
+        print("Expected a Run_Log.csv/Run_Log.json file or at least one file matching **/Run_Log.{json,csv}.")
         print("Stop triage and re-export from the sheet before further analysis.")
         return 2
 
