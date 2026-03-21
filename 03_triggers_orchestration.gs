@@ -1506,7 +1506,7 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   const fallbackExemptionCapMode = String(config.OPENING_LAG_FALLBACK_EXEMPTION_CAP_MODE || 'unlimited_when_zero').toLowerCase();
   const fallbackExemptionAllowedSourcesInput = parseOpeningLagPolicySources_(
     config.OPENING_LAG_FALLBACK_EXEMPTION_ALLOWED_SOURCES_JSON,
-    ['fallback_cached_stale']
+    ['fallback_cached_stale', 'fallback_cached_stale_bounded_window']
   );
   const fallbackExemptionDeniedSourcesInput = parseOpeningLagPolicySources_(
     config.OPENING_LAG_FALLBACK_EXEMPTION_DENIED_SOURCES_JSON,
@@ -1535,7 +1535,8 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
   const fallbackExemptionAgeBucketSummary = {
     '<=60': 0,
     '61-180': 0,
-    '>180': 0,
+    '181-300': 0,
+    '>300': 0,
   };
   const fallbackExemptionEvidenceSampleLimit = 3;
   const fallbackExemptionEvidence = {
@@ -1608,7 +1609,13 @@ function applyOpeningLagActionabilityGate_(runId, config, oddsStage) {
           : null,
       };
 
-      if (fallbackExemptionDeniedSources[policyTier] || !fallbackExemptionAllowedSources[policyTier]) {
+      const sourceAllowed = isOpeningLagFallbackSourceAllowed_(
+        policyTier,
+        dynamicExemptionPolicy.policy_tier,
+        fallbackExemptionAllowedSources,
+        fallbackExemptionDeniedSources
+      );
+      if (!sourceAllowed) {
         exemptionDecision = 'opening_lag_fallback_exemption_denied_source';
         fallbackExemptionDeniedSource += 1;
         pushOpeningLagFallbackEvidence_(fallbackExemptionEvidence.blocked_by_source, eventEvidence, fallbackExemptionEvidenceSampleLimit);
@@ -1813,6 +1820,7 @@ function validateOpeningLagFallbackExemptionConfig_(config) {
   const allowListWasEmpty = Object.keys(allowedSources).length === 0;
   if (allowListWasEmpty) {
     allowedSources.fallback_cached_stale = true;
+    allowedSources.fallback_cached_stale_bounded_window = true;
   }
   const capZeroBlocksAll = capMode === 'deny_all_when_zero' && maxRowsPerRun === 0;
   const overlap = Object.keys(allowedSources).filter(function (source) { return !!deniedSources[source]; });
@@ -1882,7 +1890,9 @@ function openingLagAgeBucket_(openingLagMinutes) {
   if (lag <= 60) return '31_60m';
   if (lag <= 120) return '61_120m';
   if (lag <= 180) return '121_180m';
-  return '181m_plus';
+  if (lag <= 240) return '181_240m';
+  if (lag <= 300) return '241_300m';
+  return '301m_plus';
 }
 
 function openingLagPolicyTuningBucket_(openingLagMinutes) {
@@ -1890,7 +1900,25 @@ function openingLagPolicyTuningBucket_(openingLagMinutes) {
   if (!Number.isFinite(lag) || lag < 0) return '';
   if (lag <= 60) return '<=60';
   if (lag <= 180) return '61-180';
-  return '>180';
+  if (lag <= 300) return '181-300';
+  return '>300';
+}
+
+function isOpeningLagFallbackSourceAllowed_(policyTier, appliedPolicyTier, allowedSources, deniedSources) {
+  const source = String(policyTier || '').trim();
+  const applied = String(appliedPolicyTier || '').trim();
+  const allowed = allowedSources || {};
+  const denied = deniedSources || {};
+
+  if (denied[source] || (applied && denied[applied])) return false;
+  if (allowed[source] || (applied && allowed[applied])) return true;
+
+  // Preserve stale fallback quality guardrails while allowing bounded-window variants.
+  if (source === 'fallback_cached_stale' && applied === 'fallback_cached_stale_bounded_window') {
+    return !!allowed.fallback_cached_stale;
+  }
+
+  return false;
 }
 
 function deriveSignalUpstreamGateReason_(oddsStage, scheduleStage, matchStage, playerStatsStage) {
