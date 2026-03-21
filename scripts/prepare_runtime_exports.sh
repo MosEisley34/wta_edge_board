@@ -8,7 +8,8 @@ Usage:
 
 Repeatable pre-step before diagnostics scanning:
   1) Export Run_Log/State CSV/JSON artifacts into ./exports (default)
-  2) Verify expected export files exist before running scan
+  2) Enforce Run_Log CSV/JSON parity for latest batch before publish
+  3) Verify expected export files exist before running scan
 
 Expected exported files (at least one must exist):
   - ./exports/*Run_Log*.csv
