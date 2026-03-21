@@ -27,6 +27,10 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
   const byOddsEventId = {};
   const playersToFetch = [];
   const seedEvents = [];
+  const playerSlotSourceLabels = {
+    a: [],
+    b: [],
+  };
 
   oddsEvents.forEach((event) => {
     const match = matchByOddsEventId[event.event_id];
@@ -120,6 +124,8 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
 
     const playerAStats = resolvePlayerStatsPayload_(playerA, statsByPlayer, providerUnavailable, event, effectiveMatch, 'a', reasonCounts, config);
     const playerBStats = resolvePlayerStatsPayload_(playerB, statsByPlayer, providerUnavailable, event, effectiveMatch, 'b', reasonCounts, config);
+    playerSlotSourceLabels.a.push(String(playerAStats.source_used || source));
+    playerSlotSourceLabels.b.push(String(playerBStats.source_used || source));
 
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerA, source, featureTimestamp, playerAStats));
     rows.push(buildRawPlayerStatsRow_(event.event_id, playerB, source, featureTimestamp, playerBStats));
@@ -196,6 +202,8 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
   const top100FallbackAppliedCount = cohortMode === 'top100'
     ? Object.keys(fallbackDiagnostics.fallback_source_by_player || {}).length
     : 0;
+  const playerResolutionSourceByPlayer = buildPlayerResolutionSourceMap_(requestedUniquePlayers, statsByPlayer, statsSelectionMetadata, providerUnavailable);
+  const resolutionSourceSummary = summarizePlayerResolutionSourceMap_(playerResolutionSourceByPlayer);
   reasonCounts.stats_out_of_cohort = outOfCohortCount;
   reasonCounts.stats_rank_unknown = unknownRankCount;
   reasonCounts.stats_top100_filter_excluded = top100FilterExcludedCount;
@@ -222,6 +230,14 @@ function stageFetchPlayerStats(runId, config, oddsEvents, matchRows) {
       top100_fallback_applied_count: top100FallbackAppliedCount,
       overlap_ratio: roundNumber_(overlapRatio, 3),
       top_unresolved_player_samples: unresolvedPlayers.slice(0, 20),
+      players_total: requestedPlayerCount,
+      players_found_ta: resolutionSourceSummary.players_found_ta,
+      players_fallback_provider: resolutionSourceSummary.players_fallback_provider,
+      players_fallback_model: resolutionSourceSummary.players_fallback_model,
+      players_unresolved: unresolvedPlayerCount,
+      player_a_source: aggregatePlayerSlotSourceLabel_(playerSlotSourceLabels.a),
+      player_b_source: aggregatePlayerSlotSourceLabel_(playerSlotSourceLabels.b),
+      player_resolution_source_by_player: playerResolutionSourceByPlayer,
     },
   });
 
@@ -248,6 +264,14 @@ function buildSkippedPlayerStatsStage_(runId, reasonCode) {
       unresolved_player_count: 0,
       overlap_ratio: 0,
       top_unresolved_player_samples: [],
+      players_total: 0,
+      players_found_ta: 0,
+      players_fallback_provider: 0,
+      players_fallback_model: 0,
+      players_unresolved: 0,
+      player_a_source: 'none',
+      player_b_source: 'none',
+      player_resolution_source_by_player: {},
     },
   });
 
@@ -340,6 +364,61 @@ function resolvePlayerStatsPayload_(canonicalPlayerName, statsByPlayer, provider
       break_pct: null,
     },
   };
+}
+
+function buildPlayerResolutionSourceMap_(requestedPlayers, statsByPlayer, statsSelectionMetadata, providerUnavailable) {
+  const sourcesFromSelection = statsSelectionMetadata && typeof statsSelectionMetadata === 'object'
+    ? (statsSelectionMetadata.player_source_by_player || {})
+    : {};
+  const map = {};
+  (requestedPlayers || []).forEach(function (playerName) {
+    const key = String(playerName || '').trim();
+    if (!key) return;
+    const providerStats = (statsByPlayer || {})[key] || {};
+    const preferredSource = String(sourcesFromSelection[key] || providerStats.source_used || '').trim();
+    if (preferredSource) {
+      map[key] = preferredSource;
+    } else {
+      map[key] = providerUnavailable ? 'derived_player_stats_v1_fallback' : 'unresolved';
+    }
+  });
+  return map;
+}
+
+function summarizePlayerResolutionSourceMap_(sourceByPlayer) {
+  const summary = {
+    players_found_ta: 0,
+    players_fallback_provider: 0,
+    players_fallback_model: 0,
+  };
+  Object.keys(sourceByPlayer || {}).forEach(function (playerName) {
+    const sourceLabel = String(sourceByPlayer[playerName] || '').toLowerCase();
+    if (!sourceLabel) return;
+    if (sourceLabel.indexOf('tennis_abstract') >= 0 || sourceLabel.indexOf('ta_') === 0) {
+      summary.players_found_ta += 1;
+      return;
+    }
+    if (sourceLabel === 'sofascore' || sourceLabel === 'scrape') {
+      summary.players_fallback_provider += 1;
+      return;
+    }
+    if (sourceLabel.indexOf('derived_player_stats_v1_fallback') >= 0) {
+      summary.players_fallback_model += 1;
+    }
+  });
+  return summary;
+}
+
+function aggregatePlayerSlotSourceLabel_(labels) {
+  const normalized = (labels || [])
+    .map(function (label) { return String(label || '').trim(); })
+    .filter(function (label) { return !!label; });
+  if (!normalized.length) return 'none';
+  const unique = {};
+  normalized.forEach(function (label) { unique[label] = true; });
+  const keys = Object.keys(unique);
+  if (keys.length === 1) return keys[0];
+  return 'mixed';
 }
 
 function evaluateProviderStatsUsability_(providerStats, config) {

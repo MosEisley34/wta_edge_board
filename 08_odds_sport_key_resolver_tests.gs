@@ -5160,6 +5160,13 @@ function testStageFetchPlayerStats_providerAvailableButEmptyTracksReason_() {
   assertEquals_(0, result.stage.summary.reason_metadata.resolved_player_count);
   assertEquals_(2, result.stage.summary.reason_metadata.unresolved_player_count);
   assertEquals_(0, result.stage.summary.reason_metadata.overlap_ratio);
+  assertEquals_(2, result.stage.summary.reason_metadata.players_total);
+  assertEquals_(0, result.stage.summary.reason_metadata.players_found_ta);
+  assertEquals_(0, result.stage.summary.reason_metadata.players_fallback_provider);
+  assertEquals_(0, result.stage.summary.reason_metadata.players_fallback_model);
+  assertEquals_(2, result.stage.summary.reason_metadata.players_unresolved);
+  assertEquals_('player_stats_provider_v1', result.stage.summary.reason_metadata.player_a_source || '');
+  assertEquals_('player_stats_provider_v1', result.stage.summary.reason_metadata.player_b_source || '');
   assertEquals_(2, result.stage.summary.reason_metadata.top_unresolved_player_samples.length);
 }
 
@@ -5183,6 +5190,19 @@ function testStageFetchPlayerStats_providerReturnedNullFeaturesMarksFallbackMeta
   assertEquals_('null_features', bundle.player_b.stats_fallback_mode || '');
   assertEquals_('player_stats_provider_v1', bundle.player_a.provenance || '');
   assertEquals_('player_stats_provider_v1', bundle.player_b.provenance || '');
+}
+
+function testBuildSkippedPlayerStatsStage_emitsStructuredReasonMetadataDefaults_() {
+  const stage = buildSkippedPlayerStatsStage_('run_skip_meta', 'skipped_schedule_only_no_odds');
+  const meta = stage.summary.reason_metadata || {};
+  assertEquals_(0, Number(meta.players_total || 0));
+  assertEquals_(0, Number(meta.players_found_ta || 0));
+  assertEquals_(0, Number(meta.players_fallback_provider || 0));
+  assertEquals_(0, Number(meta.players_fallback_model || 0));
+  assertEquals_(0, Number(meta.players_unresolved || 0));
+  assertEquals_('none', String(meta.player_a_source || ''));
+  assertEquals_('none', String(meta.player_b_source || ''));
+  assertEquals_('{}', JSON.stringify(meta.player_resolution_source_by_player || {}));
 }
 
 
