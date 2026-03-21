@@ -30,6 +30,30 @@ REQUIRED_STAGE_CHAIN = (
     "stageGenerateSignals",
     "stagePersist",
 )
+REQUIRED_COVERAGE_KEYS = {
+    "resolved": (
+        "resolved",
+        "resolved_players",
+        "resolved_player_count",
+        "resolved_players_count",
+        "resolved_name_count",
+    ),
+    "requested": (
+        "requested",
+        "requested_players",
+        "requested_player_count",
+        "total_player_count",
+        "total_players_count",
+        "players_total",
+    ),
+    "unresolved": (
+        "unresolved",
+        "unresolved_players",
+        "unresolved_player_count",
+        "unresolved_players_count",
+        "players_unresolved",
+    ),
+}
 
 
 def _iter_run_log_sources(export_dir: str) -> list[RunLogSource]:
@@ -108,7 +132,16 @@ def _parse_json_like(value: object) -> object:
 
 def _scan_run_contracts(path: str, target_run_ids: set[str]) -> dict[str, dict[str, object]]:
     contracts: dict[str, dict[str, object]] = {
-        run_id: {"disallowed_reasons": set(), "stages": set()} for run_id in target_run_ids
+        run_id: {
+            "disallowed_reasons": set(),
+            "stages": set(),
+            "run_summary_exists": False,
+            "stage_fetch_player_stats_summary_exists": False,
+            "coverage_prereq": {"resolved": False, "requested": False, "unresolved": False},
+            "reason_codes_has_stats_miss_a": False,
+            "reason_codes_has_stats_miss_b": False,
+        }
+        for run_id in target_run_ids
     }
     lower = path.lower()
     if lower.endswith(".json"):
@@ -134,6 +167,14 @@ def _scan_run_contracts(path: str, target_run_ids: set[str]) -> dict[str, dict[s
             contracts[run_id]["stages"].add(stage)
 
         if str(row.get("row_type") or "") == "summary" and stage == "runEdgeBoard":
+            contracts[run_id]["run_summary_exists"] = True
+            reason_codes = _parse_json_like(row.get("reason_codes"))
+            if isinstance(reason_codes, dict):
+                if "STATS_MISS_A" in reason_codes:
+                    contracts[run_id]["reason_codes_has_stats_miss_a"] = True
+                if "STATS_MISS_B" in reason_codes:
+                    contracts[run_id]["reason_codes_has_stats_miss_b"] = True
+
             stage_summaries = _parse_json_like(row.get("stage_summaries"))
             if not isinstance(stage_summaries, list):
                 message = _parse_json_like(row.get("message"))
@@ -146,7 +187,35 @@ def _scan_run_contracts(path: str, target_run_ids: set[str]) -> dict[str, dict[s
                     stage_name = str(stage_summary.get("stage") or "").strip()
                     if stage_name:
                         contracts[run_id]["stages"].add(stage_name)
+                    if stage_name != "stageFetchPlayerStats":
+                        continue
+
+                    contracts[run_id]["stage_fetch_player_stats_summary_exists"] = True
+                    reason_metadata = _parse_json_like(stage_summary.get("reason_metadata"))
+                    if not isinstance(reason_metadata, dict):
+                        continue
+                    coverage = _parse_json_like(reason_metadata.get("coverage"))
+                    coverage_dict = coverage if isinstance(coverage, dict) else {}
+
+                    for prereq_key, aliases in REQUIRED_COVERAGE_KEYS.items():
+                        has_alias = any(alias in coverage_dict for alias in aliases)
+                        if not has_alias:
+                            has_alias = any(alias in reason_metadata for alias in aliases)
+                        if has_alias:
+                            contracts[run_id]["coverage_prereq"][prereq_key] = True
     return contracts
+
+
+def _empty_contract() -> dict[str, object]:
+    return {
+        "disallowed_reasons": set(),
+        "stages": set(),
+        "run_summary_exists": False,
+        "stage_fetch_player_stats_summary_exists": False,
+        "coverage_prereq": {"resolved": False, "requested": False, "unresolved": False},
+        "reason_codes_has_stats_miss_a": False,
+        "reason_codes_has_stats_miss_b": False,
+    }
 
 
 def _format_missing(run_ids: Iterable[str], present_ids: set[str]) -> list[str]:
@@ -173,6 +242,14 @@ def main() -> int:
             "(default: ./exports_live)."
         ),
     )
+    parser.add_argument(
+        "--require-gate-prereqs",
+        action="store_true",
+        help=(
+            "Require runEdgeBoard summary, full stage chain, and player-stats coverage metadata "
+            "needed by scripts/check_player_stats_coverage.py."
+        ),
+    )
     args = parser.parse_args()
 
     sources = _iter_run_log_sources(args.export_dir)
@@ -185,8 +262,8 @@ def main() -> int:
     merged_counts: Counter[str] = Counter()
     source_counts: dict[str, Counter[str]] = {}
     merged_contracts: dict[str, dict[str, object]] = {
-        args.run_id_a: {"disallowed_reasons": set(), "stages": set()},
-        args.run_id_b: {"disallowed_reasons": set(), "stages": set()},
+        args.run_id_a: _empty_contract(),
+        args.run_id_b: _empty_contract(),
     }
     kind_counts = Counter(source.kind for source in sources)
 
@@ -211,6 +288,24 @@ def main() -> int:
         for run_id, details in source_contracts.items():
             merged_contracts[run_id]["disallowed_reasons"].update(details["disallowed_reasons"])
             merged_contracts[run_id]["stages"].update(details["stages"])
+            merged_contracts[run_id]["run_summary_exists"] = (
+                merged_contracts[run_id]["run_summary_exists"] or details["run_summary_exists"]
+            )
+            merged_contracts[run_id]["stage_fetch_player_stats_summary_exists"] = (
+                merged_contracts[run_id]["stage_fetch_player_stats_summary_exists"]
+                or details["stage_fetch_player_stats_summary_exists"]
+            )
+            merged_contracts[run_id]["reason_codes_has_stats_miss_a"] = (
+                merged_contracts[run_id]["reason_codes_has_stats_miss_a"]
+                or details["reason_codes_has_stats_miss_a"]
+            )
+            merged_contracts[run_id]["reason_codes_has_stats_miss_b"] = (
+                merged_contracts[run_id]["reason_codes_has_stats_miss_b"]
+                or details["reason_codes_has_stats_miss_b"]
+            )
+            for prereq_key, present in details["coverage_prereq"].items():
+                if present:
+                    merged_contracts[run_id]["coverage_prereq"][prereq_key] = True
 
     targets = (args.run_id_a, args.run_id_b)
     present_ids = set(merged_counts)
@@ -240,15 +335,41 @@ def main() -> int:
         disallowed = sorted(merged_contracts[run_id]["disallowed_reasons"])
         if disallowed:
             contract_failures.append(f"{run_id}: disallowed reason_code(s) {', '.join(disallowed)}")
-        observed_stages = set(merged_contracts[run_id]["stages"])
-        missing_stages = [stage for stage in REQUIRED_STAGE_CHAIN if stage not in observed_stages]
-        if missing_stages:
-            contract_failures.append(
-                f"{run_id}: missing stage chain entries ({', '.join(missing_stages)})"
-            )
+        if args.require_gate_prereqs:
+            if not merged_contracts[run_id]["run_summary_exists"]:
+                contract_failures.append(
+                    f"{run_id}: missing runEdgeBoard summary row (row_type=summary, stage=runEdgeBoard)"
+                )
+            observed_stages = set(merged_contracts[run_id]["stages"])
+            missing_stages = [stage for stage in REQUIRED_STAGE_CHAIN if stage not in observed_stages]
+            if missing_stages:
+                contract_failures.append(
+                    f"{run_id}: missing stage chain entries ({', '.join(missing_stages)})"
+                )
+            if not merged_contracts[run_id]["stage_fetch_player_stats_summary_exists"]:
+                contract_failures.append(
+                    f"{run_id}: missing stageFetchPlayerStats summary in stage_summaries"
+                )
+            missing_coverage = [
+                key
+                for key, present in merged_contracts[run_id]["coverage_prereq"].items()
+                if not present
+            ]
+            if missing_coverage:
+                contract_failures.append(
+                    f"{run_id}: missing coverage metadata field group(s) for gate ({', '.join(missing_coverage)})"
+                )
+            if not merged_contracts[run_id]["reason_codes_has_stats_miss_a"]:
+                contract_failures.append(f"{run_id}: reason_codes missing STATS_MISS_A")
+            if not merged_contracts[run_id]["reason_codes_has_stats_miss_b"]:
+                contract_failures.append(f"{run_id}: reason_codes missing STATS_MISS_B")
 
     if contract_failures:
         print("Precheck failed: run-pair comparison auto-failed due to invalid run contract.")
+        if args.require_gate_prereqs:
+            print(
+                "Gate prereq mode (--require-gate-prereqs) blocks compare scripts until summary/stage/coverage requirements are met."
+            )
         for failure in contract_failures:
             print(f"- {failure}")
         print("Replacement run IDs are required before producing pre/post verdict.")
