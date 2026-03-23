@@ -48,6 +48,40 @@ Operational expectation:
 - `triage_runtime_diagnostics_local.sh` should show `Run-health degraded contract (first-pass triage)` near the top.
 - `runtime_diagnostics_summary.py` should print deterministic seven-line summary output including daily status and day-over-day deltas.
 
+## Operator SLOs for degraded-mode reliability
+
+Use these thresholds for weekly operations review and on-call escalation.
+
+### Max tolerated consecutive degraded runs (by primary cause)
+
+- `run_health_no_matches_from_odds`: **3** consecutive runs maximum.
+- `stats_zero_coverage`: **2** consecutive runs maximum.
+- `run_health_expected_temporary_no_odds`: **6** consecutive runs maximum before mandatory validation of upstream freshness.
+- `run_health_opening_lag_schedule_seed_no_odds`: **6** consecutive runs maximum during expected market-open lag windows.
+- `odds_refresh_bootstrap_blocked_by_credit_limit` / `credit_hard_limit_skip_odds`: **1** run maximum before operator intervention.
+
+### Notification delivery success SLO
+
+- Signal and risk notification delivery (`postDiscordWebhook_` outcomes) must maintain:
+  - **≥ 99.0% success per rolling 7-day window**, and
+  - **≥ 95.0% success per day**.
+- Any `notify_http_failed` burst of **3+ consecutive failures** is treated as an incident candidate.
+
+### Mandatory remediation triggers
+
+Trigger remediation immediately when any of these occur:
+
+1. Hard credit protection mode activated (`credit_hard_limit_skip_odds` or bootstrap credit-blocked paths).
+2. Notification success falls below daily 95% threshold.
+3. Stage-summary vs final-summary reason-code contract mismatch appears in run-health diagnostics.
+4. Matcher precheck blockers (`schedule_missing_player_identity`, `schedule_date_misaligned_with_odds`) persist for 2 consecutive runs.
+
+Required remediation checklist:
+- Confirm webhook endpoint health and credentials.
+- Validate odds/schedule provider freshness windows and parser contracts.
+- Re-run deterministic soak replay sequence (below) and archive artifacts.
+- Open incident ticket with sampled blocker payloads from triage output.
+
 ## Manual usage flow (optional)
 
 1. Run the repeatable export pre-step into the known export directory (`./exports` by default):
@@ -104,6 +138,34 @@ Optional knobs:
 - `--top-n`
 - `--max-stages`
 - `--warning-limit`
+
+## Weekly soak replay (CI/Ops, no manual steps)
+
+Run this deterministic sequence weekly (or after reliability-related changes) to replay contract checks and scenario coverage end-to-end.
+
+```bash
+# 1) Deterministic script-level regression pack.
+pytest -q scripts/tests/test_compare_run_diagnostics.py \
+  scripts/tests/test_compare_run_metrics.py \
+  scripts/tests/test_runtime_diagnostics_summary.py \
+  scripts/tests/test_runtime_periodic_aggregates.py
+
+# 2) Log-profile parity + compact reason-code guardrails.
+scripts/ci_profile_parity_gate.sh
+
+# 3) Rebuild runtime exports from latest artifacts and run triage contracts.
+scripts/prepare_runtime_exports.sh --out-dir ./exports ./exports
+scripts/triage_runtime_diagnostics_ci.sh
+
+# 4) Emit operator-facing deterministic summary + periodic rollup snapshot.
+scripts/runtime_diagnostics_summary.py ./exports
+scripts/runtime_periodic_aggregates.py ./exports --snapshot-dir ./docs/baselines/runtime_rollups
+```
+
+Expected outcome:
+- all commands succeed in CI without manual input,
+- run-health degraded contract section is present,
+- no new reason-code contract mismatch warnings are introduced.
 
 ### Periodic historical rollups (for planning/postmortems)
 

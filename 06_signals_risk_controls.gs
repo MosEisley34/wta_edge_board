@@ -1638,7 +1638,12 @@ function sendSignalNotification_(config, runId, signalHash, payload) {
   }
 
   const message = formatSignalNotificationMessage_(runId, signalHash, payload);
-  return postDiscordWebhook_(config.DISCORD_WEBHOOK, { content: message }, !!config.NOTIFY_TEST_MODE);
+  return postDiscordWebhook_(
+    config.DISCORD_WEBHOOK,
+    { content: message },
+    !!config.NOTIFY_TEST_MODE,
+    Number(config.NOTIFY_WEBHOOK_MAX_RETRIES || 0)
+  );
 }
 
 function formatSignalNotificationMessage_(runId, signalHash, payload) {
@@ -1780,7 +1785,7 @@ function resolveTopPositiveFeatureContributors_(statsBundle, maxContributors) {
 }
 
 
-function postDiscordWebhook_(webhookUrl, payload, testMode) {
+function postDiscordWebhook_(webhookUrl, payload, testMode, maxRetries) {
   if (testMode) {
     return {
       outcome: 'sent',
@@ -1788,35 +1793,70 @@ function postDiscordWebhook_(webhookUrl, payload, testMode) {
       http_status: 200,
       response_body_preview: 'test_mode_no_post',
       test_mode: true,
+      retry_count: 0,
+      attempt_count: 1,
     };
   }
 
-  try {
-    const response = UrlFetchApp.fetch(String(webhookUrl), {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(payload || {}),
-      muteHttpExceptions: true,
-    });
-    const code = Number(response.getResponseCode());
-    const body = truncateForLog_(response.getContentText(), 300);
+  const retryBudget = Math.max(0, Number(maxRetries || 0));
+  let attemptCount = 0;
+  let lastFailure = null;
 
-    return {
-      outcome: code >= 200 && code < 300 ? 'sent' : 'notify_http_failed',
-      transport: 'discord_webhook',
-      http_status: code,
-      response_body_preview: body,
-      test_mode: false,
-    };
-  } catch (error) {
-    return {
-      outcome: 'notify_http_failed',
-      transport: 'discord_webhook',
-      http_status: null,
-      response_body_preview: truncateForLog_(String(error && error.message ? error.message : error), 300),
-      test_mode: false,
-    };
+  while (attemptCount <= retryBudget) {
+    attemptCount += 1;
+    try {
+      const response = UrlFetchApp.fetch(String(webhookUrl), {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify(payload || {}),
+        muteHttpExceptions: true,
+      });
+      const code = Number(response.getResponseCode());
+      const body = truncateForLog_(response.getContentText(), 300);
+      if (code >= 200 && code < 300) {
+        return {
+          outcome: 'sent',
+          transport: 'discord_webhook',
+          http_status: code,
+          response_body_preview: body,
+          test_mode: false,
+          retry_count: attemptCount - 1,
+          attempt_count: attemptCount,
+        };
+      }
+
+      lastFailure = {
+        outcome: 'notify_http_failed',
+        transport: 'discord_webhook',
+        http_status: code,
+        response_body_preview: body,
+        test_mode: false,
+        retry_count: attemptCount - 1,
+        attempt_count: attemptCount,
+      };
+      if (code < 500 && code !== 429) break;
+    } catch (error) {
+      lastFailure = {
+        outcome: 'notify_http_failed',
+        transport: 'discord_webhook',
+        http_status: null,
+        response_body_preview: truncateForLog_(String(error && error.message ? error.message : error), 300),
+        test_mode: false,
+        retry_count: attemptCount - 1,
+        attempt_count: attemptCount,
+      };
+    }
   }
+
+  return lastFailure || {
+    outcome: 'notify_http_failed',
+    transport: 'discord_webhook',
+    http_status: null,
+    response_body_preview: 'notify_http_failed',
+    test_mode: false,
+    retry_count: Math.max(0, attemptCount - 1),
+    attempt_count: Math.max(1, attemptCount),
+  };
 }
 
 function truncateForLog_(value, maxLen) {
