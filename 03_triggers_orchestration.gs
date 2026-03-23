@@ -955,30 +955,28 @@ function runEdgeBoard() {
       signal_decision_summary: signalDecisionSummary,
     };
 
-    const forceVerboseCapture = !!productiveMitigation.verbose_diagnostics_capture_active;
-    if (normalizeLogProfile_(config.LOG_PROFILE || DEFAULT_CONFIG.LOG_PROFILE) === 'verbose' || forceVerboseCapture) {
-      setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
-    } else {
-      setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify({
-        run_id: runId,
-        log_profile: 'compact',
-        note: 'Set LOG_PROFILE=verbose to capture full LAST_RUN_VERBOSE_JSON diagnostics payload.',
-        reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes, REASON_CODE_ALIAS_SCHEMA_ID),
-        stage_count: compactStageSummaries.length,
-      }));
-    }
-    const competitionDiagnosticsGeneratedAt = localAndUtcTimestamps_(new Date());
-    setStateValue_('LAST_RUN_COMPETITION_DIAGNOSTICS_JSON', JSON.stringify({
-      run_id: runId,
-      generated_at: competitionDiagnosticsGeneratedAt.local,
-      generated_at_utc: competitionDiagnosticsGeneratedAt.utc,
-      source_fields_priority: (scheduleStage.canonicalExamples[0] && scheduleStage.canonicalExamples[0].resolver_fields || []).map((f) => f.field),
-      top_unresolved_competitions: scheduleStage.topUnresolvedCompetitions,
-      unresolved_competition_counts: scheduleStage.unresolvedCompetitionCounts,
-    }, null, 2));
+    const requiredParityStages = ['stageFetchPlayerStats'];
+    const gsParityPrecheck = {
+      contract_name: 'run_log_export_parity_contract_v1',
+      latest_run_ids: [runId],
+      summary_presence_by_run_id: { [runId]: true },
+      required_stage_summary_presence_by_run_id: { [runId]: { stageFetchPlayerStats: true } },
+      parity_status: 'pass',
+      reason_code: 'export_parity_contract_pass_precheck',
+    };
 
-    // Policy: only successful orchestration updates debounce; crashed runs should retry immediately.
-    scriptProps.setProperty(PROPS.LAST_PIPELINE_RUN_TS, String(nowMs));
+    const summaryStageSummariesPayload = {
+      schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
+      stage_summaries: [
+        oddsStage.summary,
+        scheduleStage.summary,
+        matchStage.summary,
+        playerStatsStage.summary,
+        signalStage.summary,
+        persistStage.summary,
+      ],
+      gs_export_parity_contract: gsParityPrecheck,
+    };
 
     appendLogRow_({
       row_type: 'summary',
@@ -1003,24 +1001,64 @@ function runEdgeBoard() {
       signal_decision_summary: JSON.stringify(signalDecisionSummary),
       reason_codes: combinedReasonCodes,
       rejection_codes: combinedReasonCodes,
-      stage_summaries: JSON.stringify([
-        oddsStage.summary,
-        scheduleStage.summary,
-        matchStage.summary,
-        playerStatsStage.summary,
-        signalStage.summary,
-        persistStage.summary,
-      ]),
+      stage_summaries: JSON.stringify(summaryStageSummariesPayload),
       cooldown_suppressed: signalStage.cooldownSuppressedCount,
       duplicate_suppressed: signalStage.duplicateSuppressedCount,
     });
+
+    const parityContractStatus = buildRunExportParityContractState_(runId, requiredParityStages, {
+      latest_run_ids: [runId],
+    });
+    if (!parityContractStatus.pass) {
+      combinedReasonCodes.export_parity_contract_failed = Number(combinedReasonCodes.export_parity_contract_failed || 0) + 1;
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'export_parity_contract',
+        status: 'failed',
+        reason_code: 'export_parity_contract_failed',
+        message: JSON.stringify(parityContractStatus),
+      });
+      const parityError = new Error('Export parity contract failed; blocking successful publish state updates.');
+      parityError.reason_code = 'export_parity_contract_failed';
+      parityError.parity_status = parityContractStatus;
+      throw parityError;
+    }
+
+    const forceVerboseCapture = !!productiveMitigation.verbose_diagnostics_capture_active;
+    if (normalizeLogProfile_(config.LOG_PROFILE || DEFAULT_CONFIG.LOG_PROFILE) === 'verbose' || forceVerboseCapture) {
+      setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify(verbosePayload, null, 2));
+    } else {
+      setStateValue_('LAST_RUN_VERBOSE_JSON', JSON.stringify({
+        run_id: runId,
+        log_profile: 'compact',
+        note: 'Set LOG_PROFILE=verbose to capture full LAST_RUN_VERBOSE_JSON diagnostics payload.',
+        reason_codes: compactReasonCodeMapForLog_(combinedReasonCodes, REASON_CODE_ALIAS_SCHEMA_ID),
+        stage_count: compactStageSummaries.length,
+      }));
+    }
+    const competitionDiagnosticsGeneratedAt = localAndUtcTimestamps_(new Date());
+    setStateValue_('LAST_RUN_COMPETITION_DIAGNOSTICS_JSON', JSON.stringify({
+      run_id: runId,
+      generated_at: competitionDiagnosticsGeneratedAt.local,
+      generated_at_utc: competitionDiagnosticsGeneratedAt.utc,
+      source_fields_priority: (scheduleStage.canonicalExamples[0] && scheduleStage.canonicalExamples[0].resolver_fields || []).map((f) => f.field),
+      top_unresolved_competitions: scheduleStage.topUnresolvedCompetitions,
+      unresolved_competition_counts: scheduleStage.unresolvedCompetitionCounts,
+    }, null, 2));
+
+    // Policy: only successful orchestration updates debounce; crashed runs should retry immediately.
+    scriptProps.setProperty(PROPS.LAST_PIPELINE_RUN_TS, String(nowMs));
     markRunLifecycleCompleted_(lifecycleContext, runId);
   } catch (error) {
     const errorMessage = String(error && error.message ? error.message : error);
+    const errorReasonCode = String(error && error.reason_code ? error.reason_code : 'run_exception');
     appendRunLifecycleStatus_(runId, 'aborted', {
-      reason_code: error && error.reason_code ? error.reason_code : 'run_exception',
+      reason_code: errorReasonCode,
       message: errorMessage,
     });
+    const summaryReasonCodes = {};
+    summaryReasonCodes[errorReasonCode] = 1;
     appendLogRow_({
       row_type: 'summary',
       run_id: runId,
@@ -1028,7 +1066,8 @@ function runEdgeBoard() {
       started_at: startedAt,
       ended_at: new Date(),
       status: 'failed',
-      reason_code: 'run_exception',
+      reason_code: errorReasonCode,
+      reason_codes: summaryReasonCodes,
       message: errorMessage,
       exception: errorMessage,
       stack: String(error && error.stack ? error.stack : ''),

@@ -287,7 +287,7 @@ function serializeCompactReasonCodesForLogEntry_(normalizedEntry, schemaId, opti
   if (Array.isArray(stageSummaryPayload)) {
     normalized.stage_summaries = JSON.stringify(compactStageSummariesForLog_(stageSummaryPayload, schemaId, compactOptions));
   } else if (stageSummaryPayload && typeof stageSummaryPayload === 'object' && stageSummaryPayload.stage_summaries) {
-    normalized.stage_summaries = JSON.stringify(compactStageSummariesForLog_(stageSummaryPayload.stage_summaries || [], String(stageSummaryPayload.schema_id || schemaId), compactOptions));
+    normalized.stage_summaries = JSON.stringify(compactStageSummariesForLog_(stageSummaryPayload.stage_summaries || [], String(stageSummaryPayload.schema_id || schemaId), compactOptions, stageSummaryPayload));
   }
 
   const fallbackWarningAliases = {};
@@ -1767,8 +1767,8 @@ function compactReasonCodeMapForLog_(reasonMap, schemaId, options) {
   };
 }
 
-function compactStageSummariesForLog_(stageSummaries, schemaId, options) {
-  return {
+function compactStageSummariesForLog_(stageSummaries, schemaId, options, metadata) {
+  const envelope = {
     schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
     stage_summaries: (stageSummaries || []).map((summary) => {
       const cloned = Object.assign({}, summary || {});
@@ -1778,6 +1778,111 @@ function compactStageSummariesForLog_(stageSummaries, schemaId, options) {
       return cloned;
     }),
   };
+  if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+    Object.keys(metadata).forEach((key) => {
+      if (key === 'stage_summaries' || key === 'schema_id') return;
+      envelope[key] = metadata[key];
+    });
+  }
+  return envelope;
+}
+
+function buildRunExportParityContractState_(runId, requiredStages, options) {
+  const runIdText = String(runId || '').trim();
+  const required = Array.isArray(requiredStages) && requiredStages.length
+    ? requiredStages.map((stage) => String(stage || '').trim()).filter((stage) => !!stage)
+    : ['stageFetchPlayerStats'];
+  const runIds = Array.isArray(options && options.latest_run_ids)
+    ? (options.latest_run_ids || []).map((id) => String(id || '').trim()).filter((id) => !!id)
+    : (runIdText ? [runIdText] : []);
+
+  const status = {
+    contract_key: 'LAST_EXPORT_PARITY_STATUS',
+    contract_name: 'run_log_export_parity_contract_v1',
+    latest_run_ids: runIds,
+    summary_presence_by_run_id: {},
+    required_stage_summary_presence_by_run_id: {},
+    pass: false,
+    parity_status: 'failed',
+    reason_code: 'export_parity_missing_run_id',
+    checked_at: formatLocalIso_(new Date()),
+    checked_at_utc: new Date().toISOString(),
+  };
+
+  runIds.forEach((id) => {
+    status.summary_presence_by_run_id[id] = false;
+    status.required_stage_summary_presence_by_run_id[id] = {};
+    required.forEach((stage) => {
+      status.required_stage_summary_presence_by_run_id[id][stage] = false;
+    });
+  });
+
+  if (!runIds.length) {
+    setStateValue_('LAST_EXPORT_PARITY_STATUS', JSON.stringify(status));
+    return status;
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEETS.RUN_LOG) || ensureSheet_(ss, SHEETS.RUN_LOG);
+  const values = sh.getDataRange().getValues();
+  if (!values || values.length <= 1) {
+    status.reason_code = 'export_parity_run_log_empty';
+    setStateValue_('LAST_EXPORT_PARITY_STATUS', JSON.stringify(status));
+    return status;
+  }
+
+  const header = values[0];
+  const idx = {
+    row_type: header.indexOf('row_type'),
+    run_id: header.indexOf('run_id'),
+    stage: header.indexOf('stage'),
+    stage_summaries: header.indexOf('stage_summaries'),
+  };
+
+  values.slice(1).forEach((row) => {
+    const rowRunId = String(idx.run_id >= 0 ? row[idx.run_id] : '').trim();
+    if (!rowRunId || !Object.prototype.hasOwnProperty.call(status.summary_presence_by_run_id, rowRunId)) return;
+
+    const rowType = String(idx.row_type >= 0 ? row[idx.row_type] : '').trim();
+    const stage = String(idx.stage >= 0 ? row[idx.stage] : '').trim();
+    if (rowType !== 'summary' || stage !== 'runEdgeBoard') return;
+
+    status.summary_presence_by_run_id[rowRunId] = true;
+    const stagePayload = parseLogJsonLike_(idx.stage_summaries >= 0 ? row[idx.stage_summaries] : null, null);
+    const stageSummaries = Array.isArray(stagePayload)
+      ? stagePayload
+      : ((stagePayload && Array.isArray(stagePayload.stage_summaries)) ? stagePayload.stage_summaries : []);
+
+    const stageSet = {};
+    stageSummaries.forEach((summary) => {
+      if (!summary || typeof summary !== 'object') return;
+      const stageName = String(summary.stage || '').trim();
+      if (stageName) stageSet[stageName] = true;
+    });
+
+    required.forEach((requiredStage) => {
+      status.required_stage_summary_presence_by_run_id[rowRunId][requiredStage] = !!stageSet[requiredStage];
+    });
+  });
+
+  const missingSummary = Object.keys(status.summary_presence_by_run_id).some((id) => !status.summary_presence_by_run_id[id]);
+  const missingStageSummary = Object.keys(status.required_stage_summary_presence_by_run_id).some((id) => {
+    const requiredMap = status.required_stage_summary_presence_by_run_id[id] || {};
+    return Object.keys(requiredMap).some((stage) => !requiredMap[stage]);
+  });
+
+  if (missingSummary) {
+    status.reason_code = 'export_parity_missing_run_summary';
+  } else if (missingStageSummary) {
+    status.reason_code = 'export_parity_missing_stage_summary';
+  } else {
+    status.pass = true;
+    status.parity_status = 'pass';
+    status.reason_code = 'export_parity_contract_pass';
+  }
+
+  setStateValue_('LAST_EXPORT_PARITY_STATUS', JSON.stringify(status));
+  return status;
 }
 
 function expandReasonCodeMapForLegacy_(reasonMap, schemaId, fallbackAliases) {
