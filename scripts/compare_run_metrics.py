@@ -174,7 +174,10 @@ def _player_stats_comparator(summary: Dict[str, Any]) -> Dict[str, Any]:
     if requested == 0:
         requested = resolved + max(0, _pick_int(metadata, ("unresolved_player_count", "unresolved_players_count")))
     unresolved_total = max(0, requested - resolved)
-    ta_resolved = max(0, _pick_int(metadata, ("resolved_via_ta_count", "ta_resolved_count")))
+    ta_resolved = max(
+        0,
+        _pick_int(metadata, ("resolved_via_ta_count", "ta_resolved_count", "players_found_ta")),
+    )
     provider_fallback = max(
         0,
         _pick_int(
@@ -183,10 +186,17 @@ def _player_stats_comparator(summary: Dict[str, Any]) -> Dict[str, Any]:
                 "resolved_via_provider_fallback_count",
                 "provider_fallback_resolved_count",
                 "resolved_via_source_fallback_count",
+                "players_fallback_provider",
             ),
         ),
     )
-    model_fallback = max(0, _pick_int(metadata, ("resolved_via_model_fallback_count", "model_fallback_resolved_count")))
+    model_fallback = max(
+        0,
+        _pick_int(
+            metadata,
+            ("resolved_via_model_fallback_count", "model_fallback_resolved_count", "players_fallback_model"),
+        ),
+    )
     unresolved_a = max(0, _pick_int(metadata, ("unresolved_player_a_count", "unresolved_side_a_count")))
     unresolved_b = max(0, _pick_int(metadata, ("unresolved_player_b_count", "unresolved_side_b_count")))
     top_reasons = _pick_reason_map(
