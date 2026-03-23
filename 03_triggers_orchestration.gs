@@ -665,6 +665,7 @@ function runEdgeBoard() {
       stale_odds_skip_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.stale_odds_skip) || 0),
       low_edge_suppressed_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.edge_below_threshold) || 0),
       cooldown_suppressed_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.cooldown_suppressed) || 0),
+      edge_quality_diagnostics: signalDecisionSummary && signalDecisionSummary.edge_quality ? signalDecisionSummary.edge_quality : {},
     };
     const dataNotActionableState = updateRunHealthDataNotActionableState_(runId, runHealthMetrics, config);
     const noMatchFromOddsState = updateRunHealthNoMatchFromOddsState_(runId, runHealthMetrics, config);
@@ -947,6 +948,7 @@ function runEdgeBoard() {
         status: runHealthDiagnostics.status,
         reason_code: runHealthDiagnostics.reason_code,
         diagnostics: runHealthDiagnostics.warning_payload,
+        edge_quality_diagnostics: signalDecisionSummary && signalDecisionSummary.edge_quality ? signalDecisionSummary.edge_quality : {},
       },
       productive_output_mitigation: productiveMitigation,
       productive_output_watchdog: productiveOutputState,
@@ -2078,6 +2080,9 @@ function evaluateRunHealthDiagnostics_(metrics) {
   const staleOddsSkipCount = Number(metrics && metrics.stale_odds_skip_count || 0);
   const lowEdgeSuppressedCount = Number(metrics && metrics.low_edge_suppressed_count || 0);
   const cooldownSuppressedCount = Number(metrics && metrics.cooldown_suppressed_count || 0);
+  const edgeQualityDiagnostics = metrics && metrics.edge_quality_diagnostics && typeof metrics.edge_quality_diagnostics === 'object'
+    ? Object.assign({}, metrics.edge_quality_diagnostics)
+    : {};
   const dataNotActionableStreak = Math.max(0, Number(metrics && metrics.data_not_actionable_streak || 0));
   const dataNotActionableEscalationThreshold = Math.max(2, Number(metrics && metrics.data_not_actionable_escalation_threshold || 3));
   const noMatchFromOddsStreak = Math.max(0, Number(metrics && metrics.no_match_from_odds_streak || 0));
@@ -2322,6 +2327,47 @@ function evaluateRunHealthDiagnostics_(metrics) {
     };
   }
 
+  const edgeInstabilityDetected = !!edgeQualityDiagnostics.instability_detected;
+  if (edgeInstabilityDetected) {
+    const edgeQualityPayload = Object.assign(buildRunHealthDegradedContract_({
+      reason_code: 'edge_quality_unstable',
+      odds_reason_codes: oddsReasonCodes,
+      schedule_reason_codes: scheduleReasonCodes,
+      match_reason_codes: matchReasonCodes,
+      signal_reason_codes: signalReasonCodes,
+      player_stats_reason_codes: playerStatsReasonCodes,
+      opening_lag_blocked_count: openingLagBlockedCount,
+      schedule_only_seed_count: scheduleOnlySeedCount,
+      no_odds_stage_count: noOddsStageCount,
+      stale_odds_skip_count: staleOddsSkipCount,
+      low_edge_suppressed_count: lowEdgeSuppressedCount,
+      cooldown_suppressed_count: cooldownSuppressedCount,
+      sampled_blocked_odds: sampledBlockedOdds,
+      sample_unmatched_cases: sampleUnmatchedCases,
+      edge_quality_diagnostics: edgeQualityDiagnostics,
+    }), {
+      reason_code: 'edge_quality_unstable',
+      fetched_odds: fetchedOdds,
+      fetched_schedule: fetchedSchedule,
+      matched: matched,
+      signals_found: signalsFound,
+      edge_quality_diagnostics: edgeQualityDiagnostics,
+      message: 'Edge distribution volatility breached configured stability threshold versus previous run.',
+    });
+
+    return {
+      is_degraded: true,
+      status: 'degraded',
+      reason_code: 'edge_quality_unstable',
+      degraded_reason_code: 'edge_quality_unstable',
+      summary_status: 'degraded',
+      summary_reason_code: 'edge_quality_unstable',
+      summary_message: edgeQualityPayload.message,
+      warning_payload: edgeQualityPayload,
+      should_emit_warning: true,
+    };
+  }
+
   if (!degraded) {
     return {
       is_degraded: false,
@@ -2477,6 +2523,9 @@ function buildRunHealthDegradedContract_(metrics) {
   const statsZeroCoverageCount = Number(safe.stats_zero_coverage_count || 0);
   const noMatchFromOddsStreak = Number(safe.no_match_from_odds_streak || 0);
   const noMatchFromOddsDegradedTrigger = Number(safe.no_match_from_odds_degraded_trigger || 0);
+  const edgeQualityDiagnostics = safe.edge_quality_diagnostics && typeof safe.edge_quality_diagnostics === 'object'
+    ? Object.assign({}, safe.edge_quality_diagnostics)
+    : {};
 
   const blockerCounts = {
     opening_lag_blocked_count: openingLagBlockedCount,
@@ -2491,7 +2540,7 @@ function buildRunHealthDegradedContract_(metrics) {
   };
 
   return {
-    run_health_contract_version: 2,
+    run_health_contract_version: 3,
     reason_code: sanitizeRunHealthText_(safe.reason_code, 72),
     blocker_counts: blockerCounts,
     opening_lag_blocked_count: openingLagBlockedCount,
@@ -2534,6 +2583,7 @@ function buildRunHealthDegradedContract_(metrics) {
       }
     ),
     sampled_blocked_records: sampledBlockedRecords,
+    edge_quality_diagnostics: edgeQualityDiagnostics,
     sampled_blocked_odds: sampledBlockedRecords,
     sample_unmatched_events: (safe.sample_unmatched_cases || []).slice(0, 5).map(function (entry) {
       return {

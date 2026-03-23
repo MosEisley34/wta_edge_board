@@ -1,0 +1,50 @@
+[
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-baseline",
+    "signal_decision_summary": {
+      "suppression_counts": {
+        "edge": {"by_reason": {"edge_below_threshold": 2}},
+        "cooldown": {"by_reason": {"cooldown_suppressed": 1}}
+      },
+      "edge_quality": {
+        "edge_volatility_vs_previous_run": {
+          "abs_delta_p95": 0.01
+        }
+      }
+    },
+    "stage_summaries": [
+      {
+        "stage": "stageFetchPlayerStats",
+        "reason_metadata": {
+          "coverage": {"resolved_rate": 0.75}
+        }
+      }
+    ]
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-candidate",
+    "signal_decision_summary": {
+      "suppression_counts": {
+        "edge": {"by_reason": {"edge_below_threshold": 7}},
+        "cooldown": {"by_reason": {"cooldown_suppressed": 1}}
+      },
+      "edge_quality": {
+        "edge_volatility_vs_previous_run": {
+          "abs_delta_p95": 0.08
+        }
+      }
+    },
+    "stage_summaries": [
+      {
+        "stage": "stageFetchPlayerStats",
+        "reason_metadata": {
+          "coverage": {"resolved_rate": 0.45}
+        }
+      }
+    ]
+  }
+]

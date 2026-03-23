@@ -9,6 +9,7 @@ Usage:
 Standard triage bundle flow:
   1) Export Run_Log/State CSV/JSON artifacts into ./exports (default)
   2) Run runtime diagnostics scan against the export directory
+  3) Evaluate edge-quality stability/robustness gate
 
 Examples:
   scripts/run_triage_bundle.sh ./runtime
@@ -47,10 +48,15 @@ if [[ "${#inputs[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-echo "[1/2] Preparing Run_Log/State exports in ${out_dir}"
+echo "[1/3] Preparing Run_Log/State exports in ${out_dir}"
 scripts/prepare_runtime_exports.sh --out-dir "$out_dir" "${inputs[@]}"
 
 echo
-echo "[2/2] Scanning runtime diagnostics from ${out_dir}"
+echo "[2/3] Scanning runtime diagnostics from ${out_dir}"
 echo "[triage] First pass: prioritize the Run-health degraded contract section."
 scripts/scan_runtime_diagnostics.sh "$out_dir"
+
+
+echo
+echo "[3/3] Evaluating edge-quality gate from ${out_dir}"
+python3 scripts/evaluate_edge_quality.py "${out_dir}"
