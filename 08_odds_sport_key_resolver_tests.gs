@@ -8721,3 +8721,430 @@ function testAppendStageLog_clonesReasonCodeMapAcrossEmitters_() {
     appendLogRow_ = originalAppend;
   }
 }
+
+function testGetCreditAwareRuntimeConfig_softModeEntryAndExit_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const state = {
+    ODDS_API_CREDIT_SNAPSHOT: JSON.stringify({
+      header_present: true,
+      remaining: 15,
+      remaining_is_numeric: true,
+    }),
+  };
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+
+  try {
+    const config = {
+      ODDS_MIN_CREDITS_SOFT_LIMIT: 25,
+      ODDS_MIN_CREDITS_HARD_LIMIT: 5,
+      ODDS_WINDOW_CACHE_TTL_MIN: 5,
+      ODDS_WINDOW_REFRESH_MIN: 6,
+      ODDS_REFRESH_TIER_LOW_INTERVAL_MIN: 20,
+      ODDS_REFRESH_TIER_MED_INTERVAL_MIN: 10,
+      ODDS_REFRESH_TIER_HIGH_INTERVAL_MIN: 5,
+      MATCH_FALLBACK_EXPANSION_MIN: 120,
+    };
+
+    const softRuntime = getCreditAwareRuntimeConfig_(config);
+    assertEquals_('soft', softRuntime.mode);
+    assertEquals_(10, Number(softRuntime.odds_window_cache_ttl_min || 0));
+    assertEquals_(12, Number(softRuntime.odds_window_refresh_min || 0));
+    assertEquals_(40, Number(softRuntime.odds_refresh_tier_low_interval_min || 0));
+    assertEquals_(0, Number(softRuntime.match_fallback_expansion_min || 0));
+    assertEquals_(false, !!softRuntime.schedule_refresh_non_critical_enabled);
+
+    state.ODDS_API_CREDIT_SNAPSHOT = JSON.stringify({
+      header_present: true,
+      remaining: 120,
+      remaining_is_numeric: true,
+    });
+
+    const normalRuntime = getCreditAwareRuntimeConfig_(config);
+    assertEquals_('normal', normalRuntime.mode);
+    assertEquals_(5, Number(normalRuntime.odds_window_cache_ttl_min || 0));
+    assertEquals_(6, Number(normalRuntime.odds_window_refresh_min || 0));
+    assertEquals_(120, Number(normalRuntime.match_fallback_expansion_min || 0));
+    assertEquals_(true, !!normalRuntime.schedule_refresh_non_critical_enabled);
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+  }
+}
+
+function testResolveOddsWindowForPipeline_hardCreditSkipsOddsRefresh_() {
+  const originalFetchScheduleFromOddsApi = fetchScheduleFromOddsApi_;
+  const originalUpdateCreditStateFromHeaders = updateCreditStateFromHeaders_;
+  const originalGetCachedPayload = getCachedPayload_;
+  const originalGetStateJson = getStateJson_;
+  const originalGetCreditAwareRuntimeConfig = getCreditAwareRuntimeConfig_;
+
+  fetchScheduleFromOddsApi_ = function () {
+    return {
+      events: [{
+        event_id: 'sched_hard_credit',
+        competition: 'WTA 500',
+        start_time: new Date('2025-03-01T04:00:00.000Z'),
+      }],
+      reason_code: 'schedule_api_success',
+      api_credit_usage: 1,
+      api_call_count: 1,
+      credit_headers: { requests_remaining: '4' },
+    };
+  };
+  updateCreditStateFromHeaders_ = function () {};
+  getCachedPayload_ = function () { return { events: [] }; };
+  getStateJson_ = function () { return null; };
+  getCreditAwareRuntimeConfig_ = function () {
+    return {
+      mode: 'hard',
+      snapshot: { limit_enforced: true, remaining_is_numeric: true },
+      odds_refresh_tier_low_upper_min: 240,
+      odds_refresh_tier_med_upper_min: 180,
+      odds_refresh_tier_high_upper_min: 90,
+      odds_refresh_tier_low_interval_min: 20,
+      odds_refresh_tier_med_interval_min: 10,
+      odds_refresh_tier_high_interval_min: 5,
+    };
+  };
+
+  try {
+    const decision = resolveOddsWindowForPipeline_({
+      LOOKAHEAD_HOURS: 36,
+      ODDS_WINDOW_PRE_FIRST_MIN: 120,
+      ODDS_WINDOW_POST_LAST_MIN: 60,
+      ODDS_NO_GAMES_BEHAVIOR: 'SKIP',
+    }, Date.parse('2025-03-01T00:00:00.000Z'));
+
+    assertEquals_(false, decision.should_fetch_odds);
+    assertEquals_('credit_hard_limit_skip_odds', decision.decision_reason_code);
+    assertEquals_('credit_hard_limit_skip', decision.current_refresh_mode);
+    assertEquals_('hard', decision.runtime_credit_mode);
+  } finally {
+    fetchScheduleFromOddsApi_ = originalFetchScheduleFromOddsApi;
+    updateCreditStateFromHeaders_ = originalUpdateCreditStateFromHeaders;
+    getCachedPayload_ = originalGetCachedPayload;
+    getStateJson_ = originalGetStateJson;
+    getCreditAwareRuntimeConfig_ = originalGetCreditAwareRuntimeConfig;
+  }
+}
+
+function testStageFetchOdds_staleFallbackScenarioTransitionWithBypassToggle_() {
+  const withoutBypass = runStageFetchOddsStaleFallbackFixtureScenario_({
+    name: 'transition_without_bypass',
+    stalePayload: {
+      cached_at_ms: Date.parse('2025-01-01T00:00:00.000Z'),
+      event_count: 1,
+      has_games: true,
+      events: [{ event_id: 'evt_stale_transition', commence_time: '2025-01-01T02:00:00.000Z' }],
+    },
+    bypassStaleFallback: false,
+  });
+  const withBypass = runStageFetchOddsStaleFallbackFixtureScenario_({
+    name: 'transition_with_bypass',
+    stalePayload: {
+      cached_at_ms: Date.parse('2025-01-01T00:00:00.000Z'),
+      event_count: 1,
+      has_games: true,
+      events: [{ event_id: 'evt_stale_transition', commence_time: '2025-01-01T02:00:00.000Z' }],
+    },
+    bypassStaleFallback: true,
+  });
+
+  assertEquals_('cached_stale_fallback', withoutBypass.selected_source);
+  assertEquals_('odds_stale_fallback', withoutBypass.reason_code);
+  assertEquals_('fresh_api', withBypass.selected_source);
+  assertEquals_('odds_api_failure_no_stale_fallback', withBypass.reason_code);
+  assertEquals_(1, Number(withBypass.summary.reason_codes.stale_fallback_bypassed || 0));
+}
+
+function testStageMatchEvents_matcherPrecheckScenarios_areDeterministic_() {
+  const missingIdentityStage = stageMatchEvents('run_matcher_missing_identity', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+    MATCHER_PLAYER_IDENTITY_MISSING_RATE_BLOCK_THRESHOLD: 0.5,
+    MATCHER_PLAYER_IDENTITY_MISSING_MIN_ROWS: 2,
+  }, [{
+    event_id: 'odds_precheck_1',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player One',
+    player_2: 'Player Two',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }], [{
+    event_id: 'sched_precheck_1',
+    canonical_tier: 'WTA_500',
+    player_1: '',
+    player_2: '',
+    matcher_player_1_raw: '',
+    matcher_player_2_raw: '',
+    matcher_player_1_canonical: '',
+    matcher_player_2_canonical: '',
+    start_time: new Date('2025-03-01T12:05:00.000Z'),
+  }, {
+    event_id: 'sched_precheck_2',
+    canonical_tier: 'WTA_500',
+    player_1: '',
+    player_2: '',
+    matcher_player_1_raw: '',
+    matcher_player_2_raw: '',
+    matcher_player_1_canonical: '',
+    matcher_player_2_canonical: '',
+    start_time: new Date('2025-03-01T14:05:00.000Z'),
+  }]);
+
+  const misalignedStage = stageMatchEvents('run_matcher_misaligned', {
+    MATCH_TIME_TOLERANCE_MIN: 45,
+    MATCH_FALLBACK_EXPANSION_MIN: 120,
+    MATCH_SCHEDULE_DATE_ALIGNMENT_BUFFER_MIN: 120,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, [{
+    event_id: 'odds_precheck_2',
+    competition: 'WTA 500 Doha',
+    player_1: 'Player Three',
+    player_2: 'Player Four',
+    commence_time: new Date('2025-03-05T12:00:00.000Z'),
+  }], [{
+    event_id: 'sched_precheck_3',
+    canonical_tier: 'WTA_500',
+    player_1: 'Player Three',
+    player_2: 'Player Four',
+    start_time: new Date('2025-03-01T09:00:00.000Z'),
+  }]);
+
+  assertEquals_(1, Number(missingIdentityStage.summary.reason_codes.schedule_missing_player_identity || 0));
+  assertEquals_('schedule_missing_player_identity', String((missingIdentityStage.summary.reason_metadata || {}).matcher_precheck_reason || ''));
+  assertEquals_(1, Number(misalignedStage.summary.reason_codes.schedule_date_misaligned_with_odds || 0));
+  assertEquals_('schedule_date_misaligned_with_odds', String((misalignedStage.summary.reason_metadata || {}).matcher_precheck_reason || ''));
+}
+
+function testPostDiscordWebhook_retriesHttpFailureAndCapturesOutcome_() {
+  const originalFetch = UrlFetchApp.fetch;
+  let callCount = 0;
+
+  UrlFetchApp.fetch = function () {
+    callCount += 1;
+    if (callCount === 1) {
+      return {
+        getResponseCode: function () { return 500; },
+        getContentText: function () { return 'upstream down'; },
+      };
+    }
+    return {
+      getResponseCode: function () { return 204; },
+      getContentText: function () { return ''; },
+    };
+  };
+
+  try {
+    const result = postDiscordWebhook_('https://discord.example/webhook', { content: 'hello' }, false, 2);
+    assertEquals_('sent', result.outcome);
+    assertEquals_(2, Number(result.attempt_count || 0));
+    assertEquals_(1, Number(result.retry_count || 0));
+    assertEquals_(204, Number(result.http_status || 0));
+    assertEquals_(2, callCount);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
+function testPostDiscordWebhook_exhaustsRetriesOnFailure_() {
+  const originalFetch = UrlFetchApp.fetch;
+  let callCount = 0;
+
+  UrlFetchApp.fetch = function () {
+    callCount += 1;
+    throw new Error('network down');
+  };
+
+  try {
+    const result = postDiscordWebhook_('https://discord.example/webhook', { content: 'hello' }, false, 2);
+    assertEquals_('notify_http_failed', result.outcome);
+    assertEquals_(3, Number(result.attempt_count || 0));
+    assertEquals_(2, Number(result.retry_count || 0));
+    assertContains_(String(result.response_body_preview || ''), 'network down');
+    assertEquals_(3, callCount);
+  } finally {
+    UrlFetchApp.fetch = originalFetch;
+  }
+}
+
+function testMaybeNotifyCreditBurnRate_riskOnlyWarningPath_deliversAndPersistsDayKey_() {
+  const originalGetStateJson = getStateJson_;
+  const originalSetStateValue = setStateValue_;
+  const originalPostDiscordWebhook = postDiscordWebhook_;
+  const state = {};
+  let webhookPayload = null;
+
+  getStateJson_ = function (key) {
+    return JSON.parse(state[key] || '{}');
+  };
+  setStateValue_ = function (key, value) {
+    state[key] = value;
+  };
+  postDiscordWebhook_ = function (url, payload, testMode, maxRetries) {
+    webhookPayload = { url: url, payload: payload, test_mode: testMode, max_retries: maxRetries };
+    return {
+      outcome: 'sent',
+      transport: 'discord_webhook',
+      http_status: 204,
+      test_mode: false,
+      retry_count: 1,
+      attempt_count: 2,
+    };
+  };
+
+  try {
+    const result = maybeNotifyCreditBurnRate_({
+      ODDS_BURN_RATE_NOTIFY_ENABLED: true,
+      NOTIFY_ENABLED: true,
+      DISCORD_WEBHOOK: 'https://discord.example/webhook',
+      NOTIFY_WEBHOOK_MAX_RETRIES: 2,
+    }, 'run_credit_warn', {
+      warning_lt_7d: true,
+      observed_at_utc: '2025-03-01T07:10:00.000Z',
+      projected_days_remaining: 1.9,
+      calls_per_day_rolling: 130,
+      credits_remaining: 250,
+    });
+
+    assertEquals_(true, result.notify_attempted);
+    assertEquals_('sent', result.outcome);
+    assertEquals_('2025-03-01', result.day_key_utc);
+    assertContains_(String((webhookPayload.payload || {}).content || ''), 'Burn Rate Warning');
+    const notifyState = JSON.parse(state.ODDS_API_BURN_RATE_NOTIFY_STATE || '{}');
+    assertEquals_('2025-03-01', String(notifyState.last_notify_day_utc || ''));
+  } finally {
+    getStateJson_ = originalGetStateJson;
+    setStateValue_ = originalSetStateValue;
+    postDiscordWebhook_ = originalPostDiscordWebhook;
+  }
+}
+
+function testStageGenerateSignals_nonTradableSuppression_isAuditableInSummary_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalAppendLogRow = appendLogRow_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const state = {};
+  const nowMs = Date.parse('2026-01-01T00:10:00.000Z');
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { state[key] = value; };
+  appendLogRow_ = function () {};
+  localAndUtcTimestamps_ = function () {
+    return { local: '2026-01-01T00:10:00-07:00', utc: '2026-01-01T07:10:00.000Z' };
+  };
+
+  try {
+    const result = stageGenerateSignals('run_non_tradable_audit', {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      MAX_CURRENT_VS_OPEN_LINE_DELTA: 0.01,
+      MAX_MINUTES_SINCE_OPEN_SNAPSHOT: 1000,
+      MIN_BOOK_COUNT: 0,
+      MIN_LIQUIDITY: 0,
+      NOTIFY_ENABLED: true,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: 'https://discord.example/webhook',
+    }, [{
+      event_id: 'evt_non_tradable_audit',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 130,
+      open_price: 220,
+      commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+      open_timestamp_epoch_ms: nowMs - (10 * 60 * 1000),
+    }], [{
+      odds_event_id: 'evt_non_tradable_audit',
+      schedule_event_id: 'sched_non_tradable_audit',
+      competition_tier: 'WTA_500',
+    }], {
+      evt_non_tradable_audit: {
+        player_a: { has_stats: true, features: { ranking: 5, recent_form: 0.7, surface_win_rate: 0.68, hold_pct: 0.72, break_pct: 0.4 } },
+        player_b: { has_stats: true, features: { ranking: 35, recent_form: 0.43, surface_win_rate: 0.49, hold_pct: 0.59, break_pct: 0.27 } },
+      },
+    });
+
+    const decisionSummary = JSON.parse(state.LAST_SIGNAL_DECISION_SUMMARY || '{}');
+    assertEquals_(1, Number((decisionSummary.suppression_counts || {}).risk_guard.total || 0));
+    assertEquals_(1, Number((((decisionSummary.suppression_counts || {}).risk_guard || {}).by_reason || {}).line_drift_exceeded || 0));
+    assertEquals_('line_drift_exceeded', String((((decisionSummary.sampled_top_suppressions || [])[0]) || {}).reason_code || ''));
+    assertEquals_('line_drift_exceeded', String(result.rows[0].notification_outcome || ''));
+    assertEquals_(true, !!(result.rows[0].notification_metadata && result.rows[0].notification_metadata.non_tradable));
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    appendLogRow_ = originalAppendLogRow;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testRunEdgeBoard_runHealthReasonCodes_consistentAcrossStageSummariesAndFinalSummary_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_consistency_1' }],
+      oddsRows: [{ key: 'odds_consistency_1|book|h2h|p1' }],
+      oddsReasonCodes: { odds_actionable: 1 },
+      scheduleEvents: [{ event_id: 'sched_consistency_1' }],
+      scheduleRows: [{ event_id: 'sched_consistency_1' }],
+      scheduleReasonCodes: { schedule_api_success: 1 },
+      matchRows: [{ odds_event_id: 'odds_consistency_1', schedule_event_id: 'sched_consistency_1' }],
+      matchedCount: 1,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten: 0,
+      matchReasonCodes: { primary_match: 1, matched_count: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoard();
+    const verbose = JSON.parse(harness.stateWrites.LAST_RUN_VERBOSE_JSON || '{}');
+    const stageSummaries = verbose.stage_summaries || [];
+    const finalReasonCodes = verbose.reason_codes || {};
+    const stageMerged = stageSummaries.reduce(function (acc, summary) {
+      const reasonCodes = (summary && summary.reason_codes) || {};
+      Object.keys(reasonCodes).forEach(function (key) {
+        acc[key] = Number(acc[key] || 0) + Number(reasonCodes[key] || 0);
+      });
+      return acc;
+    }, {});
+
+    assertEquals_(Number(stageMerged.odds_actionable || 0), Number(finalReasonCodes.odds_actionable || 0));
+    assertEquals_(Number(stageMerged.schedule_api_success || 0), Number(finalReasonCodes.schedule_api_success || 0));
+    assertEquals_(Number(stageMerged.primary_match || 0), Number(finalReasonCodes.primary_match || 0));
+    assertEquals_(Number(stageMerged.matched_count || 0), Number(finalReasonCodes.matched_count || 0));
+  } finally {
+    harness.restore();
+  }
+}

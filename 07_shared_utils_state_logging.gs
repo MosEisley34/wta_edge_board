@@ -937,7 +937,12 @@ function maybeNotifyCreditBurnRate_(config, runId, burnRateSummary) {
     '🔥 Rolling burn rate: **' + (Number.isFinite(rollingCallsPerDay) ? roundNumber_(rollingCallsPerDay, 2) + ' calls/day' : 'unknown') + '**',
     '💳 Credits remaining: **' + (Number.isFinite(creditsRemaining) ? roundNumber_(creditsRemaining, 0) : 'unknown') + '**',
   ].join('\n');
-  const notifyResult = postDiscordWebhook_(config.DISCORD_WEBHOOK, { content: message }, !!config.NOTIFY_TEST_MODE);
+  const notifyResult = postDiscordWebhook_(
+    config.DISCORD_WEBHOOK,
+    { content: message },
+    !!config.NOTIFY_TEST_MODE,
+    Number(config.NOTIFY_WEBHOOK_MAX_RETRIES || 0)
+  );
   const outcome = String(notifyResult && notifyResult.outcome || 'notify_http_failed');
   if (outcome === 'sent') {
     setStateValue_('ODDS_API_BURN_RATE_NOTIFY_STATE', JSON.stringify({
