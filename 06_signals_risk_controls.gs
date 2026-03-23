@@ -1154,6 +1154,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     }
   }
 
+  const previousSignalDecisionSummary = getStateJson_('LAST_SIGNAL_DECISION_SUMMARY') || {};
   const signalDecisionSummary = buildSignalDecisionRunSummary_({
     run_id: runId,
     input_count: oddsEvents.length,
@@ -1162,6 +1163,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     sent_count: Number(reasonCounts.sent || 0),
     reason_counts: reasonCounts,
     sampled_decisions: sampledDecisions,
+    signal_rows: rows,
+    previous_summary: previousSignalDecisionSummary,
+    config: config || {},
   });
   setStateValue_('LAST_SIGNAL_DECISION_SUMMARY', JSON.stringify(signalDecisionSummary));
 
@@ -1198,11 +1202,17 @@ function buildSignalDecisionRunSummary_(payload) {
   const safe = payload || {};
   const reasonCounts = Object.assign({}, safe.reason_counts || {});
   const sampledDecisions = Array.isArray(safe.sampled_decisions) ? safe.sampled_decisions : [];
+  const signalRows = Array.isArray(safe.signal_rows) ? safe.signal_rows : [];
+  const previousSummary = safe.previous_summary && typeof safe.previous_summary === 'object'
+    ? safe.previous_summary
+    : {};
+  const config = safe.config && typeof safe.config === 'object' ? safe.config : {};
   const suppressionReasonGroups = {
     cooldown: ['cooldown_suppressed'],
     edge: ['edge_below_threshold'],
     stale: ['stale_odds_skip'],
     timing: ['too_close_to_start_skip'],
+    risk_guard: ['line_drift_exceeded', 'edge_decay_exceeded', 'liquidity_too_low'],
     config: ['notify_disabled', 'notify_missing_config'],
   };
 
@@ -1227,7 +1237,7 @@ function buildSignalDecisionRunSummary_(payload) {
       return { reason_code: reasonCode, count: Number(reasonCounts[reasonCode] || 0) };
     })
     .filter(function (entry) {
-      return entry.count > 0 && /(?:_suppressed|_skip$|edge_below_threshold|notify_missing_config|notify_disabled)/.test(entry.reason_code);
+      return entry.count > 0 && /(?:_suppressed|_skip$|edge_below_threshold|notify_missing_config|notify_disabled|line_drift_exceeded|edge_decay_exceeded|liquidity_too_low)/.test(entry.reason_code);
     })
     .sort(function (a, b) { return b.count - a.count; })
     .slice(0, 3);
@@ -1253,6 +1263,72 @@ function buildSignalDecisionRunSummary_(payload) {
     };
   });
 
+  const edgeValues = signalRows
+    .map(function (row) { return Number(row && row.edge_value); })
+    .filter(function (value) { return Number.isFinite(value); })
+    .sort(function (a, b) { return a - b; });
+  const edgeCount = edgeValues.length;
+  const edgeP50 = percentileFromSortedValues_(edgeValues, 0.5);
+  const edgeP90 = percentileFromSortedValues_(edgeValues, 0.9);
+  const edgeP95 = percentileFromSortedValues_(edgeValues, 0.95);
+  const edgeMean = edgeCount > 0
+    ? roundNumber_(edgeValues.reduce(function (sum, value) { return sum + value; }, 0) / edgeCount, 4)
+    : null;
+  const edgeDistribution = {
+    count: edgeCount,
+    min: edgeCount > 0 ? roundNumber_(edgeValues[0], 4) : null,
+    p50: edgeP50,
+    p90: edgeP90,
+    p95: edgeP95,
+    max: edgeCount > 0 ? roundNumber_(edgeValues[edgeCount - 1], 4) : null,
+    mean: edgeMean,
+  };
+
+  const previousEdgeQuality = previousSummary && previousSummary.edge_quality ? previousSummary.edge_quality : {};
+  const previousEdgeDistribution = previousEdgeQuality && previousEdgeQuality.edge_distribution
+    ? previousEdgeQuality.edge_distribution
+    : {};
+  const previousP50 = Number(previousEdgeDistribution.p50);
+  const previousP95 = Number(previousEdgeDistribution.p95);
+  const previousMean = Number(previousEdgeDistribution.mean);
+  const volatility = {
+    baseline_run_id: String(previousSummary.run_id || ''),
+    delta_p50: Number.isFinite(previousP50) && Number.isFinite(edgeP50)
+      ? roundNumber_(edgeP50 - previousP50, 4)
+      : null,
+    delta_p95: Number.isFinite(previousP95) && Number.isFinite(edgeP95)
+      ? roundNumber_(edgeP95 - previousP95, 4)
+      : null,
+    delta_mean: Number.isFinite(previousMean) && Number.isFinite(edgeMean)
+      ? roundNumber_(edgeMean - previousMean, 4)
+      : null,
+    abs_delta_p95: Number.isFinite(previousP95) && Number.isFinite(edgeP95)
+      ? roundNumber_(Math.abs(edgeP95 - previousP95), 4)
+      : null,
+    abs_delta_mean: Number.isFinite(previousMean) && Number.isFinite(edgeMean)
+      ? roundNumber_(Math.abs(edgeMean - previousMean), 4)
+      : null,
+  };
+
+  const decisionGateReasonCounts = Object.keys(reasonCounts)
+    .filter(function (reasonCode) {
+      return Number(reasonCounts[reasonCode] || 0) > 0
+        && reasonCode !== 'sent'
+        && reasonCode !== 'full_confidence_stats_scored'
+        && reasonCode !== 'low_confidence_stats_scored'
+        && reasonCode !== 'null_features_low_confidence_scored'
+        && reasonCode !== 'null_features_fallback_scored';
+    })
+    .sort(function (a, b) { return Number(reasonCounts[b] || 0) - Number(reasonCounts[a] || 0); })
+    .reduce(function (acc, reasonCode) {
+      acc[reasonCode] = Number(reasonCounts[reasonCode] || 0);
+      return acc;
+    }, {});
+
+  const volatilityThreshold = Number(config.EDGE_VOLATILITY_ALERT_THRESHOLD || 0.03);
+  const instabilityDetected = Number.isFinite(volatility.abs_delta_p95)
+    && volatility.abs_delta_p95 > volatilityThreshold;
+
   const sentCount = Number(safe.sent_count || 0);
   const scoredCount = Number(safe.scored_count || 0);
 
@@ -1264,6 +1340,13 @@ function buildSignalDecisionRunSummary_(payload) {
     sent_count: sentCount,
     suppression_counts: suppressionSummary,
     sampled_top_suppressions: sampledSuppressionExamples,
+    edge_quality: {
+      edge_distribution: edgeDistribution,
+      edge_volatility_vs_previous_run: volatility,
+      decision_gate_reason_counts: decisionGateReasonCounts,
+      instability_detected: instabilityDetected,
+      instability_threshold: volatilityThreshold,
+    },
     alignment_checks: {
       sent_matches_reason_counts: sentCount === Number(reasonCounts.sent || 0),
       cooldown_matches_reason_counts: Number((suppressionSummary.cooldown && suppressionSummary.cooldown.by_reason && suppressionSummary.cooldown.by_reason.cooldown_suppressed) || 0) === Number(reasonCounts.cooldown_suppressed || 0),
@@ -1274,6 +1357,23 @@ function buildSignalDecisionRunSummary_(payload) {
       scored_not_less_than_sent: scoredCount >= sentCount,
     },
   };
+}
+
+function percentileFromSortedValues_(values, quantile) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const q = Number(quantile);
+  if (!Number.isFinite(q)) return null;
+  if (q <= 0) return roundNumber_(Number(values[0]), 4);
+  if (q >= 1) return roundNumber_(Number(values[values.length - 1]), 4);
+  const position = (values.length - 1) * q;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return roundNumber_(Number(values[lower]), 4);
+  const lowerValue = Number(values[lower]);
+  const upperValue = Number(values[upper]);
+  if (!Number.isFinite(lowerValue) || !Number.isFinite(upperValue)) return null;
+  const interpolated = lowerValue + (upperValue - lowerValue) * (position - lower);
+  return roundNumber_(interpolated, 4);
 }
 
 function evaluatePreActionRiskGuard_(event, config, nowMs) {
