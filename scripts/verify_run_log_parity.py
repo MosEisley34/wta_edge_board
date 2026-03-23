@@ -15,6 +15,13 @@ from typing import Any
 
 
 TIMESTAMP_KEYS = ("ts", "timestamp", "started_at", "time", "created_at")
+REQUIRED_STAGE_SUMMARIES = ("stageFetchPlayerStats",)
+GS_PARITY_METADATA_KEYS = (
+    "gs_export_parity_contract",
+    "export_parity_contract",
+    "parity_contract",
+    "gs_native_parity",
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +33,7 @@ class BatchView:
     window_end_iso: str
     summary_presence: dict[str, bool]
     required_stage_presence: dict[str, dict[str, bool]]
+    gs_parity_metadata_by_run_id: dict[str, dict[str, Any]]
 
 
 class ParityError(RuntimeError):
@@ -113,6 +121,39 @@ def _extract_stage_summaries(row: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _extract_gs_native_parity_metadata(row: dict[str, Any]) -> dict[str, Any] | None:
+    stage_payload = _parse_json_like(row.get("stage_summaries"))
+    if isinstance(stage_payload, dict):
+        for key in GS_PARITY_METADATA_KEYS:
+            candidate = stage_payload.get(key)
+            if isinstance(candidate, dict):
+                return candidate
+    message_payload = _parse_json_like(row.get("message"))
+    if isinstance(message_payload, dict):
+        for key in GS_PARITY_METADATA_KEYS:
+            candidate = message_payload.get(key)
+            if isinstance(candidate, dict):
+                return candidate
+    return None
+
+
+def _metadata_claims_pass(metadata: dict[str, Any]) -> bool:
+    parity_status = str(metadata.get("parity_status") or "").strip().lower()
+    reason_code = str(metadata.get("reason_code") or "").strip().lower()
+    if parity_status == "pass":
+        return True
+    if metadata.get("pass") is True:
+        return True
+    return reason_code in {"export_parity_contract_pass", "export_parity_contract_pass_precheck"}
+
+
+def _metadata_latest_run_ids(metadata: dict[str, Any]) -> set[str]:
+    values = metadata.get("latest_run_ids")
+    if not isinstance(values, list):
+        return set()
+    return {str(v).strip() for v in values if str(v).strip()}
+
+
 def _build_batch_view(source: str, rows: list[dict[str, Any]]) -> BatchView:
     timestamped_rows: list[tuple[dt.datetime, dict[str, Any]]] = []
     for row in rows:
@@ -146,9 +187,11 @@ def _build_batch_view(source: str, rows: list[dict[str, Any]]) -> BatchView:
 
     summary_presence = {run_id: False for run_id in sorted(latest_run_ids)}
     required_stage_presence = {
-        run_id: {"stageFetchPlayerStats": False}
+        run_id: {stage: False for stage in REQUIRED_STAGE_SUMMARIES}
         for run_id in sorted(latest_run_ids)
     }
+    gs_parity_metadata_by_run_id: dict[str, dict[str, Any]] = {}
+
     for _, row in batch_rows:
         run_id = str(row.get("run_id") or "").strip()
         stage = str(row.get("stage") or "").strip()
@@ -159,6 +202,9 @@ def _build_batch_view(source: str, rows: list[dict[str, Any]]) -> BatchView:
                 stage_name = str(stage_summary.get("stage") or "").strip()
                 if stage_name in required_stage_presence[run_id]:
                     required_stage_presence[run_id][stage_name] = True
+            metadata = _extract_gs_native_parity_metadata(row)
+            if isinstance(metadata, dict):
+                gs_parity_metadata_by_run_id[run_id] = metadata
 
     return BatchView(
         source=source,
@@ -168,7 +214,59 @@ def _build_batch_view(source: str, rows: list[dict[str, Any]]) -> BatchView:
         window_end_iso=end_ts.isoformat(),
         summary_presence=summary_presence,
         required_stage_presence=required_stage_presence,
+        gs_parity_metadata_by_run_id=gs_parity_metadata_by_run_id,
     )
+
+
+def _validate_metadata_contract(batch: BatchView, errors: list[str]) -> None:
+    for run_id, metadata in batch.gs_parity_metadata_by_run_id.items():
+        if not isinstance(metadata.get("summary_presence_by_run_id"), dict):
+            errors.append(
+                f"{batch.source} GS parity metadata missing summary_presence_by_run_id for run_id={run_id}"
+            )
+            continue
+        if not isinstance(metadata.get("required_stage_summary_presence_by_run_id"), dict):
+            errors.append(
+                f"{batch.source} GS parity metadata missing required_stage_summary_presence_by_run_id for run_id={run_id}"
+            )
+            continue
+
+        if not _metadata_claims_pass(metadata):
+            continue
+
+        metadata_run_ids = _metadata_latest_run_ids(metadata)
+        if metadata_run_ids and run_id not in metadata_run_ids:
+            errors.append(
+                f"{batch.source} GS parity metadata claims pass but excludes run_id={run_id} in latest_run_ids={sorted(metadata_run_ids)}"
+            )
+
+        summary_map = metadata.get("summary_presence_by_run_id") or {}
+        stage_map_root = metadata.get("required_stage_summary_presence_by_run_id") or {}
+        if bool(summary_map.get(run_id)) is not True:
+            errors.append(
+                f"{batch.source} GS parity metadata claims pass but summary_presence_by_run_id[{run_id}] is not true"
+            )
+        if bool(batch.summary_presence.get(run_id)) is not True:
+            errors.append(
+                f"{batch.source} GS parity metadata claims pass but run log summary row is missing for run_id={run_id}"
+            )
+
+        metadata_stage_map = stage_map_root.get(run_id)
+        if not isinstance(metadata_stage_map, dict):
+            errors.append(
+                f"{batch.source} GS parity metadata claims pass but stage presence map missing for run_id={run_id}"
+            )
+            continue
+
+        for stage_name in REQUIRED_STAGE_SUMMARIES:
+            if bool(metadata_stage_map.get(stage_name)) is not True:
+                errors.append(
+                    f"{batch.source} GS parity metadata claims pass but required stage {stage_name} is false for run_id={run_id}"
+                )
+            if bool((batch.required_stage_presence.get(run_id) or {}).get(stage_name)) is not True:
+                errors.append(
+                    f"{batch.source} GS parity metadata claims pass but file rows missing required stage {stage_name} for run_id={run_id}"
+                )
 
 
 def verify_run_log_parity(export_dir: str) -> None:
@@ -243,6 +341,17 @@ def verify_run_log_parity(export_dir: str) -> None:
             "missing required stage summaries in Run_Log.csv latest batch: "
             f"{missing_stage_summaries_csv}"
         )
+
+    metadata_run_ids_json = set(json_batch.gs_parity_metadata_by_run_id.keys())
+    metadata_run_ids_csv = set(csv_batch.gs_parity_metadata_by_run_id.keys())
+    if metadata_run_ids_json != metadata_run_ids_csv:
+        errors.append(
+            "GS parity metadata presence mismatch for latest batch run_id(s): "
+            f"json={sorted(metadata_run_ids_json)} csv={sorted(metadata_run_ids_csv)}"
+        )
+
+    _validate_metadata_contract(json_batch, errors)
+    _validate_metadata_contract(csv_batch, errors)
 
     if errors:
         joined = "\n - ".join(errors)
