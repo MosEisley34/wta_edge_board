@@ -1,0 +1,34 @@
+{
+  "aggregate_status_counts": {
+    "fail": 0,
+    "insufficient_sample": 0,
+    "pass": 0
+  },
+  "as_of_utc": "2026-03-11T23:59:59+00:00",
+  "decisionable_window_count": 0,
+  "fail_rate_threshold": 0.15,
+  "failing_decisionable_window_count": 0,
+  "gate_reason": "no_decisionable_windows",
+  "gate_verdict": "insufficient_sample",
+  "generated_at_utc": "2026-03-24T20:56:44.749070+00:00",
+  "min_pairs_per_window": 10,
+  "schema": "edge_quality_daily_slo_v1",
+  "window_reports": [
+    {
+      "decisionable": false,
+      "fail_rate": null,
+      "fail_rate_threshold": 0.15,
+      "min_ended_at": "2026-03-04T23:59:59+00:00",
+      "pair_count": 0,
+      "pairs": [],
+      "run_count": 1,
+      "status_counts": {
+        "fail": 0,
+        "insufficient_sample": 0,
+        "pass": 0
+      },
+      "verdict": "insufficient_sample",
+      "window_days": 7
+    }
+  ]
+}
