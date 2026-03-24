@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/run_triage_bundle.sh [--out-dir <dir>] <file-or-directory> [more paths...]
+  scripts/run_triage_bundle.sh [--out-dir <dir>] [--rolling-report-out <json>] <file-or-directory> [more paths...]
 
 Standard triage bundle flow:
   1) Export Run_Log/State CSV/JSON artifacts into ./exports (default)
@@ -14,10 +14,12 @@ Standard triage bundle flow:
 Examples:
   scripts/run_triage_bundle.sh ./runtime
   scripts/run_triage_bundle.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
+  scripts/run_triage_bundle.sh --out-dir ./exports --rolling-report-out ./docs/baselines/runtime_rollups/edge_quality_rolling_2026-03-24.json ./runtime
 USAGE
 }
 
 out_dir="./exports"
+rolling_report_out=""
 inputs=()
 
 while [[ "$#" -gt 0 ]]; do
@@ -30,6 +32,15 @@ while [[ "$#" -gt 0 ]]; do
         exit 1
       fi
       out_dir="$1"
+      ;;
+    --rolling-report-out)
+      shift
+      if [[ "$#" -eq 0 ]]; then
+        echo "Error: --rolling-report-out requires a file path." >&2
+        usage >&2
+        exit 1
+      fi
+      rolling_report_out="$1"
       ;;
     -h|--help)
       usage
@@ -59,4 +70,8 @@ scripts/scan_runtime_diagnostics.sh "$out_dir"
 
 echo
 echo "[3/3] Evaluating edge-quality gate from ${out_dir}"
-python3 scripts/evaluate_edge_quality.py "${out_dir}"
+if [[ -n "${rolling_report_out}" ]]; then
+  python3 scripts/evaluate_edge_quality.py "${out_dir}" --rolling-report-out "${rolling_report_out}"
+else
+  python3 scripts/evaluate_edge_quality.py "${out_dir}"
+fi

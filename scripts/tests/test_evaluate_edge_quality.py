@@ -8,7 +8,12 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from evaluate_edge_quality import EdgeQualityGateConfig, evaluate_edge_quality_gate, load_run_log_rows  # noqa: E402
+from evaluate_edge_quality import (  # noqa: E402
+    EdgeQualityGateConfig,
+    evaluate_edge_quality_gate,
+    evaluate_rolling_edge_quality,
+    load_run_log_rows,
+)
 
 
 class EvaluateEdgeQualityTests(unittest.TestCase):
@@ -154,6 +159,49 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("fail", report["status"])
         self.assertTrue(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
         self.assertEqual("contextual_window_pairs", report["effective_volatility_ceiling"]["source"])
+
+    def test_rolling_report_splits_full_history_and_recent_window(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "ended_at": "2026-03-20T00:00:00Z",
+                "feature_completeness": 0.8,
+                "edge_volatility": 0.01,
+                "signal_decision_summary": json.dumps({"suppression_counts": {}}),
+                "stage_summaries": json.dumps([]),
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "ended_at": "2026-03-21T00:00:00Z",
+                "feature_completeness": 0.8,
+                "edge_volatility": 0.01,
+                "signal_decision_summary": json.dumps({"suppression_counts": {}}),
+                "stage_summaries": json.dumps([]),
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-c",
+                "ended_at": "2026-03-22T00:00:00Z",
+                "feature_completeness": 0.8,
+                "edge_volatility": 0.01,
+                "signal_decision_summary": json.dumps({"suppression_counts": {}}),
+                "stage_summaries": json.dumps([]),
+            },
+        ]
+        report = evaluate_rolling_edge_quality(
+            rows=rows,
+            config=EdgeQualityGateConfig(),
+            min_ended_at="2026-03-21T00:00:00Z",
+        )
+        self.assertEqual(2, report["full_history_trend"]["pair_count"])
+        self.assertEqual(1, report["recent_window_gate"]["pair_count"])
+        self.assertEqual("go", report["recent_window_gate"]["go_no_go"])
+        self.assertEqual(1, report["recent_window_gate"]["status_counts"]["pass"])
 
 
 if __name__ == "__main__":
