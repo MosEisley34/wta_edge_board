@@ -1,0 +1,2 @@
+Run log parity check failed: expected both Run_Log JSON and CSV artifacts in the export batch. Found json=1 csv=0 under runtime_exports/exports.
+Remediation: re-export source batch.
