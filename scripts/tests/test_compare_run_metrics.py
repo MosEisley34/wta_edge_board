@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 import sys
+import json
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
@@ -10,6 +11,17 @@ from compare_run_metrics import build_report  # noqa: E402
 
 
 class CompareRunMetricsTests(unittest.TestCase):
+    @staticmethod
+    def _stage_chain():
+        return [
+            {"stage": "stageFetchOdds", "duration_ms": 10},
+            {"stage": "stageFetchSchedule", "duration_ms": 10},
+            {"stage": "stageMatchEvents", "duration_ms": 10},
+            {"stage": "stageFetchPlayerStats", "duration_ms": 10},
+            {"stage": "stageGenerateSignals", "duration_ms": 10},
+            {"stage": "stagePersist", "duration_ms": 10},
+        ]
+
     def test_build_report_emits_deterministic_sections(self):
         rows = [
             {
@@ -122,14 +134,7 @@ class CompareRunMetricsTests(unittest.TestCase):
                 "run_id": "run-a",
                 "reason_codes": {},
                 "signal_decision_summary": {},
-                "stage_summaries": [
-                    {"stage": "stageFetchOdds", "duration_ms": 10},
-                    {"stage": "stageFetchSchedule", "duration_ms": 10},
-                    {"stage": "stageMatchEvents", "duration_ms": 10},
-                    {"stage": "stageFetchPlayerStats", "duration_ms": 10},
-                    {"stage": "stageGenerateSignals", "duration_ms": 10},
-                    {"stage": "stagePersist", "duration_ms": 10},
-                ],
+                "stage_summaries": self._stage_chain(),
             },
             {
                 "row_type": "diag",
@@ -143,14 +148,7 @@ class CompareRunMetricsTests(unittest.TestCase):
                 "run_id": "run-b",
                 "reason_codes": {},
                 "signal_decision_summary": {},
-                "stage_summaries": [
-                    {"stage": "stageFetchOdds", "duration_ms": 10},
-                    {"stage": "stageFetchSchedule", "duration_ms": 10},
-                    {"stage": "stageMatchEvents", "duration_ms": 10},
-                    {"stage": "stageFetchPlayerStats", "duration_ms": 10},
-                    {"stage": "stageGenerateSignals", "duration_ms": 10},
-                    {"stage": "stagePersist", "duration_ms": 10},
-                ],
+                "stage_summaries": self._stage_chain(),
             },
         ]
 
@@ -165,14 +163,7 @@ class CompareRunMetricsTests(unittest.TestCase):
                 "run_id": "run-a",
                 "reason_codes": {},
                 "signal_decision_summary": {},
-                "stage_summaries": [
-                    {"stage": "stageFetchOdds", "duration_ms": 10},
-                    {"stage": "stageFetchSchedule", "duration_ms": 10},
-                    {"stage": "stageMatchEvents", "duration_ms": 10},
-                    {"stage": "stageFetchPlayerStats", "duration_ms": 10},
-                    {"stage": "stageGenerateSignals", "duration_ms": 10},
-                    {"stage": "stagePersist", "duration_ms": 10},
-                ],
+                "stage_summaries": self._stage_chain(),
             },
             {
                 "row_type": "summary",
@@ -192,6 +183,111 @@ class CompareRunMetricsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "missing stage chain entries"):
             build_report(rows, "run-a", "run-b")
+
+    def test_build_report_parses_alias_envelope_core_metrics(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_codes": json.dumps(
+                    {
+                        "schema_id": "reason_code_alias_v1",
+                        "reason_codes": {
+                            "MATCH_CT": 4,
+                            "NO_P_MATCH": 1,
+                            "REJ_CT": 1,
+                            "STATS_ENR": 3,
+                            "STATS_MISS_A": 1,
+                            "STATS_MISS_B": 0,
+                        },
+                    }
+                ),
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "reason_codes": {
+                    "MATCH_CT": 2,
+                    "NO_P_MATCH": 0,
+                    "REJ_CT": 1,
+                    "STATS_ENR": 1,
+                    "STATS_MISS_A": 0,
+                    "STATS_MISS_B": 1,
+                },
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+        ]
+
+        report = build_report(rows, "run-a", "run-b")
+        self.assertIn("MATCH_CT               4", report)
+        self.assertIn("STATS_ENR              3", report)
+        self.assertNotIn("WARNING run=run-a", report)
+
+    def test_build_report_maps_fallback_aliases_back_to_canonical_metrics(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_codes": {
+                    "schema_id": "reason_code_alias_v1",
+                    "reason_codes": {"UNK_MATCH": 3, "UNK_STATS": 2, "STATS_MISS_A": 1, "STATS_MISS_B": 1},
+                    "fallback_aliases": {"UNK_MATCH": "MATCH_CT", "UNK_STATS": "STATS_ENR"},
+                },
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "reason_codes": {
+                    "MATCH_CT": 1,
+                    "NO_P_MATCH": 0,
+                    "REJ_CT": 0,
+                    "STATS_ENR": 1,
+                    "STATS_MISS_A": 0,
+                    "STATS_MISS_B": 0,
+                },
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+        ]
+
+        report = build_report(rows, "run-a", "run-b")
+        # Regression: diagnostics may show non-zero alias counters while old metric parser showed zero.
+        self.assertIn("MATCH_CT               3", report)
+        self.assertIn("STATS_ENR              2", report)
+        self.assertNotIn("WARNING run=run-a", report)
+
+    def test_build_report_warns_on_stage_summaries_with_zero_core_metrics(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "reason_codes": {"MATCH_CT": 1},
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+        ]
+
+        report = build_report(rows, "run-a", "run-b")
+        self.assertIn("WARNING run=run-a: stage summaries detected but all core metrics parsed as zero", report)
+        self.assertNotIn("WARNING run=run-b", report)
 
 
 if __name__ == "__main__":
