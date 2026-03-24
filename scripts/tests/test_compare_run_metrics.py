@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from compare_run_metrics import build_report  # noqa: E402
+from compare_run_metrics import build_report, _metric_counts, _has_stage_summary_zero_core_metrics  # noqa: E402
 
 
 class CompareRunMetricsTests(unittest.TestCase):
@@ -21,6 +21,12 @@ class CompareRunMetricsTests(unittest.TestCase):
             {"stage": "stageGenerateSignals", "duration_ms": 10},
             {"stage": "stagePersist", "duration_ms": 10},
         ]
+
+    @staticmethod
+    def _load_live_shape_fixtures():
+        fixture_path = ROOT / "scripts" / "fixtures" / "compare_run_metrics_live_runtime_rows.json"
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        return payload
 
     def test_build_report_emits_deterministic_sections(self):
         rows = [
@@ -288,6 +294,17 @@ class CompareRunMetricsTests(unittest.TestCase):
         report = build_report(rows, "run-a", "run-b")
         self.assertIn("WARNING run=run-a: stage summaries detected but all core metrics parsed as zero", report)
         self.assertNotIn("WARNING run=run-b", report)
+
+    def test_live_runtime_summary_row_shapes_parse_non_zero_core_metrics(self):
+        fixture_rows = self._load_live_shape_fixtures()
+
+        for fixture in fixture_rows:
+            with self.subTest(run_id=fixture["run_id"]):
+                metric_counts = _metric_counts(fixture)
+                self.assertGreater(metric_counts["MATCH_CT"], 0)
+                self.assertGreater(metric_counts["STATS_ENR"], 0)
+                self.assertFalse(_has_stage_summary_zero_core_metrics(fixture, metric_counts))
+
 
 
 if __name__ == "__main__":

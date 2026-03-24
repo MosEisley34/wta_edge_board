@@ -56,6 +56,90 @@ def _extract_stage_summaries(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
     return _normalize_stage_summaries_payload(summary.get("message"))
 
 
+def _reason_schema_id(payload: Dict[str, Any], parent_schema_id: str | None = None) -> str:
+    for key in ("schema_id", "reason_code_schema_id", "reason_codes_schema_id", "alias_schema_id"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    if parent_schema_id:
+        return str(parent_schema_id)
+    return REASON_CODE_ALIAS_SCHEMA_ID
+
+
+def _reason_fallback_aliases(payload: Dict[str, Any], inherited: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    aliases: Dict[str, Any] = {}
+    if isinstance(inherited, dict):
+        aliases.update(inherited)
+    for key in (
+        "fallback_aliases",
+        "reason_fallback_aliases",
+        "reason_code_aliases",
+        "alias_fallbacks",
+    ):
+        candidate = _parse_json(payload.get(key), {})
+        if isinstance(candidate, dict):
+            aliases.update(candidate)
+    return aliases
+
+
+def _iter_reason_code_envelopes(node: Any, inherited_schema_id: str | None = None, inherited_aliases: Dict[str, Any] | None = None):
+    if isinstance(node, str):
+        parsed = _parse_json(node, None)
+        if parsed is not None:
+            yield from _iter_reason_code_envelopes(parsed, inherited_schema_id, inherited_aliases)
+        return
+    if not isinstance(node, dict):
+        return
+
+    schema_id = _reason_schema_id(node, inherited_schema_id)
+    fallback_aliases = _reason_fallback_aliases(node, inherited_aliases)
+
+    reason_map = _parse_json(node.get("reason_codes"), node.get("reason_codes"))
+    if isinstance(reason_map, dict) and isinstance(reason_map.get("reason_codes"), dict):
+        envelope_schema_id = _reason_schema_id(reason_map, schema_id)
+        envelope_aliases = _reason_fallback_aliases(reason_map, fallback_aliases)
+        yield reason_map.get("reason_codes"), envelope_schema_id, envelope_aliases
+        reason_map = None
+    if isinstance(reason_map, dict):
+        yield reason_map, schema_id, fallback_aliases
+
+    for reason_key in ("metrics", "counters"):
+        candidate = node.get(reason_key)
+        if isinstance(candidate, dict):
+            yield candidate, schema_id, fallback_aliases
+
+    for nested_key in (
+        "summary",
+        "totals",
+        "stage_summary",
+        "reason_code_summary",
+        "message",
+        "payload",
+    ):
+        nested = node.get(nested_key)
+        if nested is not None:
+            yield from _iter_reason_code_envelopes(nested, schema_id, fallback_aliases)
+
+
+def _iter_summary_reason_code_envelopes(summary: Dict[str, Any]):
+    yield from _iter_reason_code_envelopes(
+        {
+            "reason_codes": summary.get("reason_codes"),
+            "schema_id": summary.get("schema_id"),
+            "fallback_aliases": summary.get("fallback_aliases"),
+            "reason_code_schema_id": summary.get("reason_code_schema_id"),
+            "reason_code_aliases": summary.get("reason_code_aliases"),
+        }
+    )
+
+    message_payload = _parse_json(summary.get("message"), None)
+    if isinstance(message_payload, dict):
+        yield from _iter_reason_code_envelopes(message_payload)
+
+    for stage in _extract_stage_summaries(summary):
+        yield from _iter_reason_code_envelopes(stage)
+
+
 def load_rows(path: Path) -> List[Dict[str, Any]]:
     if path.suffix.lower() == ".json":
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -95,33 +179,26 @@ def _metric_counts(summary: Dict[str, Any]) -> Dict[str, int]:
     return {metric: int(reason_codes.get(metric, 0) or 0) for metric in METRICS}
 
 
+def _has_stage_summary_zero_core_metrics(summary: Dict[str, Any], metric_counts: Dict[str, int]) -> bool:
+    return bool(_extract_stage_summaries(summary)) and sum(metric_counts.values()) == 0
+
+
 def _extract_canonical_reason_codes(summary: Dict[str, Any]) -> Dict[str, float]:
-    reason_payload = _parse_json(summary.get("reason_codes"), {})
-    fallback_aliases = _parse_json(summary.get("fallback_aliases"), {})
-    schema_id = str(summary.get("schema_id") or REASON_CODE_ALIAS_SCHEMA_ID)
-
-    # Accept both plain maps and envelope maps ({schema_id, reason_codes, fallback_aliases}).
-    reason_map = reason_payload
-    if isinstance(reason_payload, dict) and isinstance(reason_payload.get("reason_codes"), dict):
-        reason_map = reason_payload.get("reason_codes")
-        fallback_aliases = reason_payload.get("fallback_aliases") or fallback_aliases
-        schema_id = str(reason_payload.get("schema_id") or schema_id)
-
-    if not isinstance(reason_map, dict):
-        return {}
-    if not isinstance(fallback_aliases, dict):
-        fallback_aliases = {}
-
-    expanded = _expand_reason_map(
-        reason_map,
-        schema_id=schema_id,
-        fallback_aliases=fallback_aliases,
-    )
-    canonical_to_alias = REASON_CODE_ALIAS_DICTIONARIES.get(schema_id) or {}
     normalized: Dict[str, float] = {}
-    for key, value in expanded.items():
-        metric_key = canonical_to_alias.get(key, key)
-        normalized[metric_key] = normalized.get(metric_key, 0.0) + float(value)
+    for reason_map, schema_id, fallback_aliases in _iter_summary_reason_code_envelopes(summary):
+        if not isinstance(reason_map, dict):
+            continue
+        if not isinstance(fallback_aliases, dict):
+            fallback_aliases = {}
+        expanded = _expand_reason_map(
+            reason_map,
+            schema_id=str(schema_id or REASON_CODE_ALIAS_SCHEMA_ID),
+            fallback_aliases=fallback_aliases,
+        )
+        canonical_to_alias = REASON_CODE_ALIAS_DICTIONARIES.get(str(schema_id or REASON_CODE_ALIAS_SCHEMA_ID)) or {}
+        for key, value in expanded.items():
+            metric_key = canonical_to_alias.get(key, key)
+            normalized[metric_key] = normalized.get(metric_key, 0.0) + float(value)
     return normalized
 
 
@@ -399,7 +476,7 @@ def build_report(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
         (run_a, summary_a, metric_counts_a),
         (run_b, summary_b, metric_counts_b),
     ):
-        if _extract_stage_summaries(summary) and sum(metric_counts.values()) == 0:
+        if _has_stage_summary_zero_core_metrics(summary, metric_counts):
             lines.append(
                 f"WARNING run={run_id}: stage summaries detected but all core metrics parsed as zero; "
                 "verify reason-code parser/alias schema alignment"

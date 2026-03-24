@@ -1,0 +1,136 @@
+[
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "live-shape-a",
+    "reason_codes": {
+      "odds_refresh_skipped_outside_window": 1,
+      "opening_lag_within_limit": 0,
+      "missing_open_timestamp": 0,
+      "opening_lag_exceeded": 0,
+      "schedule_seed_no_odds": 1,
+      "diagnostic_records_written": 1,
+      "skipped_schedule_only_no_odds": 1
+    },
+    "signal_decision_summary": {},
+    "stage_summaries": "[{\"reason_codes\":{\"matched_count\":3,\"stats_enriched\":2,\"stats_missing_player_a\":1,\"stats_missing_player_b\":0},\"output_count\":3,\"reason_metadata\":{}},{\"reason_codes\":{}},{\"reason_codes\":{\"schedule_seed_no_odds\":1,\"diagnostic_records_written\":1}},{\"run_id\":\"live-shape-a\",\"stage\":\"stageFetchPlayerStats\",\"duration_ms\":123,\"reason_codes\":{\"stats_enriched\":2,\"stats_missing_player_a\":1,\"stats_missing_player_b\":0},\"reason_metadata\":{}},{\"reason_codes\":{}},{\"reason_codes\":{}}]"
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "live-shape-b",
+    "reason_codes": {
+      "opening_lag_within_limit": 0,
+      "missing_open_timestamp": 1,
+      "opening_lag_exceeded": 0,
+      "odds_non_actionable": 1,
+      "schedule_enrichment_no_schedule_events": 1,
+      "no_player_match": 2,
+      "rejected_count": 2,
+      "stats_enriched": 1,
+      "stats_missing_player_a": 1,
+      "stats_missing_player_b": 1,
+      "matched_count": 2
+    },
+    "signal_decision_summary": {},
+    "stage_summaries": "[{\"reason_codes\":{\"opening_lag_within_limit\":0,\"missing_open_timestamp\":1}},{\"reason_codes\":{\"schedule_enrichment_no_schedule_events\":1}},{\"reason_codes\":{\"no_player_match\":2,\"rejected_count\":2,\"stats_enriched\":1,\"stats_missing_player_a\":1,\"stats_missing_player_b\":1,\"matched_count\":2}},{\"reason_codes\":{}},{\"reason_codes\":{}},{\"reason_codes\":{}}]"
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "live-envelope-c",
+    "reason_codes": {
+      "schema_id": "reason_code_alias_v1",
+      "reason_codes": {
+        "MATCH_CT": 4,
+        "NO_P_MATCH": 1,
+        "REJ_CT": 1,
+        "STATS_ENR": 3,
+        "STATS_MISS_A": 1,
+        "STATS_MISS_B": 0
+      }
+    },
+    "signal_decision_summary": {},
+    "stage_summaries": "[{\"stage\":\"stageFetchOdds\",\"duration_ms\":10},{\"stage\":\"stageFetchSchedule\",\"duration_ms\":10},{\"stage\":\"stageMatchEvents\",\"duration_ms\":10},{\"stage\":\"stageFetchPlayerStats\",\"duration_ms\":10},{\"stage\":\"stageGenerateSignals\",\"duration_ms\":10},{\"stage\":\"stagePersist\",\"duration_ms\":10}]"
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "live-envelope-d",
+    "message": "{\"schema_id\":\"reason_code_alias_v1\",\"reason_codes\":{\"matched_count\":5,\"no_player_match\":1,\"rejected_count\":1,\"stats_enriched\":2,\"stats_missing_player_a\":1,\"stats_missing_player_b\":0}}",
+    "signal_decision_summary": {},
+    "stage_summaries": "[{\"stage\":\"stageFetchOdds\",\"duration_ms\":10},{\"stage\":\"stageFetchSchedule\",\"duration_ms\":10},{\"stage\":\"stageMatchEvents\",\"duration_ms\":10},{\"stage\":\"stageFetchPlayerStats\",\"duration_ms\":10},{\"stage\":\"stageGenerateSignals\",\"duration_ms\":10},{\"stage\":\"stagePersist\",\"duration_ms\":10}]"
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "live-envelope-e",
+    "reason_codes": {
+      "schema_id": "reason_code_alias_v1",
+      "reason_codes": {
+        "UNK_MATCH": 6,
+        "UNK_STATS": 4,
+        "STATS_MISS_A": 1,
+        "STATS_MISS_B": 2
+      },
+      "fallback_aliases": {
+        "UNK_MATCH": "MATCH_CT",
+        "UNK_STATS": "STATS_ENR"
+      }
+    },
+    "signal_decision_summary": {},
+    "stage_summaries": "[{\"stage\":\"stageFetchOdds\",\"duration_ms\":10},{\"stage\":\"stageFetchSchedule\",\"duration_ms\":10},{\"stage\":\"stageMatchEvents\",\"duration_ms\":10},{\"stage\":\"stageFetchPlayerStats\",\"duration_ms\":10},{\"stage\":\"stageGenerateSignals\",\"duration_ms\":10},{\"stage\":\"stagePersist\",\"duration_ms\":10}]"
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "live-envelope-f",
+    "reason_codes": {},
+    "signal_decision_summary": {},
+    "stage_summaries": {
+      "schema_id": "reason_code_alias_v1",
+      "stage_summaries": [
+        {
+          "stage": "stageMatchEvents",
+          "summary": {
+            "schema_id": "reason_code_alias_v1",
+            "reason_codes": {
+              "matched_count": 2,
+              "no_player_match": 1,
+              "rejected_count": 1
+            }
+          }
+        },
+        {
+          "stage": "stageFetchPlayerStats",
+          "totals": {
+            "fallback_aliases": {
+              "UNK_STATS": "STATS_ENR"
+            },
+            "reason_codes": {
+              "UNK_STATS": 2,
+              "stats_missing_player_a": 1,
+              "stats_missing_player_b": 1
+            }
+          }
+        },
+        {
+          "stage": "stageFetchOdds",
+          "duration_ms": 10
+        },
+        {
+          "stage": "stageFetchSchedule",
+          "duration_ms": 10
+        },
+        {
+          "stage": "stageGenerateSignals",
+          "duration_ms": 10
+        },
+        {
+          "stage": "stagePersist",
+          "duration_ms": 10
+        }
+      ]
+    }
+  }
+]
