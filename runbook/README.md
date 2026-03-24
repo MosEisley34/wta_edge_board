@@ -26,10 +26,22 @@ What it does:
 
 `prepare_runtime_exports.sh` enforces a single-snapshot Run_Log export contract: `Run_Log.csv` + `Run_Log.json` are regenerated together from the same latest source snapshot, parity-gated, and recorded in `run_log_latest_batch_note.json`.
 
-For compare/gate workflows that require explicit run IDs, use fail-fast preflight:
+For compare/gate workflows that require explicit run IDs, always use this fail-fast preflight first:
 
 ```bash
-scripts/export_parity_precheck.sh [--out-dir ./exports] <run_id_a> <run_id_b> <file-or-directory> [more paths...]
+scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
+```
+
+Operational contract for compare/gate workflows:
+- `scripts/export_parity_precheck.sh` must be the first command in the sequence.
+- If wrapper parity/precheck fails, stop triage and re-export immediately.
+- After wrapper success, run all downstream commands against `./exports_live` only (`precheck_run_ids.py`, `verify_run_log_parity.py`, `compare_*`, `evaluate_edge_quality.py`).
+- Do not mix stale `live_runtime/Run_Log.json` with fresh `Run_Log.csv` in runbook examples or operator commands.
+
+Optional shell muscle-memory helper (ops dotfiles):
+
+```bash
+alias rl_precheck='scripts/export_parity_precheck.sh --out-dir ./exports_live'
 ```
 
 
@@ -55,6 +67,24 @@ Operational expectation:
 - `prepare_runtime_exports.sh` must produce `runtime_export_manifest.json` plus at least one Run_Log/State artifact.
 - `triage_runtime_diagnostics_local.sh` should show `Run-health degraded contract (first-pass triage)` near the top.
 - `runtime_diagnostics_summary.py` should print deterministic seven-line summary output including daily status and day-over-day deltas.
+
+## Compare/gate command checklist (run IDs required)
+
+Use this sequence for all run-to-run parity/quality workflows:
+
+```bash
+# 1) Mandatory export + parity + run-id precheck wrapper.
+scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
+
+# 2) Optional explicit precheck re-run against the prepared export dir only.
+python3 scripts/precheck_run_ids.py <run_id_a> <run_id_b> --export-dir ./exports_live
+
+# 3) Compare/gate commands read only from ./exports_live.
+python3 scripts/verify_run_log_parity.py --export-dir ./exports_live
+python3 scripts/compare_run_diagnostics.py <run_id_a> <run_id_b> --export-dir ./exports_live
+python3 scripts/compare_run_metrics.py <run_id_a> <run_id_b> --input ./exports_live/Run_Log.csv
+python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b>
+```
 
 ## Operator SLOs for degraded-mode reliability
 

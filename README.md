@@ -197,13 +197,22 @@ First-pass diagnosis should always start with the scanner's **Run-health degrade
 
 Manual 3-step flow is still available when needed:
 
-### Run-ID precheck gate before comparison scripts
+### Run-ID precheck gate before comparison scripts (standard operator flow)
 
-After exporting to `./exports_live`, run a dedicated precheck before any run-vs-run comparison:
+Before any compare/gate command, always run this single wrapper command first:
 
 ```bash
-python3 scripts/precheck_run_ids.py <run_id_a> <run_id_b> --export-dir ./exports_live
+scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
 ```
+
+Examples:
+
+```bash
+scripts/export_parity_precheck.sh --out-dir ./exports_live 20260320T095837_9ccfe02e 20260319T184422_4bcd8a9f ./live_runtime
+scripts/export_parity_precheck.sh --out-dir ./exports_live 20260320T095837_9ccfe02e 20260319T184422_4bcd8a9f ./live_runtime/Run_Log.csv ./live_runtime/Run_Log.json ./live_runtime/State.json
+```
+
+Do not run compare/gate scripts against ad-hoc inputs before this wrapper succeeds.
 
 Behavior contract:
 - scans `./exports_live/*Run_Log*.json` and `./exports_live/*Run_Log*.csv` (recursive),
@@ -218,14 +227,12 @@ Emergency override (incident-only):
 - `--allow-csv-only-triage` allows CSV-present/JSON-missing run IDs to proceed for emergency triage,
 - precheck prints `degraded_confidence_csv_only_triage` so downstream readers know confidence is reduced.
 
-If precheck fails, **stop triage and re-export from the sheet before further analysis**.
-Only proceed to comparison scripts once both run IDs are confirmed present.
+If wrapper parity or precheck fails, **stop triage immediately and re-export before further analysis**.
+Only proceed once both run IDs are confirmed present in parity-checked exports.
 
-For a single fail-fast command that chains export + parity + precheck:
-
-```bash
-scripts/export_parity_precheck.sh [--out-dir ./exports] <run_id_a> <run_id_b> <file-or-directory> [more paths...]
-```
+Downstream contract after wrapper success:
+- Use only `./exports_live` outputs for all follow-up commands (`precheck_run_ids.py`, `verify_run_log_parity.py`, `compare_*`, `evaluate_edge_quality.py`, coverage gates).
+- Do **not** mix stale `live_runtime/Run_Log.json` with fresh `Run_Log.csv` in operator workflows or examples.
 
 ### Player-stats coverage gate (runs after precheck, before verdict publication)
 
