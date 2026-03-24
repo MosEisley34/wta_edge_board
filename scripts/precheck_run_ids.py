@@ -250,6 +250,14 @@ def main() -> int:
             "needed by scripts/check_player_stats_coverage.py."
         ),
     )
+    parser.add_argument(
+        "--allow-csv-only-triage",
+        action="store_true",
+        help=(
+            "Emergency override: allow precheck to continue when run IDs are present in CSV but missing "
+            "from JSON. This degrades confidence and should be used only for incident triage."
+        ),
+    )
     args = parser.parse_args()
 
     sources = _iter_run_log_sources(args.export_dir)
@@ -310,6 +318,21 @@ def main() -> int:
     targets = (args.run_id_a, args.run_id_b)
     present_ids = set(merged_counts)
     missing = _format_missing(targets, present_ids)
+    has_json = kind_counts["json"] > 0
+    has_csv = kind_counts["csv"] > 0
+    target_source_presence: dict[str, dict[str, bool]] = {
+        run_id: {
+            "json": any(
+                source.kind == "json" and source_counts.get(source.path, Counter()).get(run_id, 0) > 0
+                for source in sources
+            ),
+            "csv": any(
+                source.kind == "csv" and source_counts.get(source.path, Counter()).get(run_id, 0) > 0
+                for source in sources
+            ),
+        }
+        for run_id in targets
+    }
 
     print(
         "Precheck merged run IDs across "
@@ -329,6 +352,39 @@ def main() -> int:
         print("Precheck failed: one or more target run IDs are missing from merged JSON/CSV sources.")
         print("Stop triage and re-export from the sheet before further analysis.")
         return 2
+
+    source_mismatch_failures: list[str] = []
+    degraded_confidence_reasons: list[str] = []
+    if has_json and has_csv:
+        for run_id in targets:
+            source_presence = target_source_presence[run_id]
+            if source_presence["json"] and source_presence["csv"]:
+                continue
+            if args.allow_csv_only_triage and source_presence["csv"] and not source_presence["json"]:
+                degraded_confidence_reasons.append(
+                    f"{run_id}: csv_present=true json_present=false"
+                )
+                continue
+            source_mismatch_failures.append(
+                f"{run_id}: csv_present={str(source_presence['csv']).lower()} "
+                f"json_present={str(source_presence['json']).lower()}"
+            )
+
+    if source_mismatch_failures:
+        print("Precheck failed: run_id_source_mismatch.")
+        print("Each target run_id must be present in both Run_Log.csv and Run_Log.json when both sources exist.")
+        for failure in source_mismatch_failures:
+            print(f"- {failure}")
+        print("Stop triage and re-export from the sheet before further analysis.")
+        return 2
+
+    if degraded_confidence_reasons:
+        print(
+            "Precheck warning: degraded_confidence_csv_only_triage "
+            "(--allow-csv-only-triage emergency override enabled)."
+        )
+        for detail in degraded_confidence_reasons:
+            print(f"- {detail}")
 
     contract_failures: list[str] = []
     for run_id in targets:
