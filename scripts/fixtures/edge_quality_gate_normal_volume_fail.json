@@ -1,0 +1,54 @@
+[
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-older-1",
+    "tournament_id": "wta-miami",
+    "time_block": "2026-03-24T12",
+    "signal_decision_summary": {"edge_quality": {"edge_volatility_vs_previous_run": {"abs_delta_p95": 0.018}}},
+    "stage_summaries": [
+      {"stage": "stageFetchPlayerStats", "reason_metadata": {"coverage": {"resolved_rate": 0.84}}},
+      {"stage": "stageGenerateSignals", "output_count": 40},
+      {"stage": "stageMatchEvents", "reason_codes": {"matched_count": 25}, "output_count": 25}
+    ]
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-older-2",
+    "tournament_id": "wta-miami",
+    "time_block": "2026-03-24T12",
+    "signal_decision_summary": {"edge_quality": {"edge_volatility_vs_previous_run": {"abs_delta_p95": 0.021}}},
+    "stage_summaries": [
+      {"stage": "stageFetchPlayerStats", "reason_metadata": {"coverage": {"resolved_rate": 0.83}}},
+      {"stage": "stageGenerateSignals", "output_count": 42},
+      {"stage": "stageMatchEvents", "reason_codes": {"matched_count": 27}, "output_count": 27}
+    ]
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-baseline",
+    "tournament_id": "wta-miami",
+    "time_block": "2026-03-24T12",
+    "signal_decision_summary": {"edge_quality": {"edge_volatility_vs_previous_run": {"abs_delta_p95": 0.019}}},
+    "stage_summaries": [
+      {"stage": "stageFetchPlayerStats", "reason_metadata": {"coverage": {"resolved_rate": 0.82}}},
+      {"stage": "stageGenerateSignals", "output_count": 38},
+      {"stage": "stageMatchEvents", "reason_codes": {"matched_count": 24}, "output_count": 24}
+    ]
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-candidate",
+    "tournament_id": "wta-miami",
+    "time_block": "2026-03-24T12",
+    "signal_decision_summary": {"edge_quality": {"edge_volatility_vs_previous_run": {"abs_delta_p95": 0.09}}},
+    "stage_summaries": [
+      {"stage": "stageFetchPlayerStats", "reason_metadata": {"coverage": {"resolved_rate": 0.81}}},
+      {"stage": "stageGenerateSignals", "output_count": 37},
+      {"stage": "stageMatchEvents", "reason_codes": {"matched_count": 23}, "output_count": 23}
+    ]
+  }
+]

@@ -9,6 +9,7 @@ import glob
 import json
 import os
 from dataclasses import dataclass
+from statistics import quantiles
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,11 @@ from pipeline_log_adapter import (
 class EdgeQualityGateConfig:
     min_feature_completeness: float = 0.60
     max_edge_volatility: float = 0.03
+    min_scored_signals_for_volatility: int = 10
+    min_matched_events_for_volatility: int = 5
+    volatility_context_min_pairs: int = 4
+    volatility_context_quantile: float = 0.90
+    volatility_context_ceiling_factor: float = 1.25
     max_suppression_drift: float = 0.50
     suppression_min_volume: int = 2
 
@@ -283,6 +289,115 @@ def _edge_volatility(summary_row: dict[str, Any], signal_summary: dict[str, Any]
     return None, "unsupported_artifact_shape_edge_volatility"
 
 
+def _extract_scored_signals(summary_row: dict[str, Any], signal_summary: dict[str, Any]) -> int | None:
+    candidate_fields = (
+        "scored_signals",
+        "scored_signals_count",
+        "scored_signal_count",
+        "signals_scored",
+        "signal_count",
+    )
+    for field in candidate_fields:
+        try:
+            return max(0, int(float(summary_row.get(field))))
+        except (TypeError, ValueError):
+            pass
+        try:
+            return max(0, int(float(signal_summary.get(field))))
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+    for stage in _extract_stage_summaries(summary_row):
+        if str(stage.get("stage") or "").strip() != "stageGenerateSignals":
+            continue
+        for key in ("output_count", "input_count"):
+            try:
+                return max(0, int(float(stage.get(key))))
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _extract_matched_events(summary_row: dict[str, Any]) -> int | None:
+    for stage in _extract_stage_summaries(summary_row):
+        if str(stage.get("stage") or "").strip() != "stageMatchEvents":
+            continue
+        reason_codes = _parse_json_like(stage.get("reason_codes"), {})
+        if not isinstance(reason_codes, dict):
+            reason_codes = {}
+        for key in ("matched_count", "MATCH_CT"):
+            try:
+                return max(0, int(float(reason_codes.get(key))))
+            except (TypeError, ValueError):
+                continue
+        try:
+            return max(0, int(float(stage.get("output_count"))))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _context_value(summary_row: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = summary_row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _volatility_context_key(summary_row: dict[str, Any]) -> tuple[str, str]:
+    tournament = _context_value(
+        summary_row,
+        "tournament_id",
+        "tournament_key",
+        "tournament",
+        "competition_id",
+        "competition",
+    )
+    time_block = _context_value(
+        summary_row,
+        "time_block",
+        "window_block",
+        "window_key",
+        "schedule_day",
+        "run_date",
+    )
+    return tournament, time_block
+
+
+def _adaptive_volatility_ceiling(
+    rows: list[dict[str, Any]],
+    baseline_summary: dict[str, Any],
+    candidate_summary: dict[str, Any],
+    config: EdgeQualityGateConfig,
+) -> dict[str, Any]:
+    target_contexts = {_volatility_context_key(baseline_summary), _volatility_context_key(candidate_summary)}
+    context_values: list[float] = []
+    for row in rows:
+        if str(row.get("row_type") or "") != "summary" or str(row.get("stage") or "") != "runEdgeBoard":
+            continue
+        if _volatility_context_key(row) not in target_contexts:
+            continue
+        volatility, _ = _edge_volatility(row, _extract_signal_summary(row))
+        if volatility is None:
+            continue
+        context_values.append(abs(float(volatility)))
+
+    default = float(config.max_edge_volatility)
+    if len(context_values) < max(1, int(config.volatility_context_min_pairs)):
+        return {"ceiling": default, "source": "configured", "sample_size": len(context_values)}
+
+    quantile = min(0.99, max(0.5, float(config.volatility_context_quantile)))
+    q = quantiles(context_values, n=100, method="inclusive")[int(round(quantile * 100)) - 1]
+    contextual_ceiling = q * float(config.volatility_context_ceiling_factor)
+    return {
+        "ceiling": max(default, contextual_ceiling),
+        "source": "contextual_window_pairs",
+        "sample_size": len(context_values),
+        "quantile": quantile,
+    }
+
+
 def _snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
     summary = _pick_run_summary(rows, run_id)
     if not summary:
@@ -299,8 +414,14 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         "run_id": run_id,
         "feature_completeness": feature_completeness,
         "edge_volatility": edge_volatility,
+        "scored_signals": _extract_scored_signals(summary, signal_summary),
+        "matched_events": _extract_matched_events(summary),
         "suppression_counts": _flatten_suppression_counts(signal_summary),
         "diagnostics": diagnostics,
+        "context": {
+            "tournament": _volatility_context_key(summary)[0],
+            "time_block": _volatility_context_key(summary)[1],
+        },
     }
 
 
@@ -314,6 +435,7 @@ def evaluate_edge_quality_gate(
     candidate = _snapshot(rows, candidate_run_id)
 
     failures: list[str] = []
+    warnings: list[str] = []
     candidate_feature_completeness = candidate["feature_completeness"]
     if candidate_feature_completeness is None:
         diag = candidate["diagnostics"].get("feature_completeness_reason_code", "missing_field_feature_completeness")
@@ -325,13 +447,32 @@ def evaluate_edge_quality_gate(
         )
 
     candidate_edge_volatility = candidate["edge_volatility"]
+    scored_signals = candidate.get("scored_signals")
+    matched_events = candidate.get("matched_events")
+    sample_known = scored_signals is not None and matched_events is not None
+    sufficient_scored = (scored_signals or 0) >= config.min_scored_signals_for_volatility
+    sufficient_matched = (matched_events or 0) >= config.min_matched_events_for_volatility
+    enough_sample_for_volatility = (not sample_known) or (sufficient_scored and sufficient_matched)
+    adaptive_ceiling_info = _adaptive_volatility_ceiling(
+        rows=rows,
+        baseline_summary=_pick_run_summary(rows, baseline_run_id),
+        candidate_summary=_pick_run_summary(rows, candidate_run_id),
+        config=config,
+    )
+    effective_volatility_ceiling = float(adaptive_ceiling_info["ceiling"])
     if candidate_edge_volatility is None:
         diag = candidate["diagnostics"].get("edge_volatility_reason_code", "missing_field_edge_volatility")
         failures.append(f"missing_edge_volatility_metric reason_code={diag}")
-    elif candidate_edge_volatility > config.max_edge_volatility:
+    elif sample_known and not enough_sample_for_volatility:
+        warnings.append(
+            "insufficient_sample_for_edge_volatility "
+            f"(scored_signals={scored_signals} required>={config.min_scored_signals_for_volatility}; "
+            f"matched_events={matched_events} required>={config.min_matched_events_for_volatility})"
+        )
+    elif candidate_edge_volatility > effective_volatility_ceiling:
         failures.append(
             "edge_volatility_above_ceiling "
-            f"(candidate={candidate_edge_volatility:.4f} > ceiling={config.max_edge_volatility:.4f})"
+            f"(candidate={candidate_edge_volatility:.4f} > ceiling={effective_volatility_ceiling:.4f})"
         )
 
     suppression_reasons = sorted(set(baseline["suppression_counts"].keys()) | set(candidate["suppression_counts"].keys()))
@@ -348,17 +489,22 @@ def evaluate_edge_quality_gate(
                 f"(reason={reason} baseline={base} candidate={cand} drift={drift:.4f} > bound={config.max_suppression_drift:.4f})"
             )
 
+    status = "fail" if failures else ("insufficient_sample" if warnings else "pass")
     return {
-        "status": "fail" if failures else "pass",
+        "status": status,
         "baseline": baseline,
         "candidate": candidate,
         "thresholds": {
             "min_feature_completeness": config.min_feature_completeness,
             "max_edge_volatility": config.max_edge_volatility,
+            "min_scored_signals_for_volatility": config.min_scored_signals_for_volatility,
+            "min_matched_events_for_volatility": config.min_matched_events_for_volatility,
             "max_suppression_drift": config.max_suppression_drift,
             "suppression_min_volume": config.suppression_min_volume,
         },
+        "effective_volatility_ceiling": adaptive_ceiling_info,
         "suppression_drifts": suppression_drifts,
+        "warnings": warnings,
         "failures": failures,
     }
 
@@ -370,6 +516,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-run-id", default="", help="Candidate run_id (defaults to latest)")
     parser.add_argument("--min-feature-completeness", type=float, default=0.60)
     parser.add_argument("--max-edge-volatility", type=float, default=0.03)
+    parser.add_argument("--min-scored-signals-for-volatility", type=int, default=10)
+    parser.add_argument("--min-matched-events-for-volatility", type=int, default=5)
+    parser.add_argument("--volatility-context-min-pairs", type=int, default=4)
+    parser.add_argument("--volatility-context-quantile", type=float, default=0.90)
+    parser.add_argument("--volatility-context-ceiling-factor", type=float, default=1.25)
     parser.add_argument("--max-suppression-drift", type=float, default=0.50)
     parser.add_argument("--suppression-min-volume", type=int, default=2)
     return parser
@@ -395,6 +546,11 @@ def main() -> int:
         config=EdgeQualityGateConfig(
             min_feature_completeness=args.min_feature_completeness,
             max_edge_volatility=args.max_edge_volatility,
+            min_scored_signals_for_volatility=max(0, int(args.min_scored_signals_for_volatility)),
+            min_matched_events_for_volatility=max(0, int(args.min_matched_events_for_volatility)),
+            volatility_context_min_pairs=max(1, int(args.volatility_context_min_pairs)),
+            volatility_context_quantile=float(args.volatility_context_quantile),
+            volatility_context_ceiling_factor=max(0.0, float(args.volatility_context_ceiling_factor)),
             max_suppression_drift=args.max_suppression_drift,
             suppression_min_volume=max(0, int(args.suppression_min_volume)),
         ),

@@ -419,3 +419,31 @@ Use `scripts/extract_player_features.py` to normalize probe payloads under `OUT_
 - `OUT_DIR/normalized/source_diagnostics.csv`
 
 The extractor keeps model features clean by routing source-level parse/status issues (for example pointer/metadata payloads and hard API errors) into `source_diagnostics.csv` instead of `player_features.csv`.
+
+## Edge quality gate thresholds by run-volume tier
+
+Use `scripts/evaluate_edge_quality.py` with volume-aware thresholds so low-sample runs emit soft warnings instead of false hard failures.
+
+Recommended operating tiers:
+
+- **Low volume / sparse windows**
+  - `--min-scored-signals-for-volatility=10`
+  - `--min-matched-events-for-volatility=5`
+  - Expected behavior: if either threshold is not met, status returns `insufficient_sample` and skips volatility hard-fail enforcement.
+- **Normal volume (default daily operations)**
+  - `--max-edge-volatility=0.03`
+  - `--min-scored-signals-for-volatility=20`
+  - `--min-matched-events-for-volatility=10`
+  - `--volatility-context-min-pairs=4`
+  - `--volatility-context-quantile=0.90`
+  - `--volatility-context-ceiling-factor=1.25`
+- **High volume / major-event windows**
+  - `--min-scored-signals-for-volatility=30`
+  - `--min-matched-events-for-volatility=15`
+  - Keep context-window recalibration enabled and consider tightening `--max-edge-volatility` to `0.02-0.025` when historical variance supports it.
+
+Context-window recalibration contract:
+
+- Volatility ceiling is recalculated from run summaries in the same `(tournament, time_block)` context.
+- Effective ceiling = `max(configured_ceiling, quantile(context_volatility) * ceiling_factor)`.
+- Keep `--volatility-context-min-pairs` at `4+` so the adaptive ceiling reflects a stable window pair set.
