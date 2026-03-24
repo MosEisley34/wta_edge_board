@@ -112,6 +112,35 @@ Auditability requirement:
 - Persist rolling outputs as JSON artifacts (`--rolling-report-out`) every cycle.
 - Keep the artifact path/date in the incident/release log so both windows remain reconstructable later.
 
+## Daily production SLO job (rolling 3d/7d pair quality)
+
+Run once per day against `./exports_live/Run_Log.csv`:
+
+```bash
+scripts/run_daily_edge_quality_slo.sh
+```
+
+Gate contract:
+- Windows: last `3` and `7` days (configurable via `--windows`).
+- A window is **decisionable** only if `pair_count >= 10` (configurable via `--min-pairs`).
+- Status counts tracked per window: `pass`, `fail`, `insufficient_sample`.
+- Window fail-rate = `status_counts.fail / pair_count`.
+- **Daily gate verdict = fail** when any decisionable window fail-rate exceeds `0.15` (configurable via `--fail-rate-threshold`).
+
+Artifacts:
+- Timestamped full output: `reports/edge_quality_daily_slo_<timestamp>.json`.
+- Trend-baseline archive: `docs/baselines/edge_quality_slo/edge_quality_daily_slo_summary.jsonl`.
+
+Example with explicit tuning:
+
+```bash
+scripts/run_daily_edge_quality_slo.sh \
+  --run-log ./exports_live/Run_Log.csv \
+  --windows 3,7 \
+  --min-pairs 10 \
+  --fail-rate-threshold 0.15
+```
+
 ## Operator SLOs for degraded-mode reliability
 
 Use these thresholds for weekly operations review and on-call escalation.

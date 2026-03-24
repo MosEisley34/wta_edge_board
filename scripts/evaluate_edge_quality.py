@@ -10,7 +10,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from statistics import quantiles
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,13 @@ class EdgeQualityGateConfig:
     volatility_context_ceiling_factor: float = 1.25
     max_suppression_drift: float = 0.50
     suppression_min_volume: int = 2
+
+
+@dataclass(frozen=True)
+class DailyEdgeQualitySLOConfig:
+    window_days: tuple[int, ...] = (3, 7)
+    min_pairs_per_window: int = 10
+    fail_rate_threshold: float = 0.15
 
 
 def _parse_json_like(value: Any, fallback: Any) -> Any:
@@ -677,6 +684,141 @@ def evaluate_rolling_edge_quality(
     }
 
 
+def _resolve_as_of_utc(as_of_utc: str = "") -> datetime:
+    parsed = _parse_timestamp(as_of_utc.strip()) if as_of_utc else None
+    return parsed or datetime.now(timezone.utc)
+
+
+def _window_threshold_iso(as_of: datetime, window_days: int) -> str:
+    floor = as_of - timedelta(days=max(1, int(window_days)))
+    return floor.isoformat()
+
+
+def evaluate_daily_edge_quality_slo(
+    rows: list[dict[str, Any]],
+    gate_config: EdgeQualityGateConfig,
+    slo_config: DailyEdgeQualitySLOConfig,
+    as_of_utc: str = "",
+) -> dict[str, Any]:
+    as_of = _resolve_as_of_utc(as_of_utc)
+    window_reports: list[dict[str, Any]] = []
+    aggregate_status_counts = {"pass": 0, "fail": 0, "insufficient_sample": 0}
+
+    for window_days in sorted(set(int(item) for item in slo_config.window_days if int(item) > 0)):
+        min_ended_at = _window_threshold_iso(as_of, window_days)
+        run_ids = _rolling_run_ids(rows, min_ended_at=min_ended_at)
+        pair_reports = [
+            evaluate_edge_quality_gate(
+                rows=rows,
+                baseline_run_id=baseline_run_id,
+                candidate_run_id=candidate_run_id,
+                config=gate_config,
+            )
+            for baseline_run_id, candidate_run_id in _run_pairs_from_ids(run_ids)
+        ]
+
+        status_counts = {"pass": 0, "fail": 0, "insufficient_sample": 0}
+        for report in pair_reports:
+            status = str(report.get("status") or "")
+            if status == "pass":
+                status_counts["pass"] += 1
+            elif status == "fail":
+                status_counts["fail"] += 1
+            else:
+                status_counts["insufficient_sample"] += 1
+
+        decisionable = len(pair_reports) >= int(slo_config.min_pairs_per_window)
+        fail_rate = (status_counts["fail"] / len(pair_reports)) if pair_reports else None
+        verdict = "insufficient_sample"
+        if decisionable:
+            verdict = "fail" if (fail_rate or 0.0) > float(slo_config.fail_rate_threshold) else "pass"
+
+        window_report = {
+            "window_days": window_days,
+            "min_ended_at": min_ended_at,
+            "run_count": len(run_ids),
+            "pair_count": len(pair_reports),
+            "decisionable": decisionable,
+            "status_counts": status_counts,
+            "fail_rate": fail_rate,
+            "fail_rate_threshold": float(slo_config.fail_rate_threshold),
+            "verdict": verdict,
+            "pairs": pair_reports,
+        }
+        window_reports.append(window_report)
+        aggregate_status_counts["pass"] += status_counts["pass"]
+        aggregate_status_counts["fail"] += status_counts["fail"]
+        aggregate_status_counts["insufficient_sample"] += status_counts["insufficient_sample"]
+
+    decisionable_windows = [window for window in window_reports if bool(window.get("decisionable"))]
+    failing_decisionable_windows = [
+        window for window in decisionable_windows if str(window.get("verdict") or "") == "fail"
+    ]
+
+    if not decisionable_windows:
+        gate_verdict = "insufficient_sample"
+        gate_reason = "no_decisionable_windows"
+    elif failing_decisionable_windows:
+        gate_verdict = "fail"
+        gate_reason = "decisionable_window_fail_rate_exceeded_threshold"
+    else:
+        gate_verdict = "pass"
+        gate_reason = "all_decisionable_windows_within_fail_rate_threshold"
+
+    return {
+        "schema": "edge_quality_daily_slo_v1",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "as_of_utc": as_of.isoformat(),
+        "min_pairs_per_window": int(slo_config.min_pairs_per_window),
+        "fail_rate_threshold": float(slo_config.fail_rate_threshold),
+        "aggregate_status_counts": aggregate_status_counts,
+        "window_reports": window_reports,
+        "gate_verdict": gate_verdict,
+        "gate_reason": gate_reason,
+        "decisionable_window_count": len(decisionable_windows),
+        "failing_decisionable_window_count": len(failing_decisionable_windows),
+    }
+
+
+def write_daily_slo_artifacts(
+    report: dict[str, Any],
+    output_dir: str,
+    archive_dir: str = "",
+) -> tuple[Path, Path]:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    reports_path = Path(output_dir)
+    reports_path.mkdir(parents=True, exist_ok=True)
+    daily_output = reports_path / f"edge_quality_daily_slo_{stamp}.json"
+    daily_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    archive_root = Path(archive_dir) if archive_dir else reports_path / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    archive_summary = archive_root / "edge_quality_daily_slo_summary.jsonl"
+    summary_row = {
+        "generated_at_utc": report.get("generated_at_utc"),
+        "as_of_utc": report.get("as_of_utc"),
+        "gate_verdict": report.get("gate_verdict"),
+        "gate_reason": report.get("gate_reason"),
+        "decisionable_window_count": report.get("decisionable_window_count"),
+        "failing_decisionable_window_count": report.get("failing_decisionable_window_count"),
+        "aggregate_status_counts": report.get("aggregate_status_counts"),
+        "windows": [
+            {
+                "window_days": row.get("window_days"),
+                "pair_count": row.get("pair_count"),
+                "decisionable": row.get("decisionable"),
+                "fail_rate": row.get("fail_rate"),
+                "verdict": row.get("verdict"),
+            }
+            for row in report.get("window_reports") or []
+        ],
+    }
+    with archive_summary.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(summary_row, sort_keys=True) + "\n")
+
+    return daily_output, archive_summary
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate edge-quality gate from Run_Log exports.")
     parser.add_argument("path", help="Run_Log file or export directory")
@@ -701,6 +843,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional output path for rolling edge-quality report JSON artifact.",
     )
+    parser.add_argument(
+        "--daily-slo",
+        action="store_true",
+        help="Evaluate daily production SLO windows (3/7 days by default) and publish reports.",
+    )
+    parser.add_argument(
+        "--daily-slo-windows",
+        default="3,7",
+        help="Comma-separated day windows for daily SLO (default: 3,7).",
+    )
+    parser.add_argument("--daily-slo-min-pairs", type=int, default=10)
+    parser.add_argument("--daily-slo-fail-rate-threshold", type=float, default=0.15)
+    parser.add_argument("--daily-slo-output-dir", default="reports")
+    parser.add_argument("--daily-slo-archive-dir", default="docs/baselines/edge_quality_slo")
+    parser.add_argument(
+        "--as-of-utc",
+        default="",
+        help="Optional ISO-8601 timestamp for deterministic daily-SLO window boundaries.",
+    )
     return parser
 
 
@@ -723,6 +884,37 @@ def main() -> int:
         max_suppression_drift=args.max_suppression_drift,
         suppression_min_volume=max(0, int(args.suppression_min_volume)),
     )
+
+    if args.daily_slo:
+        window_days = tuple(
+            int(item.strip())
+            for item in str(args.daily_slo_windows).split(",")
+            if item.strip()
+        )
+        if not window_days:
+            parser.error("--daily-slo-windows must include at least one positive integer day window.")
+        slo_config = DailyEdgeQualitySLOConfig(
+            window_days=window_days,
+            min_pairs_per_window=max(1, int(args.daily_slo_min_pairs)),
+            fail_rate_threshold=max(0.0, float(args.daily_slo_fail_rate_threshold)),
+        )
+        report = evaluate_daily_edge_quality_slo(
+            rows=rows,
+            gate_config=config,
+            slo_config=slo_config,
+            as_of_utc=str(args.as_of_utc or "").strip(),
+        )
+        daily_path, summary_path = write_daily_slo_artifacts(
+            report=report,
+            output_dir=str(args.daily_slo_output_dir or "reports"),
+            archive_dir=str(args.daily_slo_archive_dir or ""),
+        )
+        report["artifacts"] = {
+            "daily_report_path": str(daily_path),
+            "summary_archive_path": str(summary_path),
+        }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 1 if str(report.get("gate_verdict") or "") == "fail" else 0
 
     if args.baseline_run_id and args.candidate_run_id:
         run_pair = [args.baseline_run_id, args.candidate_run_id]

@@ -460,3 +460,32 @@ Context-window recalibration contract:
 - Volatility ceiling is recalculated from run summaries in the same `(tournament, time_block)` context.
 - Effective ceiling = `max(configured_ceiling, quantile(context_volatility) * ceiling_factor)`.
 - Keep `--volatility-context-min-pairs` at `4+` so the adaptive ceiling reflects a stable window pair set.
+
+## Daily production edge-quality SLO gate
+
+Run a single daily SLO job against `./exports_live/Run_Log.csv` to evaluate rolling pair quality for the last **3** and **7** days with minimum volume constraints:
+
+```bash
+scripts/run_daily_edge_quality_slo.sh
+```
+
+Default behavior:
+- evaluates rolling windows `3,7` days,
+- marks a window as `decisionable` only when `pair_count >= 10`,
+- tracks status counts as `pass`, `fail`, `insufficient_sample`,
+- computes window fail-rate as `fail / pair_count`,
+- fails the daily gate when any decisionable window exceeds `--fail-rate-threshold` (`0.15` by default),
+- writes a timestamped report to `reports/edge_quality_daily_slo_<timestamp>.json`,
+- appends a trend-baseline summary row to `docs/baselines/edge_quality_slo/edge_quality_daily_slo_summary.jsonl`.
+
+Manual invocation:
+
+```bash
+python3 scripts/evaluate_edge_quality.py ./exports_live/Run_Log.csv \
+  --daily-slo \
+  --daily-slo-windows 3,7 \
+  --daily-slo-min-pairs 10 \
+  --daily-slo-fail-rate-threshold 0.15 \
+  --daily-slo-output-dir reports \
+  --daily-slo-archive-dir docs/baselines/edge_quality_slo
+```
