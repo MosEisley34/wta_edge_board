@@ -13,6 +13,10 @@ Matching rules:
   - extension: .csv or .json
   - basename contains "run_log" or "state" (case-insensitive)
 
+Run_Log contract:
+  - Run_Log.csv and Run_Log.json are exported as a paired snapshot from the same latest source directory.
+  - both are written with a shared batch timestamp to prevent mixed-staleness analysis.
+
 Examples:
   scripts/export_runtime_artifacts.sh ./runtime_dump
   scripts/export_runtime_artifacts.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
@@ -55,6 +59,7 @@ import os
 import re
 import shutil
 import sys
+import datetime as dt
 from pathlib import Path
 
 out_dir = Path(sys.argv[1])
@@ -100,9 +105,71 @@ if not selected:
 
 out_dir.mkdir(parents=True, exist_ok=True)
 
-used_names: dict[str, int] = {}
+def _canonical_run_log_name(path: Path) -> str | None:
+    lower_stem = path.stem.lower()
+    if "run_log" not in lower_stem and "run-log" not in lower_stem and "runlog" not in lower_stem:
+        return None
+    if path.suffix.lower() == ".json":
+        return "Run_Log.json"
+    if path.suffix.lower() == ".csv":
+        return "Run_Log.csv"
+    return None
+
+
+def _pick_latest_run_log_pair(paths: list[Path]) -> tuple[Path, Path]:
+    by_parent: dict[Path, dict[str, list[Path]]] = {}
+    for src in paths:
+        canonical_name = _canonical_run_log_name(src)
+        if canonical_name is None:
+            continue
+        parent_map = by_parent.setdefault(src.parent, {"csv": [], "json": []})
+        parent_map[src.suffix.lower().lstrip(".")].append(src)
+
+    paired: list[tuple[float, Path, Path]] = []
+    for _, grouped in by_parent.items():
+        csv_paths = grouped["csv"]
+        json_paths = grouped["json"]
+        if not csv_paths or not json_paths:
+            continue
+        latest_csv = max(csv_paths, key=lambda p: p.stat().st_mtime)
+        latest_json = max(json_paths, key=lambda p: p.stat().st_mtime)
+        snapshot_mtime = max(latest_csv.stat().st_mtime, latest_json.stat().st_mtime)
+        paired.append((snapshot_mtime, latest_csv, latest_json))
+
+    if not paired:
+        raise RuntimeError(
+            "Run_Log export failed: could not find a directory snapshot containing both "
+            "Run_Log CSV and JSON. Export both from the same source snapshot and retry."
+        )
+
+    _, csv_src, json_src = max(paired, key=lambda row: row[0])
+    return csv_src, json_src
+
+
+selected_unique = sorted(set(selected))
+run_log_csv_src, run_log_json_src = _pick_latest_run_log_pair(selected_unique)
+
 written = []
-for src in sorted(set(selected)):
+for src, target_name in (
+    (run_log_csv_src, "Run_Log.csv"),
+    (run_log_json_src, "Run_Log.json"),
+):
+    dst = out_dir / target_name
+    shutil.copy2(src, dst)
+    written.append((src, dst))
+
+# Normalize exported Run_Log timestamps to one batch timestamp to keep CSV+JSON aligned.
+batch_export_ts = dt.datetime.now(tz=dt.timezone.utc).timestamp()
+for _, dst in written:
+    os.utime(dst, (batch_export_ts, batch_export_ts))
+
+# Copy State artifacts after canonical Run_Log export. Keep all candidates but deduplicate names.
+state_selected = [
+    src for src in selected_unique
+    if src.suffix.lower() in ext_ok and "state" in src.stem.lower()
+]
+used_names: dict[str, int] = {"Run_Log.csv": 1, "Run_Log.json": 1}
+for src in state_selected:
     base = src.name
     n = used_names.get(base, 0)
     if n == 0:

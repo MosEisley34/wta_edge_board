@@ -36,6 +36,17 @@ class BatchView:
     gs_parity_metadata_by_run_id: dict[str, dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class ParityResult:
+    export_dir: str
+    latest_run_ids: list[str]
+    max_timestamp_iso: str
+    window_start_iso: str
+    window_end_iso: str
+    json_files: list[str]
+    csv_files: list[str]
+
+
 class ParityError(RuntimeError):
     pass
 
@@ -269,7 +280,30 @@ def _validate_metadata_contract(batch: BatchView, errors: list[str]) -> None:
                 )
 
 
-def verify_run_log_parity(export_dir: str) -> None:
+def _write_latest_batch_sidecar(export_dir: str, result: ParityResult) -> str:
+    sidecar_path = os.path.join(export_dir, "run_log_latest_batch_note.json")
+    payload = {
+        "recorded_at_utc": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+        "export_dir": result.export_dir,
+        "latest_batch_run_ids": result.latest_run_ids,
+        "latest_batch_max_timestamp_utc": result.max_timestamp_iso,
+        "latest_batch_window_start_utc": result.window_start_iso,
+        "latest_batch_window_end_utc": result.window_end_iso,
+        "verified_sources": {
+            "run_log_json_files": result.json_files,
+            "run_log_csv_files": result.csv_files,
+        },
+        "operator_check": (
+            "Confirm both Run_Log.json and Run_Log.csv include every run_id listed in latest_batch_run_ids."
+        ),
+    }
+    with open(sidecar_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+    return sidecar_path
+
+
+def verify_run_log_parity(export_dir: str) -> ParityResult:
     json_files, csv_files = _iter_run_log_files(export_dir)
 
     if not json_files or not csv_files:
@@ -359,6 +393,15 @@ def verify_run_log_parity(export_dir: str) -> None:
             "Run log parity check failed for export batch; aborting publish to avoid partial artifacts.\n"
             f" - {joined}"
         )
+    return ParityResult(
+        export_dir=os.path.abspath(export_dir),
+        latest_run_ids=sorted(json_batch.latest_run_ids),
+        max_timestamp_iso=json_batch.max_timestamp_iso,
+        window_start_iso=json_batch.window_start_iso,
+        window_end_iso=json_batch.window_end_iso,
+        json_files=[os.path.abspath(path) for path in json_files],
+        csv_files=[os.path.abspath(path) for path in csv_files],
+    )
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -374,12 +417,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
     try:
-        verify_run_log_parity(args.export_dir)
+        result = verify_run_log_parity(args.export_dir)
+        sidecar_path = _write_latest_batch_sidecar(args.export_dir, result)
     except ParityError as exc:
         print(str(exc), file=sys.stderr)
         print(REMEDIATION_HINT, file=sys.stderr)
         return 1
     print(f"Run log parity check passed for {args.export_dir}.")
+    print(f"Latest batch sidecar note: {sidecar_path}")
     return 0
 
 

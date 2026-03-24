@@ -24,6 +24,14 @@ What it does:
 2. Immediately invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`).
 3. Prioritize the scanner's **Run-health degraded contract (first-pass triage)** section before any key-specific deep dive.
 
+`prepare_runtime_exports.sh` enforces a single-snapshot Run_Log export contract: `Run_Log.csv` + `Run_Log.json` are regenerated together from the same latest source snapshot, parity-gated, and recorded in `run_log_latest_batch_note.json`.
+
+For compare/gate workflows that require explicit run IDs, use fail-fast preflight:
+
+```bash
+scripts/export_parity_precheck.sh [--out-dir ./exports] <run_id_a> <run_id_b> <file-or-directory> [more paths...]
+```
+
 
 ## Quick operational checks (copy/paste)
 
