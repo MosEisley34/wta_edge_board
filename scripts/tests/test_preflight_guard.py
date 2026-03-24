@@ -40,6 +40,22 @@ class PreflightGuardTests(unittest.TestCase):
             status = enforce_preflight_guard(str(root), "run-a", "run-b", "INC-1234")
             self.assertEqual(status["status"], "emergency_override")
 
+    def test_sidecar_manifest_mismatch_blocks_compare_with_remediation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_manifest(root, generated_at="2026-03-24T00:00:00+00:00")
+            write_preflight_sidecar(str(root), "run-a", "run-b", False, "")
+            self._write_manifest(root, generated_at="2026-03-24T01:00:00+00:00")
+            with self.assertRaisesRegex(
+                ValueError,
+                r"Preflight guard failed: sidecar manifest stamp does not match current export batch\.",
+            ) as ctx:
+                enforce_preflight_guard(str(root), "run-a", "run-b", "")
+            self.assertIn(
+                "Re-run scripts/export_parity_precheck.sh for this export directory.",
+                str(ctx.exception),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

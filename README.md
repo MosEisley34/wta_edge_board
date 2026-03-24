@@ -258,6 +258,7 @@ Comparison scripts are now wired to enforce this same gate by default before the
 - `--player-stats-gate-override-reason <incident-reference>`.
 
 Comparison scripts also enforce preflight sidecar parity for the current export batch (`run_compare_preflight.json` + `runtime_export_manifest.json`). If sidecar/manifest proves preflight was not run for the current batch, compare scripts exit non-zero.
+`run_compare_preflight.json` is required evidence for every comparison report; include it alongside diagnostics/metrics output artifacts in incident or release notes.
 
 Emergency-only preflight bypass requires an explicit incident tag:
 - `--emergency-preflight-override-tag <LETTERS-NNN>` (example: `INC-1234`).
@@ -268,6 +269,10 @@ Comparison workflows should use the preflight wrappers so command paths always s
 scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_success> <run_degraded> <live_runtime_dir_or_files>
 scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_success> <run_degraded> <live_runtime_dir_or_files>
 ```
+
+Operator/team usage policy:
+- Do not run `scripts/compare_run_diagnostics.py` or `scripts/compare_run_metrics.py` directly in runbook examples.
+- Route compare commands through the corresponding `_preflight.sh` wrapper.
 
 Avoid legacy/incorrect flag patterns such as `--run-log` or `--require`; run IDs are positional arguments.
 

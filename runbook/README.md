@@ -87,6 +87,28 @@ scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <ru
 python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b>
 ```
 
+Evidence artifact contract (required for every comparison report):
+- Attach `./exports_live/run_compare_preflight.json` with each diagnostics/metrics comparison output.
+- If this artifact is missing, treat the report as non-compliant and rerun the wrapper.
+
+## Operator SOP: refresh JSON from CSV → preflight → compare
+
+Use this copy/paste SOP when an operator wants a deterministic compare packet from local runtime exports.
+
+```bash
+# 1) Refresh canonical Run_Log/State JSON from CSV inputs into a clean export batch.
+scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./live_runtime/Run_Log.csv ./live_runtime/State.csv
+
+# 2) Compare diagnostics through mandatory preflight wrapper.
+scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
+
+# 3) Compare metrics through mandatory preflight wrapper.
+scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
+
+# 4) Confirm required evidence artifact exists for incident/report attachment.
+test -f ./exports_live/run_compare_preflight.json && echo "preflight evidence present"
+```
+
 Emergency override policy:
 - `scripts/export_parity_precheck.sh --allow-csv-only-triage` requires `--incident-tag <LETTERS-NNN>`.
 - compare scripts may only bypass missing preflight sidecar using `--emergency-preflight-override-tag <LETTERS-NNN>`.
