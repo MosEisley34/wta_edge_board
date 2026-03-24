@@ -7,6 +7,7 @@ from pathlib import Path
 from collections import Counter
 from typing import Any, Dict, List, Tuple
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate
+from pipeline_log_adapter import REASON_CODE_ALIAS_DICTIONARIES, REASON_CODE_ALIAS_SCHEMA_ID, _expand_reason_map
 
 METRICS = ["MATCH_CT", "NO_P_MATCH", "REJ_CT", "STATS_ENR", "STATS_MISS_A", "STATS_MISS_B"]
 DISALLOWED_RUN_REASON_CODES = {"run_debounced_skip", "run_locked_skip"}
@@ -90,10 +91,38 @@ def _run_has_disallowed_skip(rows: List[Dict[str, Any]], run_id: str) -> str | N
 
 
 def _metric_counts(summary: Dict[str, Any]) -> Dict[str, int]:
-    reason_codes = _parse_json(summary.get("reason_codes"), {})
-    if not isinstance(reason_codes, dict):
-        reason_codes = {}
+    reason_codes = _extract_canonical_reason_codes(summary)
     return {metric: int(reason_codes.get(metric, 0) or 0) for metric in METRICS}
+
+
+def _extract_canonical_reason_codes(summary: Dict[str, Any]) -> Dict[str, float]:
+    reason_payload = _parse_json(summary.get("reason_codes"), {})
+    fallback_aliases = _parse_json(summary.get("fallback_aliases"), {})
+    schema_id = str(summary.get("schema_id") or REASON_CODE_ALIAS_SCHEMA_ID)
+
+    # Accept both plain maps and envelope maps ({schema_id, reason_codes, fallback_aliases}).
+    reason_map = reason_payload
+    if isinstance(reason_payload, dict) and isinstance(reason_payload.get("reason_codes"), dict):
+        reason_map = reason_payload.get("reason_codes")
+        fallback_aliases = reason_payload.get("fallback_aliases") or fallback_aliases
+        schema_id = str(reason_payload.get("schema_id") or schema_id)
+
+    if not isinstance(reason_map, dict):
+        return {}
+    if not isinstance(fallback_aliases, dict):
+        fallback_aliases = {}
+
+    expanded = _expand_reason_map(
+        reason_map,
+        schema_id=schema_id,
+        fallback_aliases=fallback_aliases,
+    )
+    canonical_to_alias = REASON_CODE_ALIAS_DICTIONARIES.get(schema_id) or {}
+    normalized: Dict[str, float] = {}
+    for key, value in expanded.items():
+        metric_key = canonical_to_alias.get(key, key)
+        normalized[metric_key] = normalized.get(metric_key, 0.0) + float(value)
+    return normalized
 
 
 def _suppression_counts(summary: Dict[str, Any]) -> Dict[str, int]:
@@ -361,8 +390,20 @@ def build_report(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
             missing.append(run_b)
         raise ValueError(f"Missing runEdgeBoard summary rows for run_id(s): {', '.join(missing)}")
 
+    metric_counts_a = _metric_counts(summary_a)
+    metric_counts_b = _metric_counts(summary_b)
+
     lines = [f"run_comparator left={run_a} right={run_b}"]
-    lines.extend(_format_side_by_side("core_metrics", run_a, run_b, _metric_counts(summary_a), _metric_counts(summary_b)))
+    lines.extend(_format_side_by_side("core_metrics", run_a, run_b, metric_counts_a, metric_counts_b))
+    for run_id, summary, metric_counts in (
+        (run_a, summary_a, metric_counts_a),
+        (run_b, summary_b, metric_counts_b),
+    ):
+        if _extract_stage_summaries(summary) and sum(metric_counts.values()) == 0:
+            lines.append(
+                f"WARNING run={run_id}: stage summaries detected but all core metrics parsed as zero; "
+                "verify reason-code parser/alias schema alignment"
+            )
     lines.extend(_format_side_by_side("signal_suppression_reasons", run_a, run_b, _suppression_counts(summary_a), _suppression_counts(summary_b)))
     lines.extend(_format_side_by_side("per_stage_duration_ms", run_a, run_b, _stage_durations(summary_a), _stage_durations(summary_b)))
     player_stats_a = _player_stats_comparator(summary_a)
