@@ -7,6 +7,7 @@ from pathlib import Path
 from collections import Counter
 from typing import Any, Dict, List, Tuple
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate
+from preflight_guard import enforce_preflight_guard
 from pipeline_log_adapter import REASON_CODE_ALIAS_DICTIONARIES, REASON_CODE_ALIAS_SCHEMA_ID, _expand_reason_map
 
 METRICS = ["MATCH_CT", "NO_P_MATCH", "REJ_CT", "STATS_ENR", "STATS_MISS_A", "STATS_MISS_B"]
@@ -565,6 +566,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("run_b")
     parser.add_argument("--input", default="exports_live/Run_Log.csv", help="Run log CSV or JSON path")
     parser.add_argument(
+        "--emergency-preflight-override-tag",
+        default="",
+        help=(
+            "Emergency-only override when preflight sidecar is missing. "
+            "Requires incident tag format <LETTERS>-<NNN> (example: INC-1234)."
+        ),
+    )
+    parser.add_argument(
         "--skip-player-stats-coverage-gate",
         action="store_true",
         help="Skip player-stats coverage gate (not recommended; emergency/manual debugging only).",
@@ -606,6 +615,18 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     input_path = _resolve_default_input(args.input)
+    export_dir = str(input_path.parent)
+    preflight_status = enforce_preflight_guard(
+        export_dir,
+        args.run_a,
+        args.run_b,
+        args.emergency_preflight_override_tag,
+    )
+    if preflight_status.get("status") == "emergency_override":
+        print(
+            "# preflight_guard: emergency override active "
+            f"(incident_tag={preflight_status.get('incident_tag')})"
+        )
     rows = load_rows(input_path)
     if not args.skip_player_stats_coverage_gate:
         gate_config = GateConfig(

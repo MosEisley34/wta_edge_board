@@ -224,7 +224,7 @@ Failure contract:
 - emits `run_id_source_mismatch` with per-run details (`csv_present=<bool> json_present=<bool>`) when mixed-source integrity fails.
 
 Emergency override (incident-only):
-- `--allow-csv-only-triage` allows CSV-present/JSON-missing run IDs to proceed for emergency triage,
+- `--allow-csv-only-triage` allows CSV-present/JSON-missing run IDs to proceed for emergency triage, but now requires `--incident-tag <LETTERS-NNN>` (example: `INC-1234`),
 - precheck prints `degraded_confidence_csv_only_triage` so downstream readers know confidence is reduced.
 
 If wrapper parity or precheck fails, **stop triage immediately and re-export before further analysis**.
@@ -257,10 +257,16 @@ Comparison scripts are now wired to enforce this same gate by default before the
 - `--skip-player-stats-coverage-gate`, or
 - `--player-stats-gate-override-reason <incident-reference>`.
 
-Comparison scripts should use positional run IDs (with optional `--export-dir`), for example:
+Comparison scripts also enforce preflight sidecar parity for the current export batch (`run_compare_preflight.json` + `runtime_export_manifest.json`). If sidecar/manifest proves preflight was not run for the current batch, compare scripts exit non-zero.
+
+Emergency-only preflight bypass requires an explicit incident tag:
+- `--emergency-preflight-override-tag <LETTERS-NNN>` (example: `INC-1234`).
+
+Comparison workflows should use the preflight wrappers so command paths always start with preflight:
 
 ```bash
-python3 scripts/compare_run_diagnostics.py <run_success> <run_degraded> --export-dir ./exports_live
+scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_success> <run_degraded> <live_runtime_dir_or_files>
+scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_success> <run_degraded> <live_runtime_dir_or_files>
 ```
 
 Avoid legacy/incorrect flag patterns such as `--run-log` or `--require`; run IDs are positional arguments.

@@ -63,6 +63,8 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
                     "--export-dir",
                     str(root),
                     "--allow-csv-only-triage",
+                    "--allow-csv-only-triage-incident-tag",
+                    "INC-1234",
                 ]
             )
 
@@ -97,12 +99,34 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
                     "--export-dir",
                     str(root),
                     "--allow-csv-only-triage",
+                    "--allow-csv-only-triage-incident-tag",
+                    "INC-1234",
                 ]
             )
 
             self.assertEqual(code, 0)
             self.assertIn("degraded_confidence_csv_only_triage", output)
             self.assertIn("run-b: csv_present=true json_present=false", output)
+
+    def test_override_requires_incident_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_csv(root / "Run_Log.csv", ["run-a", "run-b"])
+            self._write_json(root / "Run_Log.json", ["run-a"])
+
+            code, output = self._run_main(
+                [
+                    "precheck_run_ids.py",
+                    "run-a",
+                    "run-b",
+                    "--export-dir",
+                    str(root),
+                    "--allow-csv-only-triage",
+                ]
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("Incident tag is required", output)
 
 
 if __name__ == "__main__":

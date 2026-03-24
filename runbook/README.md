@@ -42,6 +42,8 @@ Optional shell muscle-memory helper (ops dotfiles):
 
 ```bash
 alias rl_precheck='scripts/export_parity_precheck.sh --out-dir ./exports_live'
+alias rl_compare_diag='scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live'
+alias rl_compare_metrics='scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live'
 ```
 
 
@@ -73,18 +75,21 @@ Operational expectation:
 Use this sequence for all run-to-run parity/quality workflows:
 
 ```bash
-# 1) Mandatory export + parity + run-id precheck wrapper.
-scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
+# 1) Mandatory compare wrapper (runs export parity + run-id precheck first).
+scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
 
 # 2) Optional explicit precheck re-run against the prepared export dir only.
 python3 scripts/precheck_run_ids.py <run_id_a> <run_id_b> --export-dir ./exports_live
 
-# 3) Compare/gate commands read only from ./exports_live.
+# 3) Additional compare/gate commands read only from ./exports_live.
 python3 scripts/verify_run_log_parity.py --export-dir ./exports_live
-python3 scripts/compare_run_diagnostics.py <run_id_a> <run_id_b> --export-dir ./exports_live
-python3 scripts/compare_run_metrics.py <run_id_a> <run_id_b> --input ./exports_live/Run_Log.csv
+scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
 python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b>
 ```
+
+Emergency override policy:
+- `scripts/export_parity_precheck.sh --allow-csv-only-triage` requires `--incident-tag <LETTERS-NNN>`.
+- compare scripts may only bypass missing preflight sidecar using `--emergency-preflight-override-tag <LETTERS-NNN>`.
 
 ## Rolling edge-quality windows (postmortem vs release gate)
 
@@ -245,6 +250,9 @@ pytest -q scripts/tests/test_compare_run_diagnostics.py \
 
 # 2) Log-profile parity + compact reason-code guardrails.
 scripts/ci_profile_parity_gate.sh
+
+# 2b) Preflight reference consistency (docs + wrappers).
+python3 scripts/ci_preflight_reference_gate.py
 
 # 3) Rebuild runtime exports from latest artifacts and run triage contracts.
 scripts/prepare_runtime_exports.sh --out-dir ./exports ./exports
