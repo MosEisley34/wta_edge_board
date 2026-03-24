@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/export_parity_precheck.sh [--out-dir <dir>] <run_id_a> <run_id_b> <file-or-directory> [more paths...]
+  scripts/export_parity_precheck.sh [--out-dir <dir>] [--allow-csv-only-triage --incident-tag <TAG>] <run_id_a> <run_id_b> <file-or-directory> [more paths...]
 
 Fail-fast operational wrapper:
   1) Export Run_Log/State artifacts from a single latest snapshot
@@ -14,10 +14,13 @@ Fail-fast operational wrapper:
 Examples:
   scripts/export_parity_precheck.sh runA runB ./runtime
   scripts/export_parity_precheck.sh --out-dir ./exports runA runB ./runtime/Run_Log.csv ./runtime/Run_Log.json
+  scripts/export_parity_precheck.sh --out-dir ./exports --allow-csv-only-triage --incident-tag INC-1234 runA runB ./runtime
 USAGE
 }
 
 out_dir="./exports"
+allow_csv_only_triage=0
+incident_tag=""
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -29,6 +32,20 @@ while [[ "$#" -gt 0 ]]; do
         exit 1
       fi
       out_dir="$1"
+      shift
+      ;;
+    --allow-csv-only-triage)
+      allow_csv_only_triage=1
+      shift
+      ;;
+    --incident-tag)
+      shift
+      if [[ "$#" -eq 0 ]]; then
+        echo "Error: --incident-tag requires a value." >&2
+        usage >&2
+        exit 1
+      fi
+      incident_tag="$1"
       shift
       ;;
     -h|--help)
@@ -52,6 +69,11 @@ run_id_b="$2"
 shift 2
 inputs=("$@")
 
+if [[ "$allow_csv_only_triage" -eq 1 && -z "$incident_tag" ]]; then
+  echo "Error: --allow-csv-only-triage requires --incident-tag <INCIDENT-TAG>." >&2
+  exit 1
+fi
+
 echo "[1/3] Exporting runtime artifacts into ${out_dir}"
 scripts/prepare_runtime_exports.sh --out-dir "$out_dir" "${inputs[@]}"
 
@@ -63,7 +85,30 @@ python3 scripts/verify_run_log_parity.py --export-dir "$out_dir"
 echo
 
 echo "[3/3] Running run-id precheck gate"
-python3 scripts/precheck_run_ids.py "$run_id_a" "$run_id_b" --export-dir "$out_dir"
+precheck_args=("$run_id_a" "$run_id_b" --export-dir "$out_dir")
+if [[ "$allow_csv_only_triage" -eq 1 ]]; then
+  precheck_args+=(--allow-csv-only-triage --allow-csv-only-triage-incident-tag "$incident_tag")
+fi
+python3 scripts/precheck_run_ids.py "${precheck_args[@]}"
+
+python3 - "$out_dir" "$run_id_a" "$run_id_b" "$allow_csv_only_triage" "$incident_tag" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path.cwd()
+sys.path.insert(0, str(repo_root / "scripts"))
+from preflight_guard import write_preflight_sidecar
+
+out_dir, run_a, run_b, allow_csv_only, incident_tag = sys.argv[1:6]
+sidecar_path = write_preflight_sidecar(
+    out_dir,
+    run_a,
+    run_b,
+    allow_csv_only_triage=allow_csv_only == "1",
+    incident_tag=incident_tag,
+)
+print(f"Preflight sidecar written: {sidecar_path}")
+PY
 
 echo
 

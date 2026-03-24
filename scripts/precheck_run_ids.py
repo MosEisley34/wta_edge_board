@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
 
+from preflight_guard import validate_incident_tag
 
 @dataclass(frozen=True)
 class RunLogSource:
@@ -258,7 +259,21 @@ def main() -> int:
             "from JSON. This degrades confidence and should be used only for incident triage."
         ),
     )
+    parser.add_argument(
+        "--allow-csv-only-triage-incident-tag",
+        default="",
+        help=(
+            "Incident tag required when --allow-csv-only-triage is used. "
+            "Must match <LETTERS>-<NNN>, for example INC-1234."
+        ),
+    )
     args = parser.parse_args()
+    if args.allow_csv_only_triage:
+        try:
+            validate_incident_tag(args.allow_csv_only_triage_incident_tag)
+        except ValueError as exc:
+            print(f"Precheck failed: {exc}")
+            return 2
 
     sources = _iter_run_log_sources(args.export_dir)
     if not sources:
