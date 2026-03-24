@@ -714,6 +714,10 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   let lastH2hDecision = null;
   const h2hDecisionCounts = { h2h_applied: 0, h2h_low_sample: 0, h2h_unavailable: 0 };
   const sampledDecisionLimit = Number(config.SIGNAL_DECISION_SAMPLE_LIMIT || 50);
+  const suppressionPrecheckSkipScoring = toBoolean_(
+    config.SIGNAL_SUPPRESSION_PRECHECK_SKIP_SCORING,
+    toBoolean_(DEFAULT_CONFIG.SIGNAL_SUPPRESSION_PRECHECK_SKIP_SCORING, true)
+  );
   let processedCandidateCount = 0;
   let scoredCandidateCount = 0;
   const reasonCounts = {
@@ -846,9 +850,12 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
 
     const startCutoffMs = config.MINUTES_BEFORE_START_CUTOFF * 60000;
     if (event.commence_time.getTime() <= nowMs + startCutoffMs) {
-      const modelProbabilityTooClose = estimateFairProbability_(impliedProbability, match.competition_tier, enrichedStatsBundle, reasonCounts, config);
-      lastH2hDecision = resolveH2hProbabilityBump_(enrichedStatsBundle, config || {});
-      recordH2hDecisionCount_(h2hDecisionCounts, lastH2hDecision);
+      let modelProbabilityTooClose = null;
+      if (!suppressionPrecheckSkipScoring) {
+        modelProbabilityTooClose = estimateFairProbability_(impliedProbability, match.competition_tier, enrichedStatsBundle, reasonCounts, config);
+        lastH2hDecision = resolveH2hProbabilityBump_(enrichedStatsBundle, config || {});
+        recordH2hDecisionCount_(h2hDecisionCounts, lastH2hDecision);
+      }
       rows.push(buildSignalRow_(runId, config, event, match, {
         notification_outcome: 'too_close_to_start_skip',
         model_probability: modelProbabilityTooClose,
@@ -861,17 +868,21 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stats_confidence: resolvedStatsConfidence,
       }));
       captureDecision_(event, match, 'too_close_to_start_skip', {
-        scored: true,
+        scored: !suppressionPrecheckSkipScoring,
         stats_confidence: resolvedStatsConfidence,
+        suppression_precheck_skip_scoring: suppressionPrecheckSkipScoring,
       });
       return;
     }
 
     const staleThresholdMs = config.STALE_ODDS_WINDOW_MIN * 60000;
     if (nowMs - event.odds_updated_time.getTime() > staleThresholdMs) {
-      const modelProbabilityStale = estimateFairProbability_(impliedProbability, match.competition_tier, enrichedStatsBundle, reasonCounts, config);
-      lastH2hDecision = resolveH2hProbabilityBump_(enrichedStatsBundle, config || {});
-      recordH2hDecisionCount_(h2hDecisionCounts, lastH2hDecision);
+      let modelProbabilityStale = null;
+      if (!suppressionPrecheckSkipScoring) {
+        modelProbabilityStale = estimateFairProbability_(impliedProbability, match.competition_tier, enrichedStatsBundle, reasonCounts, config);
+        lastH2hDecision = resolveH2hProbabilityBump_(enrichedStatsBundle, config || {});
+        recordH2hDecisionCount_(h2hDecisionCounts, lastH2hDecision);
+      }
       rows.push(buildSignalRow_(runId, config, event, match, {
         notification_outcome: 'stale_odds_skip',
         model_probability: modelProbabilityStale,
@@ -884,8 +895,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stats_confidence: resolvedStatsConfidence,
       }));
       captureDecision_(event, match, 'stale_odds_skip', {
-        scored: true,
+        scored: !suppressionPrecheckSkipScoring,
         stats_confidence: resolvedStatsConfidence,
+        suppression_precheck_skip_scoring: suppressionPrecheckSkipScoring,
       });
       return;
     }
