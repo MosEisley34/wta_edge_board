@@ -103,8 +103,20 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
 
     def test_missing_metrics_emit_reason_code_diagnostics(self):
         rows = [
-            {"row_type": "summary", "stage": "runEdgeBoard", "run_id": "run-baseline", "signal_decision_summary": "{}"},
-            {"row_type": "summary", "stage": "runEdgeBoard", "run_id": "run-candidate", "signal_decision_summary": "{}"},
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-baseline",
+                "signal_decision_summary": "{}",
+                "stage_summaries": "[]",
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-candidate",
+                "signal_decision_summary": "{}",
+                "stage_summaries": "[]",
+            },
         ]
         report = evaluate_edge_quality_gate(
             rows,
@@ -118,6 +130,41 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             report["failures"],
         )
         self.assertIn("missing_edge_volatility_metric reason_code=missing_field_edge_volatility", report["failures"])
+
+    def test_legacy_schema_rows_emit_dedicated_status_instead_of_completeness_fail(self):
+        rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_legacy_schema_warning.json"))
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(
+                min_feature_completeness=0.6,
+                max_edge_volatility=0.03,
+                max_suppression_drift=0.6,
+                suppression_min_volume=2,
+            ),
+        )
+        self.assertEqual("legacy_schema_insufficient_feature_contract", report["status"])
+        self.assertEqual([], report["failures"])
+        self.assertTrue(
+            any(item.startswith("legacy_schema_insufficient_feature_contract") for item in report["warnings"])
+        )
+
+    def test_modern_schema_runs_still_enforce_completeness_floor(self):
+        rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_fail.json"))
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(
+                min_feature_completeness=0.6,
+                max_edge_volatility=0.03,
+                max_suppression_drift=1.0,
+                suppression_min_volume=999,
+            ),
+        )
+        self.assertEqual("fail", report["status"])
+        self.assertTrue(any("feature_completeness_below_floor" in item for item in report["failures"]))
 
     def test_low_volume_comparison_returns_insufficient_sample(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_low_volume_insufficient.json"))

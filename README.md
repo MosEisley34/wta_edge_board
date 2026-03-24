@@ -431,6 +431,12 @@ The extractor keeps model features clean by routing source-level parse/status is
 
 Use `scripts/evaluate_edge_quality.py` with volume-aware thresholds so low-sample runs emit soft warnings instead of false hard failures.
 
+Legacy-schema handling contract:
+
+- Runs emitted with older feature-contract shapes (legacy `schema_id`, non-canonical `stage_summaries`, or missing required feature-contract fields) are classified as `legacy_schema_insufficient_feature_contract`.
+- These rows are reported explicitly via warning entries prefixed with `legacy_schema_insufficient_feature_contract` instead of the generic `missing_feature_completeness_metric` hard fail.
+- Modern rows continue to enforce `--min-feature-completeness` exactly as before.
+
 Recommended operating tiers:
 
 - **Low volume / sparse windows**
