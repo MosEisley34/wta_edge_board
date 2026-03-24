@@ -103,6 +103,7 @@ python3 scripts/evaluate_edge_quality.py ./exports_live \
 Operational gate criteria:
 - **GO/NO-GO must use only `recent_window_gate` status counts**.
 - Treat any `recent_window_gate.status_counts.fail > 0` as **NO-GO**.
+- Treat any `recent_window_gate.status_counts.legacy_schema_insufficient_feature_contract > 0` as **NO-GO** and triage as historical-schema incompatibility (not a modern completeness regression).
 - Treat any `recent_window_gate.status_counts.insufficient_sample > 0` as **NO-GO** until sample sufficiency is restored.
 - Treat `recent_window_gate.pair_count == 0` as **NO-GO** (insufficient evidence).
 - Use `full_history_trend` only for diagnostics/postmortem context (not release gating).

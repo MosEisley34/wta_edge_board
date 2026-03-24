@@ -1,0 +1,31 @@
+[
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-baseline",
+    "feature_completeness": 0.83,
+    "edge_volatility": 0.01,
+    "signal_decision_summary": {
+      "suppression_counts": {
+        "edge": {"by_reason": {"edge_below_threshold": 4}}
+      }
+    }
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-candidate",
+    "edge_volatility": 0.012,
+    "schema_id": "reason_code_alias_v0",
+    "stage_summaries": {
+      "legacy_stage_rows": [
+        {"name": "stageFetchPlayerStats", "output": 12}
+      ]
+    },
+    "signal_decision_summary": {
+      "suppression_counts": {
+        "edge": {"by_reason": {"edge_below_threshold": 4}}
+      }
+    }
+  }
+]

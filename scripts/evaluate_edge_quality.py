@@ -251,6 +251,48 @@ def _extract_feature_completeness(summary_row: dict[str, Any]) -> tuple[float | 
     return None, "missing_field_feature_completeness"
 
 
+def _run_schema_markers(summary_row: dict[str, Any]) -> dict[str, Any]:
+    markers: list[str] = []
+
+    payload = _parse_json_like(summary_row.get("reason_codes"), {})
+    schema_candidates: list[str] = []
+    for candidate in (summary_row.get("schema_id"), payload.get("schema_id") if isinstance(payload, dict) else None):
+        if candidate in (None, ""):
+            continue
+        schema_candidates.append(str(candidate))
+
+    non_current_schema_ids = sorted({schema for schema in schema_candidates if schema != REASON_CODE_ALIAS_SCHEMA_ID})
+    if non_current_schema_ids:
+        markers.append("reason_code_schema_id_legacy")
+
+    stage_raw = summary_row.get("stage_summaries")
+    stage_parsed = _parse_json_like(stage_raw, None)
+    stage_rows = _extract_stage_summaries(summary_row)
+    stage_explicitly_empty = stage_parsed == [] or (
+        isinstance(stage_parsed, dict) and stage_parsed.get("stage_summaries") == []
+    )
+    if stage_raw not in (None, "") and not stage_rows and not stage_explicitly_empty:
+        markers.append("stage_summaries_legacy_shape")
+
+    required_fields = (
+        "feature_completeness",
+        "player_stats_feature_completeness",
+        "stats_feature_completeness",
+        "stage_summaries",
+        "reason_codes",
+    )
+    has_required_fields = any(summary_row.get(field) not in (None, "") for field in required_fields)
+    if not has_required_fields:
+        markers.append("missing_feature_contract_required_fields")
+
+    return {
+        "legacy_feature_contract": bool(markers),
+        "markers": markers,
+        "schema_ids": sorted(set(schema_candidates)),
+        "non_current_schema_ids": non_current_schema_ids,
+    }
+
+
 def _extract_signal_summary(summary_row: dict[str, Any]) -> dict[str, Any]:
     parsed = _parse_json_like(summary_row.get("signal_decision_summary"), {})
     return parsed if isinstance(parsed, dict) else {}
@@ -454,6 +496,7 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         diagnostics["feature_completeness_reason_code"] = feature_diag
     if edge_diag:
         diagnostics["edge_volatility_reason_code"] = edge_diag
+    schema_markers = _run_schema_markers(summary)
     return {
         "run_id": run_id,
         "feature_completeness": feature_completeness,
@@ -466,6 +509,7 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
             "tournament": _volatility_context_key(summary)[0],
             "time_block": _volatility_context_key(summary)[1],
         },
+        "schema_markers": schema_markers,
     }
 
 
@@ -482,8 +526,12 @@ def evaluate_edge_quality_gate(
     warnings: list[str] = []
     candidate_feature_completeness = candidate["feature_completeness"]
     if candidate_feature_completeness is None:
-        diag = candidate["diagnostics"].get("feature_completeness_reason_code", "missing_field_feature_completeness")
-        failures.append(f"missing_feature_completeness_metric reason_code={diag}")
+        if candidate.get("schema_markers", {}).get("legacy_feature_contract"):
+            markers = ",".join(candidate.get("schema_markers", {}).get("markers", [])) or "unknown"
+            warnings.append(f"legacy_schema_insufficient_feature_contract markers={markers}")
+        else:
+            diag = candidate["diagnostics"].get("feature_completeness_reason_code", "missing_field_feature_completeness")
+            failures.append(f"missing_feature_completeness_metric reason_code={diag}")
     elif candidate_feature_completeness < config.min_feature_completeness:
         failures.append(
             "feature_completeness_below_floor "
@@ -533,7 +581,15 @@ def evaluate_edge_quality_gate(
                 f"(reason={reason} baseline={base} candidate={cand} drift={drift:.4f} > bound={config.max_suppression_drift:.4f})"
             )
 
-    status = "fail" if failures else ("insufficient_sample" if warnings else "pass")
+    has_legacy_schema_warning = any(item.startswith("legacy_schema_insufficient_feature_contract") for item in warnings)
+    if failures:
+        status = "fail"
+    elif has_legacy_schema_warning:
+        status = "legacy_schema_insufficient_feature_contract"
+    elif warnings:
+        status = "insufficient_sample"
+    else:
+        status = "pass"
     return {
         "status": status,
         "baseline": baseline,
@@ -572,7 +628,12 @@ def evaluate_rolling_edge_quality(
             )
             pair_reports.append(report)
 
-        status_counts = {"pass": 0, "fail": 0, "insufficient_sample": 0}
+        status_counts = {
+            "pass": 0,
+            "fail": 0,
+            "insufficient_sample": 0,
+            "legacy_schema_insufficient_feature_contract": 0,
+        }
         for report in pair_reports:
             status = str(report.get("status") or "")
             if status in status_counts:
@@ -587,12 +648,16 @@ def evaluate_rolling_edge_quality(
         if include_go_nogo:
             fail_count = status_counts["fail"]
             insufficient_count = status_counts["insufficient_sample"]
+            legacy_count = status_counts["legacy_schema_insufficient_feature_contract"]
             if summary["pair_count"] <= 0:
                 go_no_go = "no-go"
                 reason = "insufficient_recent_window_pairs"
             elif fail_count > 0:
                 go_no_go = "no-go"
                 reason = "recent_window_edge_quality_failures_present"
+            elif legacy_count > 0:
+                go_no_go = "no-go"
+                reason = "recent_window_legacy_schema_contract_present"
             elif insufficient_count > 0:
                 go_no_go = "no-go"
                 reason = "recent_window_insufficient_sample_present"
