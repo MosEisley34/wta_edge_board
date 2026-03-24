@@ -1,0 +1,226 @@
+{
+  "generated_at_utc": "2026-03-24T21:04:50.309188+00:00",
+  "input": "runtime_exports/exports/Run_Log.json",
+  "runbook_changelog_markdown": "### cooldown_window_150m\n- Change pivot run_id: `test-run`\n- Before window run_ids (0): none\n- After window run_ids (2): test-run, test-run\n- Suppression total \u0394: +0\n- Scored signals \u0394: +0\n- Sent notifications \u0394: +0\n- Player-stats no-regression gate: PASS",
+  "tuning_effect": {
+    "after": {
+      "matched_events": 0,
+      "player_stats": {
+        "coverage_rate": null,
+        "requested": 0,
+        "resolved": 0,
+        "ta_parity_rate": null,
+        "ta_resolved": 0
+      },
+      "run_count": 2,
+      "run_ids": [
+        "test-run",
+        "test-run"
+      ],
+      "scored_signals": 0,
+      "sent_notifications": 0,
+      "suppression_bucket_mix": [
+        {
+          "bucket": "cooldown",
+          "count": 0,
+          "share": 0
+        },
+        {
+          "bucket": "edge",
+          "count": 0,
+          "share": 0
+        },
+        {
+          "bucket": "stale",
+          "count": 0,
+          "share": 0
+        },
+        {
+          "bucket": "timing",
+          "count": 0,
+          "share": 0
+        }
+      ],
+      "suppression_reason_mix": [
+        {
+          "count": 0,
+          "reason": "cooldown_suppressed",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "edge_below_threshold",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "notify_disabled",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "notify_missing_config",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "stale_odds_skip",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "too_close_to_start_skip",
+          "share": 0
+        }
+      ],
+      "suppression_total": 0
+    },
+    "before": {
+      "matched_events": 0,
+      "player_stats": {
+        "coverage_rate": null,
+        "requested": 0,
+        "resolved": 0,
+        "ta_parity_rate": null,
+        "ta_resolved": 0
+      },
+      "run_count": 0,
+      "run_ids": [],
+      "scored_signals": 0,
+      "sent_notifications": 0,
+      "suppression_bucket_mix": [
+        {
+          "bucket": "cooldown",
+          "count": 0,
+          "share": 0
+        },
+        {
+          "bucket": "edge",
+          "count": 0,
+          "share": 0
+        },
+        {
+          "bucket": "stale",
+          "count": 0,
+          "share": 0
+        },
+        {
+          "bucket": "timing",
+          "count": 0,
+          "share": 0
+        }
+      ],
+      "suppression_reason_mix": [],
+      "suppression_total": 0
+    },
+    "change_label": "cooldown_window_150m",
+    "change_run_id": "test-run",
+    "diff": {
+      "matched_events_delta": 0,
+      "no_regression": {
+        "overall": true,
+        "player_stats_coverage": true,
+        "player_stats_ta_parity": true
+      },
+      "player_stats_coverage_delta": null,
+      "player_stats_ta_parity_delta": null,
+      "scored_signals_delta": 0,
+      "sent_notifications_delta": 0,
+      "suppression_total_delta": 0
+    },
+    "window_days": 3
+  },
+  "weekly_window": {
+    "end_utc": "2026-03-13T01:39:07.692000+00:00",
+    "start_utc": "2026-03-06T01:39:07.692000+00:00",
+    "summary": {
+      "matched_events": 0,
+      "player_stats": {
+        "coverage_rate": null,
+        "requested": 0,
+        "resolved": 0,
+        "ta_parity_rate": null,
+        "ta_resolved": 0
+      },
+      "run_count": 1,
+      "run_ids": [
+        "test-run"
+      ],
+      "scored_signals": 0,
+      "sent_notifications": 0,
+      "suppression_bucket_mix": [
+        {
+          "bucket": "cooldown",
+          "count": 0,
+          "share": 0
+        },
+        {
+          "bucket": "edge",
+          "count": 0,
+          "share": 0
+        },
+        {
+          "bucket": "stale",
+          "count": 0,
+          "share": 0
+        },
+        {
+          "bucket": "timing",
+          "count": 0,
+          "share": 0
+        }
+      ],
+      "suppression_reason_mix": [
+        {
+          "count": 0,
+          "reason": "cooldown_suppressed",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "edge_below_threshold",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "notify_disabled",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "notify_missing_config",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "stale_odds_skip",
+          "share": 0
+        },
+        {
+          "count": 0,
+          "reason": "too_close_to_start_skip",
+          "share": 0
+        }
+      ],
+      "suppression_total": 0
+    },
+    "top_suppression_buckets": [
+      {
+        "avoidable_count": 0,
+        "bucket": "cooldown",
+        "classification": "expected",
+        "count": 0,
+        "expected_count": 0,
+        "share": 0
+      },
+      {
+        "avoidable_count": 0,
+        "bucket": "edge",
+        "classification": "avoidable",
+        "count": 0,
+        "expected_count": 0,
+        "share": 0
+      }
+    ]
+  }
+}

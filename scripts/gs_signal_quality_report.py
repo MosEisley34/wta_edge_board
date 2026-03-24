@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any
 
 
-EXPECTED_SUPPRESSION_REASONS = {
-    "cooldown_suppressed",
-    "duplicate_suppressed",
-    "notify_disabled",
-    "notify_missing_config",
+SUPPRESSION_BUCKET_REASON_MAP = {
+    "edge": {"edge_below_threshold"},
+    "timing": {"too_close_to_start_skip"},
+    "stale": {"stale_odds_skip"},
+    "cooldown": {"cooldown_suppressed"},
 }
 
 
@@ -261,6 +261,7 @@ def _aggregate(snapshots: list[RunSnapshot]) -> dict[str, Any]:
         "sent_notifications": sum(s.sent_notifications for s in snapshots),
         "suppression_total": total_suppressions,
         "suppression_reason_mix": suppression_mix,
+        "suppression_bucket_mix": _bucket_mix_from_suppressions(dict(suppressions)),
         "player_stats": {
             "requested": requested,
             "resolved": resolved,
@@ -271,16 +272,36 @@ def _aggregate(snapshots: list[RunSnapshot]) -> dict[str, Any]:
     }
 
 
+def _bucket_mix_from_suppressions(suppressions: dict[str, int]) -> list[dict[str, Any]]:
+    bucket_counts = {bucket: 0 for bucket in SUPPRESSION_BUCKET_REASON_MAP}
+    for reason, count in suppressions.items():
+        for bucket, reasons in SUPPRESSION_BUCKET_REASON_MAP.items():
+            if reason in reasons:
+                bucket_counts[bucket] += int(count)
+
+    total = sum(bucket_counts.values())
+    ordered = sorted(bucket_counts.items(), key=lambda item: (-item[1], item[0]))
+    return [
+        {
+            "bucket": bucket,
+            "count": count,
+            "share": round((count / total), 4) if total else 0,
+        }
+        for bucket, count in ordered
+    ]
+
+
 def _top_suppression_buckets(summary: dict[str, Any], top_n: int = 2) -> list[dict[str, Any]]:
-    buckets = summary.get("suppression_reason_mix", [])
+    buckets = summary.get("suppression_bucket_mix", [])
     out = []
     for entry in buckets[:top_n]:
-        reason = str(entry["reason"])
+        bucket = str(entry["bucket"])
         count = int(entry["count"])
-        classification = "expected" if reason in EXPECTED_SUPPRESSION_REASONS else "avoidable"
+        # cooldown is expected noise; edge/timing/stale are tuneable avoidable suppression churn.
+        classification = "expected" if bucket == "cooldown" else "avoidable"
         out.append(
             {
-                "reason": reason,
+                "bucket": bucket,
                 "count": count,
                 "share": entry.get("share", 0),
                 "expected_count": count if classification == "expected" else 0,

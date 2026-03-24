@@ -210,6 +210,21 @@ Add one entry per change:
 - Player-stats no-regression gate: PASS|FAIL
 ```
 
+Latest weekly cycle (2026-03-24):
+
+### cooldown_window_150m
+- Change pivot run_id: `test-run`
+- Before window run_ids (0): none
+- After window run_ids (2): test-run, test-run
+- Suppression total Δ: +0
+- Scored signals Δ: +0
+- Sent notifications Δ: +0
+- Player-stats coverage Δ: n/a (no requested players in window)
+- Player-stats TA parity Δ: n/a (no resolved players in window)
+- Player-stats no-regression gate: PASS
+- Weekly top suppression buckets (latest exports): cooldown=0, edge=0
+
+
 ## Operator SLOs for degraded-mode reliability
 
 Use these thresholds for weekly operations review and on-call escalation.
