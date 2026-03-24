@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pipeline_log_adapter import (
+    REASON_CODE_ALIAS_DICTIONARIES,
+    REASON_CODE_ALIAS_SCHEMA_ID,
+    _expand_reason_map,
+)
+
 
 @dataclass(frozen=True)
 class EdgeQualityGateConfig:
@@ -98,15 +104,60 @@ def _extract_stage_summaries(summary_row: dict[str, Any]) -> list[dict[str, Any]
     direct = _parse_json_like(summary_row.get("stage_summaries"), None)
     if isinstance(direct, list):
         return [row for row in direct if isinstance(row, dict)]
+    if isinstance(direct, dict):
+        nested = direct.get("stage_summaries")
+        if isinstance(nested, list):
+            return [row for row in nested if isinstance(row, dict)]
     message = _parse_json_like(summary_row.get("message"), {})
     if isinstance(message, dict):
         nested = message.get("stage_summaries")
         if isinstance(nested, list):
             return [row for row in nested if isinstance(row, dict)]
+        if isinstance(nested, dict) and isinstance(nested.get("stage_summaries"), list):
+            return [row for row in nested.get("stage_summaries") if isinstance(row, dict)]
     return []
 
 
-def _extract_feature_completeness(summary_row: dict[str, Any]) -> float:
+def _reason_code_totals(summary_row: dict[str, Any]) -> tuple[dict[str, float], str | None]:
+    payload = _parse_json_like(summary_row.get("reason_codes"), {})
+    fallback_aliases = _parse_json_like(summary_row.get("fallback_aliases"), {})
+    schema_id = str(summary_row.get("schema_id") or REASON_CODE_ALIAS_SCHEMA_ID)
+
+    reason_map = payload
+    if isinstance(payload, dict) and isinstance(payload.get("reason_codes"), dict):
+        reason_map = payload.get("reason_codes")
+        fallback_aliases = payload.get("fallback_aliases") or fallback_aliases
+        schema_id = str(payload.get("schema_id") or schema_id)
+
+    if not isinstance(reason_map, dict):
+        return {}, "unsupported_artifact_shape_reason_codes"
+    if not isinstance(fallback_aliases, dict):
+        fallback_aliases = {}
+
+    expanded = _expand_reason_map(reason_map, schema_id=schema_id, fallback_aliases=fallback_aliases)
+    canonical_to_alias = REASON_CODE_ALIAS_DICTIONARIES.get(schema_id) or {}
+    normalized: dict[str, float] = {}
+    for key, value in expanded.items():
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        normalized[str(key)] = normalized.get(str(key), 0.0) + numeric
+        alias = canonical_to_alias.get(str(key))
+        if alias:
+            normalized[alias] = normalized.get(alias, 0.0) + numeric
+    return normalized, None
+
+
+def _extract_feature_completeness(summary_row: dict[str, Any]) -> tuple[float | None, str | None]:
+    for field in ("feature_completeness", "player_stats_feature_completeness", "stats_feature_completeness"):
+        try:
+            value = float(summary_row.get(field))
+            if value >= 0:
+                return value, None
+        except (TypeError, ValueError):
+            continue
+
     for stage in _extract_stage_summaries(summary_row):
         if str(stage.get("stage") or "") != "stageFetchPlayerStats":
             continue
@@ -117,7 +168,7 @@ def _extract_feature_completeness(summary_row: dict[str, Any]) -> float:
         if isinstance(coverage, dict):
             value = coverage.get("resolved_rate")
             try:
-                return float(value)
+                return float(value), None
             except (TypeError, ValueError):
                 pass
         requested = metadata.get("requested_player_count", metadata.get("players_total", 0))
@@ -125,10 +176,29 @@ def _extract_feature_completeness(summary_row: dict[str, Any]) -> float:
         try:
             requested_n = float(requested)
             resolved_n = float(resolved)
-            return (resolved_n / requested_n) if requested_n > 0 else 0.0
+            return ((resolved_n / requested_n) if requested_n > 0 else 0.0), None
         except (TypeError, ValueError, ZeroDivisionError):
-            return 0.0
-    return 0.0
+            continue
+        try:
+            input_n = float(stage.get("input_count"))
+            output_n = float(stage.get("output_count"))
+            if input_n > 0:
+                return max(0.0, min(1.0, output_n / input_n)), None
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+
+    reason_totals, reason_diag = _reason_code_totals(summary_row)
+    enriched = float(reason_totals.get("stats_enriched", reason_totals.get("STATS_ENR", 0.0)) or 0.0)
+    missing_a = float(reason_totals.get("stats_missing_player_a", reason_totals.get("STATS_MISS_A", 0.0)) or 0.0)
+    missing_b = float(reason_totals.get("stats_missing_player_b", reason_totals.get("STATS_MISS_B", 0.0)) or 0.0)
+    denom = enriched + missing_a + missing_b
+    if denom > 0:
+        return max(0.0, min(1.0, enriched / denom)), None
+    if reason_diag:
+        return None, reason_diag
+    if summary_row.get("reason_codes") not in (None, ""):
+        return None, "unsupported_artifact_shape_reason_codes"
+    return None, "missing_field_feature_completeness"
 
 
 def _extract_signal_summary(summary_row: dict[str, Any]) -> dict[str, Any]:
@@ -155,20 +225,62 @@ def _flatten_suppression_counts(signal_summary: dict[str, Any]) -> dict[str, int
     return counts
 
 
-def _edge_volatility(signal_summary: dict[str, Any]) -> float | None:
+def _edge_volatility(summary_row: dict[str, Any], signal_summary: dict[str, Any]) -> tuple[float | None, str | None]:
+    for field in (
+        "edge_volatility",
+        "edge_volatility_vs_previous_run",
+        "edge_volatility_abs_delta_p95",
+        "edge_volatility_abs_delta_mean",
+    ):
+        raw = summary_row.get(field)
+        if isinstance(raw, dict):
+            for nested_key in ("abs_delta_p95", "abs_delta_mean", "delta_p95"):
+                try:
+                    return abs(float(raw.get(nested_key))), None
+                except (TypeError, ValueError):
+                    continue
+        try:
+            return abs(float(raw)), None
+        except (TypeError, ValueError):
+            pass
+
     edge_quality = signal_summary.get("edge_quality") if isinstance(signal_summary, dict) else {}
     if not isinstance(edge_quality, dict):
-        return None
+        edge_quality = {}
     volatility = edge_quality.get("edge_volatility_vs_previous_run")
     if not isinstance(volatility, dict):
-        return None
+        volatility = {}
     for key in ("abs_delta_p95", "abs_delta_mean", "delta_p95"):
         value = volatility.get(key)
         try:
-            return abs(float(value))
+            return abs(float(value)), None
         except (TypeError, ValueError):
             continue
-    return None
+
+    for stage in _extract_stage_summaries(summary_row):
+        if str(stage.get("stage") or "").strip() != "stageGenerateSignals":
+            continue
+        metadata = _parse_json_like(stage.get("reason_metadata"), {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        for key in ("edge_volatility_vs_previous_run", "edge_volatility"):
+            candidate = metadata.get(key)
+            if isinstance(candidate, dict):
+                for nested_key in ("abs_delta_p95", "abs_delta_mean", "delta_p95"):
+                    try:
+                        return abs(float(candidate.get(nested_key))), None
+                    except (TypeError, ValueError):
+                        continue
+        try:
+            produced = float(stage.get("output_count"))
+            considered = float(stage.get("input_count"))
+            if considered > 0:
+                return abs(produced - considered) / considered, None
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+    if summary_row.get("signal_decision_summary") not in (None, "") or summary_row.get("stage_summaries") not in (None, ""):
+        return None, "missing_field_edge_volatility"
+    return None, "unsupported_artifact_shape_edge_volatility"
 
 
 def _snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
@@ -176,11 +288,19 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
     if not summary:
         raise ValueError(f"Missing runEdgeBoard summary row for run_id={run_id}")
     signal_summary = _extract_signal_summary(summary)
+    feature_completeness, feature_diag = _extract_feature_completeness(summary)
+    edge_volatility, edge_diag = _edge_volatility(summary, signal_summary)
+    diagnostics: dict[str, str] = {}
+    if feature_diag:
+        diagnostics["feature_completeness_reason_code"] = feature_diag
+    if edge_diag:
+        diagnostics["edge_volatility_reason_code"] = edge_diag
     return {
         "run_id": run_id,
-        "feature_completeness": _extract_feature_completeness(summary),
-        "edge_volatility": _edge_volatility(signal_summary),
+        "feature_completeness": feature_completeness,
+        "edge_volatility": edge_volatility,
         "suppression_counts": _flatten_suppression_counts(signal_summary),
+        "diagnostics": diagnostics,
     }
 
 
@@ -194,15 +314,20 @@ def evaluate_edge_quality_gate(
     candidate = _snapshot(rows, candidate_run_id)
 
     failures: list[str] = []
-    if candidate["feature_completeness"] < config.min_feature_completeness:
+    candidate_feature_completeness = candidate["feature_completeness"]
+    if candidate_feature_completeness is None:
+        diag = candidate["diagnostics"].get("feature_completeness_reason_code", "missing_field_feature_completeness")
+        failures.append(f"missing_feature_completeness_metric reason_code={diag}")
+    elif candidate_feature_completeness < config.min_feature_completeness:
         failures.append(
             "feature_completeness_below_floor "
-            f"(candidate={candidate['feature_completeness']:.4f} < floor={config.min_feature_completeness:.4f})"
+            f"(candidate={candidate_feature_completeness:.4f} < floor={config.min_feature_completeness:.4f})"
         )
 
     candidate_edge_volatility = candidate["edge_volatility"]
     if candidate_edge_volatility is None:
-        failures.append("missing_edge_volatility_metric")
+        diag = candidate["diagnostics"].get("edge_volatility_reason_code", "missing_field_edge_volatility")
+        failures.append(f"missing_edge_volatility_metric reason_code={diag}")
     elif candidate_edge_volatility > config.max_edge_volatility:
         failures.append(
             "edge_volatility_above_ceiling "

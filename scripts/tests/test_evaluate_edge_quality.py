@@ -61,6 +61,59 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual("fail", payload["status"])
 
+    def test_alias_envelope_csv_pass_derives_non_zero_feature_completeness(self):
+        rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_alias_pass.csv"))
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(
+                min_feature_completeness=0.6,
+                max_edge_volatility=0.2,
+                max_suppression_drift=0.6,
+                suppression_min_volume=2,
+            ),
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertGreater(report["candidate"]["feature_completeness"], 0.0)
+        self.assertEqual({}, report["candidate"]["diagnostics"])
+
+    def test_alias_envelope_csv_fail_uses_stage_signal_output_derivation(self):
+        rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_alias_fail.csv"))
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(
+                min_feature_completeness=0.6,
+                max_edge_volatility=0.03,
+                max_suppression_drift=0.6,
+                suppression_min_volume=2,
+            ),
+        )
+        self.assertEqual("fail", report["status"])
+        self.assertGreater(report["candidate"]["feature_completeness"], 0.0)
+        self.assertTrue(any("feature_completeness_below_floor" in item for item in report["failures"]))
+        self.assertTrue(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
+
+    def test_missing_metrics_emit_reason_code_diagnostics(self):
+        rows = [
+            {"row_type": "summary", "stage": "runEdgeBoard", "run_id": "run-baseline", "signal_decision_summary": "{}"},
+            {"row_type": "summary", "stage": "runEdgeBoard", "run_id": "run-candidate", "signal_decision_summary": "{}"},
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(),
+        )
+        self.assertEqual("fail", report["status"])
+        self.assertIn(
+            "missing_feature_completeness_metric reason_code=missing_field_feature_completeness",
+            report["failures"],
+        )
+        self.assertIn("missing_edge_volatility_metric reason_code=missing_field_edge_volatility", report["failures"])
+
 
 if __name__ == "__main__":
     unittest.main()
