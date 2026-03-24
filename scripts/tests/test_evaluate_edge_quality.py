@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,10 +10,13 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from evaluate_edge_quality import (  # noqa: E402
+    DailyEdgeQualitySLOConfig,
     EdgeQualityGateConfig,
+    evaluate_daily_edge_quality_slo,
     evaluate_edge_quality_gate,
     evaluate_rolling_edge_quality,
     load_run_log_rows,
+    write_daily_slo_artifacts,
 )
 
 
@@ -249,6 +253,88 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual(1, report["recent_window_gate"]["pair_count"])
         self.assertEqual("go", report["recent_window_gate"]["go_no_go"])
         self.assertEqual(1, report["recent_window_gate"]["status_counts"]["pass"])
+
+    def test_daily_slo_verdict_fails_when_decisionable_window_fail_rate_exceeds_threshold(self):
+        rows = []
+        for index in range(1, 13):
+            rows.append(
+                {
+                    "row_type": "summary",
+                    "stage": "runEdgeBoard",
+                    "run_id": f"run-{index}",
+                    "ended_at": f"2026-03-{index:02d}T00:00:00Z",
+                    "feature_completeness": 0.9,
+                    "edge_volatility": 0.01 if index != 11 else 0.08,
+                    "signal_decision_summary": json.dumps({"suppression_counts": {}}),
+                    "stage_summaries": json.dumps([]),
+                }
+            )
+        report = evaluate_daily_edge_quality_slo(
+            rows=rows,
+            gate_config=EdgeQualityGateConfig(max_edge_volatility=0.03),
+            slo_config=DailyEdgeQualitySLOConfig(window_days=(12,), min_pairs_per_window=10, fail_rate_threshold=0.05),
+            as_of_utc="2026-03-12T12:00:00Z",
+        )
+        self.assertEqual("fail", report["gate_verdict"])
+        self.assertEqual(1, report["decisionable_window_count"])
+        self.assertEqual(1, report["window_reports"][0]["status_counts"]["fail"])
+
+    def test_daily_slo_verdict_insufficient_when_window_below_min_pairs(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "ended_at": "2026-03-22T00:00:00Z",
+                "feature_completeness": 0.8,
+                "edge_volatility": 0.01,
+                "signal_decision_summary": json.dumps({"suppression_counts": {}}),
+                "stage_summaries": json.dumps([]),
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "ended_at": "2026-03-23T00:00:00Z",
+                "feature_completeness": 0.8,
+                "edge_volatility": 0.01,
+                "signal_decision_summary": json.dumps({"suppression_counts": {}}),
+                "stage_summaries": json.dumps([]),
+            },
+        ]
+        report = evaluate_daily_edge_quality_slo(
+            rows=rows,
+            gate_config=EdgeQualityGateConfig(),
+            slo_config=DailyEdgeQualitySLOConfig(window_days=(3, 7), min_pairs_per_window=10, fail_rate_threshold=0.15),
+            as_of_utc="2026-03-24T12:00:00Z",
+        )
+        self.assertEqual("insufficient_sample", report["gate_verdict"])
+        self.assertTrue(all(not window["decisionable"] for window in report["window_reports"]))
+
+    def test_write_daily_slo_artifacts_writes_timestamped_report_and_summary(self):
+        report = {
+            "generated_at_utc": "2026-03-24T01:00:00+00:00",
+            "as_of_utc": "2026-03-24T00:00:00+00:00",
+            "gate_verdict": "pass",
+            "gate_reason": "all_decisionable_windows_within_fail_rate_threshold",
+            "decisionable_window_count": 2,
+            "failing_decisionable_window_count": 0,
+            "aggregate_status_counts": {"pass": 4, "fail": 0, "insufficient_sample": 1},
+            "window_reports": [{"window_days": 3, "pair_count": 2, "decisionable": True, "fail_rate": 0.0, "verdict": "pass"}],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_reports_dir = Path(temp_dir) / "reports"
+            temp_archive_dir = Path(temp_dir) / "archive"
+            daily_path, summary_path = write_daily_slo_artifacts(
+                report=report,
+                output_dir=str(temp_reports_dir),
+                archive_dir=str(temp_archive_dir),
+            )
+            self.assertTrue(daily_path.exists())
+            self.assertTrue(summary_path.exists())
+            self.assertIn("edge_quality_daily_slo_", daily_path.name)
+            summary_lines = summary_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertGreaterEqual(len(summary_lines), 1)
 
 
 if __name__ == "__main__":
