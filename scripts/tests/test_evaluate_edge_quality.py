@@ -114,6 +114,47 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertIn("missing_edge_volatility_metric reason_code=missing_field_edge_volatility", report["failures"])
 
+    def test_low_volume_comparison_returns_insufficient_sample(self):
+        rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_low_volume_insufficient.json"))
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(
+                min_feature_completeness=0.6,
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                max_suppression_drift=0.6,
+                suppression_min_volume=2,
+            ),
+        )
+        self.assertEqual("insufficient_sample", report["status"])
+        self.assertEqual([], report["failures"])
+        self.assertTrue(any("insufficient_sample_for_edge_volatility" in item for item in report["warnings"]))
+
+    def test_normal_volume_still_fails_true_instability(self):
+        rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_normal_volume_fail.json"))
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(
+                min_feature_completeness=0.6,
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                volatility_context_min_pairs=4,
+                volatility_context_quantile=0.9,
+                volatility_context_ceiling_factor=1.2,
+                max_suppression_drift=0.6,
+                suppression_min_volume=2,
+            ),
+        )
+        self.assertEqual("fail", report["status"])
+        self.assertTrue(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
+        self.assertEqual("contextual_window_pairs", report["effective_volatility_ceiling"]["source"])
+
 
 if __name__ == "__main__":
     unittest.main()
