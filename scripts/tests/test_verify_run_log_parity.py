@@ -9,7 +9,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from verify_run_log_parity import ParityError, verify_run_log_parity  # noqa: E402
+from verify_run_log_parity import (  # noqa: E402
+    ParityError,
+    _write_latest_batch_sidecar,
+    verify_run_log_parity,
+)
 
 
 class VerifyRunLogParityTests(unittest.TestCase):
@@ -70,7 +74,32 @@ class VerifyRunLogParityTests(unittest.TestCase):
             self._write_json(root / "Run_Log.json", rows)
             self._write_csv(root / "Run_Log.csv", rows)
 
-            verify_run_log_parity(str(root))
+            result = verify_run_log_parity(str(root))
+            self.assertEqual(result.latest_run_ids, ["run-a"])
+
+    def test_verify_run_log_parity_writes_latest_batch_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [
+                {"row_type": "ops", "run_id": "run-a", "stage": "stageFetchOdds", "started_at": "2026-03-21T10:00:00Z"},
+                {
+                    "row_type": "summary",
+                    "run_id": "run-a",
+                    "stage": "runEdgeBoard",
+                    "started_at": "2026-03-21T10:00:01Z",
+                    "stage_summaries": self._summary_stage_summaries_payload(),
+                },
+            ]
+            self._write_json(root / "Run_Log.json", rows)
+            self._write_csv(root / "Run_Log.csv", rows)
+
+            result = verify_run_log_parity(str(root))
+            sidecar_path = Path(_write_latest_batch_sidecar(str(root), result))
+            payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(payload["latest_batch_run_ids"], ["run-a"])
+            self.assertIn("Run_Log.json", " ".join(payload["verified_sources"]["run_log_json_files"]))
+            self.assertIn("Run_Log.csv", " ".join(payload["verified_sources"]["run_log_csv_files"]))
 
     def test_verify_run_log_parity_fails_when_stale_json_and_fresh_csv(self):
         with tempfile.TemporaryDirectory() as tmp:

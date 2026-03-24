@@ -191,6 +191,7 @@ scripts/run_triage_bundle.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime
 ```
 
 The wrapper runs `scripts/prepare_runtime_exports.sh` and then invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`) so diagnostics inputs are consistently prepared before scanning.
+`prepare_runtime_exports.sh` now enforces a single-source Run_Log snapshot contract: it re-exports `Run_Log.csv` and `Run_Log.json` together from the same latest source snapshot and applies one export batch timestamp before parity checks.
 
 First-pass diagnosis should always start with the scanner's **Run-health degraded contract (first-pass triage)** section. It standardizes degraded run blocker counts, dominant blocker categories, sampled blocked records, and stage-skipped reason rollups before key-specific deep dives.
 
@@ -219,6 +220,12 @@ Emergency override (incident-only):
 
 If precheck fails, **stop triage and re-export from the sheet before further analysis**.
 Only proceed to comparison scripts once both run IDs are confirmed present.
+
+For a single fail-fast command that chains export + parity + precheck:
+
+```bash
+scripts/export_parity_precheck.sh [--out-dir ./exports] <run_id_a> <run_id_b> <file-or-directory> [more paths...]
+```
 
 ### Player-stats coverage gate (runs after precheck, before verdict publication)
 
@@ -270,6 +277,7 @@ scripts/prepare_runtime_exports.sh --out-dir ./exports ./runtime/Run_Log.csv ./r
 ```
 
 This pre-step copies matching `Run_Log`/`State` CSV/JSON files into `./exports` and then validates exports before scanning.
+Parity output also writes `./exports/run_log_latest_batch_note.json` so operators can verify the latest batch `run_id` set is identical across CSV and JSON.
 
 Preferred diagnostics artifact source order:
 - `Run_Log.csv`
