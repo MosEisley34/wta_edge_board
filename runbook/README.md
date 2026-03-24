@@ -146,6 +146,48 @@ scripts/run_daily_edge_quality_slo.sh \
   --fail-rate-threshold 0.15
 ```
 
+## GS suppression quality tuning loop (weekly + 3-day before/after)
+
+Use this workflow to reduce non-actionable scoring/suppression churn while keeping player-stats coverage parity intact.
+
+1. Build weekly GS-focused report from run summaries.
+2. Inspect top suppression buckets and split avoidable vs expected.
+3. Apply **one** suppression/control change at a time, then compare 3-day rolling windows.
+4. Require no regression in player-stats coverage/parity.
+5. Append measured impact + run IDs to this runbook changelog.
+
+Command (weekly report + tuning comparison):
+
+```bash
+python3 scripts/gs_signal_quality_report.py \
+  --input ./exports_live/Run_Log.csv \
+  --change-run-id <run_id_where_change_started> \
+  --weekly-window-days 7 \
+  --rolling-window-days 3 \
+  --change-label "signal_suppression_precheck_skip_scoring" \
+  --json-out ./docs/baselines/runtime_rollups/gs_signal_quality_<date>.json \
+  --markdown-out ./docs/baselines/runtime_rollups/gs_signal_quality_<date>.md
+```
+
+Control currently available for unattended runtime suppression churn:
+
+- `SIGNAL_SUPPRESSION_PRECHECK_SKIP_SCORING=true` (default): for `too_close_to_start_skip` and `stale_odds_skip`, skip model scoring/h2h work and mark these as unscored suppressions.
+
+### Suppression tuning changelog
+
+Add one entry per change:
+
+```md
+### <change_label>
+- Change pivot run_id: `<run_id>`
+- Before window run_ids (<n>): <comma-separated run ids>
+- After window run_ids (<n>): <comma-separated run ids>
+- Suppression total Δ: <+/-n>
+- Scored signals Δ: <+/-n>
+- Sent notifications Δ: <+/-n>
+- Player-stats no-regression gate: PASS|FAIL
+```
+
 ## Operator SLOs for degraded-mode reliability
 
 Use these thresholds for weekly operations review and on-call escalation.
