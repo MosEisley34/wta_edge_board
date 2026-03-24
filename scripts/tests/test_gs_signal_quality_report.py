@@ -50,10 +50,11 @@ def test_weekly_aggregate_and_top_buckets():
     assert summary["scored_signals"] == 42
     assert summary["sent_notifications"] == 12
     assert summary["suppression_total"] == 21
+    assert summary["suppression_bucket_mix"][0]["bucket"] == "timing"
     assert summary["player_stats"]["coverage_rate"] == 0.8
 
     top = _top_suppression_buckets(summary)
-    assert top[0]["reason"] == "too_close_to_start_skip"
+    assert top[0]["bucket"] == "timing"
     assert top[0]["classification"] == "avoidable"
 
 
@@ -75,3 +76,16 @@ def test_compare_windows_no_regression_gate():
     diff = _compare_windows(before, after)
     assert diff["suppression_total_delta"] == -7
     assert diff["no_regression"]["overall"] is True
+
+
+def test_top_bucket_defaults_when_all_zero():
+    summary = {
+        "suppression_bucket_mix": [
+            {"bucket": "cooldown", "count": 0, "share": 0},
+            {"bucket": "edge", "count": 0, "share": 0},
+            {"bucket": "stale", "count": 0, "share": 0},
+            {"bucket": "timing", "count": 0, "share": 0},
+        ]
+    }
+    top = _top_suppression_buckets(summary, top_n=1)
+    assert top[0]["bucket"] == "cooldown"
