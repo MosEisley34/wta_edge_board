@@ -207,7 +207,15 @@ python3 scripts/precheck_run_ids.py <run_id_a> <run_id_b> --export-dir ./exports
 Behavior contract:
 - scans `./exports_live/*Run_Log*.json` and `./exports_live/*Run_Log*.csv` (recursive),
 - confirms both target run IDs are present,
+- when both JSON and CSV sources exist, requires each target run ID in **both** sources (strict mixed-source integrity),
 - exits non-zero when either run ID is missing.
+
+Failure contract:
+- emits `run_id_source_mismatch` with per-run details (`csv_present=<bool> json_present=<bool>`) when mixed-source integrity fails.
+
+Emergency override (incident-only):
+- `--allow-csv-only-triage` allows CSV-present/JSON-missing run IDs to proceed for emergency triage,
+- precheck prints `degraded_confidence_csv_only_triage` so downstream readers know confidence is reduced.
 
 If precheck fails, **stop triage and re-export from the sheet before further analysis**.
 Only proceed to comparison scripts once both run IDs are confirmed present.
