@@ -3,6 +3,7 @@ import argparse, csv, glob, json, os, re
 from collections import Counter, defaultdict
 from typing import Any, Dict, Iterable, List, Tuple
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate
+from preflight_guard import enforce_preflight_guard
 
 TARGETS = {
     "stageMatchEvents": ["MATCH_CT", "NO_P_MATCH", "REJ_CT"],
@@ -445,6 +446,14 @@ def main() -> int:
         help='Skip player-stats coverage gate (not recommended; intended for emergency/manual debugging only).',
     )
     ap.add_argument(
+        '--emergency-preflight-override-tag',
+        default='',
+        help=(
+            'Emergency-only override when preflight sidecar is missing. '
+            'Requires incident tag format <LETTERS>-<NNN> (example: INC-1234).'
+        ),
+    )
+    ap.add_argument(
         '--player-stats-gate-override-reason',
         default=os.getenv('PLAYER_STATS_COVERAGE_GATE_OVERRIDE', ''),
         help='Override reason for player-stats gate failures; non-empty value allows report publication.',
@@ -477,6 +486,17 @@ def main() -> int:
     )
     ap.add_argument('--out', default='', help='Optional markdown output path.')
     args = ap.parse_args()
+    preflight_status = enforce_preflight_guard(
+        args.export_dir,
+        args.run_success,
+        args.run_degraded,
+        args.emergency_preflight_override_tag,
+    )
+    if preflight_status.get('status') == 'emergency_override':
+        print(
+            '# preflight_guard: emergency override active '
+            f"(incident_tag={preflight_status.get('incident_tag')})"
+        )
 
     rows = load_rows(args.export_dir)
     if not args.skip_player_stats_coverage_gate:
