@@ -497,6 +497,12 @@ def main() -> int:
             '# preflight_guard: emergency override active '
             f"(incident_tag={preflight_status.get('incident_tag')})"
         )
+        print(
+            '# preflight_evidence: MISSING (override mode); '
+            'rerun scripts/export_parity_precheck.sh to generate run_compare_preflight.json'
+        )
+    else:
+        print(f"# preflight_evidence: {preflight_status.get('sidecar_path', '')}")
 
     rows = load_rows(args.export_dir)
     if not args.skip_player_stats_coverage_gate:
