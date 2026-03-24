@@ -86,6 +86,31 @@ python3 scripts/compare_run_metrics.py <run_id_a> <run_id_b> --input ./exports_l
 python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b>
 ```
 
+## Rolling edge-quality windows (postmortem vs release gate)
+
+Use rolling edge-quality analysis each cycle to produce **two distinct windows**:
+- `full_history_trend`: long-horizon trend for postmortems and drift analysis.
+- `recent_window_gate`: release-readiness gate scoped to recent runs only.
+
+Recommended command (with explicit recent-window cutoff and persisted artifact):
+
+```bash
+python3 scripts/evaluate_edge_quality.py ./exports_live \
+  --min-ended-at 2026-03-21T00:00:00Z \
+  --rolling-report-out ./docs/baselines/runtime_rollups/edge_quality_rolling_2026-03-24.json
+```
+
+Operational gate criteria:
+- **GO/NO-GO must use only `recent_window_gate` status counts**.
+- Treat any `recent_window_gate.status_counts.fail > 0` as **NO-GO**.
+- Treat any `recent_window_gate.status_counts.insufficient_sample > 0` as **NO-GO** until sample sufficiency is restored.
+- Treat `recent_window_gate.pair_count == 0` as **NO-GO** (insufficient evidence).
+- Use `full_history_trend` only for diagnostics/postmortem context (not release gating).
+
+Auditability requirement:
+- Persist rolling outputs as JSON artifacts (`--rolling-report-out`) every cycle.
+- Keep the artifact path/date in the incident/release log so both windows remain reconstructable later.
+
 ## Operator SLOs for degraded-mode reliability
 
 Use these thresholds for weekly operations review and on-call escalation.

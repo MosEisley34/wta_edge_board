@@ -8,7 +8,9 @@ import csv
 import glob
 import json
 import os
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from statistics import quantiles
 from pathlib import Path
 from typing import Any
@@ -104,6 +106,48 @@ def _latest_run_ids(rows: list[dict[str, Any]]) -> list[str]:
     if len(unique) < 2:
         raise ValueError("Need at least two runEdgeBoard summary rows to evaluate edge quality gate.")
     return unique[-2:]
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    normalized = re.sub(r"Z([+-]\d\d:\d\d)$", r"\1", normalized)
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if str(row.get("row_type") or "") == "summary" and str(row.get("stage") or "") == "runEdgeBoard"
+    ]
+
+
+def _rolling_run_ids(rows: list[dict[str, Any]], min_ended_at: str = "") -> list[str]:
+    threshold = _parse_timestamp(min_ended_at) if min_ended_at else None
+    ordered: list[str] = []
+    for row in _summary_rows(rows):
+        run_id = str(row.get("run_id") or "")
+        if not run_id:
+            continue
+        ended = _parse_timestamp(row.get("ended_at")) or _parse_timestamp(row.get("started_at"))
+        if threshold and (ended is None or ended < threshold):
+            continue
+        ordered.append(run_id)
+    return list(dict.fromkeys(ordered))
+
+
+def _run_pairs_from_ids(run_ids: list[str]) -> list[tuple[str, str]]:
+    return [(run_ids[idx - 1], run_ids[idx]) for idx in range(1, len(run_ids))]
 
 
 def _extract_stage_summaries(summary_row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -509,6 +553,65 @@ def evaluate_edge_quality_gate(
     }
 
 
+def evaluate_rolling_edge_quality(
+    rows: list[dict[str, Any]],
+    config: EdgeQualityGateConfig,
+    min_ended_at: str = "",
+) -> dict[str, Any]:
+    full_run_ids = _rolling_run_ids(rows)
+    recent_run_ids = _rolling_run_ids(rows, min_ended_at=min_ended_at)
+
+    def _evaluate_window(window_run_ids: list[str], label: str, include_go_nogo: bool) -> dict[str, Any]:
+        pair_reports: list[dict[str, Any]] = []
+        for baseline_run_id, candidate_run_id in _run_pairs_from_ids(window_run_ids):
+            report = evaluate_edge_quality_gate(
+                rows=rows,
+                baseline_run_id=baseline_run_id,
+                candidate_run_id=candidate_run_id,
+                config=config,
+            )
+            pair_reports.append(report)
+
+        status_counts = {"pass": 0, "fail": 0, "insufficient_sample": 0}
+        for report in pair_reports:
+            status = str(report.get("status") or "")
+            if status in status_counts:
+                status_counts[status] += 1
+        summary: dict[str, Any] = {
+            "window": label,
+            "run_count": len(window_run_ids),
+            "pair_count": len(pair_reports),
+            "status_counts": status_counts,
+            "pairs": pair_reports,
+        }
+        if include_go_nogo:
+            fail_count = status_counts["fail"]
+            insufficient_count = status_counts["insufficient_sample"]
+            if summary["pair_count"] <= 0:
+                go_no_go = "no-go"
+                reason = "insufficient_recent_window_pairs"
+            elif fail_count > 0:
+                go_no_go = "no-go"
+                reason = "recent_window_edge_quality_failures_present"
+            elif insufficient_count > 0:
+                go_no_go = "no-go"
+                reason = "recent_window_insufficient_sample_present"
+            else:
+                go_no_go = "go"
+                reason = "recent_window_all_pairs_passed"
+            summary["go_no_go"] = go_no_go
+            summary["go_no_go_reason"] = reason
+        return summary
+
+    return {
+        "schema": "edge_quality_rolling_report_v1",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "min_ended_at": min_ended_at,
+        "full_history_trend": _evaluate_window(full_run_ids, label="full_history", include_go_nogo=False),
+        "recent_window_gate": _evaluate_window(recent_run_ids, label="recent_window", include_go_nogo=True),
+    }
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate edge-quality gate from Run_Log exports.")
     parser.add_argument("path", help="Run_Log file or export directory")
@@ -523,6 +626,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--volatility-context-ceiling-factor", type=float, default=1.25)
     parser.add_argument("--max-suppression-drift", type=float, default=0.50)
     parser.add_argument("--suppression-min-volume", type=int, default=2)
+    parser.add_argument(
+        "--min-ended-at",
+        default="",
+        help="Optional ISO-8601 cutoff for rolling window candidate runs (e.g. 2026-03-21T00:00:00Z).",
+    )
+    parser.add_argument(
+        "--rolling-report-out",
+        default="",
+        help="Optional output path for rolling edge-quality report JSON artifact.",
+    )
     return parser
 
 
@@ -534,30 +647,51 @@ def main() -> int:
     if not rows:
         parser.error(f"No Run_Log rows found under `{args.path}`")
 
-    if args.baseline_run_id and args.candidate_run_id:
-        run_pair = [args.baseline_run_id, args.candidate_run_id]
-    else:
-        run_pair = _latest_run_ids(rows)
-
-    report = evaluate_edge_quality_gate(
-        rows=rows,
-        baseline_run_id=run_pair[0],
-        candidate_run_id=run_pair[1],
-        config=EdgeQualityGateConfig(
-            min_feature_completeness=args.min_feature_completeness,
-            max_edge_volatility=args.max_edge_volatility,
-            min_scored_signals_for_volatility=max(0, int(args.min_scored_signals_for_volatility)),
-            min_matched_events_for_volatility=max(0, int(args.min_matched_events_for_volatility)),
-            volatility_context_min_pairs=max(1, int(args.volatility_context_min_pairs)),
-            volatility_context_quantile=float(args.volatility_context_quantile),
-            volatility_context_ceiling_factor=max(0.0, float(args.volatility_context_ceiling_factor)),
-            max_suppression_drift=args.max_suppression_drift,
-            suppression_min_volume=max(0, int(args.suppression_min_volume)),
-        ),
+    config = EdgeQualityGateConfig(
+        min_feature_completeness=args.min_feature_completeness,
+        max_edge_volatility=args.max_edge_volatility,
+        min_scored_signals_for_volatility=max(0, int(args.min_scored_signals_for_volatility)),
+        min_matched_events_for_volatility=max(0, int(args.min_matched_events_for_volatility)),
+        volatility_context_min_pairs=max(1, int(args.volatility_context_min_pairs)),
+        volatility_context_quantile=float(args.volatility_context_quantile),
+        volatility_context_ceiling_factor=max(0.0, float(args.volatility_context_ceiling_factor)),
+        max_suppression_drift=args.max_suppression_drift,
+        suppression_min_volume=max(0, int(args.suppression_min_volume)),
     )
 
+    if args.baseline_run_id and args.candidate_run_id:
+        run_pair = [args.baseline_run_id, args.candidate_run_id]
+        report = evaluate_edge_quality_gate(
+            rows=rows,
+            baseline_run_id=run_pair[0],
+            candidate_run_id=run_pair[1],
+            config=config,
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 1 if report["status"] != "pass" else 0
+
+    if args.baseline_run_id or args.candidate_run_id:
+        parser.error("--baseline-run-id and --candidate-run-id must be provided together.")
+
+    report = evaluate_rolling_edge_quality(
+        rows=rows,
+        config=config,
+        min_ended_at=str(args.min_ended_at or "").strip(),
+    )
+    if args.rolling_report_out:
+        out_path = Path(args.rolling_report_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 1 if report["status"] != "pass" else 0
+    recent_status_counts = (report.get("recent_window_gate") or {}).get("status_counts") or {}
+    if int(recent_status_counts.get("fail", 0)) > 0:
+        return 1
+    if int(recent_status_counts.get("insufficient_sample", 0)) > 0:
+        return 1
+    if int((report.get("recent_window_gate") or {}).get("pair_count", 0)) <= 0:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
