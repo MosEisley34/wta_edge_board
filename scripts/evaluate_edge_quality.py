@@ -20,6 +20,7 @@ from pipeline_log_adapter import (
     REASON_CODE_ALIAS_SCHEMA_ID,
     _expand_reason_map,
 )
+from stake_policy import StakePolicyConfig, summarize_run_stake_policy
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,9 @@ class EdgeQualityGateConfig:
     volatility_context_ceiling_factor: float = 1.25
     max_suppression_drift: float = 0.50
     suppression_min_volume: int = 2
+    stake_policy_enabled: bool = False
+    stake_policy_min_stake_mxn: float = 10.0
+    stake_policy_round_to_min: bool = False
 
 
 @dataclass(frozen=True)
@@ -491,7 +495,7 @@ def _adaptive_volatility_ceiling(
     }
 
 
-def _snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
+def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateConfig) -> dict[str, Any]:
     summary = _pick_run_summary(rows, run_id)
     if not summary:
         raise ValueError(f"Missing runEdgeBoard summary row for run_id={run_id}")
@@ -504,6 +508,15 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
     if edge_diag:
         diagnostics["edge_volatility_reason_code"] = edge_diag
     schema_markers = _run_schema_markers(summary)
+    stake_policy_summary = summarize_run_stake_policy(
+        rows,
+        run_id,
+        StakePolicyConfig(
+            enabled=bool(config.stake_policy_enabled),
+            minimum_stake_mxn=float(config.stake_policy_min_stake_mxn),
+            round_to_min=bool(config.stake_policy_round_to_min),
+        ),
+    )
     return {
         "run_id": run_id,
         "feature_completeness": feature_completeness,
@@ -517,6 +530,7 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
             "time_block": _volatility_context_key(summary)[1],
         },
         "schema_markers": schema_markers,
+        "stake_policy_summary": stake_policy_summary,
     }
 
 
@@ -526,8 +540,8 @@ def evaluate_edge_quality_gate(
     candidate_run_id: str,
     config: EdgeQualityGateConfig,
 ) -> dict[str, Any]:
-    baseline = _snapshot(rows, baseline_run_id)
-    candidate = _snapshot(rows, candidate_run_id)
+    baseline = _snapshot(rows, baseline_run_id, config)
+    candidate = _snapshot(rows, candidate_run_id, config)
 
     failures: list[str] = []
     warnings: list[str] = []
@@ -608,6 +622,9 @@ def evaluate_edge_quality_gate(
             "min_matched_events_for_volatility": config.min_matched_events_for_volatility,
             "max_suppression_drift": config.max_suppression_drift,
             "suppression_min_volume": config.suppression_min_volume,
+            "stake_policy_enabled": config.stake_policy_enabled,
+            "stake_policy_min_stake_mxn": config.stake_policy_min_stake_mxn,
+            "stake_policy_round_to_min": config.stake_policy_round_to_min,
         },
         "effective_volatility_ceiling": adaptive_ceiling_info,
         "suppression_drifts": suppression_drifts,
@@ -823,6 +840,14 @@ def evaluate_daily_edge_quality_slo(
         gate_verdict = "pass"
         gate_reason = "all_decisionable_windows_within_fail_rate_threshold"
 
+    stake_policy_aggregate = {"suppressed_count": 0, "adjusted_count": 0, "passed_count": 0, "missing_stake_count": 0}
+    for window in window_reports:
+        for pair in window.get("pairs", []):
+            for side in ("baseline", "candidate"):
+                summary = (pair.get(side) or {}).get("stake_policy_summary") or {}
+                for key in stake_policy_aggregate:
+                    stake_policy_aggregate[key] += int(summary.get(key, 0) or 0)
+
     return {
         "schema": "edge_quality_daily_slo_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -837,6 +862,7 @@ def evaluate_daily_edge_quality_slo(
         "gate_reason": gate_reason,
         "decisionable_window_count": len(decisionable_windows),
         "failing_decisionable_window_count": len(failing_decisionable_windows),
+        "stake_policy_summary_counts": stake_policy_aggregate,
     }
 
 
@@ -897,6 +923,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--volatility-context-ceiling-factor", type=float, default=1.25)
     parser.add_argument("--max-suppression-drift", type=float, default=0.50)
     parser.add_argument("--suppression-min-volume", type=int, default=2)
+    parser.add_argument("--stake-policy-enabled", action="store_true", help="Enable stake-policy evaluation summaries.")
+    parser.add_argument("--stake-policy-min-stake-mxn", type=float, default=10.0, help="Minimum MXN stake floor (default: 10).")
+    parser.add_argument("--stake-policy-round-to-min", action="store_true", help="Adjust below-min stake to floor instead of suppressing.")
     parser.add_argument(
         "--min-ended-at",
         default="",
@@ -947,6 +976,9 @@ def main() -> int:
         volatility_context_ceiling_factor=max(0.0, float(args.volatility_context_ceiling_factor)),
         max_suppression_drift=args.max_suppression_drift,
         suppression_min_volume=max(0, int(args.suppression_min_volume)),
+        stake_policy_enabled=bool(args.stake_policy_enabled),
+        stake_policy_min_stake_mxn=max(0.0, float(args.stake_policy_min_stake_mxn)),
+        stake_policy_round_to_min=bool(args.stake_policy_round_to_min),
     )
 
     if args.daily_slo:

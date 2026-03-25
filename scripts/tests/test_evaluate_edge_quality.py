@@ -343,6 +343,22 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertTrue(all(not window["decisionable"] for window in report["window_reports"]))
         self.assertTrue(all(window["decisionable_pair_count"] == 0 for window in report["window_reports"]))
 
+    def test_daily_slo_includes_stake_policy_summary_counts(self):
+        rows = [
+            self._summary_row("run-a", "2026-03-22T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            {"row_type": "diag", "stage": "stageGenerateSignals", "run_id": "run-a", "stake_mxn": 2},
+            self._summary_row("run-b", "2026-03-23T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            {"row_type": "diag", "stage": "stageGenerateSignals", "run_id": "run-b", "stake_mxn": 20},
+        ]
+        report = evaluate_daily_edge_quality_slo(
+            rows=rows,
+            gate_config=EdgeQualityGateConfig(stake_policy_enabled=True),
+            slo_config=DailyEdgeQualitySLOConfig(window_days=(3,), min_pairs_per_window=1, fail_rate_threshold=0.5),
+            as_of_utc="2026-03-24T00:00:00Z",
+        )
+        self.assertIn("stake_policy_summary_counts", report)
+        self.assertGreaterEqual(report["stake_policy_summary_counts"]["suppressed_count"], 1)
+
     def test_write_daily_slo_artifacts_writes_timestamped_report_and_summary(self):
         report = {
             "generated_at_utc": "2026-03-24T01:00:00+00:00",

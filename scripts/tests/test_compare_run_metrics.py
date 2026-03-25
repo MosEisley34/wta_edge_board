@@ -132,6 +132,34 @@ class CompareRunMetricsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_report([], "run-a", "run-b")
 
+    def test_build_report_includes_stake_policy_reason_codes(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+            {"row_type": "signal", "run_id": "run-a", "stake_mxn": 5},
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+            {"row_type": "signal", "run_id": "run-b", "stake_mxn": 3},
+        ]
+        from stake_policy import StakePolicyConfig
+
+        report = build_report(rows, "run-a", "run-b", StakePolicyConfig(enabled=True))
+        self.assertIn("[stake_policy_counts]", report)
+        self.assertIn("[stake_policy_reason_codes]", report)
+        self.assertIn("stake_below_min_suppressed", report)
+
     def test_build_report_fails_when_run_has_disallowed_skip_reason(self):
         rows = [
             {
