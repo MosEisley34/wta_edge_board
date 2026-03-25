@@ -174,7 +174,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             candidate_run_id="run-candidate",
             config=EdgeQualityGateConfig(),
         )
-        self.assertEqual("fail", report["status"])
+        self.assertEqual("schema_missing", report["status"])
         self.assertIn(
             "missing_feature_completeness_metric reason_code=missing_field_feature_completeness",
             report["failures"],
@@ -276,7 +276,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
                 suppression_min_volume=2,
             ),
         )
-        self.assertEqual("legacy_schema_insufficient_feature_contract", report["status"])
+        self.assertEqual("schema_missing", report["status"])
         self.assertEqual([], report["failures"])
         self.assertTrue(
             any(item.startswith("legacy_schema_insufficient_feature_contract") for item in report["warnings"])
@@ -316,6 +316,27 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("insufficient_sample", report["status"])
         self.assertEqual([], report["failures"])
         self.assertTrue(any("insufficient_sample_for_edge_volatility" in item for item in report["warnings"]))
+
+    def test_low_volume_can_use_aggregated_window_for_sample_check(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=5, matched_events=3),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=6, matched_events=3),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                volatility_sample_window_runs=2,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertEqual("candidate_window_aggregate", report["sample_assessment"]["strategy"])
+        self.assertTrue(any("aggregated_sample_used_for_edge_volatility" in item for item in report["warnings"]))
 
     def test_normal_volume_still_fails_true_instability(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_normal_volume_fail.json"))
@@ -399,7 +420,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertEqual("fail", report["gate_verdict"])
         self.assertEqual(1, report["decisionable_window_count"])
-        self.assertEqual(1, report["window_reports"][0]["decisionable_status_counts"]["fail"])
+        self.assertEqual(1, report["window_reports"][0]["decisionable_status_counts"]["true_fail"])
 
     def test_daily_slo_excludes_low_activity_pairs_from_fail_rate_denominator(self):
         rows = [
@@ -419,7 +440,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual(4, window["pair_count"])
         self.assertEqual(2, window["decisionable_pair_count"])
         self.assertEqual(2, window["excluded_pair_count"])
-        self.assertEqual(1, window["decisionable_status_counts"]["fail"])
+        self.assertEqual(1, window["decisionable_status_counts"]["true_fail"])
         self.assertAlmostEqual(0.5, window["fail_rate"])
         self.assertEqual("fail", window["verdict"])
         self.assertTrue(any("low_scored_signals" in pair["reasons"] for pair in window["excluded_pairs"]))
@@ -464,7 +485,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             "gate_reason": "all_decisionable_windows_within_fail_rate_threshold",
             "decisionable_window_count": 2,
             "failing_decisionable_window_count": 0,
-            "aggregate_status_counts": {"pass": 4, "fail": 0, "insufficient_sample": 1},
+            "aggregate_status_counts": {"pass": 4, "true_fail": 0, "insufficient_sample": 1, "schema_missing": 0},
             "window_reports": [{"window_days": 3, "pair_count": 2, "decisionable": True, "fail_rate": 0.0, "verdict": "pass"}],
         }
         with tempfile.TemporaryDirectory() as temp_dir:

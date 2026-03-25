@@ -29,6 +29,7 @@ class EdgeQualityGateConfig:
     max_edge_volatility: float = 0.03
     min_scored_signals_for_volatility: int = 10
     min_matched_events_for_volatility: int = 5
+    volatility_sample_window_runs: int = 1
     volatility_context_min_pairs: int = 4
     volatility_context_quantile: float = 0.90
     volatility_context_ceiling_factor: float = 1.25
@@ -555,11 +556,89 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
     }
 
 
+def _status_bucket(report: dict[str, Any]) -> str:
+    status = str(report.get("status") or "")
+    if status == "pass":
+        return "pass"
+    if status == "fail":
+        return "true_fail"
+    if status == "insufficient_sample":
+        return "insufficient_sample"
+    return "schema_missing"
+
+
+def _find_run_index(run_ids: list[str], run_id: str) -> int:
+    for idx, item in enumerate(run_ids):
+        if item == run_id:
+            return idx
+    return -1
+
+
+def _window_sample_activity(
+    rows: list[dict[str, Any]],
+    run_ids: list[str],
+    anchor_run_id: str,
+    window_runs: int,
+) -> dict[str, Any]:
+    window = max(1, int(window_runs))
+    anchor_index = _find_run_index(run_ids, anchor_run_id)
+    if anchor_index < 0:
+        return {"known": False, "run_ids": [], "scored_signals": None, "matched_events": None}
+    start_idx = max(0, anchor_index - window + 1)
+    selected_ids = run_ids[start_idx : anchor_index + 1]
+    scored_total = 0
+    matched_total = 0
+    known = True
+    for run_id in selected_ids:
+        summary = _pick_run_summary(rows, run_id)
+        if not summary:
+            known = False
+            break
+        signal_summary = _extract_signal_summary(summary)
+        scored = _extract_scored_signals(summary, signal_summary)
+        matched = _extract_matched_events(summary)
+        if scored is None or matched is None:
+            known = False
+            break
+        scored_total += int(scored)
+        matched_total += int(matched)
+    if not known:
+        return {"known": False, "run_ids": selected_ids, "scored_signals": None, "matched_events": None}
+    return {"known": True, "run_ids": selected_ids, "scored_signals": scored_total, "matched_events": matched_total}
+
+
+def _sample_volume_review(rows: list[dict[str, Any]], config: EdgeQualityGateConfig) -> dict[str, Any]:
+    summaries = _summary_rows(rows)
+    total_runs = len(summaries)
+    min_scored = int(config.min_scored_signals_for_volatility)
+    min_matched = int(config.min_matched_events_for_volatility)
+    sufficient = 0
+    for summary in summaries:
+        signal_summary = _extract_signal_summary(summary)
+        scored = _extract_scored_signals(summary, signal_summary)
+        matched = _extract_matched_events(summary)
+        if scored is None or matched is None:
+            continue
+        if int(scored) >= min_scored and int(matched) >= min_matched:
+            sufficient += 1
+    run_ids = _rolling_run_ids(rows)
+    pair_count = max(0, len(run_ids) - 1)
+    return {
+        "min_scored_signals_for_volatility": min_scored,
+        "min_matched_events_for_volatility": min_matched,
+        "summary_run_count": total_runs,
+        "rolling_pair_count": pair_count,
+        "run_count_meeting_minimum": sufficient,
+        "run_meeting_rate": (sufficient / total_runs) if total_runs else None,
+    }
+
+
 def evaluate_edge_quality_gate(
     rows: list[dict[str, Any]],
     baseline_run_id: str,
     candidate_run_id: str,
     config: EdgeQualityGateConfig,
+    ordered_run_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     baseline = _snapshot(rows, baseline_run_id, config)
     candidate = _snapshot(rows, candidate_run_id, config)
@@ -592,7 +671,27 @@ def evaluate_edge_quality_gate(
     sample_known = scored_signals is not None and matched_events is not None
     sufficient_scored = (scored_signals or 0) >= config.min_scored_signals_for_volatility
     sufficient_matched = (matched_events or 0) >= config.min_matched_events_for_volatility
+    sample_strategy = "candidate_only"
+    effective_sample = {
+        "known": sample_known,
+        "scored_signals": scored_signals,
+        "matched_events": matched_events,
+        "run_ids": [candidate_run_id],
+    }
     enough_sample_for_volatility = (not sample_known) or (sufficient_scored and sufficient_matched)
+    if (not enough_sample_for_volatility) and int(config.volatility_sample_window_runs) > 1:
+        candidate_window = _window_sample_activity(
+            rows=rows,
+            run_ids=ordered_run_ids or _rolling_run_ids(rows),
+            anchor_run_id=candidate_run_id,
+            window_runs=int(config.volatility_sample_window_runs),
+        )
+        if candidate_window["known"]:
+            effective_sample = candidate_window
+            sample_strategy = "candidate_window_aggregate"
+            sufficient_scored = int(candidate_window["scored_signals"]) >= config.min_scored_signals_for_volatility
+            sufficient_matched = int(candidate_window["matched_events"]) >= config.min_matched_events_for_volatility
+            enough_sample_for_volatility = sufficient_scored and sufficient_matched
     adaptive_ceiling_info = _adaptive_volatility_ceiling(
         rows=rows,
         baseline_summary=_pick_run_summary(rows, baseline_run_id),
@@ -600,14 +699,21 @@ def evaluate_edge_quality_gate(
         config=config,
     )
     effective_volatility_ceiling = float(adaptive_ceiling_info["ceiling"])
+    if sample_strategy != "candidate_only" and enough_sample_for_volatility:
+        warnings.append(
+            "aggregated_sample_used_for_edge_volatility "
+            f"(window_runs={config.volatility_sample_window_runs}; runs={','.join(effective_sample['run_ids'])})"
+        )
+
     if candidate_edge_volatility is None:
         diag = candidate["diagnostics"].get("edge_volatility_reason_code", "missing_field_edge_volatility")
         failures.append(f"missing_edge_volatility_metric reason_code={diag}")
-    elif sample_known and not enough_sample_for_volatility:
+    elif effective_sample["known"] and not enough_sample_for_volatility:
         warnings.append(
             "insufficient_sample_for_edge_volatility "
-            f"(scored_signals={scored_signals} required>={config.min_scored_signals_for_volatility}; "
-            f"matched_events={matched_events} required>={config.min_matched_events_for_volatility})"
+            f"(scored_signals={effective_sample['scored_signals']} required>={config.min_scored_signals_for_volatility}; "
+            f"matched_events={effective_sample['matched_events']} required>={config.min_matched_events_for_volatility}; "
+            f"strategy={sample_strategy})"
         )
     elif candidate_edge_volatility > effective_volatility_ceiling:
         failures.append(
@@ -630,11 +736,15 @@ def evaluate_edge_quality_gate(
             )
 
     has_legacy_schema_warning = any(item.startswith("legacy_schema_insufficient_feature_contract") for item in warnings)
+    has_insufficient_sample_warning = any(item.startswith("insufficient_sample_for_edge_volatility") for item in warnings)
+    has_schema_failure = any(item.startswith("missing_feature_completeness_metric") for item in failures) or any(
+        item.startswith("missing_edge_volatility_metric") for item in failures
+    )
     if failures:
-        status = "fail"
+        status = "schema_missing" if has_schema_failure else "fail"
     elif has_legacy_schema_warning:
-        status = "legacy_schema_insufficient_feature_contract"
-    elif warnings:
+        status = "schema_missing"
+    elif has_insufficient_sample_warning:
         status = "insufficient_sample"
     else:
         status = "pass"
@@ -647,6 +757,7 @@ def evaluate_edge_quality_gate(
             "max_edge_volatility": config.max_edge_volatility,
             "min_scored_signals_for_volatility": config.min_scored_signals_for_volatility,
             "min_matched_events_for_volatility": config.min_matched_events_for_volatility,
+            "volatility_sample_window_runs": config.volatility_sample_window_runs,
             "max_suppression_drift": config.max_suppression_drift,
             "suppression_min_volume": config.suppression_min_volume,
             "stake_policy_enabled": config.stake_policy_enabled,
@@ -654,6 +765,14 @@ def evaluate_edge_quality_gate(
             "stake_policy_round_to_min": config.stake_policy_round_to_min,
         },
         "effective_volatility_ceiling": adaptive_ceiling_info,
+        "sample_assessment": {
+            "strategy": sample_strategy,
+            "known": bool(effective_sample["known"]),
+            "scored_signals": effective_sample["scored_signals"],
+            "matched_events": effective_sample["matched_events"],
+            "run_ids": effective_sample["run_ids"],
+            "enough_sample_for_volatility": enough_sample_for_volatility,
+        },
         "suppression_drifts": suppression_drifts,
         "warnings": warnings,
         "high_visibility_warnings": high_visibility_warnings,
@@ -677,19 +796,18 @@ def evaluate_rolling_edge_quality(
                 baseline_run_id=baseline_run_id,
                 candidate_run_id=candidate_run_id,
                 config=config,
+                ordered_run_ids=window_run_ids,
             )
             pair_reports.append(report)
 
         status_counts = {
             "pass": 0,
-            "fail": 0,
+            "true_fail": 0,
             "insufficient_sample": 0,
-            "legacy_schema_insufficient_feature_contract": 0,
+            "schema_missing": 0,
         }
         for report in pair_reports:
-            status = str(report.get("status") or "")
-            if status in status_counts:
-                status_counts[status] += 1
+            status_counts[_status_bucket(report)] += 1
         summary: dict[str, Any] = {
             "window": label,
             "run_count": len(window_run_ids),
@@ -698,18 +816,18 @@ def evaluate_rolling_edge_quality(
             "pairs": pair_reports,
         }
         if include_go_nogo:
-            fail_count = status_counts["fail"]
+            fail_count = status_counts["true_fail"]
             insufficient_count = status_counts["insufficient_sample"]
-            legacy_count = status_counts["legacy_schema_insufficient_feature_contract"]
+            schema_missing_count = status_counts["schema_missing"]
             if summary["pair_count"] <= 0:
                 go_no_go = "no-go"
                 reason = "insufficient_recent_window_pairs"
             elif fail_count > 0:
                 go_no_go = "no-go"
                 reason = "recent_window_edge_quality_failures_present"
-            elif legacy_count > 0:
+            elif schema_missing_count > 0:
                 go_no_go = "no-go"
-                reason = "recent_window_legacy_schema_contract_present"
+                reason = "recent_window_schema_missing_present"
             elif insufficient_count > 0:
                 go_no_go = "no-go"
                 reason = "recent_window_insufficient_sample_present"
@@ -724,6 +842,7 @@ def evaluate_rolling_edge_quality(
         "schema": "edge_quality_rolling_report_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "min_ended_at": min_ended_at,
+        "sample_volume_review": _sample_volume_review(rows, config),
         "full_history_trend": _evaluate_window(full_run_ids, label="full_history", include_go_nogo=False),
         "recent_window_gate": _evaluate_window(recent_run_ids, label="recent_window", include_go_nogo=True),
     }
@@ -747,8 +866,8 @@ def evaluate_daily_edge_quality_slo(
 ) -> dict[str, Any]:
     as_of = _resolve_as_of_utc(as_of_utc)
     window_reports: list[dict[str, Any]] = []
-    aggregate_status_counts = {"pass": 0, "fail": 0, "insufficient_sample": 0}
-    aggregate_decisionable_status_counts = {"pass": 0, "fail": 0}
+    aggregate_status_counts = {"pass": 0, "true_fail": 0, "insufficient_sample": 0, "schema_missing": 0}
+    aggregate_decisionable_status_counts = {"pass": 0, "true_fail": 0}
     excluded_pair_count = 0
 
     for window_days in sorted(set(int(item) for item in slo_config.window_days if int(item) > 0)):
@@ -760,21 +879,16 @@ def evaluate_daily_edge_quality_slo(
                 baseline_run_id=baseline_run_id,
                 candidate_run_id=candidate_run_id,
                 config=gate_config,
+                ordered_run_ids=run_ids,
             )
             for baseline_run_id, candidate_run_id in _run_pairs_from_ids(run_ids)
         ]
 
-        status_counts = {"pass": 0, "fail": 0, "insufficient_sample": 0}
+        status_counts = {"pass": 0, "true_fail": 0, "insufficient_sample": 0, "schema_missing": 0}
         for report in pair_reports:
-            status = str(report.get("status") or "")
-            if status == "pass":
-                status_counts["pass"] += 1
-            elif status == "fail":
-                status_counts["fail"] += 1
-            else:
-                status_counts["insufficient_sample"] += 1
+            status_counts[_status_bucket(report)] += 1
 
-        decisionable_status_counts = {"pass": 0, "fail": 0}
+        decisionable_status_counts = {"pass": 0, "true_fail": 0}
         excluded_pairs: list[dict[str, Any]] = []
         min_scored = int(gate_config.min_scored_signals_for_volatility)
         min_matched = int(gate_config.min_matched_events_for_volatility)
@@ -797,7 +911,12 @@ def evaluate_daily_edge_quality_slo(
             elif baseline_matched < min_matched or candidate_matched < min_matched:
                 reasons.append("low_matched_events")
 
-            if reasons:
+            bucket = _status_bucket(report)
+            if reasons or bucket in {"insufficient_sample", "schema_missing"}:
+                if bucket == "insufficient_sample":
+                    reasons.append("status_insufficient_sample")
+                if bucket == "schema_missing":
+                    reasons.append("status_schema_missing")
                 excluded_pairs.append(
                     {
                         "baseline_run_id": baseline.get("run_id"),
@@ -818,13 +937,15 @@ def evaluate_daily_edge_quality_slo(
 
             status = str(report.get("status") or "")
             if status == "fail":
-                decisionable_status_counts["fail"] += 1
+                decisionable_status_counts["true_fail"] += 1
             else:
                 decisionable_status_counts["pass"] += 1
 
-        decisionable_pair_count = decisionable_status_counts["pass"] + decisionable_status_counts["fail"]
+        decisionable_pair_count = decisionable_status_counts["pass"] + decisionable_status_counts["true_fail"]
         decisionable = decisionable_pair_count >= int(slo_config.min_pairs_per_window)
-        fail_rate = (decisionable_status_counts["fail"] / decisionable_pair_count) if decisionable_pair_count else None
+        fail_rate = (
+            decisionable_status_counts["true_fail"] / decisionable_pair_count if decisionable_pair_count else None
+        )
         verdict = "insufficient_sample"
         if decisionable:
             verdict = "fail" if (fail_rate or 0.0) > float(slo_config.fail_rate_threshold) else "pass"
@@ -847,10 +968,11 @@ def evaluate_daily_edge_quality_slo(
         }
         window_reports.append(window_report)
         aggregate_status_counts["pass"] += status_counts["pass"]
-        aggregate_status_counts["fail"] += status_counts["fail"]
+        aggregate_status_counts["true_fail"] += status_counts["true_fail"]
         aggregate_status_counts["insufficient_sample"] += status_counts["insufficient_sample"]
+        aggregate_status_counts["schema_missing"] += status_counts["schema_missing"]
         aggregate_decisionable_status_counts["pass"] += decisionable_status_counts["pass"]
-        aggregate_decisionable_status_counts["fail"] += decisionable_status_counts["fail"]
+        aggregate_decisionable_status_counts["true_fail"] += decisionable_status_counts["true_fail"]
         excluded_pair_count += len(excluded_pairs)
 
     decisionable_windows = [window for window in window_reports if bool(window.get("decisionable"))]
@@ -882,6 +1004,7 @@ def evaluate_daily_edge_quality_slo(
         "as_of_utc": as_of.isoformat(),
         "min_pairs_per_window": int(slo_config.min_pairs_per_window),
         "fail_rate_threshold": float(slo_config.fail_rate_threshold),
+        "sample_volume_review": _sample_volume_review(rows, gate_config),
         "aggregate_status_counts": aggregate_status_counts,
         "aggregate_decisionable_status_counts": aggregate_decisionable_status_counts,
         "excluded_pair_count": excluded_pair_count,
@@ -946,6 +1069,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-edge-volatility", type=float, default=0.03)
     parser.add_argument("--min-scored-signals-for-volatility", type=int, default=10)
     parser.add_argument("--min-matched-events-for-volatility", type=int, default=5)
+    parser.add_argument(
+        "--volatility-sample-window-runs",
+        type=int,
+        default=1,
+        help="Optionally aggregate candidate-adjacent runs when checking volatility sample minimums (default: 1).",
+    )
     parser.add_argument("--volatility-context-min-pairs", type=int, default=4)
     parser.add_argument("--volatility-context-quantile", type=float, default=0.90)
     parser.add_argument("--volatility-context-ceiling-factor", type=float, default=1.25)
@@ -999,6 +1128,7 @@ def main() -> int:
         max_edge_volatility=args.max_edge_volatility,
         min_scored_signals_for_volatility=max(0, int(args.min_scored_signals_for_volatility)),
         min_matched_events_for_volatility=max(0, int(args.min_matched_events_for_volatility)),
+        volatility_sample_window_runs=max(1, int(args.volatility_sample_window_runs)),
         volatility_context_min_pairs=max(1, int(args.volatility_context_min_pairs)),
         volatility_context_quantile=float(args.volatility_context_quantile),
         volatility_context_ceiling_factor=max(0.0, float(args.volatility_context_ceiling_factor)),
@@ -1066,9 +1196,11 @@ def main() -> int:
 
     print(json.dumps(report, indent=2, sort_keys=True))
     recent_status_counts = (report.get("recent_window_gate") or {}).get("status_counts") or {}
-    if int(recent_status_counts.get("fail", 0)) > 0:
+    if int(recent_status_counts.get("true_fail", 0)) > 0:
         return 1
     if int(recent_status_counts.get("insufficient_sample", 0)) > 0:
+        return 1
+    if int(recent_status_counts.get("schema_missing", 0)) > 0:
         return 1
     if int((report.get("recent_window_gate") or {}).get("pair_count", 0)) <= 0:
         return 1
