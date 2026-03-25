@@ -81,3 +81,5 @@ if [[ -n "${as_of_utc}" ]]; then
 fi
 
 "${cmd[@]}"
+
+python3 scripts/read_daily_slo_status.py --reports-dir "${reports_dir}" --limit 1
