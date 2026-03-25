@@ -189,6 +189,31 @@ class PipelineLogAdapterTests(unittest.TestCase):
         self.assertEqual(2, message["reason_codes"]["missing_open_timestamp"])
         self.assertEqual(1, message["reason_codes"]["opening_lag_exceeded"])
 
+    def test_projects_quality_contract_fields_from_signal_summary(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "row_type": "summary",
+                "run_id": "run-qc",
+                "stage": "runEdgeBoard",
+                "signal_decision_summary": json.dumps(
+                    {
+                        "quality_contract": {
+                            "feature_completeness": 0.75,
+                            "feature_completeness_reason_code": "resolved_rate_from_player_stats_coverage",
+                            "edge_volatility": 0.01,
+                            "edge_volatility_reason_code": "edge_volatility_abs_delta_p95",
+                        }
+                    }
+                ),
+            }
+        )
+        self.assertEqual(0.75, adapted["feature_completeness"])
+        self.assertEqual(0.01, adapted["edge_volatility"])
+        self.assertEqual(
+            "resolved_rate_from_player_stats_coverage", adapted["feature_completeness_reason_code"]
+        )
+        self.assertEqual("edge_volatility_abs_delta_p95", adapted["edge_volatility_reason_code"])
+
 
 
 if __name__ == "__main__":

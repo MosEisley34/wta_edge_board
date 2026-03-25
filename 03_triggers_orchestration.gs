@@ -596,6 +596,12 @@ function runEdgeBoard() {
         sent_matches_reason_counts: Number(signalStage.sentCount || 0) === Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.sent) || 0),
       },
     }, signalStage.signalDecisionSummary || {});
+    const runQualityContract = buildRunQualityContractMetrics_(
+      playerStatsStage.summary,
+      signalDecisionSummary,
+      signalStage.summary
+    );
+    signalDecisionSummary.quality_contract = runQualityContract;
 
     logDiagnosticEvent_(config, 'pipeline_stage_counts', {
       run_id: runId,
@@ -1097,6 +1103,54 @@ function runEdgeBoard() {
       lock.releaseLock();
     }
   }
+}
+
+function buildRunQualityContractMetrics_(playerStatsSummary, signalDecisionSummary, signalStageSummary) {
+  const playerSummary = playerStatsSummary && typeof playerStatsSummary === 'object' ? playerStatsSummary : {};
+  const signalSummary = signalDecisionSummary && typeof signalDecisionSummary === 'object' ? signalDecisionSummary : {};
+  const stageSummary = signalStageSummary && typeof signalStageSummary === 'object' ? signalStageSummary : {};
+  const playerMetadata = playerSummary.reason_metadata && typeof playerSummary.reason_metadata === 'object'
+    ? playerSummary.reason_metadata
+    : {};
+  const coverage = playerMetadata.coverage && typeof playerMetadata.coverage === 'object'
+    ? playerMetadata.coverage
+    : {};
+  const resolvedRate = Number(coverage.resolved_rate);
+  let featureCompleteness = Number.isFinite(resolvedRate) ? Math.max(0, Math.min(1, resolvedRate)) : null;
+  let featureReasonCode = 'resolved_rate_from_player_stats_coverage';
+  if (!Number.isFinite(featureCompleteness)) {
+    featureCompleteness = 0;
+    featureReasonCode = Number(playerSummary.input_count || 0) === 0
+      ? 'upstream_stage_empty_player_stats_default'
+      : 'missing_player_stats_coverage_default';
+  }
+
+  const edgeQuality = signalSummary.edge_quality && typeof signalSummary.edge_quality === 'object'
+    ? signalSummary.edge_quality
+    : {};
+  const volatility = edgeQuality.edge_volatility_vs_previous_run && typeof edgeQuality.edge_volatility_vs_previous_run === 'object'
+    ? edgeQuality.edge_volatility_vs_previous_run
+    : {};
+  let edgeVolatility = Number(volatility.abs_delta_p95);
+  let edgeReasonCode = 'edge_volatility_abs_delta_p95';
+  if (!Number.isFinite(edgeVolatility)) {
+    edgeVolatility = Number(volatility.abs_delta_mean);
+    edgeReasonCode = 'edge_volatility_abs_delta_mean';
+  }
+  if (!Number.isFinite(edgeVolatility)) {
+    edgeVolatility = 0;
+    edgeReasonCode = Number(stageSummary.input_count || 0) === 0
+      ? 'upstream_stage_empty_generate_signals_default'
+      : 'missing_edge_volatility_default';
+  }
+
+  return {
+    schema: 'run_quality_contract_v1',
+    feature_completeness: roundNumber_(featureCompleteness, 4),
+    feature_completeness_reason_code: featureReasonCode,
+    edge_volatility: roundNumber_(Math.abs(edgeVolatility), 4),
+    edge_volatility_reason_code: edgeReasonCode,
+  };
 }
 
 function resolveCadenceControl_(config, scriptProps, nowMs) {
