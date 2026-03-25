@@ -21,6 +21,37 @@ from evaluate_edge_quality import (  # noqa: E402
 
 
 class EvaluateEdgeQualityTests(unittest.TestCase):
+    @staticmethod
+    def _summary_row(
+        run_id: str,
+        ended_at: str,
+        edge_volatility: float,
+        scored_signals: int = 12,
+        matched_events: int = 8,
+    ) -> dict[str, object]:
+        return {
+            "row_type": "summary",
+            "stage": "runEdgeBoard",
+            "run_id": run_id,
+            "ended_at": ended_at,
+            "feature_completeness": 0.9,
+            "edge_volatility": edge_volatility,
+            "signal_decision_summary": json.dumps({"suppression_counts": {}}),
+            "stage_summaries": json.dumps(
+                [
+                    {
+                        "stage": "stageMatchEvents",
+                        "reason_codes": {"matched_count": matched_events},
+                    },
+                    {
+                        "stage": "stageGenerateSignals",
+                        "output_count": scored_signals,
+                        "input_count": scored_signals,
+                    },
+                ]
+            ),
+        }
+
     def test_gate_passes_within_thresholds(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_pass.json"))
         report = evaluate_edge_quality_gate(
@@ -255,20 +286,14 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual(1, report["recent_window_gate"]["status_counts"]["pass"])
 
     def test_daily_slo_verdict_fails_when_decisionable_window_fail_rate_exceeds_threshold(self):
-        rows = []
-        for index in range(1, 13):
-            rows.append(
-                {
-                    "row_type": "summary",
-                    "stage": "runEdgeBoard",
-                    "run_id": f"run-{index}",
-                    "ended_at": f"2026-03-{index:02d}T00:00:00Z",
-                    "feature_completeness": 0.9,
-                    "edge_volatility": 0.01 if index != 11 else 0.08,
-                    "signal_decision_summary": json.dumps({"suppression_counts": {}}),
-                    "stage_summaries": json.dumps([]),
-                }
+        rows = [
+            self._summary_row(
+                run_id=f"run-{index}",
+                ended_at=f"2026-03-{index:02d}T00:00:00Z",
+                edge_volatility=0.01 if index != 11 else 0.08,
             )
+            for index in range(1, 13)
+        ]
         report = evaluate_daily_edge_quality_slo(
             rows=rows,
             gate_config=EdgeQualityGateConfig(max_edge_volatility=0.03),
@@ -277,30 +302,36 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertEqual("fail", report["gate_verdict"])
         self.assertEqual(1, report["decisionable_window_count"])
-        self.assertEqual(1, report["window_reports"][0]["status_counts"]["fail"])
+        self.assertEqual(1, report["window_reports"][0]["decisionable_status_counts"]["fail"])
+
+    def test_daily_slo_excludes_low_activity_pairs_from_fail_rate_denominator(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.08, scored_signals=12, matched_events=8),
+            self._summary_row("run-4", "2026-03-04T00:00:00Z", edge_volatility=0.08, scored_signals=3, matched_events=2),
+            self._summary_row("run-5", "2026-03-05T00:00:00Z", edge_volatility=0.08, scored_signals=3, matched_events=2),
+        ]
+        report = evaluate_daily_edge_quality_slo(
+            rows=rows,
+            gate_config=EdgeQualityGateConfig(max_edge_volatility=0.03, volatility_context_min_pairs=99),
+            slo_config=DailyEdgeQualitySLOConfig(window_days=(7,), min_pairs_per_window=2, fail_rate_threshold=0.40),
+            as_of_utc="2026-03-05T12:00:00Z",
+        )
+        window = report["window_reports"][0]
+        self.assertEqual(4, window["pair_count"])
+        self.assertEqual(2, window["decisionable_pair_count"])
+        self.assertEqual(2, window["excluded_pair_count"])
+        self.assertEqual(1, window["decisionable_status_counts"]["fail"])
+        self.assertAlmostEqual(0.5, window["fail_rate"])
+        self.assertEqual("fail", window["verdict"])
+        self.assertTrue(any("low_scored_signals" in pair["reasons"] for pair in window["excluded_pairs"]))
+        self.assertTrue(any("low_matched_events" in pair["reasons"] for pair in window["excluded_pairs"]))
 
     def test_daily_slo_verdict_insufficient_when_window_below_min_pairs(self):
         rows = [
-            {
-                "row_type": "summary",
-                "stage": "runEdgeBoard",
-                "run_id": "run-a",
-                "ended_at": "2026-03-22T00:00:00Z",
-                "feature_completeness": 0.8,
-                "edge_volatility": 0.01,
-                "signal_decision_summary": json.dumps({"suppression_counts": {}}),
-                "stage_summaries": json.dumps([]),
-            },
-            {
-                "row_type": "summary",
-                "stage": "runEdgeBoard",
-                "run_id": "run-b",
-                "ended_at": "2026-03-23T00:00:00Z",
-                "feature_completeness": 0.8,
-                "edge_volatility": 0.01,
-                "signal_decision_summary": json.dumps({"suppression_counts": {}}),
-                "stage_summaries": json.dumps([]),
-            },
+            self._summary_row("run-a", "2026-03-22T00:00:00Z", edge_volatility=0.01, scored_signals=3, matched_events=2),
+            self._summary_row("run-b", "2026-03-23T00:00:00Z", edge_volatility=0.01, scored_signals=3, matched_events=2),
         ]
         report = evaluate_daily_edge_quality_slo(
             rows=rows,
@@ -310,6 +341,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertEqual("insufficient_sample", report["gate_verdict"])
         self.assertTrue(all(not window["decisionable"] for window in report["window_reports"]))
+        self.assertTrue(all(window["decisionable_pair_count"] == 0 for window in report["window_reports"]))
 
     def test_write_daily_slo_artifacts_writes_timestamped_report_and_summary(self):
         report = {
