@@ -89,3 +89,17 @@ def test_top_bucket_defaults_when_all_zero():
     }
     top = _top_suppression_buckets(summary, top_n=1)
     assert top[0]["bucket"] == "cooldown"
+
+
+def test_suppression_extraction_from_message_and_stage_variants():
+    rows = json.loads((ROOT / "scripts" / "fixtures" / "gs_signal_quality_recent_suppressions.json").read_text(encoding="utf-8"))
+
+    snapshots = build_snapshots(rows)
+    summary = _aggregate(snapshots)
+
+    assert summary["suppression_total"] == 17
+    reason_counts = {entry["reason"]: entry["count"] for entry in summary["suppression_reason_mix"]}
+    assert reason_counts["too_close_to_start_skip"] == 8
+    assert reason_counts["stale_odds_skip"] == 4
+    assert reason_counts["edge_below_threshold"] == 4
+    assert reason_counts["cooldown_suppressed"] == 1
