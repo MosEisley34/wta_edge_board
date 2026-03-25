@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 import sys
 
@@ -7,6 +8,7 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from compare_run_diagnostics import compare_rows  # noqa: E402
+from stake_policy import StakePolicyConfig  # noqa: E402
 
 
 def _full_stage_rows(run_id: str):
@@ -93,6 +95,38 @@ class CompareRunDiagnosticsValidationTests(unittest.TestCase):
         self.assertIn("source mix deltas", report)
         self.assertIn("unresolved players by side", report)
         self.assertIn("top fallback reason deltas", report)
+
+    def test_compare_rows_emits_stake_policy_summary_sections_from_fixture_rows(self):
+        fixture_path = ROOT / "scripts" / "fixtures" / "stake_policy_mixed_signal_rows.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        run_a_fixture_rows = []
+        for row in fixture["rows"]:
+            if row.get("case_id") in {"wrong_stage_ignored", "wrong_run_ignored"}:
+                continue
+            updated = dict(row)
+            updated["run_id"] = "run-a"
+            run_a_fixture_rows.append(updated)
+
+        rows = _full_stage_rows("run-a") + _full_stage_rows("run-b")
+        rows.extend(
+            [
+                {"run_id": "run-a", "stage": "runEdgeBoard", "row_type": "summary", "message": {}},
+                {"run_id": "run-b", "stage": "runEdgeBoard", "row_type": "summary", "message": {}},
+                *run_a_fixture_rows,
+                {"row_type": "diag", "stage": "stageGenerateSignals", "run_id": "run-b", "stake_mxn": 25},
+            ]
+        )
+
+        report = compare_rows(
+            rows,
+            "run-a",
+            "run-b",
+            stake_policy_config=StakePolicyConfig(enabled=True, minimum_stake_mxn=20.0, round_to_min=False),
+        )
+        self.assertIn("## stake-policy outcomes", report)
+        self.assertIn("## stake-policy reason codes", report)
+        self.assertIn("stake_below_min_suppressed", report)
 
 
 if __name__ == "__main__":
