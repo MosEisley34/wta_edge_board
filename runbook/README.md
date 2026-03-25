@@ -48,6 +48,72 @@ Reason-code contract:
 
 `scripts/fixtures/stake_policy_mxn20.json` is the canonical fixture for tests/scripts implementing this policy.
 
+## Stake policy rollout plan (shadow → compare → promote)
+
+Use this phased plan to introduce stake policy safely and with measurable impact tracking.
+
+### Phase 1 — shadow mode (compute only, no enforcement)
+
+Goal: compute policy decisions and projected outcomes without changing runtime outputs.
+
+1. Enable stake-policy diagnostics in non-enforcing mode for a short shadow window (recommended: 1–3 days of representative run volume).
+2. For each run in the window, record:
+   - `projected_suppressions` (`below_min_suppressed_strict` projections),
+   - `projected_round_ups` (`below_min_rounded_up` projections),
+   - projected reason-code mix from stake-policy summary.
+3. Persist run IDs and window boundaries in the rollout log so later comparisons can be reproduced.
+
+Operational note:
+- During shadow mode, runtime emitted signals remain baseline behavior; only the projected policy decisions are tracked.
+
+### Phase 2 — baseline vs policy-on comparison on matched windows
+
+Use existing wrappers/scripts so both sides are preflight-gated and run-ID validated.
+
+```bash
+# 1) Mandatory deterministic export + run-id preflight.
+scripts/export_parity_precheck.sh --out-dir ./exports_live <baseline_run_id> <candidate_run_id> <live_runtime_dir_or_files>
+
+# 2) Diagnostics compare on prepared exports.
+scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <baseline_run_id> <candidate_run_id> <live_runtime_dir_or_files>
+
+# 3) Metrics compare (includes suppression + stake-policy summaries).
+scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <baseline_run_id> <candidate_run_id> <live_runtime_dir_or_files>
+
+# 4) Edge-quality gate comparison on same matched run pair.
+python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <baseline_run_id> --candidate-run-id <candidate_run_id>
+```
+
+### Phase 3 — KPI delta tracking (required)
+
+For each matched comparison window, track and archive these deltas:
+
+1. **Actionable signals count** (`actionable_signals`/sent-notification proxy where applicable).
+2. **Suppression reason mix** (distribution shift across suppression reason codes, including projected stake-policy reasons).
+3. **Coverage gate status** (player-stats/coverage gate pass-fail parity).
+4. **Edge-quality status distribution** (`pass`/`fail`/`insufficient_sample` and related gate statuses).
+
+Store KPI outputs in dated baseline artifacts and include exact run IDs used for each delta report.
+
+### Phase 4 — promotion criteria (must be met before enforcement)
+
+Document and enforce explicit criteria in release notes for the rollout window. Recommended minimum criteria:
+
+- No regression in coverage gates versus baseline window.
+- Stable parity on diagnostics/metrics contracts (no new contract mismatches).
+- Acceptable actionable-volume drop versus baseline (team-defined threshold; must be written before evaluation).
+- No new edge-quality gate failures in the recent decision window.
+
+If any criterion fails, keep policy in shadow mode, remediate, and re-run matched-window comparisons.
+
+### Phase 5 — enforce in GS runtime (after approval only)
+
+Only after all promotion criteria pass:
+
+1. Switch GS runtime stake-policy mode from shadow to enforcing.
+2. Keep daily/weekly KPI tracking active for at least one stabilization window after cutover.
+3. Record cutover date/time, config diff, and first enforcing run IDs in the runbook changelog.
+
 ## Logging profile guidance
 
 Runtime logging now supports `LOG_PROFILE=compact|verbose` (set in the `Config` sheet).
