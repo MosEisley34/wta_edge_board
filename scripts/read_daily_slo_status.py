@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read latest daily edge-quality SLO report status with schema checks."""
+"""Read latest daily edge-quality SLO report status across schema variants."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from typing import Any
 
 INCLUDE_GLOB = "edge_quality_daily_slo_*.json"
 EXCLUDE_PATTERNS = ("*cli_day*.json", "*summary*.json", "*helper*.json")
-EXPECTED_KEYS = ("status", "windows")
 
 
 def _should_skip(path: Path) -> bool:
@@ -26,42 +25,120 @@ def _candidate_reports(reports_dir: Path) -> list[Path]:
     return sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True)
 
 
-def _format_schema_warning(path: Path, payload: dict[str, Any]) -> str:
-    missing = [key for key in EXPECTED_KEYS if key not in payload]
-    return f"{path}: schema warning missing keys={','.join(missing)}"
+def _normalize_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"pass", "ok", "healthy"}:
+        return "pass"
+    if status in {"fail", "error", "degraded"}:
+        return "fail"
+    if status in {"insufficient_sample", "insufficient", "unknown", "n/a"}:
+        return "insufficient_sample"
+    return status
 
 
-def read_status_lines(reports_dir: Path, limit: int = 1) -> list[str]:
+def _derive_from_windows(windows: Any) -> tuple[str | None, dict[str, int]]:
+    if not isinstance(windows, list):
+        return None, {}
+
+    counts = {"pass": 0, "fail": 0, "insufficient_sample": 0, "unknown": 0}
+    for window in windows:
+        if not isinstance(window, dict):
+            counts["unknown"] += 1
+            continue
+        verdict = _normalize_status(window.get("verdict"))
+        if not verdict:
+            verdict = _normalize_status(window.get("status"))
+        if verdict in {"pass", "fail", "insufficient_sample"}:
+            counts[verdict] += 1
+        else:
+            counts["unknown"] += 1
+
+    if counts["fail"] > 0:
+        derived = "fail"
+    elif counts["pass"] > 0:
+        derived = "pass"
+    elif counts["insufficient_sample"] > 0:
+        derived = "insufficient_sample"
+    elif counts["unknown"] > 0:
+        derived = "unknown"
+    else:
+        derived = None
+    return derived, counts
+
+
+def _format_counts(counts: dict[str, int]) -> str:
+    non_zero = [f"{key}:{value}" for key, value in counts.items() if value > 0]
+    return ",".join(non_zero) if non_zero else "none"
+
+
+def _summarize_payload(path: Path, payload: dict[str, Any]) -> tuple[str, bool]:
+    status = _normalize_status(payload.get("status"))
+    windows = payload.get("windows")
+    schema = "legacy" if isinstance(windows, list) else "unknown"
+
+    if not status:
+        gate_verdict = _normalize_status(payload.get("gate_verdict"))
+        if gate_verdict:
+            status = gate_verdict
+            schema = "current"
+
+    if not isinstance(windows, list):
+        window_reports = payload.get("window_reports")
+        if isinstance(window_reports, list):
+            windows = window_reports
+            schema = "current"
+
+    derived_status, verdict_counts = _derive_from_windows(windows)
+    if not status and derived_status:
+        status = derived_status
+
+    if not status:
+        return f"{path}: schema warning unable_to_resolve_status_or_windows", True
+
+    window_count = len(windows) if isinstance(windows, list) else "n/a"
+    source = "reported" if "status" in payload or "gate_verdict" in payload else "derived"
+    return (
+        f"{path}: status={status} windows={window_count} schema={schema} source={source} "
+        f"verdicts={_format_counts(verdict_counts)}",
+        False,
+    )
+
+
+def read_status_lines_with_health(reports_dir: Path, limit: int = 1) -> tuple[list[str], bool]:
     lines: list[str] = []
+    has_invalid_payload = False
+
     for path in _candidate_reports(reports_dir)[: max(1, limit)]:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             lines.append(f"{path}: schema warning invalid_json error={exc}")
+            has_invalid_payload = True
             continue
 
         if not isinstance(payload, dict):
             lines.append(f"{path}: schema warning payload_not_object")
+            has_invalid_payload = True
             continue
 
-        missing = [key for key in EXPECTED_KEYS if key not in payload]
-        if missing:
-            lines.append(_format_schema_warning(path, payload))
-            continue
-
-        status = payload.get("status")
-        windows = payload.get("windows")
-        window_count = len(windows) if isinstance(windows, list) else "n/a"
-        lines.append(f"{path}: status={status} windows={window_count}")
+        summary, is_invalid = _summarize_payload(path, payload)
+        lines.append(summary)
+        has_invalid_payload = has_invalid_payload or is_invalid
 
     if not lines:
         lines.append(f"{reports_dir}: no reports found matching {INCLUDE_GLOB}")
+
+    return lines, has_invalid_payload
+
+
+def read_status_lines(reports_dir: Path, limit: int = 1) -> list[str]:
+    lines, _ = read_status_lines_with_health(reports_dir, limit=limit)
     return lines
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Read latest edge-quality daily SLO report status with schema validation.",
+        description="Read latest edge-quality daily SLO report status across schema variants.",
     )
     parser.add_argument(
         "--reports-dir",
@@ -76,9 +153,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    for line in read_status_lines(Path(args.reports_dir), limit=args.limit):
+    lines, has_invalid_payload = read_status_lines_with_health(Path(args.reports_dir), limit=args.limit)
+    for line in lines:
         print(line)
-    return 0
+    return 1 if has_invalid_payload else 0
 
 
 if __name__ == "__main__":
