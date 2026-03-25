@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Tuple
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate
 from preflight_guard import enforce_preflight_guard
 from pipeline_log_adapter import REASON_CODE_ALIAS_DICTIONARIES, REASON_CODE_ALIAS_SCHEMA_ID, _expand_reason_map
+from stake_policy import StakePolicyConfig, summarize_run_stake_policy
 
 METRICS = ["MATCH_CT", "NO_P_MATCH", "REJ_CT", "STATS_ENR", "STATS_MISS_A", "STATS_MISS_B"]
 DISALLOWED_RUN_REASON_CODES = {"run_debounced_skip", "run_locked_skip"}
@@ -455,7 +456,12 @@ def _format_side_by_side(title: str, run_a: str, run_b: str, values_a: Dict[str,
     return lines
 
 
-def build_report(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
+def build_report(
+    rows: List[Dict[str, Any]],
+    run_a: str,
+    run_b: str,
+    stake_policy_config: StakePolicyConfig | None = None,
+) -> str:
     _validate_run_pair(rows, run_a, run_b)
     summary_a = _pick_run_summary(rows, run_a)
     summary_b = _pick_run_summary(rows, run_b)
@@ -483,6 +489,37 @@ def build_report(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
                 "verify reason-code parser/alias schema alignment"
             )
     lines.extend(_format_side_by_side("signal_suppression_reasons", run_a, run_b, _suppression_counts(summary_a), _suppression_counts(summary_b)))
+    stake_config = stake_policy_config or StakePolicyConfig()
+    stake_summary_a = summarize_run_stake_policy(rows, run_a, stake_config)
+    stake_summary_b = summarize_run_stake_policy(rows, run_b, stake_config)
+    lines.extend(
+        _format_side_by_side(
+            "stake_policy_counts",
+            run_a,
+            run_b,
+            {
+                "signal_rows_evaluated": stake_summary_a["signal_rows_evaluated"],
+                "suppressed_count": stake_summary_a["suppressed_count"],
+                "adjusted_count": stake_summary_a["adjusted_count"],
+                "passed_count": stake_summary_a["passed_count"],
+            },
+            {
+                "signal_rows_evaluated": stake_summary_b["signal_rows_evaluated"],
+                "suppressed_count": stake_summary_b["suppressed_count"],
+                "adjusted_count": stake_summary_b["adjusted_count"],
+                "passed_count": stake_summary_b["passed_count"],
+            },
+        )
+    )
+    lines.extend(
+        _format_side_by_side(
+            "stake_policy_reason_codes",
+            run_a,
+            run_b,
+            stake_summary_a["reason_counts"],
+            stake_summary_b["reason_counts"],
+        )
+    )
     lines.extend(_format_side_by_side("per_stage_duration_ms", run_a, run_b, _stage_durations(summary_a), _stage_durations(summary_b)))
     player_stats_a = _player_stats_comparator(summary_a)
     player_stats_b = _player_stats_comparator(summary_b)
@@ -609,6 +646,9 @@ def parse_args() -> argparse.Namespace:
             "Output is explicitly non-approval and verdict publication remains blocked."
         ),
     )
+    parser.add_argument("--stake-policy-enabled", action="store_true", help="Enable stake-policy evaluation counters.")
+    parser.add_argument("--stake-policy-min-stake-mxn", type=float, default=10.0, help="Minimum MXN stake floor (default: 10).")
+    parser.add_argument("--stake-policy-round-to-min", action="store_true", help="Adjust below-min stake to floor instead of suppressing.")
     return parser.parse_args()
 
 
@@ -654,7 +694,12 @@ def main() -> int:
         if gate_report.get("status") == "override":
             print("# player_stats_coverage_gate: override active")
             print(json.dumps(gate_report, indent=2, sort_keys=True))
-    print(build_report(rows, args.run_a, args.run_b))
+    stake_policy_config = StakePolicyConfig(
+        enabled=bool(args.stake_policy_enabled),
+        minimum_stake_mxn=max(0.0, float(args.stake_policy_min_stake_mxn)),
+        round_to_min=bool(args.stake_policy_round_to_min),
+    )
+    print(build_report(rows, args.run_a, args.run_b, stake_policy_config=stake_policy_config))
     return 0
 
 

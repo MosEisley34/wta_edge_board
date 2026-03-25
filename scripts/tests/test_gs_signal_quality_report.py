@@ -7,6 +7,7 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from gs_signal_quality_report import build_snapshots, _aggregate, _top_suppression_buckets, _compare_windows
+from stake_policy import StakePolicyConfig
 
 
 def _summary(run_id, ended_at, scored, sent, matched, suppression_by_reason, requested=10, resolved=8, ta=6):
@@ -103,3 +104,15 @@ def test_suppression_extraction_from_message_and_stage_variants():
     assert reason_counts["stale_odds_skip"] == 4
     assert reason_counts["edge_below_threshold"] == 4
     assert reason_counts["cooldown_suppressed"] == 1
+
+
+def test_aggregate_includes_stake_policy_counts():
+    rows = [
+        _summary("r1", "2026-03-20T00:00:00Z", 20, 5, 15, {"too_close_to_start_skip": 1}),
+        {"row_type": "diag", "stage": "stageGenerateSignals", "run_id": "r1", "stake_mxn": 2},
+        _summary("r2", "2026-03-21T00:00:00Z", 20, 5, 15, {"too_close_to_start_skip": 1}),
+        {"row_type": "diag", "stage": "stageGenerateSignals", "run_id": "r2", "stake_mxn": 12},
+    ]
+    snapshots = build_snapshots(rows, stake_policy_config=StakePolicyConfig(enabled=True))
+    summary = _aggregate(snapshots)
+    assert summary["stake_policy"]["suppressed_count"] >= 1

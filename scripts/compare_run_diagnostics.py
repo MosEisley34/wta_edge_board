@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from typing import Any, Dict, Iterable, List, Tuple
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate
 from preflight_guard import enforce_preflight_guard
+from stake_policy import StakePolicyConfig, summarize_run_stake_policy
 
 TARGETS = {
     "stageMatchEvents": ["MATCH_CT", "NO_P_MATCH", "REJ_CT"],
@@ -319,7 +320,12 @@ def _player_stats_snapshot(rows: List[Dict[str, Any]], run_id: str) -> Dict[str,
     }
 
 
-def compare_rows(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
+def compare_rows(
+    rows: List[Dict[str, Any]],
+    run_a: str,
+    run_b: str,
+    stake_policy_config: StakePolicyConfig | None = None,
+) -> str:
     _validate_run_pair(rows, run_a, run_b)
     lines = []
     lines.append(f"# Run diff report: {run_a} vs {run_b}")
@@ -420,6 +426,27 @@ def compare_rows(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> str:
     else:
         lines.append("| none | 0 | 0 | +0 |")
 
+    stake_config = stake_policy_config or StakePolicyConfig()
+    stake_a = summarize_run_stake_policy(rows, run_a, stake_config)
+    stake_b = summarize_run_stake_policy(rows, run_b, stake_config)
+    lines.append("\n## stake-policy outcomes")
+    lines.append("| metric | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    for key in ("signal_rows_evaluated", "suppressed_count", "adjusted_count", "passed_count", "missing_stake_count"):
+        lines.append(f"| {key} | {stake_a[key]} | {stake_b[key]} | {stake_b[key]-stake_a[key]:+d} |")
+
+    reason_a = Counter(stake_a["reason_counts"])
+    reason_b = Counter(stake_b["reason_counts"])
+    lines.append("\n## stake-policy reason codes")
+    lines.append("| reason_code | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    reason_codes = sorted(set(reason_a) | set(reason_b))
+    if reason_codes:
+        for code in reason_codes:
+            lines.append(f"| {code} | {reason_a[code]} | {reason_b[code]} | {reason_b[code]-reason_a[code]:+d} |")
+    else:
+        lines.append("| none | 0 | 0 | +0 |")
+
     return "\n".join(lines)
 
 
@@ -484,6 +511,9 @@ def main() -> int:
             'Output is explicitly non-approval and verdict publication remains blocked.'
         ),
     )
+    ap.add_argument("--stake-policy-enabled", action="store_true", help="Enable stake-policy evaluation counters.")
+    ap.add_argument("--stake-policy-min-stake-mxn", type=float, default=10.0, help="Minimum MXN stake floor (default: 10).")
+    ap.add_argument("--stake-policy-round-to-min", action="store_true", help="Adjust below-min stake to floor instead of suppressing.")
     ap.add_argument('--out', default='', help='Optional markdown output path.')
     args = ap.parse_args()
     preflight_status = enforce_preflight_guard(
@@ -526,7 +556,12 @@ def main() -> int:
             print('# player_stats_coverage_gate: override active')
             print(json.dumps(gate_report, indent=2, sort_keys=True))
 
-    report = compare_rows(rows, args.run_success, args.run_degraded)
+    stake_policy_config = StakePolicyConfig(
+        enabled=bool(args.stake_policy_enabled),
+        minimum_stake_mxn=max(0.0, float(args.stake_policy_min_stake_mxn)),
+        round_to_min=bool(args.stake_policy_round_to_min),
+    )
+    report = compare_rows(rows, args.run_success, args.run_degraded, stake_policy_config=stake_policy_config)
     if args.out:
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
         with open(args.out, 'w', encoding='utf-8') as f:

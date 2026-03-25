@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from stake_policy import StakePolicyConfig, summarize_run_stake_policy
+
 
 SUPPRESSION_BUCKET_REASON_MAP = {
     "edge": {"edge_below_threshold"},
@@ -35,6 +37,7 @@ class RunSnapshot:
     player_stats_requested: int
     player_stats_resolved: int
     player_stats_ta_resolved: int
+    stake_policy_summary: dict[str, Any]
 
 
 
@@ -252,8 +255,9 @@ def _extract_player_stats(summary: dict[str, Any]) -> tuple[int, int, int]:
     return requested, resolved, ta_resolved
 
 
-def build_snapshots(rows: list[dict[str, Any]]) -> list[RunSnapshot]:
+def build_snapshots(rows: list[dict[str, Any]], stake_policy_config: StakePolicyConfig | None = None) -> list[RunSnapshot]:
     snapshots: list[RunSnapshot] = []
+    stake_config = stake_policy_config or StakePolicyConfig()
     for row in rows:
         if str(row.get("row_type") or "") != "summary" or str(row.get("stage") or "") != "runEdgeBoard":
             continue
@@ -275,6 +279,7 @@ def build_snapshots(rows: list[dict[str, Any]]) -> list[RunSnapshot]:
                 player_stats_requested=requested,
                 player_stats_resolved=resolved,
                 player_stats_ta_resolved=ta_resolved,
+                stake_policy_summary=summarize_run_stake_policy(rows, run_id, stake_config),
             )
         )
     return sorted(snapshots, key=lambda item: item.ended_at)
@@ -287,12 +292,15 @@ def _window(snapshots: list[RunSnapshot], start: datetime, end: datetime) -> lis
 def _aggregate(snapshots: list[RunSnapshot]) -> dict[str, Any]:
     suppressions: defaultdict[str, int] = defaultdict(int)
     requested = resolved = ta_resolved = 0
+    stake_policy_totals: defaultdict[str, int] = defaultdict(int)
     for snap in snapshots:
         requested += snap.player_stats_requested
         resolved += snap.player_stats_resolved
         ta_resolved += snap.player_stats_ta_resolved
         for reason, count in snap.suppressions.items():
             suppressions[reason] += count
+        for key in ("suppressed_count", "adjusted_count", "passed_count", "missing_stake_count"):
+            stake_policy_totals[key] += int(snap.stake_policy_summary.get(key, 0) or 0)
 
     total_suppressions = sum(suppressions.values())
     suppression_mix = [
@@ -316,6 +324,7 @@ def _aggregate(snapshots: list[RunSnapshot]) -> dict[str, Any]:
         "suppression_total": total_suppressions,
         "suppression_reason_mix": suppression_mix,
         "suppression_bucket_mix": _bucket_mix_from_suppressions(dict(suppressions)),
+        "stake_policy": dict(stake_policy_totals),
         "player_stats": {
             "requested": requested,
             "resolved": resolved,
@@ -419,6 +428,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--change-label", default="Suppression tuning change")
     parser.add_argument("--json-out", default="", help="Optional JSON output path")
     parser.add_argument("--markdown-out", default="", help="Optional markdown changelog output path")
+    parser.add_argument("--stake-policy-enabled", action="store_true", help="Enable stake-policy evaluation summaries.")
+    parser.add_argument("--stake-policy-min-stake-mxn", type=float, default=10.0, help="Minimum MXN stake floor (default: 10).")
+    parser.add_argument("--stake-policy-round-to-min", action="store_true", help="Adjust below-min stake to floor instead of suppressing.")
     return parser.parse_args()
 
 
@@ -426,7 +438,12 @@ def main() -> int:
     args = parse_args()
     path = Path(args.input)
     rows = _load_rows(path)
-    snapshots = build_snapshots(rows)
+    stake_policy_config = StakePolicyConfig(
+        enabled=bool(args.stake_policy_enabled),
+        minimum_stake_mxn=max(0.0, float(args.stake_policy_min_stake_mxn)),
+        round_to_min=bool(args.stake_policy_round_to_min),
+    )
+    snapshots = build_snapshots(rows, stake_policy_config=stake_policy_config)
     if not snapshots:
         raise SystemExit("No runEdgeBoard summary snapshots found in input.")
 
