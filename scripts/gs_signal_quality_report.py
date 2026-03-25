@@ -89,26 +89,80 @@ def _extract_stage_summaries(summary: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _extract_signal_summary(summary: dict[str, Any]) -> dict[str, Any]:
-    parsed = _parse_json(summary.get("signal_decision_summary"), {})
-    return parsed if isinstance(parsed, dict) else {}
+    fallback: dict[str, Any] | None = None
+    for candidate in _signal_summary_candidates(summary):
+        if not isinstance(candidate, dict):
+            continue
+        if "suppression_counts" in candidate or "by_reason" in candidate:
+            if fallback is None:
+                fallback = candidate
+            if _flatten_suppressions(candidate):
+                return candidate
+    if fallback is not None:
+        return fallback
+    for candidate in _signal_summary_candidates(summary):
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _signal_summary_candidates(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+
+    direct = _parse_json(summary.get("signal_decision_summary"), {})
+    if isinstance(direct, dict):
+        candidates.append(direct)
+
+    message = _parse_json(summary.get("message"), {})
+    if isinstance(message, dict):
+        nested = _parse_json(message.get("signal_decision_summary"), {})
+        if isinstance(nested, dict):
+            candidates.append(nested)
+        message_suppression = _parse_json(message.get("suppression_counts"), {})
+        if isinstance(message_suppression, dict):
+            candidates.append({"suppression_counts": message_suppression})
+
+    for stage in _extract_stage_summaries(summary):
+        if str(stage.get("stage") or "").strip() != "stageGenerateSignals":
+            continue
+        stage_summary = _parse_json(stage.get("signal_decision_summary"), {})
+        if isinstance(stage_summary, dict):
+            candidates.append(stage_summary)
+        reason_metadata = _parse_json(stage.get("reason_metadata"), {})
+        if isinstance(reason_metadata, dict):
+            nested = _parse_json(reason_metadata.get("signal_decision_summary"), {})
+            if isinstance(nested, dict):
+                candidates.append(nested)
+            suppression = _parse_json(reason_metadata.get("suppression_counts"), {})
+            if isinstance(suppression, dict):
+                candidates.append({"suppression_counts": suppression})
+
+    return candidates
 
 
 def _flatten_suppressions(signal_summary: dict[str, Any]) -> dict[str, int]:
-    suppression = signal_summary.get("suppression_counts") if isinstance(signal_summary, dict) else {}
+    if not isinstance(signal_summary, dict):
+        return {}
+    suppression = signal_summary.get("suppression_counts", signal_summary)
     if not isinstance(suppression, dict):
         return {}
     counts: dict[str, int] = {}
-    for bucket in suppression.values():
+
+    for bucket_name, bucket in suppression.items():
         if not isinstance(bucket, dict):
-            continue
-        by_reason = bucket.get("by_reason")
-        if not isinstance(by_reason, dict):
-            continue
-        for reason, raw in by_reason.items():
             try:
-                counts[str(reason)] = counts.get(str(reason), 0) + int(float(raw))
+                counts[str(bucket_name)] = counts.get(str(bucket_name), 0) + int(float(bucket))
             except (TypeError, ValueError):
                 continue
+            continue
+        by_reason = bucket.get("by_reason")
+        if isinstance(by_reason, dict):
+            for reason, raw in by_reason.items():
+                try:
+                    counts[str(reason)] = counts.get(str(reason), 0) + int(float(raw))
+                except (TypeError, ValueError):
+                    continue
+            continue
     return counts
 
 
