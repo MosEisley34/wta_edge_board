@@ -1,0 +1,97 @@
+{
+  "run_id": "run-policy-fixture",
+  "rows": [
+    {
+      "case_id": "below_min_raw",
+      "row_type": "diag",
+      "stage": "stageGenerateSignals",
+      "run_id": "run-policy-fixture",
+      "stake_mxn": 19.5
+    },
+    {
+      "case_id": "decimal_19995",
+      "row_type": "signal",
+      "stage": "stageGenerateSignals",
+      "run_id": "run-policy-fixture",
+      "proposed_stake_mxn": 19.995
+    },
+    {
+      "case_id": "boundary_2000",
+      "row_type": "signal",
+      "stage": "stageGenerateSignals",
+      "run_id": "run-policy-fixture",
+      "recommended_stake_mxn": 20.0
+    },
+    {
+      "case_id": "above_min",
+      "row_type": "ops",
+      "stage": "stageGenerateSignals",
+      "run_id": "run-policy-fixture",
+      "stake": 22
+    },
+    {
+      "case_id": "message_nested_below_min",
+      "row_type": "diag",
+      "stage": "stageGenerateSignals",
+      "run_id": "run-policy-fixture",
+      "message": "{\"suggested_stake_mxn\": 18.2}"
+    },
+    {
+      "case_id": "missing_stake",
+      "row_type": "diag",
+      "stage": "stageGenerateSignals",
+      "run_id": "run-policy-fixture",
+      "message": "{\"note\": \"no stake emitted\"}"
+    },
+    {
+      "case_id": "wrong_stage_ignored",
+      "row_type": "signal",
+      "stage": "stagePersist",
+      "run_id": "run-policy-fixture",
+      "stake_mxn": 1.0
+    },
+    {
+      "case_id": "wrong_run_ignored",
+      "row_type": "signal",
+      "stage": "stageGenerateSignals",
+      "run_id": "another-run",
+      "stake_mxn": 1.0
+    }
+  ],
+  "expected": {
+    "strict": {
+      "counts": {
+        "signal_rows_evaluated": 6,
+        "suppressed_count": 3,
+        "adjusted_count": 0,
+        "passed_count": 2,
+        "missing_stake_count": 1
+      },
+      "decision_by_case_id": {
+        "below_min_raw": "stake_below_min_suppressed",
+        "decimal_19995": "stake_below_min_suppressed",
+        "boundary_2000": "stake_policy_pass",
+        "above_min": "stake_policy_pass",
+        "message_nested_below_min": "stake_below_min_suppressed",
+        "missing_stake": "stake_missing_unscored"
+      }
+    },
+    "round_up": {
+      "counts": {
+        "signal_rows_evaluated": 6,
+        "suppressed_count": 0,
+        "adjusted_count": 3,
+        "passed_count": 2,
+        "missing_stake_count": 1
+      },
+      "decision_by_case_id": {
+        "below_min_raw": "stake_rounded_to_min",
+        "decimal_19995": "stake_rounded_to_min",
+        "boundary_2000": "stake_policy_pass",
+        "above_min": "stake_policy_pass",
+        "message_nested_below_min": "stake_rounded_to_min",
+        "missing_stake": "stake_missing_unscored"
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -116,3 +117,61 @@ def test_aggregate_includes_stake_policy_counts():
     snapshots = build_snapshots(rows, stake_policy_config=StakePolicyConfig(enabled=True))
     summary = _aggregate(snapshots)
     assert summary["stake_policy"]["suppressed_count"] >= 1
+
+
+def test_stake_policy_summary_regression_uses_fixture_based_inputs():
+    fixture = json.loads((ROOT / "scripts" / "fixtures" / "stake_policy_mixed_signal_rows.json").read_text(encoding="utf-8"))
+    rows = [
+        _summary(fixture["run_id"], "2026-03-22T00:00:00Z", 10, 5, 8, {"too_close_to_start_skip": 1}),
+        *fixture["rows"],
+    ]
+    snapshots = build_snapshots(
+        rows,
+        stake_policy_config=StakePolicyConfig(enabled=True, minimum_stake_mxn=20.0, round_to_min=False),
+    )
+
+    summary = _aggregate(snapshots)
+    assert summary["stake_policy"]["suppressed_count"] == 3
+    assert summary["stake_policy"]["passed_count"] == 2
+    assert summary["stake_policy"]["missing_stake_count"] == 1
+
+
+def test_cli_invalid_stake_policy_min_stake_has_deterministic_error():
+    fixture_input = ROOT / "scripts" / "fixtures" / "gs_signal_quality_recent_suppressions.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "gs_signal_quality_report.py"),
+            "--input",
+            str(fixture_input),
+            "--stake-policy-enabled",
+            "--stake-policy-min-stake-mxn",
+            "not-a-number",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "invalid float value: 'not-a-number'" in result.stderr
+
+
+def test_cli_missing_stake_policy_min_stake_value_has_deterministic_error():
+    fixture_input = ROOT / "scripts" / "fixtures" / "gs_signal_quality_recent_suppressions.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "gs_signal_quality_report.py"),
+            "--input",
+            str(fixture_input),
+            "--stake-policy-enabled",
+            "--stake-policy-min-stake-mxn",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "expected one argument" in result.stderr
