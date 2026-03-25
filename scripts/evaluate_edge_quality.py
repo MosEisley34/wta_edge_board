@@ -703,6 +703,8 @@ def evaluate_daily_edge_quality_slo(
     as_of = _resolve_as_of_utc(as_of_utc)
     window_reports: list[dict[str, Any]] = []
     aggregate_status_counts = {"pass": 0, "fail": 0, "insufficient_sample": 0}
+    aggregate_decisionable_status_counts = {"pass": 0, "fail": 0}
+    excluded_pair_count = 0
 
     for window_days in sorted(set(int(item) for item in slo_config.window_days if int(item) > 0)):
         min_ended_at = _window_threshold_iso(as_of, window_days)
@@ -727,8 +729,57 @@ def evaluate_daily_edge_quality_slo(
             else:
                 status_counts["insufficient_sample"] += 1
 
-        decisionable = len(pair_reports) >= int(slo_config.min_pairs_per_window)
-        fail_rate = (status_counts["fail"] / len(pair_reports)) if pair_reports else None
+        decisionable_status_counts = {"pass": 0, "fail": 0}
+        excluded_pairs: list[dict[str, Any]] = []
+        min_scored = int(gate_config.min_scored_signals_for_volatility)
+        min_matched = int(gate_config.min_matched_events_for_volatility)
+        for report in pair_reports:
+            baseline = report.get("baseline") or {}
+            candidate = report.get("candidate") or {}
+            baseline_scored = baseline.get("scored_signals")
+            candidate_scored = candidate.get("scored_signals")
+            baseline_matched = baseline.get("matched_events")
+            candidate_matched = candidate.get("matched_events")
+            reasons: list[str] = []
+
+            if baseline_scored is None or candidate_scored is None:
+                reasons.append("missing_scored_signals")
+            elif baseline_scored < min_scored or candidate_scored < min_scored:
+                reasons.append("low_scored_signals")
+
+            if baseline_matched is None or candidate_matched is None:
+                reasons.append("missing_matched_events")
+            elif baseline_matched < min_matched or candidate_matched < min_matched:
+                reasons.append("low_matched_events")
+
+            if reasons:
+                excluded_pairs.append(
+                    {
+                        "baseline_run_id": baseline.get("run_id"),
+                        "candidate_run_id": candidate.get("run_id"),
+                        "status": report.get("status"),
+                        "reasons": reasons,
+                        "baseline_activity": {
+                            "scored_signals": baseline_scored,
+                            "matched_events": baseline_matched,
+                        },
+                        "candidate_activity": {
+                            "scored_signals": candidate_scored,
+                            "matched_events": candidate_matched,
+                        },
+                    }
+                )
+                continue
+
+            status = str(report.get("status") or "")
+            if status == "fail":
+                decisionable_status_counts["fail"] += 1
+            else:
+                decisionable_status_counts["pass"] += 1
+
+        decisionable_pair_count = decisionable_status_counts["pass"] + decisionable_status_counts["fail"]
+        decisionable = decisionable_pair_count >= int(slo_config.min_pairs_per_window)
+        fail_rate = (decisionable_status_counts["fail"] / decisionable_pair_count) if decisionable_pair_count else None
         verdict = "insufficient_sample"
         if decisionable:
             verdict = "fail" if (fail_rate or 0.0) > float(slo_config.fail_rate_threshold) else "pass"
@@ -738,8 +789,12 @@ def evaluate_daily_edge_quality_slo(
             "min_ended_at": min_ended_at,
             "run_count": len(run_ids),
             "pair_count": len(pair_reports),
+            "decisionable_pair_count": decisionable_pair_count,
             "decisionable": decisionable,
             "status_counts": status_counts,
+            "decisionable_status_counts": decisionable_status_counts,
+            "excluded_pair_count": len(excluded_pairs),
+            "excluded_pairs": excluded_pairs,
             "fail_rate": fail_rate,
             "fail_rate_threshold": float(slo_config.fail_rate_threshold),
             "verdict": verdict,
@@ -749,6 +804,9 @@ def evaluate_daily_edge_quality_slo(
         aggregate_status_counts["pass"] += status_counts["pass"]
         aggregate_status_counts["fail"] += status_counts["fail"]
         aggregate_status_counts["insufficient_sample"] += status_counts["insufficient_sample"]
+        aggregate_decisionable_status_counts["pass"] += decisionable_status_counts["pass"]
+        aggregate_decisionable_status_counts["fail"] += decisionable_status_counts["fail"]
+        excluded_pair_count += len(excluded_pairs)
 
     decisionable_windows = [window for window in window_reports if bool(window.get("decisionable"))]
     failing_decisionable_windows = [
@@ -772,6 +830,8 @@ def evaluate_daily_edge_quality_slo(
         "min_pairs_per_window": int(slo_config.min_pairs_per_window),
         "fail_rate_threshold": float(slo_config.fail_rate_threshold),
         "aggregate_status_counts": aggregate_status_counts,
+        "aggregate_decisionable_status_counts": aggregate_decisionable_status_counts,
+        "excluded_pair_count": excluded_pair_count,
         "window_reports": window_reports,
         "gate_verdict": gate_verdict,
         "gate_reason": gate_reason,
@@ -802,10 +862,14 @@ def write_daily_slo_artifacts(
         "decisionable_window_count": report.get("decisionable_window_count"),
         "failing_decisionable_window_count": report.get("failing_decisionable_window_count"),
         "aggregate_status_counts": report.get("aggregate_status_counts"),
+        "aggregate_decisionable_status_counts": report.get("aggregate_decisionable_status_counts"),
+        "excluded_pair_count": report.get("excluded_pair_count"),
         "windows": [
             {
                 "window_days": row.get("window_days"),
                 "pair_count": row.get("pair_count"),
+                "decisionable_pair_count": row.get("decisionable_pair_count"),
+                "excluded_pair_count": row.get("excluded_pair_count"),
                 "decisionable": row.get("decisionable"),
                 "fail_rate": row.get("fail_rate"),
                 "verdict": row.get("verdict"),

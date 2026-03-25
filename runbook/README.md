@@ -149,10 +149,13 @@ scripts/run_daily_edge_quality_slo.sh
 
 Gate contract:
 - Windows: last `3` and `7` days (configurable via `--windows`).
-- A window is **decisionable** only if `pair_count >= 10` (configurable via `--min-pairs`).
-- Status counts tracked per window: `pass`, `fail`, `insufficient_sample`.
-- Window fail-rate = `status_counts.fail / pair_count`.
+- A pair is **decisionable for fail-rate** only when both runs meet minimum activity (`matched_events >= 5` and `scored_signals >= 10`).
+- Low-activity or missing-activity pairs are tracked in `excluded_pairs` with run IDs, activity counts, and exclusion reasons.
+- A window is **decisionable** only if `decisionable_pair_count >= 10` (configurable via `--min-pairs`).
+- Status counts tracked per window remain operational context: `pass`, `fail`, `insufficient_sample`.
+- Window fail-rate = `decisionable_status_counts.fail / decisionable_pair_count`.
 - **Daily gate verdict = fail** when any decisionable window fail-rate exceeds `0.15` (configurable via `--fail-rate-threshold`).
+- `insufficient_sample`/low-signal outcomes should not be treated as hard quality failures; use them for operational triage only.
 
 Artifacts:
 - Timestamped full output: `reports/edge_quality_daily_slo_<timestamp>.json`.
