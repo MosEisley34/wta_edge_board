@@ -1,5 +1,53 @@
 # Runtime diagnostics runbook
 
+## Signal stake policy spec (canonical contract)
+
+Use this contract for any runtime that converts internal stake units into emitted recommendation values.
+
+### Config schema (`stake_policy`)
+
+```yaml
+stake_policy:
+  base_unit_size: 1.0
+  account_currency: MXN
+  minimum_stake_per_currency:
+    MXN: 20
+  policy_mode: strict_suppress_below_min # strict_suppress_below_min | round_up_to_min
+  precision:
+    decimals: 2
+    rounding_mode: round_half_up
+```
+
+Operational requirements:
+- `base_unit_size > 0` and numeric.
+- `account_currency` must have a configured `minimum_stake_per_currency` entry (starting baseline `MXN: 20`).
+- `policy_mode` must be one of `strict_suppress_below_min` or `round_up_to_min`.
+- Deterministic precision is fixed at `2` decimals with `round_half_up`.
+
+### Conversion → validation → emission sequence
+
+1. Convert to account-currency value: `raw_stake = signal_stake_units * base_unit_size`.
+2. Apply precision normalization: round to 2 decimals (`round_half_up`).
+3. Validate against per-currency minimum:
+   - at/above minimum: emit unchanged stake;
+   - below minimum + `strict_suppress_below_min`: suppress;
+   - below minimum + `round_up_to_min`: emit at configured minimum.
+4. Emit stake fields on outbound signals:
+   - `recommended_stake`
+   - `recommended_stake_currency`
+   - `min_stake_applied`
+   - `stake_policy_decision_reason`
+
+Reason-code contract:
+- `at_or_above_min_emit`
+- `below_min_suppressed_strict`
+- `below_min_rounded_up`
+- `stake_policy_config_error`
+
+### Canonical fixture
+
+`scripts/fixtures/stake_policy_mxn20.json` is the canonical fixture for tests/scripts implementing this policy.
+
 ## Logging profile guidance
 
 Runtime logging now supports `LOG_PROFILE=compact|verbose` (set in the `Config` sheet).
