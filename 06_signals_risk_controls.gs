@@ -960,6 +960,60 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       return;
     }
 
+    const stakePolicyDecision = evaluateSignalStakePolicy_(edgeTierAndStake.stake_units, config);
+    if (stakePolicyDecision.reason_code === 'stake_policy_config_error') {
+      captureDecision_(event, match, stakePolicyDecision.reason_code, {
+        scored: true,
+        model_probability: modelProbability,
+        market_implied_probability: impliedProbability,
+        edge_value: edgeValue,
+        edge_tier: edgeTierAndStake.edge_tier,
+        stake_units: edgeTierAndStake.stake_units,
+        stats_confidence: resolvedStatsConfidence,
+        stake_policy_decision: stakePolicyDecision,
+      });
+      rows.push(buildSignalRow_(runId, config, event, match, {
+        notification_outcome: stakePolicyDecision.reason_code,
+        model_probability: modelProbability,
+        market_implied_probability: impliedProbability,
+        edge_value: edgeValue,
+        edge_tier: edgeTierAndStake.edge_tier,
+        stake_units: edgeTierAndStake.stake_units,
+        signal_hash: signalHash,
+        model_version: modelVersion,
+        stats_confidence: resolvedStatsConfidence,
+        stake_policy_decision: stakePolicyDecision,
+        signal_delivery_mode: 'stake_policy_error',
+      }));
+      return;
+    }
+    if (stakePolicyDecision.decision === 'suppressed') {
+      captureDecision_(event, match, stakePolicyDecision.reason_code, {
+        scored: true,
+        model_probability: modelProbability,
+        market_implied_probability: impliedProbability,
+        edge_value: edgeValue,
+        edge_tier: edgeTierAndStake.edge_tier,
+        stake_units: edgeTierAndStake.stake_units,
+        stats_confidence: resolvedStatsConfidence,
+        stake_policy_decision: stakePolicyDecision,
+      });
+      rows.push(buildSignalRow_(runId, config, event, match, {
+        notification_outcome: stakePolicyDecision.reason_code,
+        model_probability: modelProbability,
+        market_implied_probability: impliedProbability,
+        edge_value: edgeValue,
+        edge_tier: 'NONE',
+        stake_units: 0,
+        signal_hash: signalHash,
+        model_version: modelVersion,
+        stats_confidence: resolvedStatsConfidence,
+        stake_policy_decision: stakePolicyDecision,
+        signal_delivery_mode: 'stake_policy_suppressed',
+      }));
+      return;
+    }
+
     const notifyDecision = maybeNotifySignal_(signalState, seenHashesThisRun, signalHash, nowMs, config.SIGNAL_COOLDOWN_MIN);
     let notifyOutcome = notifyDecision.outcome;
     let notifyDiagnostics = null;
@@ -975,6 +1029,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         edge_tier: edgeTierAndStake.edge_tier,
         edge_value: edgeValue,
         stake_units: edgeTierAndStake.stake_units,
+        recommended_stake: stakePolicyDecision.final_stake,
+        recommended_stake_currency: stakePolicyDecision.account_currency,
         model_probability: modelProbability,
         market_implied_probability: impliedProbability,
         commence_time: event.commence_time,
@@ -1026,6 +1082,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       edge_tier: edgeTierAndStake.edge_tier,
       stake_units: edgeTierAndStake.stake_units,
       stats_confidence: resolvedStatsConfidence,
+      stake_policy_decision: stakePolicyDecision,
     });
 
     rows.push(buildSignalRow_(runId, config, event, match, {
@@ -1040,6 +1097,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       notification_metadata: notifyDiagnostics,
       stats_confidence: resolvedStatsConfidence,
       signal_delivery_mode: fallbackOnlyMode ? 'fallback_only' : 'normal',
+      stake_policy_decision: stakePolicyDecision,
     }));
   });
 
@@ -1072,6 +1130,12 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       notification_outcome: row.notification_outcome,
       notification_metadata: row.notification_metadata || null,
       stats_confidence: row.stats_confidence,
+      recommended_stake: row.recommended_stake,
+      recommended_stake_currency: row.recommended_stake_currency,
+      proposed_stake: row.proposed_stake,
+      min_stake_threshold: row.min_stake_threshold,
+      stake_policy_mode: row.stake_policy_mode,
+      stake_policy_decision_reason: row.stake_policy_decision_reason,
     })),
   }));
 
@@ -1343,6 +1407,7 @@ function buildSignalDecisionRunSummary_(payload) {
 
   const sentCount = Number(safe.sent_count || 0);
   const scoredCount = Number(safe.scored_count || 0);
+  const stakePolicySummary = summarizeSignalRowsStakePolicy_(signalRows, config);
 
   return {
     run_id: String(safe.run_id || ''),
@@ -1352,6 +1417,7 @@ function buildSignalDecisionRunSummary_(payload) {
     sent_count: sentCount,
     suppression_counts: suppressionSummary,
     sampled_top_suppressions: sampledSuppressionExamples,
+    stake_policy_summary: stakePolicySummary,
     edge_quality: {
       edge_distribution: edgeDistribution,
       edge_volatility_vs_previous_run: volatility,
@@ -1514,6 +1580,7 @@ function resolveLiquidity_(event) {
 }
 
 function buildSignalRow_(runId, config, event, match, detail) {
+  const stakePolicyDecision = detail.stake_policy_decision || evaluateSignalStakePolicy_(detail.stake_units, config || {});
   return {
     key: detail.signal_hash,
     run_id: runId,
@@ -1529,6 +1596,13 @@ function buildSignalRow_(runId, config, event, match, detail) {
     edge_value: detail.edge_value,
     edge_tier: detail.edge_tier,
     stake_units: detail.stake_units,
+    proposed_stake: stakePolicyDecision.proposed_stake,
+    recommended_stake: stakePolicyDecision.final_stake,
+    recommended_stake_currency: stakePolicyDecision.account_currency,
+    min_stake_threshold: stakePolicyDecision.minimum_stake,
+    min_stake_applied: stakePolicyDecision.decision === 'adjusted',
+    stake_policy_mode: stakePolicyDecision.policy_mode,
+    stake_policy_decision_reason: stakePolicyDecision.reason_code,
     opening_price: resolveOpeningPrice_(event),
     evaluation_price: resolveEvaluationPrice_(event),
     price_delta_bps: resolvePriceDeltaBps_(event),
@@ -1547,6 +1621,130 @@ function buildSignalRow_(runId, config, event, match, detail) {
     created_at_utc: new Date().toISOString(),
     notification_metadata: detail.notification_metadata || null,
   };
+}
+
+function evaluateSignalStakePolicy_(stakeUnits, config) {
+  const cfg = config || {};
+  const policyMode = normalizeStakePolicyMode_(cfg.STAKE_POLICY_MODE);
+  const accountCurrency = String(cfg.ACCOUNT_CURRENCY || 'MXN').toUpperCase();
+  const minimums = parseMinStakePerCurrency_(cfg.MIN_STAKE_PER_CURRENCY_JSON);
+  if (!Object.prototype.hasOwnProperty.call(minimums, accountCurrency)) {
+    return {
+      decision: 'config_error',
+      reason_code: 'stake_policy_config_error',
+      policy_mode: policyMode,
+      account_currency: accountCurrency,
+      proposed_stake: null,
+      final_stake: null,
+      minimum_stake: null,
+    };
+  }
+
+  const minimumStake = Number(minimums[accountCurrency]);
+  const proposedStake = roundHalfUp_(Number(stakeUnits || 0), 2);
+  if (!Number.isFinite(proposedStake)) {
+    return {
+      decision: 'missing_stake',
+      reason_code: 'stake_missing_unscored',
+      policy_mode: policyMode,
+      account_currency: accountCurrency,
+      proposed_stake: null,
+      final_stake: null,
+      minimum_stake: minimumStake,
+    };
+  }
+  if (proposedStake < minimumStake) {
+    if (policyMode === 'round_up_to_min') {
+      return {
+        decision: 'adjusted',
+        reason_code: 'stake_rounded_to_min',
+        policy_mode: policyMode,
+        account_currency: accountCurrency,
+        proposed_stake: proposedStake,
+        final_stake: minimumStake,
+        minimum_stake: minimumStake,
+      };
+    }
+    return {
+      decision: 'suppressed',
+      reason_code: 'stake_below_min_suppressed',
+      policy_mode: policyMode,
+      account_currency: accountCurrency,
+      proposed_stake: proposedStake,
+      final_stake: 0,
+      minimum_stake: minimumStake,
+    };
+  }
+  return {
+    decision: 'passed',
+    reason_code: 'stake_policy_pass',
+    policy_mode: policyMode,
+    account_currency: accountCurrency,
+    proposed_stake: proposedStake,
+    final_stake: proposedStake,
+    minimum_stake: minimumStake,
+  };
+}
+
+function normalizeStakePolicyMode_(value) {
+  const normalized = String(value || 'strict_suppress_below_min').toLowerCase();
+  if (normalized === 'round_up_to_min') return normalized;
+  return 'strict_suppress_below_min';
+}
+
+function parseMinStakePerCurrency_(raw) {
+  let parsed = raw;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch (err) {
+      parsed = {};
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  return Object.keys(parsed).reduce(function (acc, key) {
+    const numeric = Number(parsed[key]);
+    if (!Number.isFinite(numeric) || numeric < 0) return acc;
+    acc[String(key || '').toUpperCase()] = roundHalfUp_(numeric, 2);
+    return acc;
+  }, {});
+}
+
+function roundHalfUp_(value, decimals) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return NaN;
+  const places = Math.max(0, Number(decimals || 0));
+  const scale = Math.pow(10, places);
+  if (numeric >= 0) return Math.floor(numeric * scale + 0.5) / scale;
+  return Math.ceil(numeric * scale - 0.5) / scale;
+}
+
+function summarizeSignalRowsStakePolicy_(signalRows, config) {
+  const rows = Array.isArray(signalRows) ? signalRows : [];
+  const reasonCounts = {};
+  const summary = {
+    policy_mode: normalizeStakePolicyMode_(config && config.STAKE_POLICY_MODE),
+    account_currency: String(config && config.ACCOUNT_CURRENCY || 'MXN').toUpperCase(),
+    signal_rows_evaluated: 0,
+    suppressed_count: 0,
+    adjusted_count: 0,
+    passed_count: 0,
+    missing_stake_count: 0,
+    config_error_count: 0,
+    reason_counts: reasonCounts,
+  };
+  rows.forEach(function (row) {
+    const reasonCode = String(row && row.stake_policy_decision_reason || '');
+    if (!reasonCode) return;
+    summary.signal_rows_evaluated += 1;
+    reasonCounts[reasonCode] = Number(reasonCounts[reasonCode] || 0) + 1;
+    if (reasonCode === 'stake_below_min_suppressed') summary.suppressed_count += 1;
+    if (reasonCode === 'stake_rounded_to_min') summary.adjusted_count += 1;
+    if (reasonCode === 'stake_policy_pass') summary.passed_count += 1;
+    if (reasonCode === 'stake_missing_unscored') summary.missing_stake_count += 1;
+    if (reasonCode === 'stake_policy_config_error') summary.config_error_count += 1;
+  });
+  return summary;
 }
 
 

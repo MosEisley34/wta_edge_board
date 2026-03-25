@@ -81,6 +81,10 @@ const DEFAULT_CONFIG = {
   STAKE_UNITS_SMALL: '0.5',
   STAKE_UNITS_MED: '1',
   STAKE_UNITS_STRONG: '1.5',
+  STAKE_POLICY_MODE: 'strict_suppress_below_min',
+  ACCOUNT_CURRENCY: 'MXN',
+  DISPLAY_CURRENCY: 'MXN',
+  MIN_STAKE_PER_CURRENCY_JSON: '{"MXN":20}',
   SIGNAL_COOLDOWN_MIN: '150',
   MINUTES_BEFORE_START_CUTOFF: '60',
   STALE_ODDS_WINDOW_MIN: '60',
@@ -226,6 +230,12 @@ const REASON_CODE_ALIAS_DICTIONARIES = {
     run_health_single_run_critical_triggered: 'RH_CRIT_1RUN',
     source_entity_domain_mismatch_non_tennis_sport_slug_football: 'SRC_DM_FOOT',
     source_entity_domain_mismatch: 'SRC_DM',
+    stake_policy_disabled: 'STAKE_OFF',
+    stake_missing_unscored: 'STAKE_MISS',
+    stake_below_min_suppressed: 'STAKE_SUP',
+    stake_rounded_to_min: 'STAKE_RND',
+    stake_policy_pass: 'STAKE_OK',
+    stake_policy_config_error: 'STAKE_CFG',
     player_stats_out_of_cohort_only: 'PSTATS_OUT_COH',
     player_stats_unknown_rank_only: 'PSTATS_UNK_RNK',
     match_map_diagnostic_records_written: 'MM_DIAG_WR',
@@ -462,6 +472,14 @@ function getConfig_() {
     STAKE_UNITS_SMALL: toNumber_(config.STAKE_UNITS_SMALL, 0.5),
     STAKE_UNITS_MED: toNumber_(config.STAKE_UNITS_MED, 1),
     STAKE_UNITS_STRONG: toNumber_(config.STAKE_UNITS_STRONG, 1.5),
+    STAKE_POLICY_MODE: String(config.STAKE_POLICY_MODE || DEFAULT_CONFIG.STAKE_POLICY_MODE || 'strict_suppress_below_min').toLowerCase(),
+    ACCOUNT_CURRENCY: String(config.ACCOUNT_CURRENCY || DEFAULT_CONFIG.ACCOUNT_CURRENCY || 'MXN').toUpperCase(),
+    DISPLAY_CURRENCY: String(config.DISPLAY_CURRENCY || config.ACCOUNT_CURRENCY || DEFAULT_CONFIG.DISPLAY_CURRENCY || 'MXN').toUpperCase(),
+    MIN_STAKE_PER_CURRENCY_JSON: String(
+      config.MIN_STAKE_PER_CURRENCY_JSON
+      || DEFAULT_CONFIG.MIN_STAKE_PER_CURRENCY_JSON
+      || '{"MXN":20}'
+    ),
     SIGNAL_COOLDOWN_MIN: toNumber_(config.SIGNAL_COOLDOWN_MIN, 150),
     MINUTES_BEFORE_START_CUTOFF: toNumber_(config.MINUTES_BEFORE_START_CUTOFF, 60),
     STALE_ODDS_WINDOW_MIN: toNumber_(config.STALE_ODDS_WINDOW_MIN, 60),

@@ -76,6 +76,10 @@ function appendRunStartConfigAuditLog_(runId, config, startedAt) {
       opening_lag_fallback_exemption_max_rows_per_run: Math.max(0, Number(cfg.OPENING_LAG_FALLBACK_EXEMPTION_MAX_ROWS_PER_RUN || 0)),
       opening_lag_fallback_key_match_window_minutes: Math.max(0, Number(cfg.OPENING_LAG_FALLBACK_KEY_MATCH_WINDOW_MINUTES || 0)),
       opening_lag_fallback_key_match_max_age_minutes: Math.max(0, Number(cfg.OPENING_LAG_FALLBACK_KEY_MATCH_MAX_AGE_MINUTES || 0)),
+      stake_policy_mode: String(cfg.STAKE_POLICY_MODE || ''),
+      account_currency: String(cfg.ACCOUNT_CURRENCY || ''),
+      display_currency: String(cfg.DISPLAY_CURRENCY || ''),
+      min_stake_per_currency_json: String(cfg.MIN_STAKE_PER_CURRENCY_JSON || ''),
     }),
   });
 }
@@ -119,7 +123,10 @@ function stagePersist(runId, payload) {
   upsertSheetRows_(SHEETS.SIGNALS, [
     'key', 'run_id', 'odds_event_id', 'schedule_event_id',
     'market', 'side', 'bookmaker', 'competition_tier', 'model_version',
-    'model_probability', 'market_implied_probability', 'edge_value', 'edge_tier', 'stake_units', 'opening_price', 'evaluation_price', 'price_delta_bps', 'opening_lag_minutes', 'decision_gate_status',
+    'model_probability', 'market_implied_probability', 'edge_value', 'edge_tier', 'stake_units',
+    'proposed_stake', 'recommended_stake', 'recommended_stake_currency',
+    'min_stake_threshold', 'min_stake_applied', 'stake_policy_mode', 'stake_policy_decision_reason',
+    'opening_price', 'evaluation_price', 'price_delta_bps', 'opening_lag_minutes', 'decision_gate_status',
     'signal_hash', 'notification_outcome', 'reason_code', 'created_at',
   ], payload.signals);
 
