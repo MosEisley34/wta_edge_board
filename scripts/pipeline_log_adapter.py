@@ -241,6 +241,25 @@ def _legacy_row_type(event_type: str, stage: str) -> str:
     return "stage"
 
 
+def _apply_quality_contract_projection(adapted: dict[str, Any]) -> dict[str, Any]:
+    row = dict(adapted)
+    signal_summary = _parse_json_like(row.get("signal_decision_summary"), {})
+    if not isinstance(signal_summary, dict):
+        return row
+    quality_contract = signal_summary.get("quality_contract")
+    if not isinstance(quality_contract, dict):
+        return row
+    if row.get("feature_completeness") in (None, "") and quality_contract.get("feature_completeness") not in (None, ""):
+        row["feature_completeness"] = quality_contract.get("feature_completeness")
+    if row.get("edge_volatility") in (None, "") and quality_contract.get("edge_volatility") not in (None, ""):
+        row["edge_volatility"] = quality_contract.get("edge_volatility")
+    if quality_contract.get("feature_completeness_reason_code") not in (None, ""):
+        row["feature_completeness_reason_code"] = str(quality_contract.get("feature_completeness_reason_code"))
+    if quality_contract.get("edge_volatility_reason_code") not in (None, ""):
+        row["edge_volatility_reason_code"] = str(quality_contract.get("edge_volatility_reason_code"))
+    return row
+
+
 def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
     schema_version = int(record.get("schema_version") or 0)
 
@@ -274,7 +293,7 @@ def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
                 _expand_stage_summaries(stage_summary_envelope.get("stage_summaries") or [], schema_id=stage_schema_id)
             )
 
-        return adapted
+        return _apply_quality_contract_projection(adapted)
 
     event_type = str(record.get("et") or "")
     stage = str(record.get("st") or event_type)
@@ -316,7 +335,7 @@ def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
     else:
         message = str(record.get("msg") or "")
 
-    return {
+    adapted = {
         "row_type": row_type,
         "run_id": str(record.get("rid") or ""),
         "stage": stage,
@@ -340,7 +359,13 @@ def adapt_run_log_record_for_legacy(record: dict[str, Any]) -> dict[str, Any]:
         "exception": str(record.get("ex") or ""),
         "stack": str(record.get("stk") or ""),
         "stage_summaries": json.dumps(expanded_stage_summaries),
+        "signal_decision_summary": (
+            json.dumps(record.get("sds"))
+            if isinstance(record.get("sds"), (dict, list))
+            else str(record.get("sds") or record.get("signal_decision_summary") or "")
+        ),
     }
+    return _apply_quality_contract_projection(adapted)
 
 
 def adapt_run_log_records_for_legacy(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

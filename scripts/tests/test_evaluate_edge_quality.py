@@ -181,6 +181,88 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertIn("missing_edge_volatility_metric reason_code=missing_field_edge_volatility", report["failures"])
 
+    def test_quality_contract_defaults_are_used_when_upstream_empty(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-baseline",
+                "signal_decision_summary": json.dumps(
+                    {
+                        "quality_contract": {
+                            "feature_completeness": 0.0,
+                            "feature_completeness_reason_code": "upstream_stage_empty_player_stats_default",
+                            "edge_volatility": 0.0,
+                            "edge_volatility_reason_code": "upstream_stage_empty_generate_signals_default",
+                        }
+                    }
+                ),
+                "stage_summaries": "[]",
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-candidate",
+                "signal_decision_summary": json.dumps(
+                    {
+                        "quality_contract": {
+                            "feature_completeness": 0.0,
+                            "feature_completeness_reason_code": "upstream_stage_empty_player_stats_default",
+                            "edge_volatility": 0.0,
+                            "edge_volatility_reason_code": "upstream_stage_empty_generate_signals_default",
+                        }
+                    }
+                ),
+                "stage_summaries": "[]",
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(min_feature_completeness=0.0),
+        )
+        self.assertFalse(any("missing_field_edge_volatility" in item for item in report["failures"]))
+
+    def test_zero_requested_players_does_not_force_zero_completeness(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-baseline",
+                "signal_decision_summary": "{}",
+                "stage_summaries": json.dumps(
+                    [
+                        {
+                            "stage": "stageFetchPlayerStats",
+                            "reason_metadata": {"requested_player_count": 0, "resolved_player_count": 0},
+                        }
+                    ]
+                ),
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-candidate",
+                "signal_decision_summary": "{}",
+                "stage_summaries": json.dumps(
+                    [
+                        {
+                            "stage": "stageFetchPlayerStats",
+                            "reason_metadata": {"requested_player_count": 0, "resolved_player_count": 0},
+                        }
+                    ]
+                ),
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(),
+        )
+        self.assertTrue(any("missing_feature_completeness_metric" in item for item in report["failures"]))
+
     def test_legacy_schema_rows_emit_dedicated_status_instead_of_completeness_fail(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_legacy_schema_warning.json"))
         report = evaluate_edge_quality_gate(

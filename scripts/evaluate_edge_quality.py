@@ -218,6 +218,13 @@ def _extract_feature_completeness(summary_row: dict[str, Any]) -> tuple[float | 
                 return value, None
         except (TypeError, ValueError):
             continue
+    quality_contract = _extract_quality_contract(_extract_signal_summary(summary_row))
+    try:
+        value = float(quality_contract.get("feature_completeness"))
+        if value >= 0:
+            return value, None
+    except (TypeError, ValueError):
+        pass
 
     for stage in _extract_stage_summaries(summary_row):
         if str(stage.get("stage") or "") != "stageFetchPlayerStats":
@@ -237,7 +244,8 @@ def _extract_feature_completeness(summary_row: dict[str, Any]) -> tuple[float | 
         try:
             requested_n = float(requested)
             resolved_n = float(resolved)
-            return ((resolved_n / requested_n) if requested_n > 0 else 0.0), None
+            if requested_n > 0:
+                return (resolved_n / requested_n), None
         except (TypeError, ValueError, ZeroDivisionError):
             continue
         try:
@@ -255,6 +263,8 @@ def _extract_feature_completeness(summary_row: dict[str, Any]) -> tuple[float | 
     denom = enriched + missing_a + missing_b
     if denom > 0:
         return max(0.0, min(1.0, enriched / denom)), None
+    if isinstance(quality_contract, dict) and quality_contract.get("feature_completeness_reason_code"):
+        return None, str(quality_contract.get("feature_completeness_reason_code"))
     if reason_diag:
         return None, reason_diag
     if summary_row.get("reason_codes") not in (None, ""):
@@ -308,6 +318,10 @@ def _extract_signal_summary(summary_row: dict[str, Any]) -> dict[str, Any]:
     parsed = _parse_json_like(summary_row.get("signal_decision_summary"), {})
     return parsed if isinstance(parsed, dict) else {}
 
+def _extract_quality_contract(signal_summary: dict[str, Any]) -> dict[str, Any]:
+    quality_contract = signal_summary.get("quality_contract") if isinstance(signal_summary, dict) else {}
+    return quality_contract if isinstance(quality_contract, dict) else {}
+
 
 def _flatten_suppression_counts(signal_summary: dict[str, Any]) -> dict[str, int]:
     suppression = signal_summary.get("suppression_counts") if isinstance(signal_summary, dict) else {}
@@ -359,6 +373,11 @@ def _edge_volatility(summary_row: dict[str, Any], signal_summary: dict[str, Any]
             return abs(float(value)), None
         except (TypeError, ValueError):
             continue
+    quality_contract = _extract_quality_contract(signal_summary)
+    try:
+        return abs(float(quality_contract.get("edge_volatility"))), None
+    except (TypeError, ValueError):
+        pass
 
     for stage in _extract_stage_summaries(summary_row):
         if str(stage.get("stage") or "").strip() != "stageGenerateSignals":
@@ -382,6 +401,8 @@ def _edge_volatility(summary_row: dict[str, Any], signal_summary: dict[str, Any]
         except (TypeError, ValueError, ZeroDivisionError):
             continue
     if summary_row.get("signal_decision_summary") not in (None, "") or summary_row.get("stage_summaries") not in (None, ""):
+        if isinstance(quality_contract, dict) and quality_contract.get("edge_volatility_reason_code"):
+            return None, str(quality_contract.get("edge_volatility_reason_code"))
         return None, "missing_field_edge_volatility"
     return None, "unsupported_artifact_shape_edge_volatility"
 

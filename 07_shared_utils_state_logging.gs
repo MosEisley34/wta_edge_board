@@ -343,6 +343,7 @@ function resolveSinglePassReasonCodeMap_(rowReasonCodeMap, messageReasonCodeMap,
 
 function appendLogRow_(entry) {
   const normalized = normalizeLogEntryForAppend_(entry || {});
+  validateRunSummaryQualityContract_(normalized);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sh = ss.getSheetByName(SHEETS.RUN_LOG);
 
@@ -379,6 +380,38 @@ function appendLogRow_(entry) {
 
   maybeEmitReasonAliasFallbackWarningOpsLog_(normalized);
   maybeEmitWatchdogWarningAggregateOpsLog_(normalized);
+}
+
+function validateRunSummaryQualityContract_(entry) {
+  const rowType = String(entry && entry.row_type || '');
+  const stage = String(entry && entry.stage || '');
+  if (rowType !== 'summary' || stage !== 'runEdgeBoard') return;
+
+  const signalSummary = parseLogJsonLike_(entry.signal_decision_summary, {});
+  const qualityContract = signalSummary && typeof signalSummary === 'object' && signalSummary.quality_contract
+    ? signalSummary.quality_contract
+    : null;
+  if (!qualityContract || typeof qualityContract !== 'object') {
+    throw new Error('run_summary_quality_contract_missing: signal_decision_summary.quality_contract is required');
+  }
+
+  const featureCompleteness = Number(qualityContract.feature_completeness);
+  if (!Number.isFinite(featureCompleteness) || featureCompleteness < 0 || featureCompleteness > 1) {
+    throw new Error('run_summary_quality_contract_invalid_feature_completeness');
+  }
+  const featureReasonCode = String(qualityContract.feature_completeness_reason_code || '').trim();
+  if (!featureReasonCode) {
+    throw new Error('run_summary_quality_contract_missing_feature_reason_code');
+  }
+
+  const edgeVolatility = Number(qualityContract.edge_volatility);
+  if (!Number.isFinite(edgeVolatility) || edgeVolatility < 0) {
+    throw new Error('run_summary_quality_contract_invalid_edge_volatility');
+  }
+  const edgeReasonCode = String(qualityContract.edge_volatility_reason_code || '').trim();
+  if (!edgeReasonCode) {
+    throw new Error('run_summary_quality_contract_missing_edge_reason_code');
+  }
 }
 
 function setStateValue_(key, value, opts) {
