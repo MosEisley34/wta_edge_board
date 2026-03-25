@@ -1,0 +1,66 @@
+{
+  "stake_policy": {
+    "base_unit_size": 1.0,
+    "account_currency": "MXN",
+    "minimum_stake_per_currency": {
+      "MXN": 20
+    },
+    "policy_mode": "strict_suppress_below_min",
+    "precision": {
+      "decimals": 2,
+      "rounding_mode": "round_half_up"
+    }
+  },
+  "contract": {
+    "conversion_formula": "raw_stake = signal_stake_units * base_unit_size",
+    "precision_rule": "round_half_up to 2 decimals",
+    "emitted_fields": [
+      "recommended_stake",
+      "recommended_stake_currency",
+      "min_stake_applied",
+      "stake_policy_decision_reason"
+    ],
+    "decision_reasons": [
+      "at_or_above_min_emit",
+      "below_min_suppressed_strict",
+      "below_min_rounded_up",
+      "stake_policy_config_error"
+    ]
+  },
+  "deterministic_examples": [
+    {
+      "id": "strict_above_min",
+      "signal_stake_units": 20.125,
+      "expected": {
+        "emitted": true,
+        "recommended_stake": 20.13,
+        "recommended_stake_currency": "MXN",
+        "min_stake_applied": false,
+        "stake_policy_decision_reason": "at_or_above_min_emit"
+      }
+    },
+    {
+      "id": "strict_below_min_suppressed",
+      "signal_stake_units": 19.994,
+      "expected": {
+        "emitted": false,
+        "recommended_stake": null,
+        "recommended_stake_currency": "MXN",
+        "min_stake_applied": false,
+        "stake_policy_decision_reason": "below_min_suppressed_strict"
+      }
+    },
+    {
+      "id": "round_up_mode_variant",
+      "override_policy_mode": "round_up_to_min",
+      "signal_stake_units": 10.001,
+      "expected": {
+        "emitted": true,
+        "recommended_stake": 20.0,
+        "recommended_stake_currency": "MXN",
+        "min_stake_applied": true,
+        "stake_policy_decision_reason": "below_min_rounded_up"
+      }
+    }
+  ]
+}

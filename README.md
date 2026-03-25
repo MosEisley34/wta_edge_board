@@ -1,5 +1,60 @@
 # wta_edge_board
 
+## Signal stake policy spec (canonical contract)
+
+This contract defines a single deterministic policy for converting model stake units into emitted signal stake amounts.
+
+### Config schema (`stake_policy`)
+
+```yaml
+stake_policy:
+  base_unit_size: 1.0
+  account_currency: MXN
+  minimum_stake_per_currency:
+    MXN: 20
+  policy_mode: strict_suppress_below_min # strict_suppress_below_min | round_up_to_min
+  precision:
+    decimals: 2
+    rounding_mode: round_half_up
+```
+
+Schema field requirements:
+- `base_unit_size` (number, `> 0`): multiplier used to convert raw stake units into account-currency value.
+- `account_currency` (ISO 4217 string): default currency for emitted signal stake values.
+- `minimum_stake_per_currency` (map of ISO 4217 → number): per-currency minimum stake floor. Initial required key: `MXN: 20`.
+- `policy_mode` (enum):
+  - `strict_suppress_below_min`: suppress signal emission when converted stake is below configured minimum.
+  - `round_up_to_min`: emit signal and clamp stake to configured minimum when converted stake is below minimum.
+- `precision.decimals` (integer): number of decimals used in final emitted stake (`2` required).
+- `precision.rounding_mode` (enum): `round_half_up` required for deterministic rounding.
+
+### Conversion, validation, and emission contract
+
+1. **Convert**
+   - Compute `raw_stake = signal_stake_units * base_unit_size` in `account_currency`.
+2. **Normalize precision**
+   - Compute `normalized_stake` by rounding `raw_stake` to `precision.decimals` using `round_half_up`.
+3. **Validate minimum policy**
+   - Resolve `currency_minimum = minimum_stake_per_currency[account_currency]`.
+   - If no currency minimum exists, treat as config error and suppress signal.
+   - If `normalized_stake >= currency_minimum`, emit unchanged.
+   - If `normalized_stake < currency_minimum`, apply `policy_mode`:
+     - `strict_suppress_below_min`: suppress signal.
+     - `round_up_to_min`: set emitted stake to `currency_minimum`.
+4. **Emit fields** (when signal is emitted)
+   - `recommended_stake`: final post-policy stake rounded/represented with 2 decimals.
+   - `recommended_stake_currency`: equals `account_currency`.
+   - `min_stake_applied`: boolean (`true` only when floor/clamp applied).
+   - `stake_policy_decision_reason`: deterministic reason code:
+     - `at_or_above_min_emit`
+     - `below_min_suppressed_strict`
+     - `below_min_rounded_up`
+     - `stake_policy_config_error`
+
+### Canonical fixture
+
+Use `scripts/fixtures/stake_policy_mxn20.json` as the canonical test and script fixture for this contract.
+
 ## Troubleshooting: menu missing after open
 
 If the custom menu does not appear (for example due to simple-trigger binding/deployment mismatch), use this recovery flow:
