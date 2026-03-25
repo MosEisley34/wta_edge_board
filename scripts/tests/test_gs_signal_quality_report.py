@@ -175,3 +175,23 @@ def test_cli_missing_stake_policy_min_stake_value_has_deterministic_error():
 
     assert result.returncode != 0
     assert "expected one argument" in result.stderr
+
+
+def test_cli_emits_high_visibility_warning_when_stake_policy_disabled():
+    fixture_input = ROOT / "scripts" / "fixtures" / "gs_signal_quality_recent_suppressions.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "gs_signal_quality_report.py"),
+            "--input",
+            str(fixture_input),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    warnings = payload.get("high_visibility_warnings", [])
+    assert warnings
+    assert "STAKE_POLICY_DISABLED" in warnings[0]
