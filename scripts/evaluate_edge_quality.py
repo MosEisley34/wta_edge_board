@@ -545,6 +545,12 @@ def evaluate_edge_quality_gate(
 
     failures: list[str] = []
     warnings: list[str] = []
+    high_visibility_warnings: list[str] = []
+    if not bool(config.stake_policy_enabled):
+        high_visibility_warnings.append(
+            "HIGH_VISIBILITY_STAKE_POLICY_DISABLED "
+            "(stake_policy_summary counters are not policy outcomes; enable --stake-policy-enabled to validate behavior)"
+        )
     candidate_feature_completeness = candidate["feature_completeness"]
     if candidate_feature_completeness is None:
         if candidate.get("schema_markers", {}).get("legacy_feature_contract"):
@@ -629,6 +635,7 @@ def evaluate_edge_quality_gate(
         "effective_volatility_ceiling": adaptive_ceiling_info,
         "suppression_drifts": suppression_drifts,
         "warnings": warnings,
+        "high_visibility_warnings": high_visibility_warnings,
         "failures": failures,
     }
 

@@ -67,6 +67,21 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertEqual("pass", report["status"])
         self.assertEqual([], report["failures"])
+        self.assertTrue(
+            any(item.startswith("HIGH_VISIBILITY_STAKE_POLICY_DISABLED") for item in report["high_visibility_warnings"])
+        )
+
+    def test_gate_omits_disabled_warning_when_stake_policy_enabled(self):
+        rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_pass.json"))
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(stake_policy_enabled=True),
+        )
+        self.assertFalse(
+            any(item.startswith("HIGH_VISIBILITY_STAKE_POLICY_DISABLED") for item in report["high_visibility_warnings"])
+        )
 
     def test_gate_fails_with_threshold_breaches(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_fail.json"))

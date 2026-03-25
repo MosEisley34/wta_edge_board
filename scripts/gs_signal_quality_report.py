@@ -466,6 +466,11 @@ def main() -> int:
             "top_suppression_buckets": top_two,
         },
     }
+    if not stake_policy_config.enabled:
+        report["high_visibility_warnings"] = [
+            "STAKE_POLICY_DISABLED: stake_policy summary counters reflect disabled-policy placeholders, "
+            "not enforced min-stake outcomes. Re-run with --stake-policy-enabled."
+        ]
 
     if args.change_run_id:
         pivot = next((s for s in snapshots if s.run_id == args.change_run_id), None)
