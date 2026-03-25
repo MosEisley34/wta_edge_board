@@ -469,6 +469,8 @@ function ensureTabsAndConfig_() {
     'key', 'run_id', 'odds_event_id', 'schedule_event_id',
     'market', 'side', 'bookmaker', 'competition_tier', 'model_version',
     'model_probability', 'market_implied_probability', 'edge_value', 'edge_tier', 'stake_units',
+    'proposed_stake', 'recommended_stake', 'recommended_stake_currency',
+    'min_stake_threshold', 'min_stake_applied', 'stake_policy_mode', 'stake_policy_decision_reason',
     'signal_hash', 'notification_outcome', 'reason_code', 'created_at',
   ]);
   ensureHeaders_(ss, SHEETS.STATE, ['key', 'value', 'updated_at']);
