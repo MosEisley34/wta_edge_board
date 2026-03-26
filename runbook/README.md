@@ -195,20 +195,29 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 cd "$REPO_ROOT"
 
 # 1) Mandatory compare wrapper (runs export parity + run-id precheck first).
-scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
+bash -c '
+  set -euo pipefail
+  scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files> \
+    | tee ./exports_live/compare_run_diagnostics.report.log
+'
 
 # 2) Optional explicit precheck re-run against the prepared export dir only.
 python3 scripts/precheck_run_ids.py <run_id_a> <run_id_b> --export-dir ./exports_live
 
 # 3) Additional compare/gate commands read only from ./exports_live.
 python3 scripts/verify_run_log_parity.py --export-dir ./exports_live
-scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
+bash -c '
+  set -euo pipefail
+  scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files> \
+    | tee ./exports_live/compare_run_metrics.report.log
+'
 python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b>
 ```
 
 Evidence artifact contract (required for every comparison report):
 - Attach `./exports_live/run_compare_preflight.json` with each diagnostics/metrics comparison output.
-- If this artifact is missing, treat the report as non-compliant and rerun the wrapper.
+- A report is only **successful/valid** when `./exports_live/run_compare_preflight.json` exists and is non-empty.
+- If the preflight sidecar is missing, mark compare artifacts invalid and rerun the wrapper before sharing results.
 
 ## Operator SOP: refresh JSON from CSV → preflight → compare
 
@@ -246,7 +255,7 @@ scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b>
 
 # 2b) Capture preflight report with strict failure propagation.
 bash -c '
-  set -uo pipefail
+  set -euo pipefail
   scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live \
     | tee ./exports_live/run_compare_preflight.report.log
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
@@ -260,10 +269,26 @@ bash -c '
 '
 
 # 3) Compare diagnostics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
-scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC"
+bash -c '
+  set -euo pipefail
+  scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC" \
+    | tee ./exports_live/compare_run_diagnostics.report.log
+  exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
+  if [[ "$exit_code" -ne 0 ]]; then
+    exit "$exit_code"
+  fi
+'
 
 # 4) Compare metrics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
-scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC"
+bash -c '
+  set -euo pipefail
+  scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC" \
+    | tee ./exports_live/compare_run_metrics.report.log
+  exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
+  if [[ "$exit_code" -ne 0 ]]; then
+    exit "$exit_code"
+  fi
+'
 
 # 5) Evaluate edge quality only after the same source lock/precheck has succeeded.
 python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b>
@@ -274,6 +299,7 @@ test -s ./exports_live/run_compare_preflight.json && echo "preflight evidence pr
 
 Compatibility note:
 - Pipeline exit capture uses `exit_code` consistently. In bash use `${PIPESTATUS[0]}`; in zsh use `${pipestatus[1]}`.
+- Compare outputs are invalid when `run_compare_preflight.json` is missing for the export batch that produced the report.
 
 Emergency override policy:
 - `scripts/export_parity_precheck.sh --allow-csv-only-triage` requires `--incident-tag <LETTERS-NNN>`.
