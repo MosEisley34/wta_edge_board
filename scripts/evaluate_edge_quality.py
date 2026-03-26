@@ -782,6 +782,105 @@ def evaluate_edge_quality_gate(
     }
 
 
+def _windowed_fallback_assessment(
+    rows: list[dict[str, Any]],
+    config: EdgeQualityGateConfig,
+    baseline_run_id: str,
+    candidate_run_id: str,
+    recent_run_window_radius: int,
+    ordered_run_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    run_ids = ordered_run_ids or _rolling_run_ids(rows)
+    baseline_idx = _find_run_index(run_ids, baseline_run_id)
+    candidate_idx = _find_run_index(run_ids, candidate_run_id)
+    radius = max(1, int(recent_run_window_radius))
+    if baseline_idx < 0 or candidate_idx < 0:
+        return {
+            "label": "fallback_window_assessment",
+            "triggered_by_status": "insufficient_sample",
+            "available": False,
+            "reason": "candidate_or_baseline_not_found_in_ordered_runs",
+        }
+
+    anchor_low = min(baseline_idx, candidate_idx)
+    anchor_high = max(baseline_idx, candidate_idx)
+    start_idx = max(0, anchor_low - radius)
+    end_idx = min(len(run_ids), anchor_high + radius + 1)
+    window_run_ids = run_ids[start_idx:end_idx]
+    pair_reports = [
+        evaluate_edge_quality_gate(
+            rows=rows,
+            baseline_run_id=prior_run_id,
+            candidate_run_id=next_run_id,
+            config=config,
+            ordered_run_ids=run_ids,
+        )
+        for prior_run_id, next_run_id in _run_pairs_from_ids(window_run_ids)
+    ]
+    status_counts = {"pass": 0, "true_fail": 0, "insufficient_sample": 0, "schema_missing": 0}
+    for report in pair_reports:
+        status_counts[_status_bucket(report)] += 1
+
+    decision_support_status = "insufficient_sample"
+    if status_counts["true_fail"] > 0:
+        decision_support_status = "fail"
+    elif status_counts["pass"] > 0 and status_counts["schema_missing"] == 0:
+        decision_support_status = "pass"
+    elif status_counts["schema_missing"] > 0:
+        decision_support_status = "schema_missing"
+
+    return {
+        "label": "fallback_window_assessment",
+        "triggered_by_status": "insufficient_sample",
+        "available": True,
+        "window_radius_runs": radius,
+        "window_run_ids": window_run_ids,
+        "pair_count": len(pair_reports),
+        "status_counts": status_counts,
+        "decision_support_status": decision_support_status,
+        "pairs": pair_reports,
+    }
+
+
+def evaluate_edge_quality_compare_report(
+    rows: list[dict[str, Any]],
+    baseline_run_id: str,
+    candidate_run_id: str,
+    config: EdgeQualityGateConfig,
+    ordered_run_ids: list[str] | None = None,
+    fallback_recent_run_window_radius: int = 2,
+) -> dict[str, Any]:
+    pair_level_result = evaluate_edge_quality_gate(
+        rows=rows,
+        baseline_run_id=baseline_run_id,
+        candidate_run_id=candidate_run_id,
+        config=config,
+        ordered_run_ids=ordered_run_ids,
+    )
+    fallback_result: dict[str, Any] | None = None
+    if str(pair_level_result.get("status") or "") == "insufficient_sample":
+        fallback_result = _windowed_fallback_assessment(
+            rows=rows,
+            config=config,
+            baseline_run_id=baseline_run_id,
+            candidate_run_id=candidate_run_id,
+            recent_run_window_radius=max(1, int(fallback_recent_run_window_radius)),
+            ordered_run_ids=ordered_run_ids,
+        )
+
+    return {
+        "schema": "edge_quality_compare_report_v1",
+        "comparison_scope": "strict_pair_with_optional_window_fallback",
+        "labels": {
+            "strict_pair_gate": "pair_level_result",
+            "fallback_window_assessment": "windowed_fallback_result",
+        },
+        "pair_level_result": pair_level_result,
+        "windowed_fallback_result": fallback_result,
+        "status": pair_level_result.get("status"),
+    }
+
+
 def evaluate_rolling_edge_quality(
     rows: list[dict[str, Any]],
     config: EdgeQualityGateConfig,
@@ -1161,6 +1260,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daily-slo-output-dir", default="reports")
     parser.add_argument("--daily-slo-archive-dir", default="docs/baselines/edge_quality_slo")
     parser.add_argument(
+        "--fallback-recent-run-window-radius",
+        type=int,
+        default=2,
+        help=(
+            "When strict pair status is insufficient_sample, evaluate surrounding runs using this many runs "
+            "before/after the candidate pair as decision-support context."
+        ),
+    )
+    parser.add_argument(
         "--as-of-utc",
         default="",
         help="Optional ISO-8601 timestamp for deterministic daily-SLO window boundaries.",
@@ -1259,11 +1367,13 @@ def main() -> int:
 
     if args.baseline_run_id and args.candidate_run_id:
         run_pair = [args.baseline_run_id, args.candidate_run_id]
-        report = evaluate_edge_quality_gate(
+        report = evaluate_edge_quality_compare_report(
             rows=rows,
             baseline_run_id=run_pair[0],
             candidate_run_id=run_pair[1],
             config=config,
+            ordered_run_ids=_rolling_run_ids(rows),
+            fallback_recent_run_window_radius=max(1, int(args.fallback_recent_run_window_radius)),
         )
         print(json.dumps(report, indent=2, sort_keys=True))
         return 1 if report["status"] != "pass" else 0
