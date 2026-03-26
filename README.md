@@ -248,6 +248,17 @@ scripts/run_triage_bundle.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime
 The wrapper runs `scripts/prepare_runtime_exports.sh` and then invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`) so diagnostics inputs are consistently prepared before scanning.
 `prepare_runtime_exports.sh` now enforces a single-source Run_Log snapshot contract: it re-exports `Run_Log.csv` and `Run_Log.json` together from the same latest source snapshot and applies one export batch timestamp before parity checks.
 
+If you need to refresh JSON from CSV before preflight, use:
+
+```bash
+python3 scripts/mirror_runtime_csv_to_json.py --input-dir ./live_runtime --out-dir ./exports_live
+```
+
+`mirror_runtime_csv_to_json.py` behavior:
+- mirrors `Run_Log.csv`/`State.csv` to `Run_Log.json`/`State.json` when CSV exists,
+- logs a skip and continues when CSV is missing but JSON already exists,
+- fails with remediation guidance when both CSV and JSON are missing for either artifact.
+
 First-pass diagnosis should always start with the scanner's **Run-health degraded contract (first-pass triage)** section. It standardizes degraded run blocker counts, dominant blocker categories, sampled blocked records, and stage-skipped reason rollups before key-specific deep dives.
 
 Manual 3-step flow is still available when needed:
@@ -270,6 +281,8 @@ Examples:
 ```bash
 scripts/export_parity_precheck.sh --out-dir ./exports_live 20260320T095837_9ccfe02e 20260319T184422_4bcd8a9f ./live_runtime
 scripts/export_parity_precheck.sh --out-dir ./exports_live 20260320T095837_9ccfe02e 20260319T184422_4bcd8a9f ./live_runtime/Run_Log.csv ./live_runtime/Run_Log.json ./live_runtime/State.json
+python3 scripts/mirror_runtime_csv_to_json.py --input-dir ./live_runtime --out-dir ./exports_live
+scripts/export_parity_precheck.sh --out-dir ./exports_live 20260320T095837_9ccfe02e 20260319T184422_4bcd8a9f ./exports_live
 ```
 
 Do not run compare/gate scripts against ad-hoc inputs before this wrapper succeeds.
