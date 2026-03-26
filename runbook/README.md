@@ -331,14 +331,32 @@ bash -c '
 python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b> \
   | tee "$RUN_REPORT_DIR/evaluate_edge_quality.report.log"
 
-# 6) Confirm required evidence artifact exists for incident/report attachment.
-test -s ./exports_live/run_compare_preflight.json
-test ./exports_live/run_compare_preflight.json -nt "$RUN_START_MARKER"
-test "$RUN_REPORT_DIR/run_compare_preflight.report.log" -nt "$RUN_START_MARKER"
-test "$RUN_REPORT_DIR/compare_run_diagnostics.report.log" -nt "$RUN_START_MARKER"
-test "$RUN_REPORT_DIR/compare_run_metrics.report.log" -nt "$RUN_START_MARKER"
-test "$RUN_REPORT_DIR/evaluate_edge_quality.report.log" -nt "$RUN_START_MARKER"
-echo "preflight evidence and run-scoped reports are fresh"
+# 6) Strict post-run evidence/report validation (copy/paste as-is).
+bash -c '
+  set -euo pipefail
+
+  # Fresh/non-empty evidence and report logs.
+  test -s ./exports_live/run_compare_preflight.json
+  test ./exports_live/run_compare_preflight.json -nt "'"$RUN_START_MARKER"'"
+  test -s "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log"
+  test -s "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log"
+  test -s "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log"
+  test -s "'"$RUN_REPORT_DIR"'/evaluate_edge_quality.report.log"
+  test "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log" -nt "'"$RUN_START_MARKER"'"
+  test "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log" -nt "'"$RUN_START_MARKER"'"
+  test "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log" -nt "'"$RUN_START_MARKER"'"
+  test "'"$RUN_REPORT_DIR"'/evaluate_edge_quality.report.log" -nt "'"$RUN_START_MARKER"'"
+
+  # Semantic success markers (must exist).
+  rg -F "Precheck passed: both target run IDs are present" "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log"
+  rg -F "Fail-fast preflight complete. Safe to run compare/gate commands." "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log"
+  rg -F "Fail-fast preflight complete. Safe to run compare/gate commands." "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log"
+
+  # Hard-fail markers (must NOT exist).
+  ! rg -F "Precheck failed" "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log" "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log" "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log"
+  ! rg -F "Run log parity check failed" "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log" "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log" "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log"
+'
+echo "preflight evidence and strict semantic report validation passed"
 ```
 
 Compatibility note:
