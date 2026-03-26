@@ -333,6 +333,56 @@ class CompareRunMetricsTests(unittest.TestCase):
                 self.assertGreater(metric_counts["STATS_ENR"], 0)
                 self.assertFalse(_has_stage_summary_zero_core_metrics(fixture, metric_counts))
 
+    def test_fixture_policy_enabled_reason_code_outputs_are_reported(self):
+        fixture_path = ROOT / "scripts" / "fixtures" / "stake_policy_mixed_signal_rows.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+        ]
+        for run_id in ("run-a", "run-b"):
+            for stage_name in (
+                "stageFetchOdds",
+                "stageFetchSchedule",
+                "stageMatchEvents",
+                "stageFetchPlayerStats",
+                "stageGenerateSignals",
+                "stagePersist",
+            ):
+                rows.append({"row_type": "stage", "run_id": run_id, "stage": stage_name})
+        for row in fixture["rows"]:
+            case_id = str(row.get("case_id") or "")
+            if case_id == "wrong_run_ignored":
+                continue
+            copy = dict(row)
+            copy["run_id"] = "run-a" if case_id in {"boundary_2000", "above_min"} else "run-b"
+            rows.append(copy)
+
+        from stake_policy import StakePolicyConfig
+
+        report = build_report(
+            rows,
+            "run-a",
+            "run-b",
+            StakePolicyConfig(enabled=True, minimum_stake_mxn=20.0, round_to_min=False),
+        )
+        self.assertIn("stake_below_min_suppressed", report)
+        self.assertIn("stake_policy_pass", report)
+
 
 
 if __name__ == "__main__":

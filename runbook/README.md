@@ -84,6 +84,22 @@ scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <baseline_run_
 python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <baseline_run_id> --candidate-run-id <candidate_run_id>
 ```
 
+### Stake-policy enabled compare lane (policy-on only)
+
+Use this dedicated lane when the compare set is policy-enabled and you need policy-outcome deltas (suppressed/adjusted/passed + reason-code shifts):
+
+```bash
+scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <baseline_run_id> <candidate_run_id> <live_runtime_dir_or_files> -- --stake-policy-enabled
+python3 scripts/evaluate_edge_quality.py ./exports_live \
+  --baseline-run-id <baseline_run_id> \
+  --candidate-run-id <candidate_run_id> \
+  --stake-policy-enabled
+```
+
+Operator contract:
+- Compare reports are tagged with `stake_policy_enabled=true|false`.
+- A compare set that mixes `stake_policy_enabled=true` and `stake_policy_enabled=false` run summaries is invalid and must be split into homogeneous lanes before reporting deltas.
+
 ### Phase 3 — KPI delta tracking (required)
 
 For each matched comparison window, track and archive these deltas:
