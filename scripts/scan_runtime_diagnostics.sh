@@ -84,34 +84,11 @@ def collect_files(paths):
     return sorted(set(files)), missing
 
 
-def _is_list_style_state_json(path, parsed):
-    if not os.path.basename(path).lower().endswith('state.json'):
-        return False
-    if not isinstance(parsed, list):
-        return False
-    if not parsed:
-        return True
-    first = parsed[0]
-    if not isinstance(first, dict):
-        return True
-    keys = set(first.keys())
-    return 'key' in keys and 'value' in keys
-
-
-def iter_json_records(path, *, has_state_csv):
+def iter_json_records(path):
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         data = f.read().strip()
     if not data:
         return
-    parsed = json.loads(data)
-    if _is_list_style_state_json(path, parsed):
-        print(
-            f"Warning: ignoring list-style State.json schema in {path}; "
-            f"fallback source is {'State.csv' if has_state_csv else 'unavailable (no State.csv found)'}",
-            file=sys.stderr,
-        )
-        return
-
     for idx, record in iter_runtime_json_records(data):
         yield idx, record
 
@@ -178,8 +155,6 @@ def ingest_player_stats_coverage(reason_metadata, coverage_rows):
 def main():
     input_paths = sys.argv[1:]
     files, missing_paths = collect_files(input_paths)
-    has_state_csv = any(os.path.basename(path).lower().endswith('state.csv') for path in files)
-
     for p in missing_paths:
         print(f"Warning: path does not exist and was skipped: {p}", file=sys.stderr)
 
@@ -208,7 +183,7 @@ def main():
             records_iter = (
                 iter_csv_records(path)
                 if lower.endswith('.csv')
-                else iter_json_records(path, has_state_csv=has_state_csv)
+                else iter_json_records(path)
             )
             for row_num, record in records_iter:
                 scanned_records += 1
