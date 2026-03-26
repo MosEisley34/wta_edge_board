@@ -80,6 +80,7 @@ class VerifyRunLogParityTests(unittest.TestCase):
     def test_verify_run_log_parity_writes_latest_batch_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            metadata = self._parity_metadata("run-a", pass_claim=True)
             rows = [
                 {"row_type": "ops", "run_id": "run-a", "stage": "stageFetchOdds", "started_at": "2026-03-21T10:00:00Z"},
                 {
@@ -87,7 +88,7 @@ class VerifyRunLogParityTests(unittest.TestCase):
                     "run_id": "run-a",
                     "stage": "runEdgeBoard",
                     "started_at": "2026-03-21T10:00:01Z",
-                    "stage_summaries": self._summary_stage_summaries_payload(),
+                    "stage_summaries": self._summary_stage_summaries_payload(metadata=metadata),
                 },
             ]
             self._write_json(root / "Run_Log.json", rows)
@@ -181,6 +182,44 @@ class VerifyRunLogParityTests(unittest.TestCase):
             self._write_csv(root / "Run_Log.csv", csv_rows)
 
             with self.assertRaisesRegex(ParityError, "claims pass but file rows missing required stage"):
+                verify_run_log_parity(str(root))
+
+    def test_verify_run_log_parity_fails_when_gs_metadata_missing_for_latest_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [
+                {
+                    "row_type": "summary",
+                    "run_id": "run-a",
+                    "stage": "runEdgeBoard",
+                    "started_at": "2026-03-21T10:00:01Z",
+                    "stage_summaries": self._summary_stage_summaries_payload(metadata=None),
+                },
+            ]
+            self._write_json(root / "Run_Log.json", rows)
+            self._write_csv(root / "Run_Log.csv", rows)
+
+            with self.assertRaisesRegex(ParityError, "GS parity metadata missing for latest batch run_id\\(s\\)"):
+                verify_run_log_parity(str(root))
+
+    def test_verify_run_log_parity_fails_when_gs_metadata_shape_is_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            malformed = self._parity_metadata("run-a", pass_claim=True)
+            malformed["summary_presence_by_run_id"] = "invalid"
+            rows = [
+                {
+                    "row_type": "summary",
+                    "run_id": "run-a",
+                    "stage": "runEdgeBoard",
+                    "started_at": "2026-03-21T10:00:01Z",
+                    "stage_summaries": self._summary_stage_summaries_payload(metadata=malformed),
+                },
+            ]
+            self._write_json(root / "Run_Log.json", rows)
+            self._write_csv(root / "Run_Log.csv", rows)
+
+            with self.assertRaisesRegex(ParityError, "missing summary_presence_by_run_id"):
                 verify_run_log_parity(str(root))
 
 

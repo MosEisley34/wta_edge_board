@@ -964,14 +964,21 @@ function runEdgeBoard() {
     };
 
     const requiredParityStages = ['stageFetchPlayerStats'];
-    const gsParityPrecheck = {
-      contract_name: 'run_log_export_parity_contract_v1',
-      latest_run_ids: [runId],
-      summary_presence_by_run_id: { [runId]: true },
-      required_stage_summary_presence_by_run_id: { [runId]: { stageFetchPlayerStats: true } },
-      parity_status: 'pass',
-      reason_code: 'export_parity_contract_pass_precheck',
-    };
+    const gsParityPrecheck = buildRunExportParityMetadataFromStageSummaries_(
+      runId,
+      requiredParityStages,
+      [
+        oddsStage.summary,
+        scheduleStage.summary,
+        matchStage.summary,
+        playerStatsStage.summary,
+        signalStage.summary,
+        persistStage.summary,
+      ],
+      {
+        latest_run_ids: [runId],
+      }
+    );
 
     const summaryStageSummariesPayload = {
       schema_id: REASON_CODE_ALIAS_SCHEMA_ID,
@@ -984,6 +991,8 @@ function runEdgeBoard() {
         persistStage.summary,
       ],
       gs_export_parity_contract: gsParityPrecheck,
+      gs_export_parity_readiness_status: gsParityPrecheck.parity_status,
+      gs_export_parity_readiness_reason_code: gsParityPrecheck.reason_code,
     };
 
     appendLogRow_({

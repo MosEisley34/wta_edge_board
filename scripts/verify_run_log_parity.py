@@ -378,6 +378,18 @@ def verify_run_log_parity(export_dir: str) -> ParityResult:
 
     metadata_run_ids_json = set(json_batch.gs_parity_metadata_by_run_id.keys())
     metadata_run_ids_csv = set(csv_batch.gs_parity_metadata_by_run_id.keys())
+    missing_metadata_json = sorted(json_batch.latest_run_ids - metadata_run_ids_json)
+    missing_metadata_csv = sorted(csv_batch.latest_run_ids - metadata_run_ids_csv)
+    if missing_metadata_json:
+        errors.append(
+            "GS parity metadata missing for latest batch run_id(s) in Run_Log.json: "
+            f"{missing_metadata_json}"
+        )
+    if missing_metadata_csv:
+        errors.append(
+            "GS parity metadata missing for latest batch run_id(s) in Run_Log.csv: "
+            f"{missing_metadata_csv}"
+        )
     if metadata_run_ids_json != metadata_run_ids_csv:
         errors.append(
             "GS parity metadata presence mismatch for latest batch run_id(s): "
