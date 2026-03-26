@@ -429,7 +429,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json-out", default="", help="Optional JSON output path")
     parser.add_argument("--markdown-out", default="", help="Optional markdown changelog output path")
     parser.add_argument("--stake-policy-enabled", action="store_true", help="Enable stake-policy evaluation summaries.")
-    parser.add_argument("--stake-policy-min-stake-mxn", type=float, default=10.0, help="Minimum MXN stake floor (default: 10).")
+    parser.add_argument("--stake-policy-min-stake-mxn", type=float, default=20.0, help="Minimum MXN stake floor (default: 20).")
     parser.add_argument("--stake-policy-round-to-min", action="store_true", help="Adjust below-min stake to floor instead of suppressing.")
     return parser.parse_args()
 
@@ -438,7 +438,7 @@ def main() -> int:
     args = parse_args()
     path = Path(args.input)
     rows = _load_rows(path)
-    stake_policy_config = StakePolicyConfig(
+    stake_policy_config = StakePolicyConfig.from_legacy(
         enabled=bool(args.stake_policy_enabled),
         minimum_stake_mxn=max(0.0, float(args.stake_policy_min_stake_mxn)),
         round_to_min=bool(args.stake_policy_round_to_min),
@@ -459,6 +459,7 @@ def main() -> int:
     report: dict[str, Any] = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "input": str(path),
+        "stake_policy": stake_policy_config.with_canonicalized_fields().canonical_policy(),
         "weekly_window": {
             "start_utc": weekly_start.isoformat(),
             "end_utc": as_of.isoformat(),

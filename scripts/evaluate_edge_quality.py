@@ -41,7 +41,7 @@ class EdgeQualityGateConfig:
     max_suppression_drift: float = 0.50
     suppression_min_volume: int = 2
     stake_policy_enabled: bool = False
-    stake_policy_min_stake_mxn: float = 10.0
+    stake_policy_min_stake_mxn: float = 20.0
     stake_policy_round_to_min: bool = False
 
 
@@ -718,7 +718,7 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
     stake_policy_summary = summarize_run_stake_policy(
         rows,
         run_id,
-        StakePolicyConfig(
+        StakePolicyConfig.from_legacy(
             enabled=bool(config.stake_policy_enabled),
             minimum_stake_mxn=float(config.stake_policy_min_stake_mxn),
             round_to_min=bool(config.stake_policy_round_to_min),
@@ -825,6 +825,11 @@ def evaluate_edge_quality_gate(
     config: EdgeQualityGateConfig,
     ordered_run_ids: list[str] | None = None,
 ) -> dict[str, Any]:
+    canonical_stake_policy = StakePolicyConfig.from_legacy(
+        enabled=bool(config.stake_policy_enabled),
+        minimum_stake_mxn=float(config.stake_policy_min_stake_mxn),
+        round_to_min=bool(config.stake_policy_round_to_min),
+    ).with_canonicalized_fields()
     baseline = _snapshot(rows, baseline_run_id, config)
     candidate = _snapshot(rows, candidate_run_id, config)
 
@@ -945,6 +950,7 @@ def evaluate_edge_quality_gate(
             "stake_policy_enabled": config.stake_policy_enabled,
             "stake_policy_min_stake_mxn": config.stake_policy_min_stake_mxn,
             "stake_policy_round_to_min": config.stake_policy_round_to_min,
+            "stake_policy": canonical_stake_policy.canonical_policy(),
         },
         "effective_volatility_ceiling": adaptive_ceiling_info,
         "sample_assessment": {
@@ -1100,6 +1106,11 @@ def evaluate_edge_quality_compare_report(
     fallback_recent_run_window_radius: int = 3,
     fallback_min_neighboring_pairs: int = 4,
 ) -> dict[str, Any]:
+    canonical_stake_policy = StakePolicyConfig.from_legacy(
+        enabled=bool(config.stake_policy_enabled),
+        minimum_stake_mxn=float(config.stake_policy_min_stake_mxn),
+        round_to_min=bool(config.stake_policy_round_to_min),
+    ).with_canonicalized_fields()
     compare_set_run_ids = ordered_run_ids or [baseline_run_id, candidate_run_id]
     compare_set_policy_tags = _resolve_compare_set_policy_tags(
         rows=rows,
@@ -1199,6 +1210,7 @@ def evaluate_edge_quality_compare_report(
             "stake_policy_enabled": bool(config.stake_policy_enabled),
             "stake_policy_min_stake_mxn": float(config.stake_policy_min_stake_mxn),
             "stake_policy_round_to_min": bool(config.stake_policy_round_to_min),
+            "stake_policy": canonical_stake_policy.canonical_policy(),
         },
         "stake_policy_outcome_comparison": {
             "counts": policy_delta_metrics,
@@ -1566,7 +1578,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-suppression-drift", type=float, default=0.50)
     parser.add_argument("--suppression-min-volume", type=int, default=2)
     parser.add_argument("--stake-policy-enabled", action="store_true", help="Enable stake-policy evaluation summaries.")
-    parser.add_argument("--stake-policy-min-stake-mxn", type=float, default=10.0, help="Minimum MXN stake floor (default: 10).")
+    parser.add_argument("--stake-policy-min-stake-mxn", type=float, default=20.0, help="Minimum MXN stake floor (default: 20).")
     parser.add_argument("--stake-policy-round-to-min", action="store_true", help="Adjust below-min stake to floor instead of suppressing.")
     parser.add_argument(
         "--min-ended-at",

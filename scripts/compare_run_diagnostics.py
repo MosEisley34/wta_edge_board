@@ -382,6 +382,7 @@ def compare_rows(
         )
     lines = []
     lines.append(f"stake_policy_enabled={str(pair_policy_enabled).lower()}")
+    lines.append(f"stake_policy={json.dumps(stake_config.with_canonicalized_fields().canonical_policy(), sort_keys=True)}")
     lines.append(f"# Run diff report: {run_a} vs {run_b}")
     total_a = sum(1 for r in rows if str(r.get('run_id') or '') == run_a)
     total_b = sum(1 for r in rows if str(r.get('run_id') or '') == run_b)
@@ -565,7 +566,7 @@ def main() -> int:
         ),
     )
     ap.add_argument("--stake-policy-enabled", action="store_true", help="Enable stake-policy evaluation counters.")
-    ap.add_argument("--stake-policy-min-stake-mxn", type=float, default=10.0, help="Minimum MXN stake floor (default: 10).")
+    ap.add_argument("--stake-policy-min-stake-mxn", type=float, default=20.0, help="Minimum MXN stake floor (default: 20).")
     ap.add_argument("--stake-policy-round-to-min", action="store_true", help="Adjust below-min stake to floor instead of suppressing.")
     ap.add_argument('--out', default='', help='Optional markdown output path.')
     args = ap.parse_args()
@@ -609,7 +610,7 @@ def main() -> int:
             print('# player_stats_coverage_gate: override active')
             print(json.dumps(gate_report, indent=2, sort_keys=True))
 
-    stake_policy_config = StakePolicyConfig(
+    stake_policy_config = StakePolicyConfig.from_legacy(
         enabled=bool(args.stake_policy_enabled),
         minimum_stake_mxn=max(0.0, float(args.stake_policy_min_stake_mxn)),
         round_to_min=bool(args.stake_policy_round_to_min),

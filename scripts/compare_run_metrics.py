@@ -534,6 +534,7 @@ def build_report(
     lines = [
         f"run_comparator left={run_a} right={run_b}",
         f"stake_policy_enabled={str(pair_policy_enabled).lower()}",
+        f"stake_policy={json.dumps(stake_config.with_canonicalized_fields().canonical_policy(), sort_keys=True)}",
     ]
     lines.extend(_format_side_by_side("core_metrics", run_a, run_b, metric_counts_a, metric_counts_b))
     for run_id, summary, metric_counts in (
@@ -703,7 +704,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--stake-policy-enabled", action="store_true", help="Enable stake-policy evaluation counters.")
-    parser.add_argument("--stake-policy-min-stake-mxn", type=float, default=10.0, help="Minimum MXN stake floor (default: 10).")
+    parser.add_argument("--stake-policy-min-stake-mxn", type=float, default=20.0, help="Minimum MXN stake floor (default: 20).")
     parser.add_argument("--stake-policy-round-to-min", action="store_true", help="Adjust below-min stake to floor instead of suppressing.")
     return parser.parse_args()
 
@@ -750,7 +751,7 @@ def main() -> int:
         if gate_report.get("status") == "override":
             print("# player_stats_coverage_gate: override active")
             print(json.dumps(gate_report, indent=2, sort_keys=True))
-    stake_policy_config = StakePolicyConfig(
+    stake_policy_config = StakePolicyConfig.from_legacy(
         enabled=bool(args.stake_policy_enabled),
         minimum_stake_mxn=max(0.0, float(args.stake_policy_min_stake_mxn)),
         round_to_min=bool(args.stake_policy_round_to_min),
