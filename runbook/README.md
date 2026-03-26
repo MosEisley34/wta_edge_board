@@ -99,6 +99,17 @@ python3 scripts/evaluate_edge_quality.py ./exports_live \
 Operator contract:
 - Compare reports are tagged with `stake_policy_enabled=true|false`.
 - A compare set that mixes `stake_policy_enabled=true` and `stake_policy_enabled=false` run summaries is invalid and must be split into homogeneous lanes before reporting deltas.
+- Stake mode is determined by American odds sign:
+  - `+odds` → `to_risk` (stake is interpreted directly as risk amount before min-policy checks).
+  - `-odds` → `to_win` (stake is interpreted as target win and converted to risk before min-policy checks).
+- Unit/floor/bucket handling is deterministic for this lane:
+  - **Unit rule:** `raw_stake = signal_stake_units * base_unit_size`.
+  - **Minimum rule:** compare normalized `raw_stake` to `minimum_stake_per_currency[account_currency]` (baseline MXN floor is 20).
+  - **Bucket rule:** classify each row into `passed` (`at_or_above_min_emit`), `adjusted` (`below_min_rounded_up`), or `suppressed` (`below_min_suppressed_strict`) and track deltas bucket-by-bucket in compare reports.
+- Examples (base unit 10 MXN, min 20 MXN):
+  - `+120`, `signal_stake_units=1.5` ⇒ `to_risk`, `raw_stake=15` ⇒ strict mode: `suppressed`; round-up mode: `adjusted_to_20`.
+  - `-150`, `signal_stake_units=1.0` ⇒ `to_win`, target win `10`, implied risk `15` ⇒ strict mode: `suppressed`; round-up mode: `adjusted_to_20`.
+  - `+110`, `signal_stake_units=3.0` ⇒ `to_risk`, `raw_stake=30` ⇒ `passed`.
 
 ### Phase 3 — KPI delta tracking (required)
 
@@ -381,6 +392,27 @@ bash -c '
 '
 echo "preflight evidence and strict semantic report validation passed"
 ```
+
+### Operator checklist: GS refresh (before any compare or gate run)
+
+Use this quick checklist whenever you refresh GS-side runtime artifacts:
+
+1. Refresh CSV exports from the latest GS/runtime batch path.
+2. Mirror CSV → JSON in that same source path:
+   - `python3 scripts/mirror_runtime_csv_to_json.py --input-dir "$EXPORT_SRC" --out-dir "$EXPORT_SRC"`
+3. Verify newest run ID is present in both `Run_Log.csv` and `Run_Log.json`:
+   - `python3 scripts/precheck_run_ids.py <newest_run_id> <anchor_run_id> --export-dir "$EXPORT_SRC" --recent-limit 10`
+4. Compare newest run ID against an anchor run ID using the preflight wrapper before diagnostics/metrics/eval:
+   - `scripts/export_parity_precheck.sh --out-dir ./exports_live <anchor_run_id> <newest_run_id> "$EXPORT_SRC"`
+5. Only run compare/evaluate commands after the anchor-vs-newest preflight succeeds.
+
+Failure-handling notes:
+- **Missing run IDs:** stop immediately; do not run compare/evaluate. Re-export fresh CSVs, re-run CSV→JSON mirror, then repeat precheck.
+- **Identical PREV/POSTV run IDs:** treat as invalid compare input (no delta window). Select distinct run IDs (older anchor + newest candidate) and rerun precheck.
+- **Insufficient sample in edge-quality gate:** use window fallback instead of forcing pass/fail:
+  - rerun `evaluate_edge_quality.py` on a larger matched window (for example, include additional recent runs),
+  - document fallback scope + run IDs in artifacts/changelog,
+  - keep rollout decision in hold state until sufficiency is restored.
 
 Compatibility note:
 - Pipeline exit capture uses `exit_code` consistently. In bash use `${PIPESTATUS[0]}`; in zsh use `${pipestatus[1]}`.
