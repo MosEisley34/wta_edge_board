@@ -107,7 +107,10 @@ out_dir.mkdir(parents=True, exist_ok=True)
 
 def _canonical_run_log_name(path: Path) -> str | None:
     lower_stem = path.stem.lower()
-    if "run_log" not in lower_stem and "run-log" not in lower_stem and "runlog" not in lower_stem:
+    if "note" in lower_stem or "manifest" in lower_stem:
+        return None
+    canonical_stems = {"run_log", "run-log", "runlog"}
+    if lower_stem not in canonical_stems:
         return None
     if path.suffix.lower() == ".json":
         return "Run_Log.json"
