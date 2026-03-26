@@ -1,0 +1,11 @@
+{
+  "rows": [
+    {
+      "row_type": "summary",
+      "run_id": "run-obj",
+      "stage": "runEdgeBoard",
+      "status": "warning",
+      "reason_codes": {"provider_returned_null_features": 1}
+    }
+  ]
+}
