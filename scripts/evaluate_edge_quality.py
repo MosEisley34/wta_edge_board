@@ -1038,12 +1038,55 @@ def evaluate_edge_quality_compare_report(
         decision_authoritative_source = "windowed_fallback_result"
         decision_authoritative_status = windowed_status
 
+    baseline_stake_summary = (pair_level_result.get("baseline") or {}).get("stake_policy_summary") or {}
+    candidate_stake_summary = (pair_level_result.get("candidate") or {}).get("stake_policy_summary") or {}
+    policy_delta_metrics = {}
+    for key in (
+        "signal_rows_evaluated",
+        "suppressed_count",
+        "adjusted_count",
+        "passed_count",
+        "missing_stake_count",
+    ):
+        baseline_value = int(baseline_stake_summary.get(key, 0) or 0)
+        candidate_value = int(candidate_stake_summary.get(key, 0) or 0)
+        policy_delta_metrics[key] = {
+            "baseline": baseline_value,
+            "candidate": candidate_value,
+            "delta": candidate_value - baseline_value,
+        }
+    baseline_reason_counts = baseline_stake_summary.get("reason_counts") or {}
+    candidate_reason_counts = candidate_stake_summary.get("reason_counts") or {}
+    reason_code_shift = {}
+    for reason_code in sorted(set(baseline_reason_counts.keys()) | set(candidate_reason_counts.keys())):
+        baseline_value = int(baseline_reason_counts.get(reason_code, 0) or 0)
+        candidate_value = int(candidate_reason_counts.get(reason_code, 0) or 0)
+        reason_code_shift[reason_code] = {
+            "baseline": baseline_value,
+            "candidate": candidate_value,
+            "delta": candidate_value - baseline_value,
+        }
+
+    runbook_branch = "standard_compare_runbook"
+    if bool(config.stake_policy_enabled):
+        runbook_branch = "stake_policy_enabled_compare_runbook"
+
     return {
         "schema": "edge_quality_compare_report_v1",
         "comparison_scope": "strict_pair_with_optional_window_fallback",
+        "runbook_branch": runbook_branch,
         "labels": {
             "strict_pair_gate": "pair_level_result",
             "fallback_window_assessment": "windowed_fallback_result",
+        },
+        "evidence_bundle": {
+            "stake_policy_enabled": bool(config.stake_policy_enabled),
+            "stake_policy_min_stake_mxn": float(config.stake_policy_min_stake_mxn),
+            "stake_policy_round_to_min": bool(config.stake_policy_round_to_min),
+        },
+        "stake_policy_outcome_comparison": {
+            "counts": policy_delta_metrics,
+            "reason_code_shift": reason_code_shift,
         },
         "pair_level_result": pair_level_result,
         "windowed_fallback_result": fallback_result,
@@ -1052,6 +1095,8 @@ def evaluate_edge_quality_compare_report(
             "windowed_decision_status": windowed_status,
             "decision_authoritative_source": decision_authoritative_source,
             "decision_authoritative_status": decision_authoritative_status,
+            "runbook_branch": runbook_branch,
+            "stake_policy_enabled": bool(config.stake_policy_enabled),
         },
         "status": decision_authoritative_status,
     }
