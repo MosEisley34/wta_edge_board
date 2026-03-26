@@ -960,7 +960,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       return;
     }
 
-    const stakePolicyDecision = evaluateSignalStakePolicy_(edgeTierAndStake.stake_units, config);
+    const stakePolicyDecision = evaluateSignalStakePolicy_(edgeTierAndStake.stake_units, event.price, config);
     if (stakePolicyDecision.reason_code === 'stake_policy_config_error') {
       captureDecision_(event, match, stakePolicyDecision.reason_code, {
         scored: true,
@@ -1580,7 +1580,7 @@ function resolveLiquidity_(event) {
 }
 
 function buildSignalRow_(runId, config, event, match, detail) {
-  const stakePolicyDecision = detail.stake_policy_decision || evaluateSignalStakePolicy_(detail.stake_units, config || {});
+  const stakePolicyDecision = detail.stake_policy_decision || evaluateSignalStakePolicy_(detail.stake_units, event && event.price, config || {});
   return {
     key: detail.signal_hash,
     run_id: runId,
@@ -1623,67 +1623,137 @@ function buildSignalRow_(runId, config, event, match, detail) {
   };
 }
 
-function evaluateSignalStakePolicy_(stakeUnits, config) {
-  const cfg = config || {};
+function evaluateSignalStakePolicy_(stakeUnits, oddsOrConfig, maybeConfig) {
+  const hasLegacySignature = arguments.length < 3;
+  const cfg = hasLegacySignature ? (oddsOrConfig || {}) : (maybeConfig || {});
   const policyMode = normalizeStakePolicyMode_(cfg.STAKE_POLICY_MODE);
   const accountCurrency = String(cfg.ACCOUNT_CURRENCY || 'MXN').toUpperCase();
   const minimums = parseMinStakePerCurrency_(cfg.MIN_STAKE_PER_CURRENCY_JSON);
+  const configuredMaxStake = resolveMaxStakeForCurrency_(cfg, accountCurrency);
+  const unitSizeMxn = 100;
+  const bucketStepMxn = 20;
+  const oddsPrice = hasLegacySignature ? NaN : Number(oddsOrConfig);
   if (!Object.prototype.hasOwnProperty.call(minimums, accountCurrency)) {
     return {
       decision: 'config_error',
       reason_code: 'stake_policy_config_error',
+      reason_codes: ['stake_policy_config_error'],
       policy_mode: policyMode,
       account_currency: accountCurrency,
       proposed_stake: null,
       final_stake: null,
+      final_risk_mxn: null,
+      final_units: null,
       minimum_stake: null,
     };
   }
 
   const minimumStake = Number(minimums[accountCurrency]);
-  const proposedStake = roundHalfUp_(Number(stakeUnits || 0), 2);
-  if (!Number.isFinite(proposedStake)) {
+  const suggestedUnits = roundHalfUp_(Number(stakeUnits), 4);
+  if (!Number.isFinite(suggestedUnits)) {
     return {
       decision: 'missing_stake',
       reason_code: 'stake_missing_unscored',
+      reason_codes: ['stake_missing_unscored'],
       policy_mode: policyMode,
       account_currency: accountCurrency,
       proposed_stake: null,
       final_stake: null,
+      final_risk_mxn: null,
+      final_units: null,
       minimum_stake: minimumStake,
     };
   }
-  if (proposedStake < minimumStake) {
-    if (policyMode === 'round_up_to_min') {
-      return {
-        decision: 'adjusted',
-        reason_code: 'stake_rounded_to_min',
-        policy_mode: policyMode,
-        account_currency: accountCurrency,
-        proposed_stake: proposedStake,
-        final_stake: minimumStake,
-        minimum_stake: minimumStake,
-      };
-    }
+  const suggestedMxn = roundHalfUp_(suggestedUnits * unitSizeMxn, 2);
+  const initialRiskMxn = convertSuggestedStakeToRiskMxn_(suggestedMxn, oddsPrice);
+  if (!Number.isFinite(initialRiskMxn)) {
     return {
-      decision: 'suppressed',
-      reason_code: 'stake_below_min_suppressed',
+      decision: 'missing_stake',
+      reason_code: 'stake_missing_unscored',
+      reason_codes: ['stake_missing_unscored'],
       policy_mode: policyMode,
       account_currency: accountCurrency,
-      proposed_stake: proposedStake,
-      final_stake: 0,
+      proposed_stake: suggestedMxn,
+      final_stake: null,
+      final_risk_mxn: null,
+      final_units: null,
       minimum_stake: minimumStake,
+      stake_mode: Number.isFinite(oddsPrice) && oddsPrice < 0 ? 'to_win' : 'to_risk',
     };
   }
+  const adjusted = applyRiskStakeAdjustments_(initialRiskMxn, {
+    minimum_stake: minimumStake,
+    bucket_step: bucketStepMxn,
+    maximum_stake: configuredMaxStake,
+    american_odds: oddsPrice,
+  });
+  const finalRiskMxn = roundHalfUp_(adjusted.final_risk_mxn, 2);
+  const finalUnits = roundHalfUp_(finalRiskMxn / unitSizeMxn, 4);
+  const reasonCodes = adjusted.reason_codes.length ? adjusted.reason_codes.slice() : ['stake_policy_pass'];
+  const decision = adjusted.reason_codes.length ? 'adjusted' : 'passed';
+  const primaryReason = reasonCodes[0];
   return {
-    decision: 'passed',
-    reason_code: 'stake_policy_pass',
+    decision: decision,
+    reason_code: primaryReason,
+    reason_codes: reasonCodes,
     policy_mode: policyMode,
     account_currency: accountCurrency,
-    proposed_stake: proposedStake,
-    final_stake: proposedStake,
+    proposed_stake: suggestedMxn,
+    final_stake: finalRiskMxn,
+    final_risk_mxn: finalRiskMxn,
+    final_units: finalUnits,
     minimum_stake: minimumStake,
+    maximum_stake: configuredMaxStake,
+    stake_mode: adjusted.stake_mode,
+    suggested_units: suggestedUnits,
   };
+}
+
+function convertSuggestedStakeToRiskMxn_(suggestedStakeMxn, americanOdds) {
+  const suggested = Number(suggestedStakeMxn);
+  if (!Number.isFinite(suggested)) return NaN;
+  const odds = Number(americanOdds);
+  if (Number.isFinite(odds) && odds < 0) return roundHalfUp_((suggested * Math.abs(odds)) / 100, 2);
+  return roundHalfUp_(suggested, 2);
+}
+
+function applyRiskStakeAdjustments_(riskMxn, options) {
+  const cfg = options || {};
+  let finalRisk = Number(riskMxn);
+  const minStake = Number(cfg.minimum_stake);
+  const bucketStep = Number(cfg.bucket_step);
+  const maxStake = Number(cfg.maximum_stake);
+  const reasonCodes = [];
+
+  if (Number.isFinite(minStake) && finalRisk < minStake) {
+    finalRisk = minStake;
+    reasonCodes.push('stake_raised_to_min');
+  }
+  if (Number.isFinite(bucketStep) && bucketStep > 0) {
+    const rounded = roundHalfUp_(Math.round(finalRisk / bucketStep) * bucketStep, 2);
+    if (rounded !== finalRisk) {
+      reasonCodes.push(rounded > finalRisk ? 'stake_bucket_rounded_up' : 'stake_bucket_rounded_down');
+      finalRisk = rounded;
+    }
+  }
+  if (Number.isFinite(maxStake) && finalRisk > maxStake) {
+    finalRisk = maxStake;
+    reasonCodes.push('stake_capped_to_max');
+  }
+  return {
+    final_risk_mxn: finalRisk,
+    reason_codes: reasonCodes,
+    stake_mode: Number.isFinite(Number(cfg.american_odds)) && Number(cfg.american_odds) < 0 ? 'to_win' : 'to_risk',
+  };
+}
+
+function resolveMaxStakeForCurrency_(cfg, accountCurrency) {
+  if (Number.isFinite(Number(cfg && cfg.MAX_BET_MXN))) return roundHalfUp_(Number(cfg.MAX_BET_MXN), 2);
+  const maxPerCurrency = parseMinStakePerCurrency_(cfg && cfg.MAX_STAKE_PER_CURRENCY_JSON);
+  if (Object.prototype.hasOwnProperty.call(maxPerCurrency, accountCurrency)) {
+    return roundHalfUp_(Number(maxPerCurrency[accountCurrency]), 2);
+  }
+  return null;
 }
 
 function normalizeStakePolicyMode_(value) {
@@ -1739,7 +1809,11 @@ function summarizeSignalRowsStakePolicy_(signalRows, config) {
     summary.signal_rows_evaluated += 1;
     reasonCounts[reasonCode] = Number(reasonCounts[reasonCode] || 0) + 1;
     if (reasonCode === 'stake_below_min_suppressed') summary.suppressed_count += 1;
-    if (reasonCode === 'stake_rounded_to_min') summary.adjusted_count += 1;
+    if (reasonCode === 'stake_rounded_to_min'
+      || reasonCode === 'stake_raised_to_min'
+      || reasonCode === 'stake_bucket_rounded_down'
+      || reasonCode === 'stake_bucket_rounded_up'
+      || reasonCode === 'stake_capped_to_max') summary.adjusted_count += 1;
     if (reasonCode === 'stake_policy_pass') summary.passed_count += 1;
     if (reasonCode === 'stake_missing_unscored') summary.missing_stake_count += 1;
     if (reasonCode === 'stake_policy_config_error') summary.config_error_count += 1;

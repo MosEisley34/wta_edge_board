@@ -1,82 +1,80 @@
-function testEvaluateSignalStakePolicy_strictMode_matchesPythonFixtureExpectations_() {
-  const fixtureRows = buildStakePolicyFixtureRowsForGs_();
+function testEvaluateSignalStakePolicy_appliesPositiveOddsAsRiskMode_() {
   const config = {
     STAKE_POLICY_MODE: 'strict_suppress_below_min',
     ACCOUNT_CURRENCY: 'MXN',
     MIN_STAKE_PER_CURRENCY_JSON: '{"MXN":20}',
   };
-  const expectedByCaseId = {
-    below_min_raw: 'stake_below_min_suppressed',
-    decimal_19995: 'stake_below_min_suppressed',
-    boundary_2000: 'stake_policy_pass',
-    above_min: 'stake_policy_pass',
-    message_nested_below_min: 'stake_below_min_suppressed',
-    missing_stake: 'stake_missing_unscored',
-  };
+  const decision = evaluateSignalStakePolicy_(0.5, 145, config);
 
-  const observedByCaseId = {};
-  fixtureRows.forEach(function (row) {
-    const stakeValue = resolveFixtureStakeValue_(row);
-    observedByCaseId[row.case_id] = evaluateSignalStakePolicy_(stakeValue, config).reason_code;
-  });
-
-  assertEquals_(JSON.stringify(expectedByCaseId), JSON.stringify(observedByCaseId));
+  assertEquals_('passed', decision.decision);
+  assertEquals_('stake_policy_pass', decision.reason_code);
+  assertEquals_(50, decision.final_risk_mxn);
+  assertEquals_(0.5, decision.final_units);
+  assertEquals_('to_risk', decision.stake_mode);
 }
 
-function testEvaluateSignalStakePolicy_roundUpMode_matchesPythonFixtureExpectations_() {
-  const fixtureRows = buildStakePolicyFixtureRowsForGs_();
+function testEvaluateSignalStakePolicy_appliesNegativeOddsAsToWinModeAndAdjustments_() {
   const config = {
-    STAKE_POLICY_MODE: 'round_up_to_min',
+    STAKE_POLICY_MODE: 'strict_suppress_below_min',
+    ACCOUNT_CURRENCY: 'MXN',
+    MIN_STAKE_PER_CURRENCY_JSON: '{"MXN":20}',
+    MAX_BET_MXN: 120,
+  };
+  const decision = evaluateSignalStakePolicy_(0.31, -137, config);
+
+  assertEquals_('adjusted', decision.decision);
+  assertEquals_('stake_bucket_rounded_down', decision.reason_code);
+  assertEquals_(40, decision.final_risk_mxn);
+  assertEquals_(0.4, decision.final_units);
+  assertEquals_(
+    JSON.stringify(['stake_bucket_rounded_down']),
+    JSON.stringify(decision.reason_codes || [])
+  );
+  assertEquals_('to_win', decision.stake_mode);
+}
+
+function testEvaluateSignalStakePolicy_raisesMinAndCapsAtMax_() {
+  const config = {
+    STAKE_POLICY_MODE: 'strict_suppress_below_min',
+    ACCOUNT_CURRENCY: 'MXN',
+    MIN_STAKE_PER_CURRENCY_JSON: '{"MXN":20}',
+    MAX_BET_MXN: 20,
+  };
+  const decision = evaluateSignalStakePolicy_(0.1, -110, config);
+
+  assertEquals_('adjusted', decision.decision);
+  assertEquals_(20, decision.final_risk_mxn);
+  assertEquals_(0.2, decision.final_units);
+  assertEquals_(
+    JSON.stringify(['stake_raised_to_min']),
+    JSON.stringify(decision.reason_codes || [])
+  );
+}
+
+function testEvaluateSignalStakePolicy_missingSuggestionMaintainsExistingReasonCode_() {
+  const config = {
+    STAKE_POLICY_MODE: 'strict_suppress_below_min',
     ACCOUNT_CURRENCY: 'MXN',
     MIN_STAKE_PER_CURRENCY_JSON: '{"MXN":20}',
   };
-  const expectedByCaseId = {
-    below_min_raw: 'stake_rounded_to_min',
-    decimal_19995: 'stake_rounded_to_min',
-    boundary_2000: 'stake_policy_pass',
-    above_min: 'stake_policy_pass',
-    message_nested_below_min: 'stake_rounded_to_min',
-    missing_stake: 'stake_missing_unscored',
+  const decision = evaluateSignalStakePolicy_(null, 130, config);
+
+  assertEquals_('missing_stake', decision.decision);
+  assertEquals_('stake_missing_unscored', decision.reason_code);
+  assertEquals_(null, decision.final_risk_mxn);
+}
+
+function testEvaluateSignalStakePolicy_appliesCapReasonCodeWhenConfigured_() {
+  const config = {
+    STAKE_POLICY_MODE: 'strict_suppress_below_min',
+    ACCOUNT_CURRENCY: 'MXN',
+    MIN_STAKE_PER_CURRENCY_JSON: '{"MXN":20}',
+    MAX_BET_MXN: 120,
   };
+  const decision = evaluateSignalStakePolicy_(2.0, 130, config);
 
-  const observedByCaseId = {};
-  fixtureRows.forEach(function (row) {
-    const stakeValue = resolveFixtureStakeValue_(row);
-    observedByCaseId[row.case_id] = evaluateSignalStakePolicy_(stakeValue, config).reason_code;
-  });
-
-  assertEquals_(JSON.stringify(expectedByCaseId), JSON.stringify(observedByCaseId));
-}
-
-function buildStakePolicyFixtureRowsForGs_() {
-  return [
-    { case_id: 'below_min_raw', stake_mxn: 19.5 },
-    { case_id: 'decimal_19995', proposed_stake_mxn: 19.995 },
-    { case_id: 'boundary_2000', recommended_stake_mxn: 20.0 },
-    { case_id: 'above_min', stake: 22 },
-    { case_id: 'message_nested_below_min', message: '{"suggested_stake_mxn":18.2}' },
-    { case_id: 'missing_stake', message: '{"note":"no stake emitted"}' },
-  ];
-}
-
-function resolveFixtureStakeValue_(row) {
-  const payload = Object.assign({}, row || {});
-  if (typeof payload.message === 'string' && payload.message) {
-    try {
-      const parsed = JSON.parse(payload.message);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        Object.keys(parsed).forEach(function (key) {
-          payload[key] = parsed[key];
-        });
-      }
-    } catch (err) {
-      // no-op for malformed fixture rows.
-    }
-  }
-  const keys = ['stake_mxn', 'proposed_stake_mxn', 'recommended_stake_mxn', 'suggested_stake_mxn', 'stake'];
-  for (let i = 0; i < keys.length; i += 1) {
-    const numeric = Number(payload[keys[i]]);
-    if (Number.isFinite(numeric)) return numeric;
-  }
-  return null;
+  assertEquals_('adjusted', decision.decision);
+  assertEquals_('stake_capped_to_max', decision.reason_code);
+  assertEquals_(120, decision.final_risk_mxn);
+  assertEquals_(1.2, decision.final_units);
 }
