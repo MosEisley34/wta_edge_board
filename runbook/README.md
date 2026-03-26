@@ -221,6 +221,21 @@ python3 scripts/mirror_runtime_csv_to_json.py --input-dir ./live_runtime --out-d
 # 2) Build a clean, parity-gated export batch from exports_live (explicit contract dir).
 scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./exports_live
 
+# 2a) Fresh-source precheck (guard required before parity precheck).
+# Operators usually point at a timestamped runtime export batch path like:
+#   ./live_runtime/batches/2026-03-24T09-15-00Z
+EXPORT_SRC="./live_runtime/batches/2026-03-24T09-15-00Z"
+[[ -e "$EXPORT_SRC" ]] || {
+  echo "Error: fresh export source missing: $EXPORT_SRC" >&2
+  echo "Hint: regenerate or locate the latest live_runtime batch before precheck." >&2
+  exit 1
+}
+scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC"
+
+# Stale-source troubleshooting fallback (existing exports_live contract flow).
+# If the fresh source path is stale/unavailable, rerun precheck from ./exports_live.
+scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
+
 # 2b) Capture preflight report with strict failure propagation.
 bash -c '
   set -uo pipefail
