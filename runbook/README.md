@@ -221,6 +221,17 @@ python3 scripts/mirror_runtime_csv_to_json.py --input-dir ./live_runtime --out-d
 # 2) Build a clean, parity-gated export batch from exports_live (explicit contract dir).
 scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./exports_live
 
+# 2b) Capture preflight report with strict failure propagation.
+bash -c '
+  set -euo pipefail
+  scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live \
+    | tee ./exports_live/run_compare_preflight.report.log
+  [[ -s ./exports_live/run_compare_preflight.json ]] || {
+    echo "Error: missing or empty ./exports_live/run_compare_preflight.json" >&2
+    exit 1
+  }
+'
+
 # 3) Compare diagnostics through mandatory preflight wrapper.
 scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
 
@@ -228,7 +239,7 @@ scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a>
 scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
 
 # 5) Confirm required evidence artifact exists for incident/report attachment.
-test -f ./exports_live/run_compare_preflight.json && echo "preflight evidence present"
+test -s ./exports_live/run_compare_preflight.json && echo "preflight evidence present"
 ```
 
 Emergency override policy:
