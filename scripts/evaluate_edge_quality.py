@@ -957,7 +957,52 @@ def _windowed_fallback_assessment(
             break
         if end_idx < len(run_ids):
             end_idx += 1
+    min_scored = int(config.min_scored_signals_for_volatility)
+    min_matched = int(config.min_matched_events_for_volatility)
+
+    def _window_sample_counts(window_ids: list[str]) -> dict[str, Any]:
+        scored_total = 0
+        matched_total = 0
+        known = True
+        for run_id in window_ids:
+            summary = _pick_run_summary(rows, run_id)
+            if not summary:
+                known = False
+                break
+            signal_summary = _extract_signal_summary(summary)
+            scored = _extract_scored_signals(summary, signal_summary)
+            matched = _extract_matched_events(summary)
+            if scored is None or matched is None:
+                known = False
+                break
+            scored_total += int(scored)
+            matched_total += int(matched)
+        return {
+            "known": known,
+            "run_ids": window_ids,
+            "scored_signals": scored_total if known else None,
+            "matched_events": matched_total if known else None,
+            "enough_sample_for_decision": known and scored_total >= min_scored and matched_total >= min_matched,
+        }
+
+    while True:
+        window_pair_count = end_idx - start_idx - 1
+        if window_pair_count < required_pairs:
+            break
+        candidate_window_ids = run_ids[start_idx + 1 : end_idx]
+        sample_counts = _window_sample_counts(candidate_window_ids)
+        if sample_counts["enough_sample_for_decision"]:
+            break
+        if start_idx == 0 and end_idx == len(run_ids):
+            break
+        if start_idx > 0:
+            start_idx -= 1
+        if end_idx < len(run_ids):
+            end_idx += 1
+
     window_run_ids = run_ids[start_idx:end_idx]
+    candidate_window_ids = run_ids[start_idx + 1 : end_idx]
+    sample_counts = _window_sample_counts(candidate_window_ids)
     pair_reports = [
         evaluate_edge_quality_gate(
             rows=rows,
@@ -972,10 +1017,13 @@ def _windowed_fallback_assessment(
     for report in pair_reports:
         status_counts[_status_bucket(report)] += 1
 
+    sample_ready = bool(sample_counts["enough_sample_for_decision"]) or not bool(sample_counts["known"])
     decision_support_status = "insufficient_sample"
-    if status_counts["true_fail"] > 0:
+    if sample_ready and status_counts["true_fail"] > 0:
         decision_support_status = "fail"
-    elif status_counts["pass"] > 0:
+    elif sample_ready and status_counts["pass"] > 0:
+        decision_support_status = "pass"
+    elif sample_counts["enough_sample_for_decision"] and status_counts["insufficient_sample"] > 0:
         decision_support_status = "pass"
     elif status_counts["insufficient_sample"] > 0:
         decision_support_status = "insufficient_sample"
@@ -992,6 +1040,15 @@ def _windowed_fallback_assessment(
         "pair_count": len(pair_reports),
         "status_counts": status_counts,
         "decision_support_status": decision_support_status,
+        "effective_sample_counts": {
+            "known": sample_counts["known"],
+            "scored_signals": sample_counts["scored_signals"],
+            "matched_events": sample_counts["matched_events"],
+            "run_ids": sample_counts["run_ids"],
+            "min_scored_signals_for_volatility": min_scored,
+            "min_matched_events_for_volatility": min_matched,
+            "enough_sample_for_decision": sample_counts["enough_sample_for_decision"],
+        },
         "pairs": pair_reports,
     }
 
@@ -1093,6 +1150,12 @@ def evaluate_edge_quality_compare_report(
         "final_operator_summary": {
             "strict_pair_status": strict_status,
             "windowed_decision_status": windowed_status,
+            "strict_pair_sample_assessment": (pair_level_result.get("sample_assessment") or {}),
+            "fallback_effective_sample_counts": (
+                (fallback_result or {}).get("effective_sample_counts")
+                if isinstance(fallback_result, dict)
+                else None
+            ),
             "decision_authoritative_source": decision_authoritative_source,
             "decision_authoritative_status": decision_authoritative_status,
             "runbook_branch": runbook_branch,

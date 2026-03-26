@@ -419,8 +419,64 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("pass", report["status"])
         self.assertEqual(4, report["windowed_fallback_result"]["pair_count"])
         self.assertEqual(4, report["windowed_fallback_result"]["min_neighboring_pairs"])
+        self.assertTrue(report["windowed_fallback_result"]["effective_sample_counts"]["enough_sample_for_decision"])
         self.assertEqual("windowed_fallback_result", report["final_operator_summary"]["decision_authoritative_source"])
         self.assertEqual("pass", report["final_operator_summary"]["decision_authoritative_status"])
+
+    def test_compare_report_low_volume_fallback_expands_until_decision_threshold_met(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.012, scored_signals=4, matched_events=2),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.015, scored_signals=3, matched_events=2),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.013, scored_signals=4, matched_events=2),
+            self._summary_row("run-4", "2026-03-04T00:00:00Z", edge_volatility=0.014, scored_signals=4, matched_events=2),
+            self._summary_row("run-5", "2026-03-05T00:00:00Z", edge_volatility=0.016, scored_signals=4, matched_events=2),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                volatility_sample_window_runs=1,
+            ),
+            ordered_run_ids=["run-1", "run-2", "run-3", "run-4", "run-5"],
+            fallback_recent_run_window_radius=1,
+            fallback_min_neighboring_pairs=1,
+        )
+        self.assertEqual("insufficient_sample", report["pair_level_result"]["status"])
+        self.assertEqual("pass", report["status"])
+        self.assertEqual(3, report["windowed_fallback_result"]["pair_count"])
+        self.assertTrue(report["windowed_fallback_result"]["effective_sample_counts"]["enough_sample_for_decision"])
+        self.assertEqual(11, report["windowed_fallback_result"]["effective_sample_counts"]["scored_signals"])
+        self.assertEqual(6, report["windowed_fallback_result"]["effective_sample_counts"]["matched_events"])
+        self.assertEqual("windowed_fallback_result", report["final_operator_summary"]["decision_authoritative_source"])
+
+    def test_compare_report_low_volume_fallback_does_not_false_pass_when_threshold_unmet(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.012, scored_signals=3, matched_events=1),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.015, scored_signals=3, matched_events=1),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.013, scored_signals=3, matched_events=1),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                volatility_sample_window_runs=1,
+            ),
+            ordered_run_ids=["run-1", "run-2", "run-3"],
+            fallback_recent_run_window_radius=1,
+            fallback_min_neighboring_pairs=1,
+        )
+        self.assertEqual("insufficient_sample", report["pair_level_result"]["status"])
+        self.assertEqual("insufficient_sample", report["status"])
+        self.assertFalse(report["windowed_fallback_result"]["effective_sample_counts"]["enough_sample_for_decision"])
+        self.assertEqual("insufficient_sample", report["final_operator_summary"]["decision_authoritative_status"])
 
     def test_compare_report_fallback_ignores_partial_legacy_schema_pairs_when_pass_pairs_exist(self):
         rows = load_run_log_rows(
