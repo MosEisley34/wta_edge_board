@@ -125,8 +125,15 @@ class CompareRunDiagnosticsValidationTests(unittest.TestCase):
             stake_policy_config=StakePolicyConfig(enabled=True, minimum_stake_mxn=20.0, round_to_min=False),
         )
         self.assertIn("stake_policy_enabled=true", report)
+        self.assertIn("unit_size_mxn=100.0", report)
+        self.assertIn("min_bet_mxn=20.0", report)
+        self.assertIn("bucket_step_mxn=20.0", report)
+        self.assertIn("rounding_mode=down", report)
         self.assertIn("## stake-policy outcomes", report)
         self.assertIn("## stake-policy reason codes", report)
+        self.assertIn("## stake-policy stake_mode_used counts", report)
+        self.assertIn("## stake-policy adjustment reason codes", report)
+        self.assertIn("## stake-policy final_risk_mxn aggregates", report)
         self.assertIn("stake_below_min_suppressed", report)
 
     def test_compare_rows_fails_when_pair_mixes_policy_enabled_tags(self):

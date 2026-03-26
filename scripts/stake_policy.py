@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from statistics import mean, median
 from typing import Any
 
 
@@ -120,6 +121,40 @@ def _extract_proposed_stake_mxn(row: dict[str, Any]) -> float | None:
     return None
 
 
+def _extract_final_risk_mxn(row: dict[str, Any]) -> float | None:
+    payload = _row_payload(row)
+    for key in (
+        "final_risk_mxn",
+        "risk_mxn_final",
+        "stake_final_risk_mxn",
+    ):
+        numeric = _as_float(payload.get(key))
+        if numeric is not None:
+            return numeric
+    return None
+
+
+def _stake_mode_used(row: dict[str, Any], config: StakePolicyConfig) -> str:
+    payload = _row_payload(row)
+    explicit = str(payload.get("stake_mode_used") or "").strip()
+    if explicit:
+        return explicit
+    odds = _as_float(payload.get("odds_american") if payload.get("odds_american") is not None else payload.get("odds"))
+    if odds is None:
+        return "unknown"
+    sign_key = "negative" if odds < 0 else "positive"
+    return str((config.stake_mode_by_odds_sign or {}).get(sign_key) or "unknown")
+
+
+def _adjustment_reason_code(row: dict[str, Any]) -> str | None:
+    payload = _row_payload(row)
+    for key in ("stake_adjustment_reason_code", "adjustment_reason_code", "stake_adjust_reason"):
+        reason = str(payload.get(key) or "").strip()
+        if reason:
+            return reason
+    return None
+
+
 def _is_signal_row(row: dict[str, Any], run_id: str) -> bool:
     if str(row.get("run_id") or "") != run_id:
         return False
@@ -195,11 +230,24 @@ def summarize_run_stake_policy(rows: list[dict[str, Any]], run_id: str, config: 
     normalized = config.with_canonicalized_fields()
     signal_rows = [row for row in rows if _is_signal_row(row, run_id)]
     reason_counts: dict[str, int] = {}
+    stake_mode_counts: dict[str, int] = {}
+    adjustment_reason_counts: dict[str, int] = {}
+    final_risk_values: list[float] = []
     suppressed = adjusted = passed = missing = 0
     for row in signal_rows:
         outcome = evaluate_stake_policy_for_row(row, normalized)
         reason = str(outcome.get("reason_code") or "unknown")
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+        mode = _stake_mode_used(row, normalized)
+        stake_mode_counts[mode] = stake_mode_counts.get(mode, 0) + 1
+        adjustment_reason = _adjustment_reason_code(row)
+        if adjustment_reason:
+            adjustment_reason_counts[adjustment_reason] = adjustment_reason_counts.get(adjustment_reason, 0) + 1
+        final_risk = _extract_final_risk_mxn(row)
+        if final_risk is not None:
+            final_risk_values.append(float(final_risk))
+
         decision = str(outcome.get("decision") or "")
         if decision == "suppressed":
             suppressed += 1
@@ -209,6 +257,11 @@ def summarize_run_stake_policy(rows: list[dict[str, Any]], run_id: str, config: 
             passed += 1
         elif decision == "missing_stake":
             missing += 1
+
+    final_risk_summary: dict[str, Any] = {"count": len(final_risk_values)}
+    if final_risk_values:
+        final_risk_summary["mean"] = float(mean(final_risk_values))
+        final_risk_summary["median"] = float(median(final_risk_values))
 
     return {
         "enabled": bool(config.enabled),
@@ -221,4 +274,7 @@ def summarize_run_stake_policy(rows: list[dict[str, Any]], run_id: str, config: 
         "passed_count": passed,
         "missing_stake_count": missing,
         "reason_counts": dict(sorted(reason_counts.items())),
+        "stake_mode_counts": dict(sorted(stake_mode_counts.items())),
+        "adjustment_reason_counts": dict(sorted(adjustment_reason_counts.items())),
+        "final_risk_mxn_aggregates": final_risk_summary,
     }
