@@ -45,6 +45,8 @@ class DailyEdgeQualitySLOConfig:
     window_days: tuple[int, ...] = (3, 7)
     min_pairs_per_window: int = 10
     fail_rate_threshold: float = 0.15
+    min_scored_signals_by_window: dict[int, int] | None = None
+    min_matched_events_by_window: dict[int, int] | None = None
 
 
 def _parse_json_like(value: Any, fallback: Any) -> Any:
@@ -858,6 +860,15 @@ def _window_threshold_iso(as_of: datetime, window_days: int) -> str:
     return floor.isoformat()
 
 
+def _window_threshold_value(mapping: dict[int, int] | None, window_days: int, fallback: int) -> int:
+    if not mapping:
+        return int(fallback)
+    value = mapping.get(int(window_days))
+    if value is None:
+        return int(fallback)
+    return max(0, int(value))
+
+
 def evaluate_daily_edge_quality_slo(
     rows: list[dict[str, Any]],
     gate_config: EdgeQualityGateConfig,
@@ -866,6 +877,7 @@ def evaluate_daily_edge_quality_slo(
 ) -> dict[str, Any]:
     as_of = _resolve_as_of_utc(as_of_utc)
     window_reports: list[dict[str, Any]] = []
+    window_ratio_trends: list[dict[str, Any]] = []
     aggregate_status_counts = {"pass": 0, "true_fail": 0, "insufficient_sample": 0, "schema_missing": 0}
     aggregate_decisionable_status_counts = {"pass": 0, "true_fail": 0}
     excluded_pair_count = 0
@@ -890,8 +902,16 @@ def evaluate_daily_edge_quality_slo(
 
         decisionable_status_counts = {"pass": 0, "true_fail": 0}
         excluded_pairs: list[dict[str, Any]] = []
-        min_scored = int(gate_config.min_scored_signals_for_volatility)
-        min_matched = int(gate_config.min_matched_events_for_volatility)
+        min_scored = _window_threshold_value(
+            slo_config.min_scored_signals_by_window,
+            window_days,
+            int(gate_config.min_scored_signals_for_volatility),
+        )
+        min_matched = _window_threshold_value(
+            slo_config.min_matched_events_by_window,
+            window_days,
+            int(gate_config.min_matched_events_for_volatility),
+        )
         for report in pair_reports:
             baseline = report.get("baseline") or {}
             candidate = report.get("candidate") or {}
@@ -955,6 +975,11 @@ def evaluate_daily_edge_quality_slo(
             "min_ended_at": min_ended_at,
             "run_count": len(run_ids),
             "pair_count": len(pair_reports),
+            "sample_floor": {
+                "min_scored_signals": min_scored,
+                "min_matched_events": min_matched,
+                "min_pairs_per_window": int(slo_config.min_pairs_per_window),
+            },
             "decisionable_pair_count": decisionable_pair_count,
             "decisionable": decisionable,
             "status_counts": status_counts,
@@ -967,6 +992,19 @@ def evaluate_daily_edge_quality_slo(
             "pairs": pair_reports,
         }
         window_reports.append(window_report)
+        pair_count = len(pair_reports)
+        decisionable_ratio = (decisionable_pair_count / pair_count) if pair_count else None
+        insufficient_ratio = (status_counts["insufficient_sample"] / pair_count) if pair_count else None
+        window_ratio_trends.append(
+            {
+                "window_days": window_days,
+                "pair_count": pair_count,
+                "decisionable_pair_count": decisionable_pair_count,
+                "insufficient_sample_pair_count": status_counts["insufficient_sample"],
+                "decisionable_ratio": decisionable_ratio,
+                "insufficient_sample_ratio": insufficient_ratio,
+            }
+        )
         aggregate_status_counts["pass"] += status_counts["pass"]
         aggregate_status_counts["true_fail"] += status_counts["true_fail"]
         aggregate_status_counts["insufficient_sample"] += status_counts["insufficient_sample"]
@@ -979,10 +1017,14 @@ def evaluate_daily_edge_quality_slo(
     failing_decisionable_windows = [
         window for window in decisionable_windows if str(window.get("verdict") or "") == "fail"
     ]
+    insufficient_windows = [window for window in window_reports if not bool(window.get("decisionable"))]
 
     if not decisionable_windows:
         gate_verdict = "insufficient_sample"
         gate_reason = "no_decisionable_windows"
+    elif insufficient_windows:
+        gate_verdict = "insufficient_sample"
+        gate_reason = "insufficient_sample_floor_not_met_for_all_windows"
     elif failing_decisionable_windows:
         gate_verdict = "fail"
         gate_reason = "decisionable_window_fail_rate_exceeded_threshold"
@@ -1008,6 +1050,7 @@ def evaluate_daily_edge_quality_slo(
         "aggregate_status_counts": aggregate_status_counts,
         "aggregate_decisionable_status_counts": aggregate_decisionable_status_counts,
         "excluded_pair_count": excluded_pair_count,
+        "window_ratio_trends": window_ratio_trends,
         "window_reports": window_reports,
         "gate_verdict": gate_verdict,
         "gate_reason": gate_reason,
@@ -1105,6 +1148,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--daily-slo-min-pairs", type=int, default=10)
     parser.add_argument("--daily-slo-fail-rate-threshold", type=float, default=0.15)
+    parser.add_argument(
+        "--daily-slo-min-scored-by-window",
+        default="",
+        help="Optional comma-separated per-window minimum scored-signals floors (e.g. 3:10,7:20).",
+    )
+    parser.add_argument(
+        "--daily-slo-min-matched-by-window",
+        default="",
+        help="Optional comma-separated per-window minimum matched-events floors (e.g. 3:5,7:12).",
+    )
     parser.add_argument("--daily-slo-output-dir", default="reports")
     parser.add_argument("--daily-slo-archive-dir", default="docs/baselines/edge_quality_slo")
     parser.add_argument(
@@ -1113,6 +1166,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Optional ISO-8601 timestamp for deterministic daily-SLO window boundaries.",
     )
     return parser
+
+
+def _parse_window_thresholds(raw: str, field_name: str) -> dict[int, int]:
+    parsed: dict[int, int] = {}
+    if not str(raw or "").strip():
+        return parsed
+    for item in str(raw).split(","):
+        token = item.strip()
+        if not token:
+            continue
+        if ":" not in token:
+            raise ValueError(f"{field_name} entry `{token}` must use day:value format.")
+        day_raw, value_raw = token.split(":", 1)
+        day = int(day_raw.strip())
+        value = int(value_raw.strip())
+        if day <= 0:
+            raise ValueError(f"{field_name} day must be positive: `{token}`")
+        if value < 0:
+            raise ValueError(f"{field_name} value must be non-negative: `{token}`")
+        parsed[day] = value
+    return parsed
 
 
 def main() -> int:
@@ -1147,10 +1221,23 @@ def main() -> int:
         )
         if not window_days:
             parser.error("--daily-slo-windows must include at least one positive integer day window.")
+        try:
+            min_scored_by_window = _parse_window_thresholds(
+                str(args.daily_slo_min_scored_by_window or ""),
+                "--daily-slo-min-scored-by-window",
+            )
+            min_matched_by_window = _parse_window_thresholds(
+                str(args.daily_slo_min_matched_by_window or ""),
+                "--daily-slo-min-matched-by-window",
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
         slo_config = DailyEdgeQualitySLOConfig(
             window_days=window_days,
             min_pairs_per_window=max(1, int(args.daily_slo_min_pairs)),
             fail_rate_threshold=max(0.0, float(args.daily_slo_fail_rate_threshold)),
+            min_scored_signals_by_window=min_scored_by_window,
+            min_matched_events_by_window=min_matched_by_window,
         )
         report = evaluate_daily_edge_quality_slo(
             rows=rows,
