@@ -359,13 +359,17 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             ordered_run_ids=["run-1", "run-2", "run-3", "run-4"],
             fallback_recent_run_window_radius=2,
         )
-        self.assertEqual("insufficient_sample", report["status"])
+        self.assertEqual("pass", report["status"])
         self.assertEqual("insufficient_sample", report["pair_level_result"]["status"])
         self.assertIsNotNone(report["windowed_fallback_result"])
         self.assertEqual("fallback_window_assessment", report["windowed_fallback_result"]["label"])
         self.assertEqual("insufficient_sample", report["windowed_fallback_result"]["triggered_by_status"])
         self.assertEqual(3, report["windowed_fallback_result"]["pair_count"])
         self.assertEqual("pass", report["windowed_fallback_result"]["decision_support_status"])
+        self.assertEqual("insufficient_sample", report["final_operator_summary"]["strict_pair_status"])
+        self.assertEqual("pass", report["final_operator_summary"]["windowed_decision_status"])
+        self.assertEqual("windowed_fallback_result", report["final_operator_summary"]["decision_authoritative_source"])
+        self.assertEqual("pass", report["final_operator_summary"]["decision_authoritative_status"])
 
     def test_compare_report_keeps_windowed_fallback_null_when_pair_is_decisionable(self):
         rows = [
@@ -383,6 +387,39 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("pass", report["status"])
         self.assertEqual("pass", report["pair_level_result"]["status"])
         self.assertIsNone(report["windowed_fallback_result"])
+        self.assertEqual("pass", report["final_operator_summary"]["strict_pair_status"])
+        self.assertEqual("not_triggered", report["final_operator_summary"]["windowed_decision_status"])
+        self.assertEqual("strict_pair_gate", report["final_operator_summary"]["decision_authoritative_source"])
+        self.assertEqual("pass", report["final_operator_summary"]["decision_authoritative_status"])
+
+    def test_compare_report_expands_fallback_window_to_min_neighboring_pairs(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.012, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.020, scored_signals=2, matched_events=1),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.013, scored_signals=12, matched_events=8),
+            self._summary_row("run-4", "2026-03-04T00:00:00Z", edge_volatility=0.014, scored_signals=12, matched_events=8),
+            self._summary_row("run-5", "2026-03-05T00:00:00Z", edge_volatility=0.015, scored_signals=12, matched_events=8),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                volatility_sample_window_runs=1,
+            ),
+            ordered_run_ids=["run-1", "run-2", "run-3", "run-4", "run-5"],
+            fallback_recent_run_window_radius=1,
+            fallback_min_neighboring_pairs=4,
+        )
+        self.assertEqual("insufficient_sample", report["pair_level_result"]["status"])
+        self.assertEqual("pass", report["status"])
+        self.assertEqual(4, report["windowed_fallback_result"]["pair_count"])
+        self.assertEqual(4, report["windowed_fallback_result"]["min_neighboring_pairs"])
+        self.assertEqual("windowed_fallback_result", report["final_operator_summary"]["decision_authoritative_source"])
+        self.assertEqual("pass", report["final_operator_summary"]["decision_authoritative_status"])
 
     def test_normal_volume_still_fails_true_instability(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_normal_volume_fail.json"))
