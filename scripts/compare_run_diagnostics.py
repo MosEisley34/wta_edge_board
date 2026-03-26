@@ -151,6 +151,51 @@ def _validate_run_pair(rows: List[Dict[str, Any]], run_a: str, run_b: str) -> No
         )
 
 
+def _pick_run_summary(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Any]:
+    last: Dict[str, Any] = {}
+    for row in _run_rows(rows, run_id):
+        if str(row.get("row_type") or "") == "summary" and str(row.get("stage") or "") == "runEdgeBoard":
+            last = row
+    return last
+
+
+def _summary_stake_policy_enabled(summary: Dict[str, Any]) -> bool | None:
+    signal_summary = _parse_json(summary.get("signal_decision_summary"), {})
+    if not isinstance(signal_summary, dict):
+        return None
+    stake_summary = _parse_json(signal_summary.get("stake_policy_summary"), {})
+    if not isinstance(stake_summary, dict):
+        return None
+    enabled = stake_summary.get("enabled")
+    if isinstance(enabled, bool):
+        return enabled
+    if isinstance(enabled, str):
+        text = enabled.strip().lower()
+        if text in {"true", "1", "yes", "y"}:
+            return True
+        if text in {"false", "0", "no", "n"}:
+            return False
+    return None
+
+
+def _resolve_pair_policy_mode(rows: List[Dict[str, Any]], run_a: str, run_b: str, fallback_enabled: bool) -> bool:
+    observed: List[tuple[str, bool]] = []
+    for run_id in (run_a, run_b):
+        explicit = _summary_stake_policy_enabled(_pick_run_summary(rows, run_id))
+        if explicit is not None:
+            observed.append((run_id, explicit))
+    if observed:
+        observed_values = {value for _, value in observed}
+        if len(observed_values) > 1:
+            details = ", ".join(f"{run_id}={str(value).lower()}" for run_id, value in observed)
+            raise ValueError(
+                "Mixed stake_policy_enabled states detected within run pair; "
+                f"refuse to produce comparison report. pair={details}"
+            )
+        return bool(observed[0][1])
+    return bool(fallback_enabled)
+
+
 def _debug_gate_failure_report(
     rows: List[Dict[str, Any]],
     run_success: str,
@@ -327,7 +372,16 @@ def compare_rows(
     stake_policy_config: StakePolicyConfig | None = None,
 ) -> str:
     _validate_run_pair(rows, run_a, run_b)
+    stake_config = stake_policy_config or StakePolicyConfig()
+    pair_policy_enabled = _resolve_pair_policy_mode(rows, run_a, run_b, fallback_enabled=bool(stake_config.enabled))
+    if pair_policy_enabled != bool(stake_config.enabled):
+        raise ValueError(
+            "stake_policy_enabled mode mismatch between CLI/config and run summaries; "
+            f"pair_reports require homogeneous mode. summary_mode={str(pair_policy_enabled).lower()} "
+            f"requested_mode={str(bool(stake_config.enabled)).lower()}"
+        )
     lines = []
+    lines.append(f"stake_policy_enabled={str(pair_policy_enabled).lower()}")
     lines.append(f"# Run diff report: {run_a} vs {run_b}")
     total_a = sum(1 for r in rows if str(r.get('run_id') or '') == run_a)
     total_b = sum(1 for r in rows if str(r.get('run_id') or '') == run_b)
@@ -426,7 +480,6 @@ def compare_rows(
     else:
         lines.append("| none | 0 | 0 | +0 |")
 
-    stake_config = stake_policy_config or StakePolicyConfig()
     stake_a = summarize_run_stake_policy(rows, run_a, stake_config)
     stake_b = summarize_run_stake_policy(rows, run_b, stake_config)
     lines.append("\n## stake-policy outcomes")

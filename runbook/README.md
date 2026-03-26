@@ -113,12 +113,19 @@ Store KPI outputs in dated baseline artifacts and include exact run IDs used for
 
 ### Phase 4 — promotion criteria (must be met before enforcement)
 
-Document and enforce explicit criteria in release notes for the rollout window. Recommended minimum criteria:
+Document and enforce explicit criteria in release notes for the rollout window. Policy-on promotion requires **all** of the following:
 
-- No regression in coverage gates versus baseline window.
-- Stable parity on diagnostics/metrics contracts (no new contract mismatches).
-- Acceptable actionable-volume drop versus baseline (team-defined threshold; must be written before evaluation).
-- No new edge-quality gate failures in the recent decision window.
+1. **Signal-quality gate stability**
+   - `evaluate_edge_quality.py --stake-policy-enabled` returns `status=pass` (or approved `insufficient_sample` fallback support) across the matched decision window.
+   - No new `fail` statuses are introduced versus the policy-disabled baseline lane.
+2. **Suppression distribution stability**
+   - No material new drift in suppression reason distribution versus baseline (use configured `max_suppression_drift` / `suppression_min_volume` guardrails).
+   - Stake-policy reason-code distribution is stable across matched windows (no single new reason dominates unexpectedly without incident review).
+3. **Stake-policy outcome sanity**
+   - `suppressed_count`, `adjusted_count`, and `passed_count` deltas are directionally consistent with rollout intent and within predeclared tolerances.
+   - Coverage-gate pass/fail parity is maintained versus baseline.
+4. **Diagnostics contract parity**
+   - No new contract mismatches in diagnostics/metrics wrappers and preflight evidence remains valid.
 
 If any criterion fails, keep policy in shadow mode, remediate, and re-run matched-window comparisons.
 
