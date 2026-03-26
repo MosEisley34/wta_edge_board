@@ -236,13 +236,7 @@ rm -rf "$RUN_REPORT_DIR"
 mkdir -p "$RUN_REPORT_DIR"
 touch "$RUN_START_MARKER"
 
-# 1) Mirror canonical JSON artifacts from CSV into the export batch directory.
-python3 scripts/mirror_runtime_csv_to_json.py --input-dir ./live_runtime --out-dir ./exports_live
-
-# 2) Build a clean, parity-gated export batch from exports_live (explicit contract dir).
-scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./exports_live
-
-# 2a) Fresh-source precheck (guard required before parity precheck).
+# 1) Lock one source path and reuse it for mirror + precheck + compare wrappers.
 # Operators usually point at a timestamped runtime export batch path like:
 #   ./live_runtime/batches/2026-03-24T09-15-00Z
 EXPORT_SRC="./live_runtime/batches/2026-03-24T09-15-00Z"
@@ -251,6 +245,15 @@ EXPORT_SRC="./live_runtime/batches/2026-03-24T09-15-00Z"
   echo "Hint: regenerate or locate the latest live_runtime batch before precheck." >&2
   exit 1
 }
+
+# 1a) Mirror canonical JSON artifacts from CSV in the SAME locked source directory.
+python3 scripts/mirror_runtime_csv_to_json.py --input-dir "$EXPORT_SRC" --out-dir "$EXPORT_SRC"
+
+# 2) Build a clean, parity-gated export batch from exports_live (explicit contract dir).
+scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./exports_live
+
+# WARNING: Mirroring into ./exports_live does NOT repair stale JSON in ./live_runtime.
+# If precheck reads ./live_runtime (or $EXPORT_SRC under it), mirror there first.
 
 # 2a.1) Resolve + lock export source run IDs before any compare/evaluate command.
 # This MUST pass before invoking:
@@ -265,10 +268,16 @@ scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b>
 # If the fresh source path is stale/unavailable, rerun precheck from ./exports_live.
 scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
 
+# Parity mismatch likely due stale JSON (explicit triage snippet).
+# Symptom: precheck/parity says CSV↔JSON mismatch while run IDs are present in CSV.
+# Cause: mirror ran against ./exports_live, but precheck/compare still read $EXPORT_SRC (live_runtime path).
+python3 scripts/mirror_runtime_csv_to_json.py --input-dir "$EXPORT_SRC" --out-dir "$EXPORT_SRC"
+scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC"
+
 # 2b) Capture preflight report with strict failure propagation.
 bash -c '
   set -euo pipefail
-  scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live \
+  scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC" \
     | tee "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
