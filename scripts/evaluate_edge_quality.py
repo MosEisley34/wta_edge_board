@@ -104,7 +104,7 @@ def _pick_run_summary(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]
         if str(row.get("run_id") or "") != run_id:
             continue
         if str(row.get("row_type") or "") == "summary" and str(row.get("stage") or "") == "runEdgeBoard":
-            summary = row
+            summary = _normalize_legacy_summary_row(row)
     return summary
 
 
@@ -180,6 +180,138 @@ def _extract_stage_summaries(summary_row: dict[str, Any]) -> list[dict[str, Any]
         if isinstance(nested, dict) and isinstance(nested.get("stage_summaries"), list):
             return [row for row in nested.get("stage_summaries") if isinstance(row, dict)]
     return []
+
+
+def _normalize_legacy_stage_rows(stage_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    normalized: list[dict[str, Any]] = []
+    markers: list[str] = []
+    stage_name_aliases = {
+        "matchEvents": "stageMatchEvents",
+        "generateSignals": "stageGenerateSignals",
+        "fetchPlayerStats": "stageFetchPlayerStats",
+    }
+    for row in stage_rows:
+        if not isinstance(row, dict):
+            continue
+        stage_name_raw = str(row.get("stage") or row.get("name") or "").strip()
+        if not stage_name_raw:
+            continue
+        stage_name = stage_name_aliases.get(stage_name_raw, stage_name_raw)
+        if not stage_name.startswith("stage"):
+            stage_name = f"stage{stage_name[:1].upper()}{stage_name[1:]}"
+        converted: dict[str, Any] = {"stage": stage_name}
+        if row.get("reason_codes") is not None:
+            converted["reason_codes"] = row.get("reason_codes")
+        elif row.get("reasonCodes") is not None:
+            converted["reason_codes"] = row.get("reasonCodes")
+            markers.append("legacy_stage_reason_codes_alias_reasonCodes")
+        for source_key, target_key in (
+            ("input_count", "input_count"),
+            ("input", "input_count"),
+            ("output_count", "output_count"),
+            ("output", "output_count"),
+        ):
+            if row.get(source_key) not in (None, ""):
+                converted[target_key] = row.get(source_key)
+        if row.get("reason_metadata") is not None:
+            converted["reason_metadata"] = row.get("reason_metadata")
+        elif row.get("reasonMetadata") is not None:
+            converted["reason_metadata"] = row.get("reasonMetadata")
+            markers.append("legacy_stage_reason_metadata_alias_reasonMetadata")
+        normalized.append(converted)
+    return normalized, markers
+
+
+def _normalize_legacy_summary_row(summary_row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(summary_row)
+    markers: list[str] = []
+    missing_reconstruction: list[str] = []
+    schema_id = str(normalized.get("schema_id") or "")
+    stage_blob = _parse_json_like(normalized.get("stage_summaries"), None)
+    stage_has_legacy_rows = isinstance(stage_blob, dict) and isinstance(stage_blob.get("legacy_stage_rows"), list)
+    legacy_hint = bool(
+        schema_id and schema_id != REASON_CODE_ALIAS_SCHEMA_ID
+        or stage_has_legacy_rows
+        or any(
+            key in normalized
+            for key in (
+                "playerStatsFeatureCompleteness",
+                "featureCoverage",
+                "edgeVolatility",
+                "edgeVolatilityVsPreviousRun",
+                "signals_generated",
+                "events_matched",
+            )
+        )
+    )
+
+    if normalized.get("feature_completeness") in (None, ""):
+        for source_key in (
+            "player_stats_feature_completeness",
+            "stats_feature_completeness",
+            "playerStatsFeatureCompleteness",
+            "featureCoverage",
+            "player_stats_resolved_rate",
+        ):
+            if normalized.get(source_key) in (None, ""):
+                continue
+            normalized["feature_completeness"] = normalized.get(source_key)
+            if source_key != "feature_completeness":
+                markers.append(f"legacy_alias_feature_completeness_from_{source_key}")
+            break
+        if normalized.get("feature_completeness") in (None, ""):
+            missing_reconstruction.append("feature_completeness")
+
+    if normalized.get("edge_volatility") in (None, ""):
+        for source_key in ("edgeVolatility", "edgeVolatilityVsPreviousRun", "edge_volatility_abs_delta_p95"):
+            if normalized.get(source_key) in (None, ""):
+                continue
+            normalized["edge_volatility"] = normalized.get(source_key)
+            markers.append(f"legacy_alias_edge_volatility_from_{source_key}")
+            break
+        if normalized.get("edge_volatility") in (None, ""):
+            missing_reconstruction.append("edge_volatility")
+
+    if normalized.get("stage_summaries") in (None, ""):
+        legacy_stage_bundle = _parse_json_like(normalized.get("legacy_stage_summaries"), None)
+        if not isinstance(legacy_stage_bundle, dict):
+            legacy_stage_bundle = _parse_json_like(normalized.get("stage_summary"), None)
+        if not isinstance(legacy_stage_bundle, dict):
+            legacy_stage_bundle = _parse_json_like(normalized.get("stage_summaries"), None)
+        legacy_stage_rows = []
+        if isinstance(legacy_stage_bundle, dict):
+            candidate = legacy_stage_bundle.get("legacy_stage_rows")
+            if isinstance(candidate, list):
+                legacy_stage_rows = candidate
+        if legacy_stage_rows:
+            converted, stage_markers = _normalize_legacy_stage_rows(legacy_stage_rows)
+            if converted:
+                normalized["stage_summaries"] = converted
+                markers.append("legacy_stage_summaries_normalized")
+                markers.extend(stage_markers)
+
+    if normalized.get("scored_signals") in (None, ""):
+        for source_key in ("signals_generated", "generated_signals", "signal_output_count"):
+            if normalized.get(source_key) in (None, ""):
+                continue
+            normalized["scored_signals"] = normalized.get(source_key)
+            markers.append(f"legacy_alias_scored_signals_from_{source_key}")
+            break
+
+    if normalized.get("matched_events") in (None, ""):
+        for source_key in ("matched_count", "events_matched", "match_events_count"):
+            if normalized.get(source_key) in (None, ""):
+                continue
+            normalized["matched_events"] = normalized.get(source_key)
+            markers.append(f"legacy_alias_matched_events_from_{source_key}")
+            break
+
+    if markers or (legacy_hint and missing_reconstruction):
+        normalized["_legacy_normalization"] = {
+            "applied_markers": sorted(set(markers)),
+            "missing_reconstruction": sorted(set(missing_reconstruction)),
+        }
+    return normalized
 
 
 def _reason_code_totals(summary_row: dict[str, Any]) -> tuple[dict[str, float], str | None]:
@@ -440,6 +572,11 @@ def _extract_scored_signals(summary_row: dict[str, Any], signal_summary: dict[st
 
 
 def _extract_matched_events(summary_row: dict[str, Any]) -> int | None:
+    for field in ("matched_events", "matched_events_count", "events_matched", "matched_count"):
+        try:
+            return max(0, int(float(summary_row.get(field))))
+        except (TypeError, ValueError):
+            continue
     for stage in _extract_stage_summaries(summary_row):
         if str(stage.get("stage") or "").strip() != "stageMatchEvents":
             continue
@@ -531,6 +668,14 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
         diagnostics["feature_completeness_reason_code"] = feature_diag
     if edge_diag:
         diagnostics["edge_volatility_reason_code"] = edge_diag
+    legacy_normalization = summary.get("_legacy_normalization") if isinstance(summary, dict) else None
+    if isinstance(legacy_normalization, dict):
+        markers = legacy_normalization.get("applied_markers")
+        missing = legacy_normalization.get("missing_reconstruction")
+        if isinstance(markers, list) and markers:
+            diagnostics["legacy_normalization_markers"] = ",".join(str(item) for item in markers)
+        if isinstance(missing, list) and missing:
+            diagnostics["legacy_missing_reconstruction"] = ",".join(str(item) for item in missing)
     schema_markers = _run_schema_markers(summary)
     stake_policy_summary = summarize_run_stake_policy(
         rows,
@@ -737,15 +882,12 @@ def evaluate_edge_quality_gate(
                 f"(reason={reason} baseline={base} candidate={cand} drift={drift:.4f} > bound={config.max_suppression_drift:.4f})"
             )
 
-    has_legacy_schema_warning = any(item.startswith("legacy_schema_insufficient_feature_contract") for item in warnings)
     has_insufficient_sample_warning = any(item.startswith("insufficient_sample_for_edge_volatility") for item in warnings)
     has_schema_failure = any(item.startswith("missing_feature_completeness_metric") for item in failures) or any(
         item.startswith("missing_edge_volatility_metric") for item in failures
     )
     if failures:
         status = "schema_missing" if has_schema_failure else "fail"
-    elif has_legacy_schema_warning:
-        status = "schema_missing"
     elif has_insufficient_sample_warning:
         status = "insufficient_sample"
     else:
@@ -833,8 +975,10 @@ def _windowed_fallback_assessment(
     decision_support_status = "insufficient_sample"
     if status_counts["true_fail"] > 0:
         decision_support_status = "fail"
-    elif status_counts["pass"] > 0 and status_counts["schema_missing"] == 0:
+    elif status_counts["pass"] > 0:
         decision_support_status = "pass"
+    elif status_counts["insufficient_sample"] > 0:
+        decision_support_status = "insufficient_sample"
     elif status_counts["schema_missing"] > 0:
         decision_support_status = "schema_missing"
 

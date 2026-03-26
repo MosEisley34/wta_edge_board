@@ -264,7 +264,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertTrue(any("missing_feature_completeness_metric" in item for item in report["failures"]))
 
-    def test_legacy_schema_rows_emit_dedicated_status_instead_of_completeness_fail(self):
+    def test_legacy_schema_rows_emit_warning_but_remain_decisionable_when_other_metrics_exist(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_legacy_schema_warning.json"))
         report = evaluate_edge_quality_gate(
             rows,
@@ -277,11 +277,12 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
                 suppression_min_volume=2,
             ),
         )
-        self.assertEqual("schema_missing", report["status"])
+        self.assertEqual("pass", report["status"])
         self.assertEqual([], report["failures"])
         self.assertTrue(
             any(item.startswith("legacy_schema_insufficient_feature_contract") for item in report["warnings"])
         )
+        self.assertIn("legacy_missing_reconstruction", report["candidate"]["diagnostics"])
 
     def test_modern_schema_runs_still_enforce_completeness_floor(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_fail.json"))
@@ -420,6 +421,31 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual(4, report["windowed_fallback_result"]["min_neighboring_pairs"])
         self.assertEqual("windowed_fallback_result", report["final_operator_summary"]["decision_authoritative_source"])
         self.assertEqual("pass", report["final_operator_summary"]["decision_authoritative_status"])
+
+    def test_compare_report_fallback_ignores_partial_legacy_schema_pairs_when_pass_pairs_exist(self):
+        rows = load_run_log_rows(
+            str(ROOT / "scripts" / "fixtures" / "edge_quality_compare_legacy_partial_metrics.json")
+        )
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+            ),
+            ordered_run_ids=["run-1", "run-2", "run-3", "run-4", "run-5"],
+            fallback_recent_run_window_radius=3,
+        )
+        self.assertEqual("insufficient_sample", report["pair_level_result"]["status"])
+        self.assertEqual("pass", report["status"])
+        self.assertEqual(
+            "windowed_fallback_result",
+            report["final_operator_summary"]["decision_authoritative_source"],
+        )
+        self.assertEqual("pass", report["windowed_fallback_result"]["decision_support_status"])
+        self.assertGreater(report["windowed_fallback_result"]["status_counts"]["schema_missing"], 0)
 
     def test_normal_volume_still_fails_true_instability(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_normal_volume_fail.json"))

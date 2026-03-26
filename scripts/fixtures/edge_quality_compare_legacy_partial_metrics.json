@@ -1,0 +1,76 @@
+[
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-1",
+    "ended_at": "2026-03-01T00:00:00Z",
+    "feature_completeness": 0.92,
+    "edge_volatility": 0.01,
+    "signal_decision_summary": {"suppression_counts": {}},
+    "stage_summaries": [
+      {"stage": "stageMatchEvents", "reason_codes": {"matched_count": 8}},
+      {"stage": "stageGenerateSignals", "input_count": 12, "output_count": 12}
+    ]
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-2",
+    "ended_at": "2026-03-02T00:00:00Z",
+    "schema_id": "reason_code_alias_v0",
+    "edgeVolatility": 0.012,
+    "signals_generated": 2,
+    "matched_count": 1,
+    "stage_summaries": {
+      "legacy_stage_rows": [
+        {"name": "matchEvents", "output": 1, "reasonCodes": {"matched_count": 1}},
+        {"name": "generateSignals", "input": 2, "output": 2}
+      ]
+    },
+    "signal_decision_summary": {"suppression_counts": {}}
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-3",
+    "ended_at": "2026-03-03T00:00:00Z",
+    "feature_completeness": 0.91,
+    "edge_volatility": 0.011,
+    "signal_decision_summary": {"suppression_counts": {}},
+    "stage_summaries": [
+      {"stage": "stageMatchEvents", "reason_codes": {"matched_count": 8}},
+      {"stage": "stageGenerateSignals", "input_count": 12, "output_count": 12}
+    ]
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-4",
+    "ended_at": "2026-03-04T00:00:00Z",
+    "schema_id": "reason_code_alias_v0",
+    "edgeVolatility": 0.013,
+    "signals_generated": 12,
+    "matched_count": 8,
+    "signal_decision_summary": {"suppression_counts": {}},
+    "stage_summaries": {
+      "legacy_stage_rows": [
+        {"name": "matchEvents", "output": 8, "reasonCodes": {"matched_count": 8}},
+        {"name": "generateSignals", "input": 12, "output": 12}
+      ]
+    }
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-5",
+    "ended_at": "2026-03-05T00:00:00Z",
+    "schema_id": "reason_code_alias_v0",
+    "signal_decision_summary": {"suppression_counts": {}},
+    "stage_summaries": {
+      "legacy_stage_rows": [
+        {"name": "matchEvents", "output": 8, "reasonCodes": {"matched_count": 8}},
+        {"name": "generateSignals", "input": 12, "output": 12}
+      ]
+    }
+  }
+]
