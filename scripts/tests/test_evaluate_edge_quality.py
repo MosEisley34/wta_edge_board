@@ -539,8 +539,18 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
 
         self.assertEqual("standard_compare_runbook", disabled_report["runbook_branch"])
         self.assertEqual("stake_policy_enabled_compare_runbook", enabled_report["runbook_branch"])
+        self.assertEqual(
+            "runbook/README.md#phase-2--baseline-vs-policy-on-comparison-on-matched-windows",
+            disabled_report["runbook_path"],
+        )
+        self.assertEqual(
+            "runbook/README.md#stake-policy-enabled-compare-lane-policy-on-only",
+            enabled_report["runbook_path"],
+        )
         self.assertFalse(disabled_report["evidence_bundle"]["stake_policy_enabled"])
         self.assertTrue(enabled_report["evidence_bundle"]["stake_policy_enabled"])
+        self.assertFalse(disabled_report["stake_policy_enabled"])
+        self.assertTrue(enabled_report["stake_policy_enabled"])
         self.assertEqual(
             3,
             enabled_report["stake_policy_outcome_comparison"]["counts"]["suppressed_count"]["delta"],
@@ -557,6 +567,25 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             "stake_below_min_suppressed",
             enabled_report["stake_policy_outcome_comparison"]["reason_code_shift"],
         )
+
+    def test_compare_report_fails_when_compare_set_mixes_policy_enabled_tags(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.02),
+        ]
+        rows[0]["signal_decision_summary"] = json.dumps({"stake_policy_summary": {"enabled": True}})
+        rows[1]["signal_decision_summary"] = json.dumps({"stake_policy_summary": {"enabled": True}})
+        rows[2]["signal_decision_summary"] = json.dumps({"stake_policy_summary": {"enabled": False}})
+
+        with self.assertRaisesRegex(ValueError, "Mixed stake_policy_enabled states"):
+            evaluate_edge_quality_compare_report(
+                rows=rows,
+                baseline_run_id="run-1",
+                candidate_run_id="run-2",
+                config=EdgeQualityGateConfig(stake_policy_enabled=True),
+                ordered_run_ids=["run-1", "run-2", "run-3"],
+            )
 
     def test_normal_volume_still_fails_true_instability(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_normal_volume_fail.json"))

@@ -22,6 +22,11 @@ from pipeline_log_adapter import (
 )
 from stake_policy import StakePolicyConfig, summarize_run_stake_policy
 
+STANDARD_COMPARE_RUNBOOK_PATH = "runbook/README.md#phase-2--baseline-vs-policy-on-comparison-on-matched-windows"
+STAKE_POLICY_ENABLED_COMPARE_RUNBOOK_PATH = (
+    "runbook/README.md#stake-policy-enabled-compare-lane-policy-on-only"
+)
+
 
 @dataclass(frozen=True)
 class EdgeQualityGateConfig:
@@ -106,6 +111,39 @@ def _pick_run_summary(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]
         if str(row.get("row_type") or "") == "summary" and str(row.get("stage") or "") == "runEdgeBoard":
             summary = _normalize_legacy_summary_row(row)
     return summary
+
+
+def _summary_stake_policy_enabled(summary: dict[str, Any]) -> bool | None:
+    signal_summary = _extract_signal_summary(summary)
+    stake_policy_summary = _parse_json_like(signal_summary.get("stake_policy_summary"), {})
+    if not isinstance(stake_policy_summary, dict):
+        return None
+    enabled_value = stake_policy_summary.get("enabled")
+    if enabled_value is None:
+        return None
+    if isinstance(enabled_value, bool):
+        return enabled_value
+    if isinstance(enabled_value, str):
+        lowered = enabled_value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+        return None
+    return bool(enabled_value)
+
+
+def _resolve_compare_set_policy_tags(
+    rows: list[dict[str, Any]],
+    compare_set_run_ids: list[str],
+    fallback_enabled: bool,
+) -> dict[str, bool]:
+    tags: dict[str, bool] = {}
+    for run_id in compare_set_run_ids:
+        summary = _pick_run_summary(rows, run_id)
+        explicit = _summary_stake_policy_enabled(summary)
+        tags[run_id] = bool(fallback_enabled if explicit is None else explicit)
+    return tags
 
 
 def _latest_run_ids(rows: list[dict[str, Any]]) -> list[str]:
@@ -1062,6 +1100,22 @@ def evaluate_edge_quality_compare_report(
     fallback_recent_run_window_radius: int = 3,
     fallback_min_neighboring_pairs: int = 4,
 ) -> dict[str, Any]:
+    compare_set_run_ids = ordered_run_ids or [baseline_run_id, candidate_run_id]
+    compare_set_policy_tags = _resolve_compare_set_policy_tags(
+        rows=rows,
+        compare_set_run_ids=compare_set_run_ids,
+        fallback_enabled=bool(config.stake_policy_enabled),
+    )
+    observed_tags = set(compare_set_policy_tags.values())
+    if len(observed_tags) > 1:
+        mixed_runs = ", ".join(
+            f"{run_id}={str(compare_set_policy_tags[run_id]).lower()}" for run_id in compare_set_run_ids
+        )
+        raise ValueError(
+            "Mixed stake_policy_enabled states detected within compare set; "
+            f"refuse to produce comparison report. compare_set={mixed_runs}"
+        )
+
     pair_level_result = evaluate_edge_quality_gate(
         rows=rows,
         baseline_run_id=baseline_run_id,
@@ -1125,13 +1179,18 @@ def evaluate_edge_quality_compare_report(
         }
 
     runbook_branch = "standard_compare_runbook"
+    runbook_path = STANDARD_COMPARE_RUNBOOK_PATH
     if bool(config.stake_policy_enabled):
         runbook_branch = "stake_policy_enabled_compare_runbook"
+        runbook_path = STAKE_POLICY_ENABLED_COMPARE_RUNBOOK_PATH
 
     return {
         "schema": "edge_quality_compare_report_v1",
         "comparison_scope": "strict_pair_with_optional_window_fallback",
         "runbook_branch": runbook_branch,
+        "runbook_path": runbook_path,
+        "stake_policy_enabled": bool(config.stake_policy_enabled),
+        "compare_set_stake_policy_tags": compare_set_policy_tags,
         "labels": {
             "strict_pair_gate": "pair_level_result",
             "fallback_window_assessment": "windowed_fallback_result",
