@@ -18,6 +18,8 @@ Examples:
 USAGE
 }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
@@ -29,12 +31,14 @@ if [[ "$#" -eq 0 ]]; then
   exit 1
 fi
 
-python3 - "$@" <<'PY'
+PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$@" <<'PY'
 import csv
 import json
 import os
 import sys
 from collections import defaultdict
+
+from runtime_json_records import iter_json_records as iter_runtime_json_records
 
 KEYS = [
     "provider_returned_null_features",
@@ -99,32 +103,6 @@ def iter_json_records(path, *, has_state_csv):
         data = f.read().strip()
     if not data:
         return
-
-    # Handle NDJSON first.
-    ndjson_records = []
-    ndjson_ok = True
-    for idx, line in enumerate(data.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ndjson_records.append((idx, json.loads(line)))
-        except Exception:
-            ndjson_ok = False
-            break
-    if ndjson_ok and ndjson_records:
-        if len(ndjson_records) == 1 and _is_list_style_state_json(path, ndjson_records[0][1]):
-            print(
-                f"Warning: ignoring list-style State.json schema in {path}; "
-                f"fallback source is {'State.csv' if has_state_csv else 'unavailable (no State.csv found)'}",
-                file=sys.stderr,
-            )
-            return
-        for idx, record in ndjson_records:
-            yield idx, record
-        return
-
-    # Fallback: regular JSON (array/object/scalar).
     parsed = json.loads(data)
     if _is_list_style_state_json(path, parsed):
         print(
@@ -133,11 +111,9 @@ def iter_json_records(path, *, has_state_csv):
             file=sys.stderr,
         )
         return
-    if isinstance(parsed, list):
-        for idx, item in enumerate(parsed, start=1):
-            yield idx, item
-    else:
-        yield 1, parsed
+
+    for idx, record in iter_runtime_json_records(data):
+        yield idx, record
 
 
 def iter_csv_records(path):
@@ -162,6 +138,8 @@ def normalize_record_text(record):
 
 
 def normalize_reason_metadata(record):
+    if not isinstance(record, dict):
+        return {}
     reason_metadata = record.get('reason_metadata')
     if isinstance(reason_metadata, dict):
         return reason_metadata
@@ -242,11 +220,12 @@ def main():
                             preview = text if len(text) <= 260 else text[:257] + '...'
                             examples[key].append((path, row_num, preview))
 
-                stage = str(record.get('stage') or '')
+                record_dict = record if isinstance(record, dict) else {}
+                stage = str(record_dict.get('stage') or '')
                 if stage == 'stageFetchPlayerStats':
-                    ingest_player_stats_coverage(normalize_reason_metadata(record), player_stats_coverage_rows)
+                    ingest_player_stats_coverage(normalize_reason_metadata(record_dict), player_stats_coverage_rows)
                 if stage == 'runEdgeBoard':
-                    stage_summaries = record.get('stage_summaries')
+                    stage_summaries = record_dict.get('stage_summaries')
                     if isinstance(stage_summaries, str):
                         try:
                             stage_summaries = json.loads(stage_summaries)
@@ -261,7 +240,7 @@ def main():
                             ingest_player_stats_coverage(normalize_reason_metadata(summary), player_stats_coverage_rows)
                 payload = None
                 if stage == 'run_health_guard':
-                    message = record.get('message')
+                    message = record_dict.get('message')
                     if isinstance(message, dict):
                         payload = message
                     elif isinstance(message, str) and message.strip():

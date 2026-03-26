@@ -86,6 +86,20 @@ class RuntimeDiagnosticsSummaryTests(unittest.TestCase):
             lines[7],
         )
 
+    def test_accepts_top_level_list_json_rows_schema(self):
+        fixture = ROOT / "scripts" / "fixtures" / "runtime_summary_rows_list.json"
+        lines = build_summary([str(fixture)], top_n=3, max_stages=2, warning_limit=2)
+
+        self.assertEqual("runs total=1 status=success:1", lines[0])
+        self.assertEqual("top_reason_codes alpha:1", lines[4])
+
+    def test_accepts_top_level_object_with_rows_collection_schema(self):
+        fixture = ROOT / "scripts" / "fixtures" / "runtime_summary_rows_object.json"
+        lines = build_summary([str(fixture)], top_n=3, max_stages=2, warning_limit=2)
+
+        self.assertEqual("runs total=1 status=success:1", lines[0])
+        self.assertEqual("top_reason_codes beta:2", lines[4])
+
 
 if __name__ == "__main__":
     unittest.main()

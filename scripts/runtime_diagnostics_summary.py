@@ -20,6 +20,7 @@ from pipeline_log_adapter import (
     REASON_CODE_ALIAS_SCHEMA_ID,
     adapt_run_log_record_for_legacy,
 )
+from runtime_json_records import iter_json_records as iter_runtime_json_records
 
 SUPPORTED_EXTENSIONS = (".csv", ".json")
 WATCHDOG_METRIC_KEYS = ("streak_count", "consecutive_empty_cycles", "diagnostics_counter")
@@ -90,28 +91,8 @@ def _iter_json_records(path: str):
     if not data:
         return
 
-    ndjson = []
-    ndjson_ok = True
-    for idx, line in enumerate(data.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ndjson.append((idx, json.loads(line)))
-        except json.JSONDecodeError:
-            ndjson_ok = False
-            break
-    if ndjson_ok and ndjson:
-        for idx, record in ndjson:
-            yield idx, record
-        return
-
-    parsed = json.loads(data)
-    if isinstance(parsed, list):
-        for idx, row in enumerate(parsed, start=1):
-            yield idx, row
-    else:
-        yield 1, parsed
+    for idx, record in iter_runtime_json_records(data):
+        yield idx, record
 
 
 def _iter_csv_records(path: str):
