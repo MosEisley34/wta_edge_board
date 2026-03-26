@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$repo_root" ]]; then
+  echo "Error: this command must be run inside a git checkout." >&2
+  exit 1
+fi
+cd "$repo_root"
+
 usage() {
   cat <<'USAGE'
 Usage:

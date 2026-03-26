@@ -189,6 +189,11 @@ Operational expectation:
 Use this sequence for all run-to-run parity/quality workflows:
 
 ```bash
+# Run from repository root (fails fast outside a git checkout).
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "$REPO_ROOT" ]] || { echo "Error: run inside a git checkout." >&2; exit 1; }
+cd "$REPO_ROOT"
+
 # 1) Mandatory compare wrapper (runs export parity + run-id precheck first).
 scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
 
