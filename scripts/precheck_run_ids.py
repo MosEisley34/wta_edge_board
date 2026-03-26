@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import glob
 import json
 import os
@@ -115,6 +116,39 @@ def _scan_run_ids(path: str) -> Counter[str]:
             if run_id:
                 run_id_counts[run_id] += 1
     return run_id_counts
+
+
+def _scan_recent_run_ids(path: str, limit: int) -> list[str]:
+    """Return run_ids in file order (up to limit), preserving uniqueness."""
+    recent: list[str] = []
+    seen: set[str] = set()
+    lower = path.lower()
+
+    def _maybe_add(value: object) -> None:
+        run_id = str(value or "").strip()
+        if not run_id or run_id in seen:
+            return
+        seen.add(run_id)
+        recent.append(run_id)
+
+    if lower.endswith(".json"):
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        rows = payload if isinstance(payload, list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            _maybe_add(row.get("run_id"))
+            if len(recent) >= limit:
+                break
+        return recent
+
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            _maybe_add(row.get("run_id"))
+            if len(recent) >= limit:
+                break
+    return recent
 
 
 def _parse_json_like(value: object) -> object:
@@ -267,6 +301,12 @@ def main() -> int:
             "Must match <LETTERS>-<NNN>, for example INC-1234."
         ),
     )
+    parser.add_argument(
+        "--recent-limit",
+        type=int,
+        default=10,
+        help="How many recent run IDs to print when target IDs are missing (default: 10).",
+    )
     args = parser.parse_args()
     if args.allow_csv_only_triage:
         try:
@@ -365,6 +405,37 @@ def main() -> int:
 
     if missing:
         print("Precheck failed: one or more target run IDs are missing from merged JSON/CSV sources.")
+        print(f"Searched export source directory/path: {os.path.normpath(args.export_dir)}")
+        recent_limit = max(1, args.recent_limit)
+        recent_examples: list[str] = []
+        for source in sources:
+            try:
+                for run_id in _scan_recent_run_ids(source.path, recent_limit):
+                    if run_id in recent_examples:
+                        continue
+                    recent_examples.append(run_id)
+                    if len(recent_examples) >= recent_limit:
+                        break
+            except Exception as exc:  # noqa: BLE001
+                print(f"Warning: failed to collect recent run IDs from {source.path}: {exc}")
+            if len(recent_examples) >= recent_limit:
+                break
+
+        if recent_examples:
+            print(f"Top recent run IDs found (limit={recent_limit}): {', '.join(recent_examples)}")
+        else:
+            print("Top recent run IDs found: none")
+
+        for run_id in missing:
+            close = difflib.get_close_matches(run_id, sorted(present_ids), n=3, cutoff=0.2)
+            if close:
+                print(f"Closest run IDs to {run_id}: {', '.join(close)}")
+            else:
+                print(f"Closest run IDs to {run_id}: none")
+        print(
+            "Remediation: point EXPORT_SRC to a fresh batch path (for example "
+            "./live_runtime/batches/<timestamp>) and rerun precheck."
+        )
         print("Stop triage and re-export from the sheet before further analysis.")
         return 2
 
