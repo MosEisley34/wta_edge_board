@@ -215,16 +215,19 @@ Evidence artifact contract (required for every comparison report):
 Use this copy/paste SOP when an operator wants a deterministic compare packet from local runtime exports.
 
 ```bash
-# 1) Refresh canonical Run_Log/State JSON from CSV inputs into a clean export batch.
-scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./live_runtime/Run_Log.csv ./live_runtime/State.csv
+# 1) Mirror canonical JSON artifacts from CSV into the export batch directory.
+python3 scripts/mirror_runtime_csv_to_json.py --input-dir ./live_runtime --out-dir ./exports_live
 
-# 2) Compare diagnostics through mandatory preflight wrapper.
+# 2) Build a clean, parity-gated export batch from exports_live (explicit contract dir).
+scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./exports_live
+
+# 3) Compare diagnostics through mandatory preflight wrapper.
 scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
 
-# 3) Compare metrics through mandatory preflight wrapper.
+# 4) Compare metrics through mandatory preflight wrapper.
 scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
 
-# 4) Confirm required evidence artifact exists for incident/report attachment.
+# 5) Confirm required evidence artifact exists for incident/report attachment.
 test -f ./exports_live/run_compare_preflight.json && echo "preflight evidence present"
 ```
 
