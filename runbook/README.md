@@ -223,9 +223,13 @@ scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./exports_live
 
 # 2b) Capture preflight report with strict failure propagation.
 bash -c '
-  set -euo pipefail
+  set -uo pipefail
   scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live \
     | tee ./exports_live/run_compare_preflight.report.log
+  exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
+  if [[ "$exit_code" -ne 0 ]]; then
+    exit "$exit_code"
+  fi
   [[ -s ./exports_live/run_compare_preflight.json ]] || {
     echo "Error: missing or empty ./exports_live/run_compare_preflight.json" >&2
     exit 1
@@ -241,6 +245,9 @@ scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <ru
 # 5) Confirm required evidence artifact exists for incident/report attachment.
 test -s ./exports_live/run_compare_preflight.json && echo "preflight evidence present"
 ```
+
+Compatibility note:
+- Pipeline exit capture uses `exit_code` consistently. In bash use `${PIPESTATUS[0]}`; in zsh use `${pipestatus[1]}`.
 
 Emergency override policy:
 - `scripts/export_parity_precheck.sh --allow-csv-only-triage` requires `--incident-tag <LETTERS-NNN>`.
