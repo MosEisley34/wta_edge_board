@@ -447,6 +447,61 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("pass", report["windowed_fallback_result"]["decision_support_status"])
         self.assertGreater(report["windowed_fallback_result"]["status_counts"]["schema_missing"], 0)
 
+    def test_compare_report_stake_policy_enabled_mode_changes_policy_outcome_comparison(self):
+        fixture_path = ROOT / "scripts" / "fixtures" / "stake_policy_mixed_signal_rows.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        rows = []
+        rows.extend(
+            [
+                self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01),
+                self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02),
+            ]
+        )
+        for row in fixture["rows"]:
+            case_id = str(row.get("case_id") or "")
+            if case_id == "wrong_run_ignored":
+                continue
+            updated = dict(row)
+            updated["run_id"] = "run-1" if case_id in {"boundary_2000", "above_min"} else "run-2"
+            rows.append(updated)
+
+        disabled_report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(stake_policy_enabled=False),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        enabled_report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(stake_policy_enabled=True, stake_policy_min_stake_mxn=20.0),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+
+        self.assertEqual("standard_compare_runbook", disabled_report["runbook_branch"])
+        self.assertEqual("stake_policy_enabled_compare_runbook", enabled_report["runbook_branch"])
+        self.assertFalse(disabled_report["evidence_bundle"]["stake_policy_enabled"])
+        self.assertTrue(enabled_report["evidence_bundle"]["stake_policy_enabled"])
+        self.assertEqual(
+            3,
+            enabled_report["stake_policy_outcome_comparison"]["counts"]["suppressed_count"]["delta"],
+        )
+        self.assertNotEqual(
+            disabled_report["stake_policy_outcome_comparison"]["reason_code_shift"],
+            enabled_report["stake_policy_outcome_comparison"]["reason_code_shift"],
+        )
+        self.assertIn(
+            "stake_policy_disabled",
+            disabled_report["stake_policy_outcome_comparison"]["reason_code_shift"],
+        )
+        self.assertIn(
+            "stake_below_min_suppressed",
+            enabled_report["stake_policy_outcome_comparison"]["reason_code_shift"],
+        )
+
     def test_normal_volume_still_fails_true_instability(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_normal_volume_fail.json"))
         report = evaluate_edge_quality_gate(
