@@ -257,6 +257,11 @@ Manual 3-step flow is still available when needed:
 Before any compare/gate command, always run this single wrapper command first:
 
 ```bash
+# Run from repository root (fails fast outside a git checkout).
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "$REPO_ROOT" ]] || { echo "Error: run inside a git checkout." >&2; exit 1; }
+cd "$REPO_ROOT"
+
 scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
 ```
 
