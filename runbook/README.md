@@ -230,6 +230,14 @@ EXPORT_SRC="./live_runtime/batches/2026-03-24T09-15-00Z"
   echo "Hint: regenerate or locate the latest live_runtime batch before precheck." >&2
   exit 1
 }
+
+# 2a.1) Resolve + lock export source run IDs before any compare/evaluate command.
+# This MUST pass before invoking:
+#   - scripts/compare_run_diagnostics_preflight.sh
+#   - scripts/compare_run_metrics_preflight.sh
+#   - python3 scripts/evaluate_edge_quality.py
+python3 scripts/precheck_run_ids.py <run_id_a> <run_id_b> --export-dir "$EXPORT_SRC" --recent-limit 10
+
 scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC"
 
 # Stale-source troubleshooting fallback (existing exports_live contract flow).
@@ -251,13 +259,16 @@ bash -c '
   }
 '
 
-# 3) Compare diagnostics through mandatory preflight wrapper.
-scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
+# 3) Compare diagnostics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
+scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC"
 
-# 4) Compare metrics through mandatory preflight wrapper.
-scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
+# 4) Compare metrics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
+scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC"
 
-# 5) Confirm required evidence artifact exists for incident/report attachment.
+# 5) Evaluate edge quality only after the same source lock/precheck has succeeded.
+python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b>
+
+# 6) Confirm required evidence artifact exists for incident/report attachment.
 test -s ./exports_live/run_compare_preflight.json && echo "preflight evidence present"
 ```
 

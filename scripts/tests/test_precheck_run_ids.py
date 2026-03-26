@@ -128,6 +128,30 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("Incident tag is required", output)
 
+    def test_missing_run_ids_prints_source_recent_and_remediation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_csv(root / "Run_Log.csv", ["run-100", "run-101", "run-102"])
+            self._write_json(root / "Run_Log.json", ["run-100", "run-101", "run-102"])
+
+            code, output = self._run_main(
+                [
+                    "precheck_run_ids.py",
+                    "run-100",
+                    "run-999",
+                    "--export-dir",
+                    str(root),
+                    "--recent-limit",
+                    "2",
+                ]
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("Searched export source directory/path:", output)
+            self.assertIn("Top recent run IDs found (limit=2): run-100, run-101", output)
+            self.assertIn("Closest run IDs to run-999:", output)
+            self.assertIn("Remediation: point EXPORT_SRC to a fresh batch path", output)
+
 
 if __name__ == "__main__":
     unittest.main()
