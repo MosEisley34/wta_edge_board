@@ -159,6 +159,8 @@ const CONFIG_PRESETS = {
 const RUN_LOG_HEADERS = [
   'row_type', 'run_id', 'stage', 'started_at', 'ended_at', 'status', 'reason_code', 'message',
   'fetched_odds', 'fetched_schedule', 'allowed_tournaments', 'matched', 'unmatched', 'signals_found',
+  'stake_mode_used', 'raw_risk_mxn', 'raw_target_win_mxn', 'final_risk_mxn', 'final_units',
+  'stake_adjustment_reason', 'min_bet_mxn', 'bucket_step_mxn', 'unit_size_mxn',
   'rejection_codes', 'cooldown_suppressed', 'duplicate_suppressed',
   'lock_event', 'debounce_event', 'trigger_event', 'exception', 'stack', 'stage_summaries',
 ];

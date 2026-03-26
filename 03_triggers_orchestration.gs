@@ -1015,6 +1015,33 @@ function runEdgeBoard() {
       odds_non_actionable_count: runHealthMetrics.odds_non_actionable_count,
       signals_found: signalStage.sentCount,
       signals_scored: Number(signalStage.scoredCount || 0),
+      stake_mode_used: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
+        ? signalDecisionSummary.stake_policy_summary.stake_mode_used
+        : '',
+      raw_risk_mxn: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
+        ? signalDecisionSummary.stake_policy_summary.raw_risk_mxn
+        : null,
+      raw_target_win_mxn: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
+        ? signalDecisionSummary.stake_policy_summary.raw_target_win_mxn
+        : null,
+      final_risk_mxn: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
+        ? signalDecisionSummary.stake_policy_summary.final_risk_mxn
+        : null,
+      final_units: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
+        ? signalDecisionSummary.stake_policy_summary.final_units
+        : null,
+      stake_adjustment_reason: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
+        ? signalDecisionSummary.stake_policy_summary.stake_adjustment_reason
+        : '',
+      min_bet_mxn: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
+        ? signalDecisionSummary.stake_policy_summary.min_bet_mxn
+        : null,
+      bucket_step_mxn: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
+        ? signalDecisionSummary.stake_policy_summary.bucket_step_mxn
+        : null,
+      unit_size_mxn: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
+        ? signalDecisionSummary.stake_policy_summary.unit_size_mxn
+        : null,
       signal_decision_summary: JSON.stringify(signalDecisionSummary),
       reason_codes: combinedReasonCodes,
       rejection_codes: combinedReasonCodes,

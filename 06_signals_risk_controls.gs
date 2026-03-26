@@ -1136,6 +1136,15 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       min_stake_threshold: row.min_stake_threshold,
       stake_policy_mode: row.stake_policy_mode,
       stake_policy_decision_reason: row.stake_policy_decision_reason,
+      stake_mode_used: row.stake_mode_used,
+      raw_risk_mxn: row.raw_risk_mxn,
+      raw_target_win_mxn: row.raw_target_win_mxn,
+      final_risk_mxn: row.final_risk_mxn,
+      final_units: row.final_units,
+      stake_adjustment_reason: row.stake_adjustment_reason,
+      min_bet_mxn: row.min_bet_mxn,
+      bucket_step_mxn: row.bucket_step_mxn,
+      unit_size_mxn: row.unit_size_mxn,
     })),
   }));
 
@@ -1603,6 +1612,15 @@ function buildSignalRow_(runId, config, event, match, detail) {
     min_stake_applied: stakePolicyDecision.decision === 'adjusted',
     stake_policy_mode: stakePolicyDecision.policy_mode,
     stake_policy_decision_reason: stakePolicyDecision.reason_code,
+    stake_mode_used: stakePolicyDecision.stake_mode_used || '',
+    raw_risk_mxn: stakePolicyDecision.raw_risk_mxn,
+    raw_target_win_mxn: stakePolicyDecision.raw_target_win_mxn,
+    final_risk_mxn: stakePolicyDecision.final_risk_mxn,
+    final_units: stakePolicyDecision.final_units,
+    stake_adjustment_reason: stakePolicyDecision.stake_adjustment_reason || stakePolicyDecision.reason_code || '',
+    min_bet_mxn: stakePolicyDecision.min_bet_mxn,
+    bucket_step_mxn: stakePolicyDecision.bucket_step_mxn,
+    unit_size_mxn: stakePolicyDecision.unit_size_mxn,
     opening_price: resolveOpeningPrice_(event),
     evaluation_price: resolveEvaluationPrice_(event),
     price_delta_bps: resolvePriceDeltaBps_(event),
@@ -1633,6 +1651,7 @@ function evaluateSignalStakePolicy_(stakeUnits, oddsOrConfig, maybeConfig) {
   const unitSizeMxn = 100;
   const bucketStepMxn = 20;
   const oddsPrice = hasLegacySignature ? NaN : Number(oddsOrConfig);
+  const stakeModeUsed = Number.isFinite(oddsPrice) && oddsPrice < 0 ? 'to_win' : 'to_risk';
   if (!Object.prototype.hasOwnProperty.call(minimums, accountCurrency)) {
     return {
       decision: 'config_error',
@@ -1642,9 +1661,16 @@ function evaluateSignalStakePolicy_(stakeUnits, oddsOrConfig, maybeConfig) {
       account_currency: accountCurrency,
       proposed_stake: null,
       final_stake: null,
+      raw_risk_mxn: null,
+      raw_target_win_mxn: null,
       final_risk_mxn: null,
       final_units: null,
       minimum_stake: null,
+      min_bet_mxn: null,
+      bucket_step_mxn: bucketStepMxn,
+      unit_size_mxn: unitSizeMxn,
+      stake_mode_used: stakeModeUsed,
+      stake_adjustment_reason: 'stake_policy_config_error',
     };
   }
 
@@ -1659,13 +1685,21 @@ function evaluateSignalStakePolicy_(stakeUnits, oddsOrConfig, maybeConfig) {
       account_currency: accountCurrency,
       proposed_stake: null,
       final_stake: null,
+      raw_risk_mxn: null,
+      raw_target_win_mxn: null,
       final_risk_mxn: null,
       final_units: null,
       minimum_stake: minimumStake,
+      min_bet_mxn: minimumStake,
+      bucket_step_mxn: bucketStepMxn,
+      unit_size_mxn: unitSizeMxn,
+      stake_mode_used: stakeModeUsed,
+      stake_adjustment_reason: 'stake_missing_unscored',
     };
   }
   const suggestedMxn = roundHalfUp_(suggestedUnits * unitSizeMxn, 2);
   const initialRiskMxn = convertSuggestedStakeToRiskMxn_(suggestedMxn, oddsPrice);
+  const rawTargetWinMxn = stakeModeUsed === 'to_win' ? suggestedMxn : null;
   if (!Number.isFinite(initialRiskMxn)) {
     return {
       decision: 'missing_stake',
@@ -1675,10 +1709,16 @@ function evaluateSignalStakePolicy_(stakeUnits, oddsOrConfig, maybeConfig) {
       account_currency: accountCurrency,
       proposed_stake: suggestedMxn,
       final_stake: null,
+      raw_risk_mxn: null,
+      raw_target_win_mxn: rawTargetWinMxn,
       final_risk_mxn: null,
       final_units: null,
       minimum_stake: minimumStake,
-      stake_mode: Number.isFinite(oddsPrice) && oddsPrice < 0 ? 'to_win' : 'to_risk',
+      min_bet_mxn: minimumStake,
+      bucket_step_mxn: bucketStepMxn,
+      unit_size_mxn: unitSizeMxn,
+      stake_mode_used: stakeModeUsed,
+      stake_adjustment_reason: 'stake_missing_unscored',
     };
   }
   const adjusted = applyRiskStakeAdjustments_(initialRiskMxn, {
@@ -1700,11 +1740,18 @@ function evaluateSignalStakePolicy_(stakeUnits, oddsOrConfig, maybeConfig) {
     account_currency: accountCurrency,
     proposed_stake: suggestedMxn,
     final_stake: finalRiskMxn,
+    raw_risk_mxn: roundHalfUp_(initialRiskMxn, 2),
+    raw_target_win_mxn: rawTargetWinMxn,
     final_risk_mxn: finalRiskMxn,
     final_units: finalUnits,
     minimum_stake: minimumStake,
+    min_bet_mxn: minimumStake,
+    bucket_step_mxn: bucketStepMxn,
+    unit_size_mxn: unitSizeMxn,
     maximum_stake: configuredMaxStake,
     stake_mode: adjusted.stake_mode,
+    stake_mode_used: adjusted.stake_mode,
+    stake_adjustment_reason: primaryReason,
     suggested_units: suggestedUnits,
   };
 }
@@ -1802,7 +1849,19 @@ function summarizeSignalRowsStakePolicy_(signalRows, config) {
     missing_stake_count: 0,
     config_error_count: 0,
     reason_counts: reasonCounts,
+    stake_mode_used: '',
+    raw_risk_mxn: null,
+    raw_target_win_mxn: null,
+    final_risk_mxn: null,
+    final_units: null,
+    stake_adjustment_reason: '',
+    min_bet_mxn: null,
+    bucket_step_mxn: null,
+    unit_size_mxn: null,
   };
+  const representativeRow = rows.find(function (row) {
+    return row && String(row.stake_policy_decision_reason || '').trim() !== '';
+  }) || null;
   rows.forEach(function (row) {
     const reasonCode = String(row && row.stake_policy_decision_reason || '');
     if (!reasonCode) return;
@@ -1818,6 +1877,21 @@ function summarizeSignalRowsStakePolicy_(signalRows, config) {
     if (reasonCode === 'stake_missing_unscored') summary.missing_stake_count += 1;
     if (reasonCode === 'stake_policy_config_error') summary.config_error_count += 1;
   });
+  if (representativeRow) {
+    summary.stake_mode_used = String(representativeRow.stake_mode_used || '');
+    summary.raw_risk_mxn = Number.isFinite(Number(representativeRow.raw_risk_mxn)) ? Number(representativeRow.raw_risk_mxn) : null;
+    summary.raw_target_win_mxn = Number.isFinite(Number(representativeRow.raw_target_win_mxn)) ? Number(representativeRow.raw_target_win_mxn) : null;
+    summary.final_risk_mxn = Number.isFinite(Number(representativeRow.final_risk_mxn)) ? Number(representativeRow.final_risk_mxn) : null;
+    summary.final_units = Number.isFinite(Number(representativeRow.final_units)) ? Number(representativeRow.final_units) : null;
+    summary.stake_adjustment_reason = String(
+      representativeRow.stake_adjustment_reason
+      || representativeRow.stake_policy_decision_reason
+      || ''
+    );
+    summary.min_bet_mxn = Number.isFinite(Number(representativeRow.min_bet_mxn)) ? Number(representativeRow.min_bet_mxn) : null;
+    summary.bucket_step_mxn = Number.isFinite(Number(representativeRow.bucket_step_mxn)) ? Number(representativeRow.bucket_step_mxn) : null;
+    summary.unit_size_mxn = Number.isFinite(Number(representativeRow.unit_size_mxn)) ? Number(representativeRow.unit_size_mxn) : null;
+  }
   return summary;
 }
 
