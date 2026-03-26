@@ -41,6 +41,32 @@ class ScanRuntimeDiagnosticsTests(unittest.TestCase):
             self.assertIn("- provider_returned_null_features: 1", result.stdout)
             self.assertNotIn("failed to parse", result.stderr)
 
+
+    def test_state_json_top_level_list_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            export_dir = Path(tmp)
+            shutil.copyfile(FIXTURES / "state_rows_list.json", export_dir / "State.json")
+
+            result = self._run_scan(export_dir)
+
+            self.assertEqual(0, result.returncode, msg=result.stderr)
+            self.assertIn("Scanned records: 2", result.stdout)
+            self.assertIn("- missing_stats: 1", result.stdout)
+            self.assertNotIn("ignoring list-style State.json schema", result.stderr)
+            self.assertNotIn("failed to parse", result.stderr)
+
+    def test_state_json_top_level_object_rows_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            export_dir = Path(tmp)
+            shutil.copyfile(FIXTURES / "state_rows_object.json", export_dir / "State.json")
+
+            result = self._run_scan(export_dir)
+
+            self.assertEqual(0, result.returncode, msg=result.stderr)
+            self.assertIn("Scanned records: 2", result.stdout)
+            self.assertIn("- missing_stats: 1", result.stdout)
+            self.assertNotIn("failed to parse", result.stderr)
+
     def test_unreadable_json_keeps_csv_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             export_dir = Path(tmp)
