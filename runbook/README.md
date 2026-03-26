@@ -224,6 +224,18 @@ Evidence artifact contract (required for every comparison report):
 Use this copy/paste SOP when an operator wants a deterministic compare packet from local runtime exports.
 
 ```bash
+# Mandatory run-scoped report hygiene (prevents stale-artifact false positives).
+RUN_A="<run_id_a>"
+RUN_B="<run_id_b>"
+RUN_REPORT_DIR="./reports/prepost_${RUN_A}_vs_${RUN_B}"
+RUN_START_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+RUN_START_MARKER="${RUN_REPORT_DIR}/.run_start_${RUN_START_UTC}"
+
+# 0) Clear old run-scoped artifacts before preflight/compare/eval.
+rm -rf "$RUN_REPORT_DIR"
+mkdir -p "$RUN_REPORT_DIR"
+touch "$RUN_START_MARKER"
+
 # 1) Mirror canonical JSON artifacts from CSV into the export batch directory.
 python3 scripts/mirror_runtime_csv_to_json.py --input-dir ./live_runtime --out-dir ./exports_live
 
@@ -257,7 +269,7 @@ scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b>
 bash -c '
   set -euo pipefail
   scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live \
-    | tee ./exports_live/run_compare_preflight.report.log
+    | tee "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
     exit "$exit_code"
@@ -266,40 +278,64 @@ bash -c '
     echo "Error: missing or empty ./exports_live/run_compare_preflight.json" >&2
     exit 1
   }
+  [[ ./exports_live/run_compare_preflight.json -nt "'"$RUN_START_MARKER"'" ]] || {
+    echo "Error: stale preflight evidence (not created in current run)." >&2
+    exit 1
+  }
+  [[ "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log" -nt "'"$RUN_START_MARKER"'" ]] || {
+    echo "Error: stale preflight report log (not created in current run)." >&2
+    exit 1
+  }
 '
 
 # 3) Compare diagnostics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
 bash -c '
   set -euo pipefail
   scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC" \
-    | tee ./exports_live/compare_run_diagnostics.report.log
+    | tee "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
     exit "$exit_code"
   fi
+  [[ "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log" -nt "'"$RUN_START_MARKER"'" ]] || {
+    echo "Error: stale diagnostics report log (not created in current run)." >&2
+    exit 1
+  }
 '
 
 # 4) Compare metrics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
 bash -c '
   set -euo pipefail
   scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC" \
-    | tee ./exports_live/compare_run_metrics.report.log
+    | tee "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
     exit "$exit_code"
   fi
+  [[ "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log" -nt "'"$RUN_START_MARKER"'" ]] || {
+    echo "Error: stale metrics report log (not created in current run)." >&2
+    exit 1
+  }
 '
 
 # 5) Evaluate edge quality only after the same source lock/precheck has succeeded.
-python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b>
+python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b> \
+  | tee "$RUN_REPORT_DIR/evaluate_edge_quality.report.log"
 
 # 6) Confirm required evidence artifact exists for incident/report attachment.
-test -s ./exports_live/run_compare_preflight.json && echo "preflight evidence present"
+test -s ./exports_live/run_compare_preflight.json
+test ./exports_live/run_compare_preflight.json -nt "$RUN_START_MARKER"
+test "$RUN_REPORT_DIR/run_compare_preflight.report.log" -nt "$RUN_START_MARKER"
+test "$RUN_REPORT_DIR/compare_run_diagnostics.report.log" -nt "$RUN_START_MARKER"
+test "$RUN_REPORT_DIR/compare_run_metrics.report.log" -nt "$RUN_START_MARKER"
+test "$RUN_REPORT_DIR/evaluate_edge_quality.report.log" -nt "$RUN_START_MARKER"
+echo "preflight evidence and run-scoped reports are fresh"
 ```
 
 Compatibility note:
 - Pipeline exit capture uses `exit_code` consistently. In bash use `${PIPESTATUS[0]}`; in zsh use `${pipestatus[1]}`.
 - Compare outputs are invalid when `run_compare_preflight.json` is missing for the export batch that produced the report.
+- Run-scoped report hygiene is mandatory: clear `reports/prepost_<runA>_vs_<runB>/` before each attempt, recreate it, and accept evidence only when required files are newer than the run-start marker in that directory.
 
 Emergency override policy:
 - `scripts/export_parity_precheck.sh --allow-csv-only-triage` requires `--incident-tag <LETTERS-NNN>`.
