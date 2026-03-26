@@ -788,6 +788,7 @@ def _windowed_fallback_assessment(
     baseline_run_id: str,
     candidate_run_id: str,
     recent_run_window_radius: int,
+    min_neighboring_pairs: int,
     ordered_run_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     run_ids = ordered_run_ids or _rolling_run_ids(rows)
@@ -806,6 +807,14 @@ def _windowed_fallback_assessment(
     anchor_high = max(baseline_idx, candidate_idx)
     start_idx = max(0, anchor_low - radius)
     end_idx = min(len(run_ids), anchor_high + radius + 1)
+    required_pairs = max(1, int(min_neighboring_pairs))
+    while (end_idx - start_idx - 1) < required_pairs and (start_idx > 0 or end_idx < len(run_ids)):
+        if start_idx > 0:
+            start_idx -= 1
+        if (end_idx - start_idx - 1) >= required_pairs:
+            break
+        if end_idx < len(run_ids):
+            end_idx += 1
     window_run_ids = run_ids[start_idx:end_idx]
     pair_reports = [
         evaluate_edge_quality_gate(
@@ -834,6 +843,7 @@ def _windowed_fallback_assessment(
         "triggered_by_status": "insufficient_sample",
         "available": True,
         "window_radius_runs": radius,
+        "min_neighboring_pairs": required_pairs,
         "window_run_ids": window_run_ids,
         "pair_count": len(pair_reports),
         "status_counts": status_counts,
@@ -848,7 +858,8 @@ def evaluate_edge_quality_compare_report(
     candidate_run_id: str,
     config: EdgeQualityGateConfig,
     ordered_run_ids: list[str] | None = None,
-    fallback_recent_run_window_radius: int = 2,
+    fallback_recent_run_window_radius: int = 3,
+    fallback_min_neighboring_pairs: int = 4,
 ) -> dict[str, Any]:
     pair_level_result = evaluate_edge_quality_gate(
         rows=rows,
@@ -865,8 +876,23 @@ def evaluate_edge_quality_compare_report(
             baseline_run_id=baseline_run_id,
             candidate_run_id=candidate_run_id,
             recent_run_window_radius=max(1, int(fallback_recent_run_window_radius)),
+            min_neighboring_pairs=max(1, int(fallback_min_neighboring_pairs)),
             ordered_run_ids=ordered_run_ids,
         )
+
+    strict_status = str(pair_level_result.get("status") or "unknown")
+    windowed_status = "not_triggered"
+    if fallback_result is not None:
+        if bool(fallback_result.get("available")):
+            windowed_status = str(fallback_result.get("decision_support_status") or "insufficient_sample")
+        else:
+            windowed_status = "unavailable"
+
+    decision_authoritative_source = "strict_pair_gate"
+    decision_authoritative_status = strict_status
+    if strict_status == "insufficient_sample" and windowed_status not in {"not_triggered", "unavailable"}:
+        decision_authoritative_source = "windowed_fallback_result"
+        decision_authoritative_status = windowed_status
 
     return {
         "schema": "edge_quality_compare_report_v1",
@@ -877,7 +903,13 @@ def evaluate_edge_quality_compare_report(
         },
         "pair_level_result": pair_level_result,
         "windowed_fallback_result": fallback_result,
-        "status": pair_level_result.get("status"),
+        "final_operator_summary": {
+            "strict_pair_status": strict_status,
+            "windowed_decision_status": windowed_status,
+            "decision_authoritative_source": decision_authoritative_source,
+            "decision_authoritative_status": decision_authoritative_status,
+        },
+        "status": decision_authoritative_status,
     }
 
 
@@ -1262,10 +1294,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fallback-recent-run-window-radius",
         type=int,
-        default=2,
+        default=3,
         help=(
             "When strict pair status is insufficient_sample, evaluate surrounding runs using this many runs "
             "before/after the candidate pair as decision-support context."
+        ),
+    )
+    parser.add_argument(
+        "--fallback-min-neighboring-pairs",
+        type=int,
+        default=4,
+        help=(
+            "Minimum neighboring run pairs required for windowed fallback decision support; "
+            "window auto-expands when possible (default: 4)."
         ),
     )
     parser.add_argument(
@@ -1374,6 +1415,7 @@ def main() -> int:
             config=config,
             ordered_run_ids=_rolling_run_ids(rows),
             fallback_recent_run_window_radius=max(1, int(args.fallback_recent_run_window_radius)),
+            fallback_min_neighboring_pairs=max(1, int(args.fallback_min_neighboring_pairs)),
         )
         print(json.dumps(report, indent=2, sort_keys=True))
         return 1 if report["status"] != "pass" else 0
