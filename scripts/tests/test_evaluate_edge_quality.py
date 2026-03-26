@@ -12,6 +12,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from evaluate_edge_quality import (  # noqa: E402
     DailyEdgeQualitySLOConfig,
     EdgeQualityGateConfig,
+    evaluate_edge_quality_compare_report,
     evaluate_daily_edge_quality_slo,
     evaluate_edge_quality_gate,
     evaluate_rolling_edge_quality,
@@ -337,6 +338,51 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("pass", report["status"])
         self.assertEqual("candidate_window_aggregate", report["sample_assessment"]["strategy"])
         self.assertTrue(any("aggregated_sample_used_for_edge_volatility" in item for item in report["warnings"]))
+
+    def test_compare_report_triggers_windowed_fallback_when_pair_is_insufficient_sample(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=3, matched_events=2),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.015, scored_signals=12, matched_events=8),
+            self._summary_row("run-4", "2026-03-04T00:00:00Z", edge_volatility=0.012, scored_signals=12, matched_events=8),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                volatility_sample_window_runs=1,
+            ),
+            ordered_run_ids=["run-1", "run-2", "run-3", "run-4"],
+            fallback_recent_run_window_radius=2,
+        )
+        self.assertEqual("insufficient_sample", report["status"])
+        self.assertEqual("insufficient_sample", report["pair_level_result"]["status"])
+        self.assertIsNotNone(report["windowed_fallback_result"])
+        self.assertEqual("fallback_window_assessment", report["windowed_fallback_result"]["label"])
+        self.assertEqual("insufficient_sample", report["windowed_fallback_result"]["triggered_by_status"])
+        self.assertEqual(3, report["windowed_fallback_result"]["pair_count"])
+        self.assertEqual("pass", report["windowed_fallback_result"]["decision_support_status"])
+
+    def test_compare_report_keeps_windowed_fallback_null_when_pair_is_decisionable(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=12, matched_events=8),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(max_edge_volatility=0.03),
+            ordered_run_ids=["run-1", "run-2"],
+            fallback_recent_run_window_radius=2,
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertEqual("pass", report["pair_level_result"]["status"])
+        self.assertIsNone(report["windowed_fallback_result"])
 
     def test_normal_volume_still_fails_true_instability(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_normal_volume_fail.json"))
