@@ -461,6 +461,62 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertTrue(all(not window["decisionable"] for window in report["window_reports"]))
         self.assertTrue(all(window["decisionable_pair_count"] == 0 for window in report["window_reports"]))
 
+    def test_daily_slo_blocks_pass_uplift_when_any_window_is_insufficient(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-4", "2026-03-04T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-5", "2026-03-05T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+        ]
+        report = evaluate_daily_edge_quality_slo(
+            rows=rows,
+            gate_config=EdgeQualityGateConfig(max_edge_volatility=0.03, volatility_context_min_pairs=99),
+            slo_config=DailyEdgeQualitySLOConfig(
+                window_days=(3, 7),
+                min_pairs_per_window=2,
+                fail_rate_threshold=0.5,
+                min_scored_signals_by_window={7: 20},
+                min_matched_events_by_window={7: 10},
+            ),
+            as_of_utc="2026-03-05T12:00:00Z",
+        )
+        self.assertEqual("insufficient_sample", report["gate_verdict"])
+        self.assertEqual("insufficient_sample_floor_not_met_for_all_windows", report["gate_reason"])
+        short_window = next(item for item in report["window_reports"] if item["window_days"] == 3)
+        long_window = next(item for item in report["window_reports"] if item["window_days"] == 7)
+        self.assertTrue(short_window["decisionable"])
+        self.assertFalse(long_window["decisionable"])
+
+    def test_daily_slo_window_specific_sample_thresholds_prevent_low_volume_false_pass(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-4", "2026-03-04T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+        ]
+        report = evaluate_daily_edge_quality_slo(
+            rows=rows,
+            gate_config=EdgeQualityGateConfig(max_edge_volatility=0.03, volatility_context_min_pairs=99),
+            slo_config=DailyEdgeQualitySLOConfig(
+                window_days=(3,),
+                min_pairs_per_window=1,
+                fail_rate_threshold=0.2,
+                min_scored_signals_by_window={3: 20},
+                min_matched_events_by_window={3: 10},
+            ),
+            as_of_utc="2026-03-04T12:00:00Z",
+        )
+        window = report["window_reports"][0]
+        self.assertEqual("insufficient_sample", window["verdict"])
+        self.assertEqual(0, window["decisionable_pair_count"])
+        self.assertEqual(2, window["excluded_pair_count"])
+        self.assertTrue(any("low_scored_signals" in item["reasons"] for item in window["excluded_pairs"]))
+        self.assertTrue(any("low_matched_events" in item["reasons"] for item in window["excluded_pairs"]))
+        trend = report["window_ratio_trends"][0]
+        self.assertEqual(0.0, trend["decisionable_ratio"])
+        self.assertEqual(0.0, trend["insufficient_sample_ratio"])
+
     def test_daily_slo_includes_stake_policy_summary_counts(self):
         rows = [
             self._summary_row("run-a", "2026-03-22T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
