@@ -551,6 +551,10 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertTrue(enabled_report["evidence_bundle"]["stake_policy_enabled"])
         self.assertFalse(disabled_report["stake_policy_enabled"])
         self.assertTrue(enabled_report["stake_policy_enabled"])
+        self.assertEqual(100.0, enabled_report["unit_size_mxn"])
+        self.assertEqual(20.0, enabled_report["min_bet_mxn"])
+        self.assertEqual(20.0, enabled_report["bucket_step_mxn"])
+        self.assertEqual("down", enabled_report["rounding_mode"])
         self.assertEqual(
             3,
             enabled_report["stake_policy_outcome_comparison"]["counts"]["suppressed_count"]["delta"],
@@ -567,6 +571,9 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             "stake_below_min_suppressed",
             enabled_report["stake_policy_outcome_comparison"]["reason_code_shift"],
         )
+        self.assertIn("stake_mode_used_shift", enabled_report["stake_policy_outcome_comparison"])
+        self.assertIn("adjustment_reason_code_shift", enabled_report["stake_policy_outcome_comparison"])
+        self.assertIn("final_risk_mxn_aggregate_shift", enabled_report["stake_policy_outcome_comparison"])
 
     def test_compare_report_fails_when_compare_set_mixes_policy_enabled_tags(self):
         rows = [

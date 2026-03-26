@@ -381,8 +381,13 @@ def compare_rows(
             f"requested_mode={str(bool(stake_config.enabled)).lower()}"
         )
     lines = []
+    canonical_policy = stake_config.with_canonicalized_fields().canonical_policy()
     lines.append(f"stake_policy_enabled={str(pair_policy_enabled).lower()}")
-    lines.append(f"stake_policy={json.dumps(stake_config.with_canonicalized_fields().canonical_policy(), sort_keys=True)}")
+    lines.append(f"stake_policy={json.dumps(canonical_policy, sort_keys=True)}")
+    lines.append(f"unit_size_mxn={canonical_policy['unit_size_mxn']}")
+    lines.append(f"min_bet_mxn={canonical_policy['min_bet_mxn']}")
+    lines.append(f"bucket_step_mxn={canonical_policy['bucket_step_mxn']}")
+    lines.append(f"rounding_mode={canonical_policy['bucket_rounding']}")
     lines.append(f"# Run diff report: {run_a} vs {run_b}")
     total_a = sum(1 for r in rows if str(r.get('run_id') or '') == run_a)
     total_b = sum(1 for r in rows if str(r.get('run_id') or '') == run_b)
@@ -500,6 +505,43 @@ def compare_rows(
             lines.append(f"| {code} | {reason_a[code]} | {reason_b[code]} | {reason_b[code]-reason_a[code]:+d} |")
     else:
         lines.append("| none | 0 | 0 | +0 |")
+
+    mode_a = Counter(stake_a["stake_mode_counts"])
+    mode_b = Counter(stake_b["stake_mode_counts"])
+    lines.append("\n## stake-policy stake_mode_used counts")
+    lines.append("| stake_mode_used | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    mode_codes = sorted(set(mode_a) | set(mode_b))
+    if mode_codes:
+        for code in mode_codes:
+            lines.append(f"| {code} | {mode_a[code]} | {mode_b[code]} | {mode_b[code]-mode_a[code]:+d} |")
+    else:
+        lines.append("| none | 0 | 0 | +0 |")
+
+    adj_a = Counter(stake_a["adjustment_reason_counts"])
+    adj_b = Counter(stake_b["adjustment_reason_counts"])
+    lines.append("\n## stake-policy adjustment reason codes")
+    lines.append("| adjustment_reason_code | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    adj_codes = sorted(set(adj_a) | set(adj_b))
+    if adj_codes:
+        for code in adj_codes:
+            lines.append(f"| {code} | {adj_a[code]} | {adj_b[code]} | {adj_b[code]-adj_a[code]:+d} |")
+    else:
+        lines.append("| none | 0 | 0 | +0 |")
+
+    risk_a = stake_a.get("final_risk_mxn_aggregates") or {}
+    risk_b = stake_b.get("final_risk_mxn_aggregates") or {}
+    lines.append("\n## stake-policy final_risk_mxn aggregates")
+    lines.append("| metric | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    for metric in ("count", "mean", "median"):
+        va = float(risk_a.get(metric, 0.0) or 0.0)
+        vb = float(risk_b.get(metric, 0.0) or 0.0)
+        if metric == "count":
+            lines.append(f"| {metric} | {int(va)} | {int(vb)} | {int(vb-va):+d} |")
+        else:
+            lines.append(f"| {metric} | {va:.4f} | {vb:.4f} | {vb-va:+.4f} |")
 
     return "\n".join(lines)
 

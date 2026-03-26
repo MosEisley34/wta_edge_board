@@ -1177,6 +1177,42 @@ def evaluate_edge_quality_compare_report(
             "candidate": candidate_value,
             "delta": candidate_value - baseline_value,
         }
+    baseline_mode_counts = baseline_stake_summary.get("stake_mode_counts") or {}
+    candidate_mode_counts = candidate_stake_summary.get("stake_mode_counts") or {}
+    stake_mode_used_shift = {}
+    for mode in sorted(set(baseline_mode_counts.keys()) | set(candidate_mode_counts.keys())):
+        baseline_value = int(baseline_mode_counts.get(mode, 0) or 0)
+        candidate_value = int(candidate_mode_counts.get(mode, 0) or 0)
+        stake_mode_used_shift[mode] = {
+            "baseline": baseline_value,
+            "candidate": candidate_value,
+            "delta": candidate_value - baseline_value,
+        }
+
+    baseline_adjustment_counts = baseline_stake_summary.get("adjustment_reason_counts") or {}
+    candidate_adjustment_counts = candidate_stake_summary.get("adjustment_reason_counts") or {}
+    adjustment_reason_code_shift = {}
+    for reason in sorted(set(baseline_adjustment_counts.keys()) | set(candidate_adjustment_counts.keys())):
+        baseline_value = int(baseline_adjustment_counts.get(reason, 0) or 0)
+        candidate_value = int(candidate_adjustment_counts.get(reason, 0) or 0)
+        adjustment_reason_code_shift[reason] = {
+            "baseline": baseline_value,
+            "candidate": candidate_value,
+            "delta": candidate_value - baseline_value,
+        }
+
+    baseline_final_risk = baseline_stake_summary.get("final_risk_mxn_aggregates") or {}
+    candidate_final_risk = candidate_stake_summary.get("final_risk_mxn_aggregates") or {}
+    final_risk_mxn_aggregate_shift = {}
+    for metric in ("count", "mean", "median"):
+        baseline_value = float(baseline_final_risk.get(metric, 0.0) or 0.0)
+        candidate_value = float(candidate_final_risk.get(metric, 0.0) or 0.0)
+        final_risk_mxn_aggregate_shift[metric] = {
+            "baseline": baseline_value,
+            "candidate": candidate_value,
+            "delta": candidate_value - baseline_value,
+        }
+
     baseline_reason_counts = baseline_stake_summary.get("reason_counts") or {}
     candidate_reason_counts = candidate_stake_summary.get("reason_counts") or {}
     reason_code_shift = {}
@@ -1201,6 +1237,10 @@ def evaluate_edge_quality_compare_report(
         "runbook_branch": runbook_branch,
         "runbook_path": runbook_path,
         "stake_policy_enabled": bool(config.stake_policy_enabled),
+        "unit_size_mxn": float(canonical_stake_policy.unit_size_mxn),
+        "min_bet_mxn": float(canonical_stake_policy.min_bet_mxn),
+        "bucket_step_mxn": float(canonical_stake_policy.bucket_step_mxn),
+        "rounding_mode": str(canonical_stake_policy.bucket_rounding),
         "compare_set_stake_policy_tags": compare_set_policy_tags,
         "labels": {
             "strict_pair_gate": "pair_level_result",
@@ -1211,10 +1251,17 @@ def evaluate_edge_quality_compare_report(
             "stake_policy_min_stake_mxn": float(config.stake_policy_min_stake_mxn),
             "stake_policy_round_to_min": bool(config.stake_policy_round_to_min),
             "stake_policy": canonical_stake_policy.canonical_policy(),
+            "unit_size_mxn": float(canonical_stake_policy.unit_size_mxn),
+            "min_bet_mxn": float(canonical_stake_policy.min_bet_mxn),
+            "bucket_step_mxn": float(canonical_stake_policy.bucket_step_mxn),
+            "rounding_mode": str(canonical_stake_policy.bucket_rounding),
         },
         "stake_policy_outcome_comparison": {
             "counts": policy_delta_metrics,
             "reason_code_shift": reason_code_shift,
+            "stake_mode_used_shift": stake_mode_used_shift,
+            "adjustment_reason_code_shift": adjustment_reason_code_shift,
+            "final_risk_mxn_aggregate_shift": final_risk_mxn_aggregate_shift,
         },
         "pair_level_result": pair_level_result,
         "windowed_fallback_result": fallback_result,

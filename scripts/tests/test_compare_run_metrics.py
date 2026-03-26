@@ -116,6 +116,10 @@ class CompareRunMetricsTests(unittest.TestCase):
 
         self.assertIn("run_comparator left=run-a right=run-b", report)
         self.assertIn("stake_policy_enabled=false", report)
+        self.assertIn("unit_size_mxn=100.0", report)
+        self.assertIn("min_bet_mxn=20.0", report)
+        self.assertIn("bucket_step_mxn=20.0", report)
+        self.assertIn("rounding_mode=down", report)
         self.assertIn("[core_metrics]", report)
         self.assertIn("MATCH_CT", report)
         self.assertIn("STATS_MISS_B", report)
@@ -159,6 +163,9 @@ class CompareRunMetricsTests(unittest.TestCase):
         report = build_report(rows, "run-a", "run-b", StakePolicyConfig(enabled=True))
         self.assertIn("[stake_policy_counts]", report)
         self.assertIn("[stake_policy_reason_codes]", report)
+        self.assertIn("[stake_policy_stake_mode_used_counts]", report)
+        self.assertIn("[stake_policy_adjustment_reason_codes]", report)
+        self.assertIn("[stake_policy_final_risk_mxn_aggregates]", report)
         self.assertIn("stake_below_min_suppressed", report)
 
     def test_build_report_blocks_mixed_policy_mode_pairs(self):

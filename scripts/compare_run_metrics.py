@@ -531,10 +531,15 @@ def build_report(
     metric_counts_a = _metric_counts(summary_a)
     metric_counts_b = _metric_counts(summary_b)
 
+    canonical_policy = stake_config.with_canonicalized_fields().canonical_policy()
     lines = [
         f"run_comparator left={run_a} right={run_b}",
         f"stake_policy_enabled={str(pair_policy_enabled).lower()}",
-        f"stake_policy={json.dumps(stake_config.with_canonicalized_fields().canonical_policy(), sort_keys=True)}",
+        f"stake_policy={json.dumps(canonical_policy, sort_keys=True)}",
+        f"unit_size_mxn={canonical_policy['unit_size_mxn']}",
+        f"min_bet_mxn={canonical_policy['min_bet_mxn']}",
+        f"bucket_step_mxn={canonical_policy['bucket_step_mxn']}",
+        f"rounding_mode={canonical_policy['bucket_rounding']}",
     ]
     lines.extend(_format_side_by_side("core_metrics", run_a, run_b, metric_counts_a, metric_counts_b))
     for run_id, summary, metric_counts in (
@@ -575,6 +580,33 @@ def build_report(
             run_b,
             stake_summary_a["reason_counts"],
             stake_summary_b["reason_counts"],
+        )
+    )
+    lines.extend(
+        _format_side_by_side(
+            "stake_policy_stake_mode_used_counts",
+            run_a,
+            run_b,
+            stake_summary_a["stake_mode_counts"],
+            stake_summary_b["stake_mode_counts"],
+        )
+    )
+    lines.extend(
+        _format_side_by_side(
+            "stake_policy_adjustment_reason_codes",
+            run_a,
+            run_b,
+            stake_summary_a["adjustment_reason_counts"],
+            stake_summary_b["adjustment_reason_counts"],
+        )
+    )
+    lines.extend(
+        _format_side_by_side(
+            "stake_policy_final_risk_mxn_aggregates",
+            run_a,
+            run_b,
+            stake_summary_a["final_risk_mxn_aggregates"],
+            stake_summary_b["final_risk_mxn_aggregates"],
         )
     )
     lines.extend(_format_side_by_side("per_stage_duration_ms", run_a, run_b, _stage_durations(summary_a), _stage_durations(summary_b)))
