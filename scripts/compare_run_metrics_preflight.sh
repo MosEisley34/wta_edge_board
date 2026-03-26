@@ -83,5 +83,10 @@ if [[ "$allow_csv_only_triage" -eq 1 ]]; then
   preflight_args+=(--allow-csv-only-triage --incident-tag "$incident_tag")
 fi
 
+preflight_sidecar="$out_dir/run_compare_preflight.json"
 scripts/export_parity_precheck.sh "${preflight_args[@]}" "$run_a" "$run_b" "${runtime_inputs[@]}"
+if [[ ! -s "$preflight_sidecar" ]]; then
+  echo "Error: expected non-empty preflight sidecar at $preflight_sidecar." >&2
+  exit 1
+fi
 python3 scripts/compare_run_metrics.py "$run_a" "$run_b" --input "$out_dir/Run_Log.csv" "${compare_extra_args[@]}"
