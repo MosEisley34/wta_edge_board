@@ -1832,6 +1832,71 @@ function compactStageSummariesForLog_(stageSummaries, schemaId, options, metadat
   return envelope;
 }
 
+function buildRunExportParityMetadataFromStageSummaries_(runId, requiredStages, stageSummaries, options) {
+  const runIdText = String(runId || '').trim();
+  const required = Array.isArray(requiredStages) && requiredStages.length
+    ? requiredStages.map((stage) => String(stage || '').trim()).filter((stage) => !!stage)
+    : ['stageFetchPlayerStats'];
+  const runIds = Array.isArray(options && options.latest_run_ids)
+    ? (options.latest_run_ids || []).map((id) => String(id || '').trim()).filter((id) => !!id)
+    : (runIdText ? [runIdText] : []);
+
+  const status = {
+    contract_name: 'run_log_export_parity_contract_v1',
+    latest_run_ids: runIds,
+    summary_presence_by_run_id: {},
+    required_stage_summary_presence_by_run_id: {},
+    pass: false,
+    parity_status: 'failed',
+    reason_code: 'export_parity_missing_run_id',
+    checked_at: formatLocalIso_(new Date()),
+    checked_at_utc: new Date().toISOString(),
+  };
+
+  runIds.forEach((id) => {
+    status.summary_presence_by_run_id[id] = !!id;
+    status.required_stage_summary_presence_by_run_id[id] = {};
+    required.forEach((stage) => {
+      status.required_stage_summary_presence_by_run_id[id][stage] = false;
+    });
+  });
+
+  if (!runIds.length) return status;
+
+  const normalizedStageSummaries = Array.isArray(stageSummaries)
+    ? stageSummaries
+    : ((stageSummaries && Array.isArray(stageSummaries.stage_summaries)) ? stageSummaries.stage_summaries : []);
+  const observedStageSet = {};
+  normalizedStageSummaries.forEach((summary) => {
+    if (!summary || typeof summary !== 'object') return;
+    const stageName = String(summary.stage || '').trim();
+    if (stageName) observedStageSet[stageName] = true;
+  });
+
+  runIds.forEach((id) => {
+    required.forEach((stage) => {
+      status.required_stage_summary_presence_by_run_id[id][stage] = !!observedStageSet[stage];
+    });
+  });
+
+  const missingSummary = Object.keys(status.summary_presence_by_run_id).some((id) => !status.summary_presence_by_run_id[id]);
+  const missingStageSummary = Object.keys(status.required_stage_summary_presence_by_run_id).some((id) => {
+    const requiredMap = status.required_stage_summary_presence_by_run_id[id] || {};
+    return Object.keys(requiredMap).some((stage) => !requiredMap[stage]);
+  });
+
+  if (missingSummary) {
+    status.reason_code = 'export_parity_missing_run_summary';
+  } else if (missingStageSummary) {
+    status.reason_code = 'export_parity_missing_stage_summary';
+  } else {
+    status.pass = true;
+    status.parity_status = 'pass';
+    status.reason_code = 'export_parity_contract_pass_precheck';
+  }
+  return status;
+}
+
 function buildRunExportParityContractState_(runId, requiredStages, options) {
   const runIdText = String(runId || '').trim();
   const required = Array.isArray(requiredStages) && requiredStages.length
