@@ -164,6 +164,47 @@ def _pick_run_summary(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Any]
     return last or {}
 
 
+def _summary_stake_policy_enabled(summary: Dict[str, Any]) -> bool | None:
+    signal_summary = _parse_json(summary.get("signal_decision_summary"), {})
+    if not isinstance(signal_summary, dict):
+        return None
+    stake_summary = _parse_json(signal_summary.get("stake_policy_summary"), {})
+    if not isinstance(stake_summary, dict):
+        return None
+    enabled = stake_summary.get("enabled")
+    if isinstance(enabled, bool):
+        return enabled
+    if isinstance(enabled, str):
+        text = enabled.strip().lower()
+        if text in {"true", "1", "yes", "y"}:
+            return True
+        if text in {"false", "0", "no", "n"}:
+            return False
+    return None
+
+
+def _resolve_pair_policy_mode(
+    summary_a: Dict[str, Any],
+    summary_b: Dict[str, Any],
+    fallback_enabled: bool,
+) -> bool:
+    observed = []
+    for run_id, summary in (("left", summary_a), ("right", summary_b)):
+        explicit = _summary_stake_policy_enabled(summary)
+        if explicit is not None:
+            observed.append((run_id, explicit))
+    if observed:
+        observed_values = {value for _, value in observed}
+        if len(observed_values) > 1:
+            details = ", ".join(f"{run_id}={str(value).lower()}" for run_id, value in observed)
+            raise ValueError(
+                "Mixed stake_policy_enabled states detected within run pair; "
+                f"refuse to produce comparison report. pair={details}"
+            )
+        return bool(observed[0][1])
+    return bool(fallback_enabled)
+
+
 def _run_rows(rows: List[Dict[str, Any]], run_id: str) -> List[Dict[str, Any]]:
     return [row for row in rows if str(row.get("run_id", "")) == run_id]
 
@@ -474,10 +515,26 @@ def build_report(
             missing.append(run_b)
         raise ValueError(f"Missing runEdgeBoard summary rows for run_id(s): {', '.join(missing)}")
 
+    stake_config = stake_policy_config or StakePolicyConfig()
+    pair_policy_enabled = _resolve_pair_policy_mode(
+        summary_a,
+        summary_b,
+        fallback_enabled=bool(stake_config.enabled),
+    )
+    if pair_policy_enabled != bool(stake_config.enabled):
+        raise ValueError(
+            "stake_policy_enabled mode mismatch between CLI/config and run summaries; "
+            f"pair_reports require homogeneous mode. summary_mode={str(pair_policy_enabled).lower()} "
+            f"requested_mode={str(bool(stake_config.enabled)).lower()}"
+        )
+
     metric_counts_a = _metric_counts(summary_a)
     metric_counts_b = _metric_counts(summary_b)
 
-    lines = [f"run_comparator left={run_a} right={run_b}"]
+    lines = [
+        f"run_comparator left={run_a} right={run_b}",
+        f"stake_policy_enabled={str(pair_policy_enabled).lower()}",
+    ]
     lines.extend(_format_side_by_side("core_metrics", run_a, run_b, metric_counts_a, metric_counts_b))
     for run_id, summary, metric_counts in (
         (run_a, summary_a, metric_counts_a),
@@ -489,7 +546,6 @@ def build_report(
                 "verify reason-code parser/alias schema alignment"
             )
     lines.extend(_format_side_by_side("signal_suppression_reasons", run_a, run_b, _suppression_counts(summary_a), _suppression_counts(summary_b)))
-    stake_config = stake_policy_config or StakePolicyConfig()
     stake_summary_a = summarize_run_stake_policy(rows, run_a, stake_config)
     stake_summary_b = summarize_run_stake_policy(rows, run_b, stake_config)
     lines.extend(

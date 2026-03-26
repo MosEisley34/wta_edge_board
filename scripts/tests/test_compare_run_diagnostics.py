@@ -124,9 +124,31 @@ class CompareRunDiagnosticsValidationTests(unittest.TestCase):
             "run-b",
             stake_policy_config=StakePolicyConfig(enabled=True, minimum_stake_mxn=20.0, round_to_min=False),
         )
+        self.assertIn("stake_policy_enabled=true", report)
         self.assertIn("## stake-policy outcomes", report)
         self.assertIn("## stake-policy reason codes", report)
         self.assertIn("stake_below_min_suppressed", report)
+
+    def test_compare_rows_fails_when_pair_mixes_policy_enabled_tags(self):
+        rows = _full_stage_rows("run-a") + _full_stage_rows("run-b")
+        rows.extend(
+            [
+                {
+                    "run_id": "run-a",
+                    "stage": "runEdgeBoard",
+                    "row_type": "summary",
+                    "signal_decision_summary": {"stake_policy_summary": {"enabled": True}},
+                },
+                {
+                    "run_id": "run-b",
+                    "stage": "runEdgeBoard",
+                    "row_type": "summary",
+                    "signal_decision_summary": {"stake_policy_summary": {"enabled": False}},
+                },
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "Mixed stake_policy_enabled states"):
+            compare_rows(rows, "run-a", "run-b", stake_policy_config=StakePolicyConfig(enabled=True))
 
 
 if __name__ == "__main__":

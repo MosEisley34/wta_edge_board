@@ -115,6 +115,7 @@ class CompareRunMetricsTests(unittest.TestCase):
         report = build_report(rows, "run-a", "run-b")
 
         self.assertIn("run_comparator left=run-a right=run-b", report)
+        self.assertIn("stake_policy_enabled=false", report)
         self.assertIn("[core_metrics]", report)
         self.assertIn("MATCH_CT", report)
         self.assertIn("STATS_MISS_B", report)
@@ -159,6 +160,28 @@ class CompareRunMetricsTests(unittest.TestCase):
         self.assertIn("[stake_policy_counts]", report)
         self.assertIn("[stake_policy_reason_codes]", report)
         self.assertIn("stake_below_min_suppressed", report)
+
+    def test_build_report_blocks_mixed_policy_mode_pairs(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_codes": {},
+                "signal_decision_summary": {"stake_policy_summary": {"enabled": True}},
+                "stage_summaries": self._stage_chain(),
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "reason_codes": {},
+                "signal_decision_summary": {"stake_policy_summary": {"enabled": False}},
+                "stage_summaries": self._stage_chain(),
+            },
+        ]
+        with self.assertRaisesRegex(ValueError, "Mixed stake_policy_enabled states"):
+            build_report(rows, "run-a", "run-b")
 
     def test_build_report_fails_when_run_has_disallowed_skip_reason(self):
         rows = [
