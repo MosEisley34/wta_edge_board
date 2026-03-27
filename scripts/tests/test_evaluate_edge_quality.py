@@ -182,6 +182,29 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertIn("missing_edge_volatility_metric reason_code=missing_field_edge_volatility", report["failures"])
 
+    def test_load_run_log_rows_normalizes_typed_quality_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Run_Log.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "row_type": "summary",
+                            "stage": "runEdgeBoard",
+                            "run_id": "run-typed",
+                            "feature_completeness": "0.8",
+                            "matched_events": "4",
+                            "scored_signals": "",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rows = load_run_log_rows(str(path))
+            self.assertEqual(0.8, rows[0]["feature_completeness"])
+            self.assertEqual(4, rows[0]["matched_events"])
+            self.assertIsNone(rows[0]["scored_signals"])
+
     def test_quality_contract_defaults_are_used_when_upstream_empty(self):
         rows = [
             {

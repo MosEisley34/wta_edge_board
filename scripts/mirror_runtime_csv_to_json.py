@@ -18,12 +18,19 @@ import csv
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 
 ARTIFACTS = (
     ("Run_Log", "Run_Log.csv", "Run_Log.json"),
     ("State", "State.csv", "State.json"),
 )
+
+RUN_LOG_TYPE_RULES: dict[str, type] = {
+    "feature_completeness": float,
+    "matched_events": int,
+    "scored_signals": int,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,7 +57,66 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return [dict(row) for row in csv.DictReader(handle)]
 
 
-def _write_json_rows(path: Path, rows: list[dict[str, str]]) -> None:
+def _coerce_value_by_rule(value: Any, expected_type: type) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "":
+            return None
+    if expected_type is float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    if expected_type is int:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return value
+        try:
+            numeric = float(value)
+            if numeric.is_integer():
+                return int(numeric)
+        except (TypeError, ValueError):
+            pass
+        return value
+    return value
+
+
+def _is_type_valid(value: Any, expected_type: type) -> bool:
+    if value is None:
+        return True
+    if expected_type is float:
+        return isinstance(value, float)
+    if expected_type is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, expected_type)
+
+
+def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows, start=1):
+        converted: dict[str, Any] = dict(row)
+        for field, expected_type in RUN_LOG_TYPE_RULES.items():
+            converted[field] = _coerce_value_by_rule(converted.get(field), expected_type)
+            if not _is_type_valid(converted.get(field), expected_type):
+                run_id = str(converted.get("run_id") or "")
+                stage = str(converted.get("stage") or "")
+                print(
+                    (
+                        "Warning: Run_Log export type violation "
+                        f"run_id={run_id or '<missing>'} stage={stage or '<missing>'} "
+                        f"field={field} expected={expected_type.__name__}|null "
+                        f"actual={type(converted.get(field)).__name__} row={idx}"
+                    ),
+                    file=sys.stderr,
+                )
+        normalized.append(converted)
+    return normalized
+
+
+def _write_json_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(rows, handle, indent=2)
@@ -76,6 +142,8 @@ def main() -> int:
 
         if csv_path.is_file():
             rows = _read_csv_rows(csv_path)
+            if label == "Run_Log":
+                rows = _apply_run_log_typing(rows)
             _write_json_rows(out_json_path, rows)
             print(f"Mirrored {csv_path} -> {out_json_path} ({len(rows)} rows)")
             continue
