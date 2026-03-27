@@ -222,6 +222,48 @@ class VerifyRunLogParityTests(unittest.TestCase):
             with self.assertRaisesRegex(ParityError, "missing summary_presence_by_run_id"):
                 verify_run_log_parity(str(root))
 
+    def test_verify_run_log_parity_fails_when_feature_completeness_schema_is_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata = self._parity_metadata("run-a", pass_claim=True)
+            rows = [
+                {
+                    "row_type": "summary",
+                    "run_id": "run-a",
+                    "stage": "runEdgeBoard",
+                    "started_at": "2026-03-21T10:00:01Z",
+                    "feature_completeness": {"legacy_alias": "bad"},
+                    "stage_summaries": self._summary_stage_summaries_payload(metadata=metadata),
+                },
+            ]
+            self._write_json(root / "Run_Log.json", rows)
+            with (root / "Run_Log.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "row_type",
+                        "run_id",
+                        "stage",
+                        "started_at",
+                        "feature_completeness",
+                        "stage_summaries",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "row_type": "summary",
+                        "run_id": "run-a",
+                        "stage": "runEdgeBoard",
+                        "started_at": "2026-03-21T10:00:01Z",
+                        "feature_completeness": "{\"legacy_alias\":\"bad\"}",
+                        "stage_summaries": json.dumps(self._summary_stage_summaries_payload(metadata=metadata)),
+                    }
+                )
+
+            with self.assertRaisesRegex(ParityError, "schema violations"):
+                verify_run_log_parity(str(root))
+
 
 if __name__ == "__main__":
     unittest.main()

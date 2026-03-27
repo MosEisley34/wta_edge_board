@@ -34,6 +34,7 @@ class BatchView:
     summary_presence: dict[str, bool]
     required_stage_presence: dict[str, dict[str, bool]]
     gs_parity_metadata_by_run_id: dict[str, dict[str, Any]]
+    row_schema_violations: dict[str, list[str]]
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,34 @@ def _parse_json_like(value: Any) -> Any:
         return json.loads(text)
     except Exception:
         return None
+
+
+def _sanitize_feature_completeness_row(row: dict[str, Any]) -> None:
+    value = row.get("feature_completeness")
+    if value in (None, ""):
+        row["feature_completeness"] = None
+        return
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            row["feature_completeness"] = None
+            return
+        try:
+            row["feature_completeness"] = float(stripped)
+            return
+        except ValueError:
+            value = stripped
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return
+    if isinstance(value, str) and value:
+        try:
+            row["feature_completeness_detail"] = json.loads(value)
+            row["reason_alias_payload"] = row["feature_completeness_detail"]
+        except Exception:
+            pass
+    row["feature_completeness"] = None
+    row["schema_violation"] = "run_log_row_schema_violation"
+    row["field_type_error"] = "feature_completeness_expected_numeric_or_null"
 
 
 def _extract_stage_summaries(row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -202,12 +231,20 @@ def _build_batch_view(source: str, rows: list[dict[str, Any]]) -> BatchView:
         for run_id in sorted(latest_run_ids)
     }
     gs_parity_metadata_by_run_id: dict[str, dict[str, Any]] = {}
+    row_schema_violations: dict[str, list[str]] = {run_id: [] for run_id in sorted(latest_run_ids)}
 
     for _, row in batch_rows:
         run_id = str(row.get("run_id") or "").strip()
         stage = str(row.get("stage") or "").strip()
         row_type = str(row.get("row_type") or "").strip()
         if row_type == "summary" and stage == "runEdgeBoard":
+            _sanitize_feature_completeness_row(row)
+            violation = str(row.get("schema_violation") or "").strip()
+            field_error = str(row.get("field_type_error") or "").strip()
+            if violation or field_error:
+                row_schema_violations[run_id].append(
+                    ",".join(part for part in (violation, field_error) if part)
+                )
             summary_presence[run_id] = True
             for stage_summary in _extract_stage_summaries(row):
                 stage_name = str(stage_summary.get("stage") or "").strip()
@@ -226,6 +263,7 @@ def _build_batch_view(source: str, rows: list[dict[str, Any]]) -> BatchView:
         summary_presence=summary_presence,
         required_stage_presence=required_stage_presence,
         gs_parity_metadata_by_run_id=gs_parity_metadata_by_run_id,
+        row_schema_violations=row_schema_violations,
     )
 
 
@@ -354,6 +392,17 @@ def verify_run_log_parity(export_dir: str) -> ParityResult:
             "stage summary availability mismatch for latest batch run_id(s): "
             f"json={json_batch.required_stage_presence} csv={csv_batch.required_stage_presence}"
         )
+    if json_batch.row_schema_violations != csv_batch.row_schema_violations:
+        errors.append(
+            "runEdgeBoard schema violation mismatch for latest batch run_id(s): "
+            f"json={json_batch.row_schema_violations} csv={csv_batch.row_schema_violations}"
+        )
+    json_invalid_rows = {run_id: issues for run_id, issues in json_batch.row_schema_violations.items() if issues}
+    csv_invalid_rows = {run_id: issues for run_id, issues in csv_batch.row_schema_violations.items() if issues}
+    if json_invalid_rows:
+        errors.append(f"Run_Log.json latest batch contains schema violations: {json_invalid_rows}")
+    if csv_invalid_rows:
+        errors.append(f"Run_Log.csv latest batch contains schema violations: {csv_invalid_rows}")
 
     missing_stage_summaries_json = {
         run_id: stage_map

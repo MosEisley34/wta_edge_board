@@ -126,7 +126,35 @@ def _normalize_typed_run_log_fields(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     for field, expected_type in RUN_LOG_TYPED_FIELDS.items():
         normalized[field] = _coerce_typed_field(normalized.get(field), expected_type)
+    _validate_run_log_row_schema(normalized)
     return normalized
+
+
+def _validate_run_log_row_schema(row: dict[str, Any]) -> None:
+    value = row.get("feature_completeness")
+    if value in (None, ""):
+        row["feature_completeness"] = None
+        return
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return
+
+    detail = None
+    if isinstance(value, dict):
+        detail = value
+    elif isinstance(value, str):
+        trimmed = value.strip()
+        if trimmed.startswith("{") or trimmed.startswith("["):
+            try:
+                detail = json.loads(trimmed)
+            except Exception:
+                detail = {"raw": trimmed}
+
+    if detail is not None:
+        row.setdefault("feature_completeness_detail", detail)
+        row.setdefault("reason_alias_payload", detail)
+    row["feature_completeness"] = None
+    row["schema_violation"] = "run_log_row_schema_violation"
+    row["field_type_error"] = "feature_completeness_expected_numeric_or_null"
 
 
 def load_run_log_rows(path_or_dir: str) -> list[dict[str, Any]]:
@@ -423,6 +451,8 @@ def _reason_code_totals(summary_row: dict[str, Any]) -> tuple[dict[str, float], 
 
 
 def _extract_feature_completeness(summary_row: dict[str, Any]) -> tuple[float | None, str | None]:
+    if str(summary_row.get("field_type_error") or "").find("feature_completeness") >= 0:
+        return None, str(summary_row.get("field_type_error"))
     for field in ("feature_completeness", "player_stats_feature_completeness", "stats_feature_completeness"):
         try:
             value = float(summary_row.get(field))

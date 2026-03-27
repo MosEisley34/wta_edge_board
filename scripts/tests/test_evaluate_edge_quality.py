@@ -205,6 +205,29 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             self.assertEqual(4, rows[0]["matched_events"])
             self.assertIsNone(rows[0]["scored_signals"])
 
+    def test_load_run_log_rows_marks_feature_completeness_schema_violation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Run_Log.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "row_type": "summary",
+                            "stage": "runEdgeBoard",
+                            "run_id": "run-bad-shape",
+                            "feature_completeness": {"legacy_alias": "payload"},
+                            "matched_events": 4,
+                            "scored_signals": 1,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rows = load_run_log_rows(str(path))
+            self.assertIsNone(rows[0]["feature_completeness"])
+            self.assertEqual("run_log_row_schema_violation", rows[0]["schema_violation"])
+            self.assertIn("feature_completeness_expected_numeric_or_null", rows[0]["field_type_error"])
+
     def test_quality_contract_defaults_are_used_when_upstream_empty(self):
         rows = [
             {
