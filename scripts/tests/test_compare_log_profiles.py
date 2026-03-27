@@ -271,6 +271,57 @@ class CompareLogProfilesTests(unittest.TestCase):
             self.assertTrue(report["pass_conditions"]["counter_integrity_invariants_passed"])
             self.assertTrue(report["pass_conditions"]["stage_counter_invariants_passed"])
             self.assertEqual([], report["quality_gate_failed_reasons"])
+            self.assertIn("verification_matrix", report)
+            self.assertIn("verification_matrix_markdown", report)
+            self.assertEqual(4, len(report["verification_matrix"]))
+            for row in report["verification_matrix"]:
+                self.assertIn("last_verified_utc", row)
+                self.assertIn("evidence_count", row)
+                self.assertIn("confidence_badge", row)
+
+    def test_matrix_adds_risk_note_when_gate_fails_despite_stable_percentage(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            verbose = tmp / "verbose.json"
+            compact = tmp / "compact.json"
+            baseline = tmp / "baseline.json"
+
+            self._write_json(verbose, [self._summary_row("run-1", reason_code="ok")])
+            self._write_json(compact, [self._summary_row("run-1", reason_code="different_reason")])
+            self._write_json(
+                baseline,
+                {
+                    "percentage_reduction": 0.0,
+                    "compact_output_size_bytes": 123,
+                },
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE_SCRIPT),
+                    str(verbose),
+                    str(compact),
+                    "--target-reduction-pct",
+                    "0",
+                    "--critical-parity-keys",
+                    "gate_reasons",
+                    "--baseline-summary",
+                    str(baseline),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(1, result.returncode)
+            report = json.loads(result.stdout)
+            matrix_rows = {row["category"]: row for row in report["verification_matrix"]}
+            self.assertIn("critical_parity", matrix_rows)
+            self.assertEqual("fail", matrix_rows["critical_parity"]["status"])
+            self.assertIn("stable percentage", matrix_rows["critical_parity"]["risk_note"])
+            self.assertIn("| Category | Score | Target | Status |", report["verification_matrix_markdown"])
 
 
 if __name__ == "__main__":
