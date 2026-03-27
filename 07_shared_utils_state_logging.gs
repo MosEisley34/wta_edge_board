@@ -86,6 +86,9 @@ function appendRunStartConfigAuditLog_(runId, config, startedAt) {
 
 function stagePersist(runId, payload) {
   const start = Date.now();
+  const signalQualityMetrics = payload && payload.signalQualityMetrics && typeof payload.signalQualityMetrics === 'object'
+    ? Object.assign({}, payload.signalQualityMetrics)
+    : null;
 
   upsertSheetRows_(SHEETS.RAW_ODDS, [
     'key', 'event_id', 'bookmaker', 'bookmaker_keys_considered', 'market', 'outcome', 'price', 'odds_timestamp', 'odds_updated_time',
@@ -151,6 +154,9 @@ function stagePersist(runId, payload) {
       match_map_diagnostic_records_written: diagnosticMatchMapUpserts,
       signals_upserts: payload.signals.length,
     },
+    reason_metadata: signalQualityMetrics ? {
+      signal_quality_metrics: JSON.stringify(signalQualityMetrics),
+    } : {},
   });
 
   return { summary };
@@ -461,21 +467,40 @@ function projectRunQualityFieldsForSummaryRow_(entry) {
       entry.feature_completeness = qualityContract.feature_completeness;
     }
   }
+  if (entry.feature_completeness_reason_code === undefined || entry.feature_completeness_reason_code === null || entry.feature_completeness_reason_code === '') {
+    if (qualityContract.feature_completeness_reason_code !== undefined && qualityContract.feature_completeness_reason_code !== null && qualityContract.feature_completeness_reason_code !== '') {
+      entry.feature_completeness_reason_code = qualityContract.feature_completeness_reason_code;
+    }
+  }
   if (entry.edge_volatility === undefined || entry.edge_volatility === null || entry.edge_volatility === '') {
     if (qualityContract.edge_volatility !== undefined && qualityContract.edge_volatility !== null && qualityContract.edge_volatility !== '') {
       entry.edge_volatility = qualityContract.edge_volatility;
     }
   }
   if (entry.matched_events === undefined || entry.matched_events === null || entry.matched_events === '') {
-    if (entry.matched !== undefined && entry.matched !== null && entry.matched !== '') {
+    if (qualityContract.matched_events !== undefined && qualityContract.matched_events !== null && qualityContract.matched_events !== '') {
+      entry.matched_events = qualityContract.matched_events;
+    } else if (entry.matched !== undefined && entry.matched !== null && entry.matched !== '') {
       entry.matched_events = entry.matched;
     }
   }
+  if (entry.matched_events_reason_code === undefined || entry.matched_events_reason_code === null || entry.matched_events_reason_code === '') {
+    if (qualityContract.matched_events_reason_code !== undefined && qualityContract.matched_events_reason_code !== null && qualityContract.matched_events_reason_code !== '') {
+      entry.matched_events_reason_code = qualityContract.matched_events_reason_code;
+    }
+  }
   if (entry.scored_signals === undefined || entry.scored_signals === null || entry.scored_signals === '') {
-    if (entry.signals_scored !== undefined && entry.signals_scored !== null && entry.signals_scored !== '') {
+    if (qualityContract.scored_signals !== undefined && qualityContract.scored_signals !== null && qualityContract.scored_signals !== '') {
+      entry.scored_signals = qualityContract.scored_signals;
+    } else if (entry.signals_scored !== undefined && entry.signals_scored !== null && entry.signals_scored !== '') {
       entry.scored_signals = entry.signals_scored;
     } else if (safeSignalSummary.scored_count !== undefined && safeSignalSummary.scored_count !== null && safeSignalSummary.scored_count !== '') {
       entry.scored_signals = safeSignalSummary.scored_count;
+    }
+  }
+  if (entry.scored_signals_reason_code === undefined || entry.scored_signals_reason_code === null || entry.scored_signals_reason_code === '') {
+    if (qualityContract.scored_signals_reason_code !== undefined && qualityContract.scored_signals_reason_code !== null && qualityContract.scored_signals_reason_code !== '') {
+      entry.scored_signals_reason_code = qualityContract.scored_signals_reason_code;
     }
   }
 }
@@ -502,6 +527,11 @@ function emitRunQualityMissingFieldGuardLog_(entry) {
       run_id: String(entry.run_id || ''),
       stage: stage,
       missing_fields: missingFields,
+      missing_field_reason_codes: {
+        feature_completeness: String(entry && entry.feature_completeness_reason_code || 'missing_feature_completeness_metric'),
+        matched_events: String(entry && entry.matched_events_reason_code || 'missing_matched_events_metric'),
+        scored_signals: String(entry && entry.scored_signals_reason_code || 'missing_scored_signals_metric'),
+      },
     }),
   });
 }
@@ -520,12 +550,16 @@ function validateRunSummaryQualityContract_(entry) {
   }
 
   const featureCompleteness = Number(qualityContract.feature_completeness);
-  if (!Number.isFinite(featureCompleteness) || featureCompleteness < 0 || featureCompleteness > 1) {
+  const featureCompletenessMissing = qualityContract.feature_completeness === null || qualityContract.feature_completeness === undefined || qualityContract.feature_completeness === '';
+  if (!featureCompletenessMissing && (!Number.isFinite(featureCompleteness) || featureCompleteness < 0 || featureCompleteness > 1)) {
     throw new Error('run_summary_quality_contract_invalid_feature_completeness');
   }
   const featureReasonCode = String(qualityContract.feature_completeness_reason_code || '').trim();
   if (!featureReasonCode) {
     throw new Error('run_summary_quality_contract_missing_feature_reason_code');
+  }
+  if (featureCompletenessMissing && featureReasonCode.indexOf('missing_') !== 0 && featureReasonCode.indexOf('upstream_') !== 0) {
+    throw new Error('run_summary_quality_contract_invalid_missing_feature_reason_code');
   }
 
   const edgeVolatility = Number(qualityContract.edge_volatility);

@@ -1255,8 +1255,21 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   setStateValue_('LAST_SIGNAL_DECISION_SUMMARY', JSON.stringify(signalDecisionSummary));
 
   const summaryReasonCodes = Object.assign({}, reasonCounts);
+  const signalQualityMetrics = {
+    feature_completeness: null,
+    feature_completeness_reason_code: 'deferred_to_run_quality_contract',
+    matched_events: Number(
+      matchRows.filter(function (row) {
+        return !!(row && row.schedule_event_id);
+      }).length
+    ),
+    matched_events_reason_code: 'stage_match_events_rows_with_schedule_event_id',
+    scored_signals: Number(scoredCandidateCount || 0),
+    scored_signals_reason_code: 'stage_generate_signals_scored_candidate_count',
+  };
   const summaryReasonMetadata = {
     signal_decision_summary: JSON.stringify(signalDecisionSummary),
+    signal_quality_metrics: JSON.stringify(signalQualityMetrics),
   };
   if (oddsEvents.length === 0) {
     summaryReasonMetadata.upstream_gate_reason = normalizedUpstreamGateReason;
@@ -1280,6 +1293,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     duplicateSuppressedCount: reasonCounts.duplicate_suppressed || 0,
     scoredCount: scoredCandidateCount,
     signalDecisionSummary: signalDecisionSummary,
+    signalQualityMetrics: signalQualityMetrics,
   };
 }
 
