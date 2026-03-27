@@ -422,6 +422,7 @@ Compatibility note:
 Emergency override policy:
 - `scripts/export_parity_precheck.sh --allow-csv-only-triage` requires `--incident-tag <LETTERS-NNN>`.
 - compare scripts may only bypass missing preflight sidecar using `--emergency-preflight-override-tag <LETTERS-NNN>`.
+- `--player-stats-gate-override-reason` only overrides coverage-threshold failures; schema-integrity failures remain blocking (`schema_missing`).
 
 ## Rolling edge-quality windows (postmortem vs release gate)
 

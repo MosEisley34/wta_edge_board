@@ -11,14 +11,14 @@ from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate  
 
 class PlayerStatsCoverageGateTests(unittest.TestCase):
     def _rows(self, baseline_reason_codes=None, candidate_reason_codes=None, baseline_meta=None, candidate_meta=None):
-        baseline_reason_codes = baseline_reason_codes or {"STATS_MISS_A": 1, "STATS_MISS_B": 1}
-        candidate_reason_codes = candidate_reason_codes or {"STATS_MISS_A": 1, "STATS_MISS_B": 1}
-        baseline_meta = baseline_meta or {
+        baseline_reason_codes = baseline_reason_codes if baseline_reason_codes is not None else {"STATS_MISS_A": 1, "STATS_MISS_B": 1}
+        candidate_reason_codes = candidate_reason_codes if candidate_reason_codes is not None else {"STATS_MISS_A": 1, "STATS_MISS_B": 1}
+        baseline_meta = baseline_meta if baseline_meta is not None else {
             "requested_player_count": 10,
             "resolved_player_count": 8,
             "unresolved_player_count": 2,
         }
-        candidate_meta = candidate_meta or {
+        candidate_meta = candidate_meta if candidate_meta is not None else {
             "requested_player_count": 10,
             "resolved_player_count": 8,
             "unresolved_player_count": 2,
@@ -66,6 +66,22 @@ class PlayerStatsCoverageGateTests(unittest.TestCase):
         report = evaluate_player_stats_gate(rows, "run-a", "run-b", config)
         self.assertEqual("override", report["status"])
         self.assertTrue(report["override_used"])
+
+    def test_override_does_not_bypass_schema_missing(self):
+        rows = self._rows(candidate_meta={})
+        config = GateConfig(
+            min_resolved_rate=0.9,
+            max_unresolved_players=0,
+            max_missing_side_increase=0,
+            override_reason="INC-999",
+        )
+        report = evaluate_player_stats_gate(rows, "run-a", "run-b", config)
+        self.assertEqual("schema_missing", report["status"])
+        self.assertEqual("schema_missing", report["reason_code"])
+        self.assertEqual("override", report["coverage_gate"])
+        self.assertEqual("fail", report["schema_integrity"])
+        self.assertTrue(report["override_used"])
+        self.assertTrue(any(failure.startswith("candidate_") for failure in report["schema_failures"]))
 
 
 if __name__ == "__main__":
