@@ -36,6 +36,7 @@ RUN_LOG_TYPE_RULES: dict[str, type] = {
     "no_hit_odds_present_but_match_failed_count": int,
     "no_hit_schema_invalid_metrics_count": int,
 }
+RUN_LOG_NUMERIC_METRIC_FIELDS = ("feature_completeness", "matched_events", "scored_signals")
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,6 +104,7 @@ def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for idx, row in enumerate(rows, start=1):
         converted: dict[str, Any] = dict(row)
+        schema_errors: list[dict[str, Any]] = []
         for field, expected_type in RUN_LOG_TYPE_RULES.items():
             converted[field] = _coerce_value_by_rule(converted.get(field), expected_type)
             if not _is_type_valid(converted.get(field), expected_type):
@@ -117,12 +119,22 @@ def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     ),
                     file=sys.stderr,
                 )
-        _sanitize_feature_completeness_shape(converted, row_number=idx)
+        _sanitize_feature_completeness_shape(converted, row_number=idx, schema_errors=schema_errors)
+        _sanitize_quality_contract_numeric_metrics(converted, row_number=idx, schema_errors=schema_errors)
+        if schema_errors:
+            converted["schema_error"] = {
+                "artifact": "Run_Log",
+                "code": "run_log_row_schema_violation",
+                "row": idx,
+                "errors": schema_errors,
+            }
         normalized.append(converted)
     return normalized
 
 
-def _sanitize_feature_completeness_shape(row: dict[str, Any], row_number: int) -> None:
+def _sanitize_feature_completeness_shape(
+    row: dict[str, Any], row_number: int, schema_errors: list[dict[str, Any]] | None = None
+) -> None:
     value = row.get("feature_completeness")
     if value is None or value == "":
         row["feature_completeness"] = None
@@ -148,6 +160,15 @@ def _sanitize_feature_completeness_shape(row: dict[str, Any], row_number: int) -
     row["feature_completeness"] = None
     row["schema_violation"] = "run_log_row_schema_violation"
     row["field_type_error"] = "feature_completeness_expected_numeric_or_null"
+    if isinstance(schema_errors, list):
+        schema_errors.append(
+            {
+                "field": "feature_completeness",
+                "expected": "numeric_or_null",
+                "actual": type(value).__name__,
+                "action": "sanitized",
+            }
+        )
     run_id = str(row.get("run_id") or "")
     stage = str(row.get("stage") or "")
     print(
@@ -158,6 +179,82 @@ def _sanitize_feature_completeness_shape(row: dict[str, Any], row_number: int) -
         ),
         file=sys.stderr,
     )
+
+
+def _capture_non_scalar_metric_detail(
+    row: dict[str, Any],
+    field: str,
+    raw_value: Any,
+    parsed_value: Any,
+) -> None:
+    detail_field = f"{field}_detail"
+    detail_json_field = f"{field}_detail_json"
+    row[detail_field] = parsed_value if isinstance(parsed_value, (dict, list)) else raw_value
+    try:
+        row[detail_json_field] = json.dumps(row[detail_field], sort_keys=True)
+    except Exception:
+        row[detail_json_field] = str(raw_value)
+
+
+def _sanitize_quality_contract_numeric_metrics(
+    row: dict[str, Any], row_number: int, schema_errors: list[dict[str, Any]]
+) -> None:
+    for field in RUN_LOG_NUMERIC_METRIC_FIELDS:
+        value = row.get(field)
+        if value is None or value == "":
+            row[field] = None
+            continue
+        if isinstance(value, bool):
+            parsed_value: Any = value
+        elif isinstance(value, str):
+            stripped = value.strip()
+            if stripped == "":
+                row[field] = None
+                continue
+            if stripped.startswith("{") or stripped.startswith("["):
+                try:
+                    parsed_value = json.loads(stripped)
+                except Exception:
+                    parsed_value = stripped
+            else:
+                parsed_value = stripped
+        else:
+            parsed_value = value
+
+        if field == "feature_completeness":
+            if isinstance(parsed_value, (int, float)) and not isinstance(parsed_value, bool):
+                row[field] = float(parsed_value)
+                continue
+        else:
+            if isinstance(parsed_value, int) and not isinstance(parsed_value, bool):
+                row[field] = parsed_value
+                continue
+            if isinstance(parsed_value, float) and parsed_value.is_integer():
+                row[field] = int(parsed_value)
+                continue
+
+        _capture_non_scalar_metric_detail(row, field, value, parsed_value)
+        row[field] = None
+        row["schema_violation"] = "run_log_row_schema_violation"
+        row["field_type_error"] = f"{field}_expected_numeric_or_null"
+        schema_errors.append(
+            {
+                "field": field,
+                "expected": "numeric_or_null",
+                "actual": type(parsed_value).__name__,
+                "action": "sanitized",
+            }
+        )
+        run_id = str(row.get("run_id") or "")
+        stage = str(row.get("stage") or "")
+        print(
+            (
+                "Warning: Run_Log schema violation "
+                f"run_id={run_id or '<missing>'} stage={stage or '<missing>'} "
+                f"field={field} row={row_number}"
+            ),
+            file=sys.stderr,
+        )
 
 
 def _write_json_rows(path: Path, rows: list[dict[str, Any]]) -> None:
