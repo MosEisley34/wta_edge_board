@@ -168,6 +168,48 @@ class CompareRunMetricsTests(unittest.TestCase):
         self.assertIn("[stake_policy_final_risk_mxn_aggregates]", report)
         self.assertIn("stake_below_min_suppressed", report)
 
+    def test_build_report_stake_mode_counts_only_enum_values(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-a",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+            {
+                "row_type": "signal",
+                "run_id": "run-a",
+                "stage": "stageGenerateSignals",
+                "stake_mxn": 25,
+                "stake_mode_used": '{"schema_id":"reason_code_alias_v1","reason_codes":{"SIG_GEN":1}}',
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-b",
+                "reason_codes": {},
+                "signal_decision_summary": {},
+                "stage_summaries": self._stage_chain(),
+            },
+            {
+                "row_type": "signal",
+                "run_id": "run-b",
+                "stage": "stageGenerateSignals",
+                "stake_mxn": 25,
+                "stake_mode_used": "to_risk",
+            },
+        ]
+        rows.extend({"row_type": "stage", "run_id": "run-a", "stage": stage["stage"]} for stage in self._stage_chain())
+        rows.extend({"row_type": "stage", "run_id": "run-b", "stage": stage["stage"]} for stage in self._stage_chain())
+
+        report = build_report(rows, "run-a", "run-b")
+
+        self.assertIn("[stake_policy_stake_mode_used_counts]", report)
+        self.assertIn("unknown", report)
+        self.assertNotIn('{"schema_id"', report)
+
     def test_build_report_blocks_mixed_policy_mode_pairs(self):
         rows = [
             {

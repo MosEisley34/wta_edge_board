@@ -75,3 +75,37 @@ def test_decimal_edge_case_19_995_remains_below_min_without_pre_rounding():
     assert strict_outcome["final_stake_mxn"] == 0.0
     assert round_up_outcome["reason_code"] == "stake_rounded_to_min"
     assert round_up_outcome["final_stake_mxn"] == 20.0
+
+
+def test_summarize_run_stake_policy_coerces_structured_stake_mode_payload_to_unknown():
+    config = StakePolicyConfig(enabled=True)
+    rows = [
+        {
+            "row_type": "signal",
+            "stage": "stageGenerateSignals",
+            "run_id": "run-1",
+            "stake_mxn": 25.0,
+            "stake_mode_used": '{"schema_id":"reason_code_alias_v1","reason_codes":{"X":1}}',
+        }
+    ]
+
+    summary = summarize_run_stake_policy(rows, "run-1", config)
+
+    assert summary["stake_mode_counts"] == {"unknown": 1}
+
+
+def test_summarize_run_stake_policy_normalizes_non_enum_stake_mode_to_unknown():
+    config = StakePolicyConfig(enabled=True)
+    rows = [
+        {
+            "row_type": "signal",
+            "stage": "stageGenerateSignals",
+            "run_id": "run-1",
+            "stake_mxn": 25.0,
+            "stake_mode_used": "legacy_mode",
+        }
+    ]
+
+    summary = summarize_run_stake_policy(rows, "run-1", config)
+
+    assert summary["stake_mode_counts"] == {"unknown": 1}

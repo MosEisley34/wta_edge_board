@@ -12,6 +12,7 @@ from typing import Any
 DEFAULT_MIN_STAKE_MXN = 10.0
 DEFAULT_UNIT_SIZE_MXN = 100.0
 DEFAULT_BUCKET_STEP_MXN = 20.0
+ALLOWED_STAKE_MODE_VALUES = {"to_risk", "to_win", "unknown"}
 
 
 @dataclass(frozen=True)
@@ -138,12 +139,17 @@ def _stake_mode_used(row: dict[str, Any], config: StakePolicyConfig) -> str:
     payload = _row_payload(row)
     explicit = str(payload.get("stake_mode_used") or "").strip()
     if explicit:
-        return explicit
+        if explicit.startswith("{"):
+            return "unknown"
+        if explicit in ALLOWED_STAKE_MODE_VALUES:
+            return explicit
+        return "unknown"
     odds = _as_float(payload.get("odds_american") if payload.get("odds_american") is not None else payload.get("odds"))
     if odds is None:
         return "unknown"
     sign_key = "negative" if odds < 0 else "positive"
-    return str((config.stake_mode_by_odds_sign or {}).get(sign_key) or "unknown")
+    derived = str((config.stake_mode_by_odds_sign or {}).get(sign_key) or "unknown")
+    return derived if derived in ALLOWED_STAKE_MODE_VALUES else "unknown"
 
 
 def _adjustment_reason_code(row: dict[str, Any]) -> str | None:

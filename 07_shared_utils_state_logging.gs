@@ -345,6 +345,7 @@ function resolveSinglePassReasonCodeMap_(rowReasonCodeMap, messageReasonCodeMap,
 
 function appendLogRow_(entry) {
   const normalized = normalizeLogEntryForAppend_(entry || {});
+  const stakeModeValidation = validateStakeModeUsedForWrite_(normalized);
   projectRunQualityFieldsForSummaryRow_(normalized);
   emitRunQualityMissingFieldGuardLog_(normalized);
   validateRunSummaryQualityContract_(normalized);
@@ -397,8 +398,51 @@ function appendLogRow_(entry) {
     sanitizeForLog_(normalized.stage_summaries || '[]'),
   ]);
 
+  if (!stakeModeValidation.valid) {
+    appendRunLogMappingErrorRow_(sh, normalized.run_id || '', stakeModeValidation);
+  }
+
   maybeEmitReasonAliasFallbackWarningOpsLog_(normalized);
   maybeEmitWatchdogWarningAggregateOpsLog_(normalized);
+}
+
+function validateStakeModeUsedForWrite_(entry) {
+  const raw = String((entry && entry.stake_mode_used) || '').trim();
+  if (!raw) return { valid: true, field: 'stake_mode_used', raw_value: '' };
+  if (raw.indexOf('{') === 0) {
+    entry.stake_mode_used = 'unknown';
+    return {
+      valid: false,
+      field: 'stake_mode_used',
+      raw_value: raw,
+      reason_code: 'run_log_mapping_invalid_stake_mode_used',
+    };
+  }
+  return { valid: true, field: 'stake_mode_used', raw_value: raw };
+}
+
+function appendRunLogMappingErrorRow_(sheet, runId, validation) {
+  const nowIso = formatLocalIso_(new Date());
+  sheet.appendRow([
+    'ops',
+    runId || '',
+    'run_log_mapping_validation',
+    nowIso,
+    nowIso,
+    'warning',
+    String((validation && validation.reason_code) || 'run_log_mapping_invalid'),
+    sanitizeForLog_(JSON.stringify({
+      run_id: String(runId || ''),
+      field: String((validation && validation.field) || ''),
+      raw_value: String((validation && validation.raw_value) || ''),
+      action: 'coerced_to_unknown',
+    })),
+    0, 0, 0, 0, 0, 0,
+    '{}',
+    0, 0,
+    '', '', '', '', '',
+    '[]',
+  ]);
 }
 
 function projectRunQualityFieldsForSummaryRow_(entry) {
