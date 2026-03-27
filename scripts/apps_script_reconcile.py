@@ -121,7 +121,7 @@ def near_duplicates(names_a: list[str], names_b: list[str], cutoff: float = 0.80
 
 
 def archive_name(name: str) -> str:
-    stamp = dt.datetime.utcnow().strftime("%Y%m%d")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d")
     return f"ARCHIVE_{stamp}_{name}"
 
 
