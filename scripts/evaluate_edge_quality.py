@@ -22,6 +22,12 @@ from pipeline_log_adapter import (
 )
 from stake_policy import StakePolicyConfig, summarize_run_stake_policy
 
+RUN_LOG_TYPED_FIELDS: dict[str, type] = {
+    "feature_completeness": float,
+    "matched_events": int,
+    "scored_signals": int,
+}
+
 STANDARD_COMPARE_RUNBOOK_PATH = "runbook/README.md#phase-2--baseline-vs-policy-on-comparison-on-matched-windows"
 STAKE_POLICY_ENABLED_COMPARE_RUNBOOK_PATH = (
     "runbook/README.md#stake-policy-enabled-compare-lane-policy-on-only"
@@ -90,16 +96,49 @@ def _iter_run_log_paths(path_or_dir: str) -> list[str]:
     return sorted(found)
 
 
+def _coerce_typed_field(value: Any, expected_type: type) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "":
+            return None
+    if expected_type is float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    if expected_type is int:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return value
+        try:
+            numeric = float(value)
+            if numeric.is_integer():
+                return int(numeric)
+        except (TypeError, ValueError):
+            pass
+    return value
+
+
+def _normalize_typed_run_log_fields(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    for field, expected_type in RUN_LOG_TYPED_FIELDS.items():
+        normalized[field] = _coerce_typed_field(normalized.get(field), expected_type)
+    return normalized
+
+
 def load_run_log_rows(path_or_dir: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in _iter_run_log_paths(path_or_dir):
         if path.lower().endswith(".json"):
             payload = json.loads(Path(path).read_text(encoding="utf-8"))
             if isinstance(payload, list):
-                rows.extend(row for row in payload if isinstance(row, dict))
+                rows.extend(_normalize_typed_run_log_fields(row) for row in payload if isinstance(row, dict))
             continue
         with open(path, "r", encoding="utf-8", newline="") as handle:
-            rows.extend(dict(row) for row in csv.DictReader(handle))
+            rows.extend(_normalize_typed_run_log_fields(dict(row)) for row in csv.DictReader(handle))
     return rows
 
 
