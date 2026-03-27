@@ -345,6 +345,8 @@ function resolveSinglePassReasonCodeMap_(rowReasonCodeMap, messageReasonCodeMap,
 
 function appendLogRow_(entry) {
   const normalized = normalizeLogEntryForAppend_(entry || {});
+  projectRunQualityFieldsForSummaryRow_(normalized);
+  emitRunQualityMissingFieldGuardLog_(normalized);
   validateRunSummaryQualityContract_(normalized);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sh = ss.getSheetByName(SHEETS.RUN_LOG);
@@ -369,6 +371,10 @@ function appendLogRow_(entry) {
     normalized.matched || 0,
     normalized.unmatched || 0,
     normalized.signals_found || 0,
+    normalized.feature_completeness === null || normalized.feature_completeness === undefined ? '' : normalized.feature_completeness,
+    normalized.edge_volatility === null || normalized.edge_volatility === undefined ? '' : normalized.edge_volatility,
+    normalized.matched_events === null || normalized.matched_events === undefined ? '' : normalized.matched_events,
+    normalized.scored_signals === null || normalized.scored_signals === undefined ? '' : normalized.scored_signals,
     normalized.stake_mode_used || '',
     normalized.raw_risk_mxn === null || normalized.raw_risk_mxn === undefined ? '' : normalized.raw_risk_mxn,
     normalized.raw_target_win_mxn === null || normalized.raw_target_win_mxn === undefined ? '' : normalized.raw_target_win_mxn,
@@ -378,6 +384,8 @@ function appendLogRow_(entry) {
     normalized.min_bet_mxn === null || normalized.min_bet_mxn === undefined ? '' : normalized.min_bet_mxn,
     normalized.bucket_step_mxn === null || normalized.bucket_step_mxn === undefined ? '' : normalized.bucket_step_mxn,
     normalized.unit_size_mxn === null || normalized.unit_size_mxn === undefined ? '' : normalized.unit_size_mxn,
+    normalized.signals_scored === null || normalized.signals_scored === undefined ? '' : normalized.signals_scored,
+    sanitizeForLog_(normalized.signal_decision_summary || ''),
     sanitizeForLog_(normalized.rejection_codes || '{}'),
     normalized.cooldown_suppressed || 0,
     normalized.duplicate_suppressed || 0,
@@ -391,6 +399,67 @@ function appendLogRow_(entry) {
 
   maybeEmitReasonAliasFallbackWarningOpsLog_(normalized);
   maybeEmitWatchdogWarningAggregateOpsLog_(normalized);
+}
+
+function projectRunQualityFieldsForSummaryRow_(entry) {
+  const rowType = String(entry && entry.row_type || '');
+  const stage = String(entry && entry.stage || '');
+  if (rowType !== 'summary' || stage !== 'runEdgeBoard') return;
+
+  const signalSummary = parseLogJsonLike_(entry.signal_decision_summary, {});
+  const safeSignalSummary = signalSummary && typeof signalSummary === 'object' ? signalSummary : {};
+  const qualityContract = safeSignalSummary.quality_contract && typeof safeSignalSummary.quality_contract === 'object'
+    ? safeSignalSummary.quality_contract
+    : {};
+
+  if (entry.feature_completeness === undefined || entry.feature_completeness === null || entry.feature_completeness === '') {
+    if (qualityContract.feature_completeness !== undefined && qualityContract.feature_completeness !== null && qualityContract.feature_completeness !== '') {
+      entry.feature_completeness = qualityContract.feature_completeness;
+    }
+  }
+  if (entry.edge_volatility === undefined || entry.edge_volatility === null || entry.edge_volatility === '') {
+    if (qualityContract.edge_volatility !== undefined && qualityContract.edge_volatility !== null && qualityContract.edge_volatility !== '') {
+      entry.edge_volatility = qualityContract.edge_volatility;
+    }
+  }
+  if (entry.matched_events === undefined || entry.matched_events === null || entry.matched_events === '') {
+    if (entry.matched !== undefined && entry.matched !== null && entry.matched !== '') {
+      entry.matched_events = entry.matched;
+    }
+  }
+  if (entry.scored_signals === undefined || entry.scored_signals === null || entry.scored_signals === '') {
+    if (entry.signals_scored !== undefined && entry.signals_scored !== null && entry.signals_scored !== '') {
+      entry.scored_signals = entry.signals_scored;
+    } else if (safeSignalSummary.scored_count !== undefined && safeSignalSummary.scored_count !== null && safeSignalSummary.scored_count !== '') {
+      entry.scored_signals = safeSignalSummary.scored_count;
+    }
+  }
+}
+
+function emitRunQualityMissingFieldGuardLog_(entry) {
+  const rowType = String(entry && entry.row_type || '');
+  const stage = String(entry && entry.stage || '');
+  if (rowType !== 'summary' || stage !== 'runEdgeBoard') return;
+
+  const requiredFields = ['feature_completeness', 'edge_volatility', 'matched_events', 'scored_signals'];
+  const missingFields = requiredFields.filter((field) => {
+    const value = entry[field];
+    return value === undefined || value === null || value === '';
+  });
+  if (missingFields.length === 0) return;
+
+  appendLogRow_({
+    row_type: 'ops',
+    run_id: String(entry.run_id || ''),
+    stage: 'run_quality_write_guard',
+    status: 'warning',
+    reason_code: 'run_quality_fields_missing_at_write_time',
+    message: JSON.stringify({
+      run_id: String(entry.run_id || ''),
+      stage: stage,
+      missing_fields: missingFields,
+    }),
+  });
 }
 
 function validateRunSummaryQualityContract_(entry) {
