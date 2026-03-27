@@ -674,6 +674,7 @@ function runEdgeBoard() {
       cooldown_suppressed_count: Number((signalStage.summary && signalStage.summary.reason_codes && signalStage.summary.reason_codes.cooldown_suppressed) || 0),
       edge_quality_diagnostics: signalDecisionSummary && signalDecisionSummary.edge_quality ? signalDecisionSummary.edge_quality : {},
     };
+    const noHitDiagnostics = resolveRunNoHitDiagnostics_(runHealthMetrics, runQualityContract);
     const dataNotActionableState = updateRunHealthDataNotActionableState_(runId, runHealthMetrics, config);
     const noMatchFromOddsState = updateRunHealthNoMatchFromOddsState_(runId, runHealthMetrics, config);
     const runHealthDiagnostics = evaluateRunHealthDiagnostics_(Object.assign({}, runHealthMetrics, {
@@ -1020,6 +1021,12 @@ function runEdgeBoard() {
       edge_volatility: runQualityContract.edge_volatility,
       matched_events: runQualityContract.matched_events,
       scored_signals: runQualityContract.scored_signals,
+      no_hit_no_events_from_source_count: noHitDiagnostics.no_hit_no_events_from_source_count,
+      no_hit_events_outside_time_window_count: noHitDiagnostics.no_hit_events_outside_time_window_count,
+      no_hit_tournament_filter_excluded_count: noHitDiagnostics.no_hit_tournament_filter_excluded_count,
+      no_hit_odds_present_but_match_failed_count: noHitDiagnostics.no_hit_odds_present_but_match_failed_count,
+      no_hit_schema_invalid_metrics_count: noHitDiagnostics.no_hit_schema_invalid_metrics_count,
+      no_hit_terminal_reason_code: noHitDiagnostics.no_hit_terminal_reason_code,
       stake_mode_used: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
         ? signalDecisionSummary.stake_policy_summary.stake_mode_used
         : '',
@@ -2193,6 +2200,67 @@ function deriveSignalUpstreamGateReason_(oddsStage, scheduleStage, matchStage, p
   return {
     reason: '',
     inputs: upstreamInputs,
+  };
+}
+
+function resolveRunNoHitDiagnostics_(metrics, runQualityContract) {
+  const safeMetrics = metrics && typeof metrics === 'object' ? metrics : {};
+  const safeQuality = runQualityContract && typeof runQualityContract === 'object' ? runQualityContract : {};
+  const oddsReasonCodes = safeMetrics.odds_reason_codes && typeof safeMetrics.odds_reason_codes === 'object'
+    ? safeMetrics.odds_reason_codes
+    : {};
+  const scheduleReasonCodes = safeMetrics.schedule_reason_codes && typeof safeMetrics.schedule_reason_codes === 'object'
+    ? safeMetrics.schedule_reason_codes
+    : {};
+  const matchReasonCodes = safeMetrics.match_reason_codes && typeof safeMetrics.match_reason_codes === 'object'
+    ? safeMetrics.match_reason_codes
+    : {};
+
+  const fetchedOdds = Math.max(0, Number(safeMetrics.fetched_odds || 0));
+  const matched = Math.max(0, Number(safeMetrics.matched || 0));
+  const rejectedTournamentCount = Number(scheduleReasonCodes.rejected_wta125 || 0)
+    + Number(scheduleReasonCodes.rejected_wta250 || 0)
+    + Number(scheduleReasonCodes.rejected_itf || 0)
+    + Number(scheduleReasonCodes.rejected_other_tier || 0)
+    + Number(scheduleReasonCodes.rejected_unknown_competition || 0);
+  const outsideWindowCount = Number(oddsReasonCodes.odds_refresh_skipped_outside_window || 0)
+    + Number(scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver || 0)
+    + Number(scheduleReasonCodes.schedule_fetch_skipped_outside_window_credit_saver_cache_expired || 0);
+  const schemaInvalidMetricsCount = ['feature_completeness', 'matched_events', 'scored_signals']
+    .reduce(function (acc, field) {
+      const value = safeQuality[field];
+      return acc + (value === null || value === undefined || value === '' ? 1 : 0);
+    }, 0);
+
+  const counters = {
+    no_events_from_source: fetchedOdds === 0 ? 1 : 0,
+    events_outside_time_window: outsideWindowCount > 0 ? 1 : 0,
+    tournament_filter_excluded: rejectedTournamentCount > 0 ? 1 : 0,
+    odds_present_but_match_failed: fetchedOdds > 0 && matched === 0 ? 1 : 0,
+    schema_invalid_metrics: schemaInvalidMetricsCount > 0 ? 1 : 0,
+  };
+  const ordered = [
+    'schema_invalid_metrics',
+    'odds_present_but_match_failed',
+    'events_outside_time_window',
+    'tournament_filter_excluded',
+    'no_events_from_source',
+  ];
+  let dominant = 'none';
+  for (let i = 0; i < ordered.length; i += 1) {
+    if (Number(counters[ordered[i]] || 0) > 0) {
+      dominant = ordered[i];
+      break;
+    }
+  }
+
+  return {
+    no_hit_no_events_from_source_count: Number(counters.no_events_from_source || 0),
+    no_hit_events_outside_time_window_count: Number(counters.events_outside_time_window || 0),
+    no_hit_tournament_filter_excluded_count: Number(counters.tournament_filter_excluded || 0),
+    no_hit_odds_present_but_match_failed_count: Number(counters.odds_present_but_match_failed || 0),
+    no_hit_schema_invalid_metrics_count: Number(counters.schema_invalid_metrics || 0),
+    no_hit_terminal_reason_code: dominant,
   };
 }
 

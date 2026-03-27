@@ -11,6 +11,13 @@ TARGETS = {
     "stageFetchPlayerStats": ["STATS_ENR", "STATS_MISS_A", "STATS_MISS_B"],
     "stageGenerateSignals": ["missing_match", "missing_stats", "EDGE_LOW"],
 }
+NO_HIT_COUNTER_FIELDS = (
+    "no_hit_no_events_from_source_count",
+    "no_hit_events_outside_time_window_count",
+    "no_hit_tournament_filter_excluded_count",
+    "no_hit_odds_present_but_match_failed_count",
+    "no_hit_schema_invalid_metrics_count",
+)
 DISALLOWED_RUN_REASON_CODES = {"run_debounced_skip", "run_locked_skip"}
 REQUIRED_STAGE_CHAIN = (
     "stageFetchOdds",
@@ -157,6 +164,20 @@ def _pick_run_summary(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Any]
         if str(row.get("row_type") or "") == "summary" and str(row.get("stage") or "") == "runEdgeBoard":
             last = row
     return last
+
+
+def _no_hit_counters(summary: Dict[str, Any]) -> Dict[str, int]:
+    counters: Dict[str, int] = {}
+    for field in NO_HIT_COUNTER_FIELDS:
+        try:
+            counters[field] = int(float(summary.get(field, 0) or 0))
+        except Exception:
+            counters[field] = 0
+    return counters
+
+
+def _no_hit_terminal_reason(summary: Dict[str, Any]) -> str:
+    return str(summary.get("no_hit_terminal_reason_code") or "none")
 
 
 def _summary_stake_policy_enabled(summary: Dict[str, Any]) -> bool | None:
@@ -445,6 +466,19 @@ def compare_rows(
 
     if not delta_pairs:
         lines.append("| - | - | - | - | - | - | - | 0 |")
+
+    no_hit_a = _no_hit_counters(_pick_run_summary(rows, run_a))
+    no_hit_b = _no_hit_counters(_pick_run_summary(rows, run_b))
+    lines.append("\n## runEdgeBoard no-hit reason counters")
+    lines.append("| counter | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    for field in NO_HIT_COUNTER_FIELDS:
+        va = int(no_hit_a.get(field, 0))
+        vb = int(no_hit_b.get(field, 0))
+        lines.append(f"| {field} | {va} | {vb} | {vb-va:+d} |")
+    lines.append("\n## runEdgeBoard terminal no-hit reason")
+    lines.append(f"- successful: `{_no_hit_terminal_reason(_pick_run_summary(rows, run_a))}`")
+    lines.append(f"- degraded: `{_no_hit_terminal_reason(_pick_run_summary(rows, run_b))}`")
 
     stats_a = _player_stats_snapshot(rows, run_a)
     stats_b = _player_stats_snapshot(rows, run_b)
