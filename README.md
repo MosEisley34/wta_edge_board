@@ -344,6 +344,14 @@ scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_succe
 scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_success> <run_degraded> <live_runtime_dir_or_files>
 ```
 
+For a single-command orchestration flow that runs precheck + both compare lanes + edge-quality evaluation, use:
+
+```bash
+scripts/run_compare_orchestration.sh --out-dir ./exports_live <run_success> <run_degraded> <live_runtime_dir_or_files>
+```
+
+`run_compare_orchestration.sh` enforces an early candidate `runEdgeBoard` feature-completeness gate immediately after parity precheck. If candidate completeness is missing/non-numeric/below floor, it exits early with a structured report containing `reason_code=FEATURE_COMPLETENESS_BELOW_FLOOR` and skips downstream comparisons by default. For debugging-only runs, pass `--force-full-compare` to preserve full downstream execution despite the gate result.
+
 Operator/team usage policy:
 - Do not run `scripts/compare_run_diagnostics.py` or `scripts/compare_run_metrics.py` directly in runbook examples.
 - Route compare commands through the corresponding `_preflight.sh` wrapper.
