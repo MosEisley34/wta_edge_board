@@ -353,6 +353,8 @@ function appendLogRow_(entry) {
   const normalized = normalizeLogEntryForAppend_(entry || {});
   const stakeModeValidation = validateStakeModeUsedForWrite_(normalized);
   projectRunQualityFieldsForSummaryRow_(normalized);
+  normalizeFeatureCompletenessForWrite_(normalized);
+  validateRunLogRowSchemaForWrite_(normalized);
   emitRunQualityMissingFieldGuardLog_(normalized);
   validateRunSummaryQualityContract_(normalized);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -382,6 +384,10 @@ function appendLogRow_(entry) {
     normalized.edge_volatility === null || normalized.edge_volatility === undefined ? '' : normalized.edge_volatility,
     normalized.matched_events === null || normalized.matched_events === undefined ? '' : normalized.matched_events,
     normalized.scored_signals === null || normalized.scored_signals === undefined ? '' : normalized.scored_signals,
+    sanitizeForLog_(normalized.feature_completeness_detail || ''),
+    sanitizeForLog_(normalized.reason_alias_payload || ''),
+    sanitizeForLog_(normalized.schema_violation || ''),
+    sanitizeForLog_(normalized.field_type_error || ''),
     normalized.stake_mode_used || '',
     normalized.raw_risk_mxn === null || normalized.raw_risk_mxn === undefined ? '' : normalized.raw_risk_mxn,
     normalized.raw_target_win_mxn === null || normalized.raw_target_win_mxn === undefined ? '' : normalized.raw_target_win_mxn,
@@ -446,9 +452,65 @@ function appendRunLogMappingErrorRow_(sheet, runId, validation) {
     0, 0, 0, 0, 0, 0,
     '{}',
     0, 0,
+    '', '', '', '',
     '', '', '', '', '',
     '[]',
   ]);
+}
+
+function normalizeFeatureCompletenessForWrite_(entry) {
+  if (!entry || typeof entry !== 'object') return;
+  if (!Object.prototype.hasOwnProperty.call(entry, 'feature_completeness')) return;
+
+  const rawValue = entry.feature_completeness;
+  if (rawValue === null || rawValue === undefined || rawValue === '') {
+    entry.feature_completeness = null;
+    return;
+  }
+
+  const rawType = typeof rawValue;
+  if (rawType === 'number') {
+    if (Number.isFinite(rawValue)) return;
+    entry.feature_completeness = null;
+    entry.schema_violation = 'run_log_row_schema_violation';
+    entry.field_type_error = 'feature_completeness_non_finite_number';
+    return;
+  }
+
+  let aliasPayload = null;
+  if (rawType === 'object') {
+    aliasPayload = rawValue;
+  } else if (rawType === 'string') {
+    const trimmed = String(rawValue || '').trim();
+    if (trimmed && (trimmed.indexOf('{') === 0 || trimmed.indexOf('[') === 0)) {
+      aliasPayload = parseLogJsonLike_(trimmed, null);
+    }
+  }
+
+  if (aliasPayload !== null) {
+    entry.feature_completeness_detail = sanitizeForLog_(JSON.stringify(aliasPayload));
+    entry.reason_alias_payload = sanitizeForLog_(JSON.stringify(aliasPayload));
+  }
+
+  entry.feature_completeness = null;
+  entry.schema_violation = 'run_log_row_schema_violation';
+  entry.field_type_error = 'feature_completeness_expected_numeric_or_null';
+}
+
+function validateRunLogRowSchemaForWrite_(entry) {
+  if (!entry || typeof entry !== 'object') return;
+  const issues = [];
+  const featureValue = entry.feature_completeness;
+  if (featureValue !== null && featureValue !== undefined && typeof featureValue !== 'number') {
+    issues.push('feature_completeness_expected_numeric_or_null');
+  } else if (typeof featureValue === 'number' && !Number.isFinite(featureValue)) {
+    issues.push('feature_completeness_non_finite_number');
+  }
+
+  if (issues.length === 0) return;
+  entry.feature_completeness = null;
+  entry.schema_violation = 'run_log_row_schema_violation';
+  entry.field_type_error = issues.join(',');
 }
 
 function projectRunQualityFieldsForSummaryRow_(entry) {

@@ -112,8 +112,47 @@ def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     ),
                     file=sys.stderr,
                 )
+        _sanitize_feature_completeness_shape(converted, row_number=idx)
         normalized.append(converted)
     return normalized
+
+
+def _sanitize_feature_completeness_shape(row: dict[str, Any], row_number: int) -> None:
+    value = row.get("feature_completeness")
+    if value is None or value == "":
+        row["feature_completeness"] = None
+        return
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return
+
+    detail = None
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if trimmed.startswith("{") or trimmed.startswith("["):
+            try:
+                detail = json.loads(trimmed)
+            except Exception:
+                detail = {"raw": trimmed}
+    elif isinstance(value, dict):
+        detail = value
+
+    if detail is not None:
+        row["feature_completeness_detail"] = detail
+        row["reason_alias_payload"] = detail
+
+    row["feature_completeness"] = None
+    row["schema_violation"] = "run_log_row_schema_violation"
+    row["field_type_error"] = "feature_completeness_expected_numeric_or_null"
+    run_id = str(row.get("run_id") or "")
+    stage = str(row.get("stage") or "")
+    print(
+        (
+            "Warning: Run_Log schema violation "
+            f"run_id={run_id or '<missing>'} stage={stage or '<missing>'} "
+            f"field=feature_completeness row={row_number}"
+        ),
+        file=sys.stderr,
+    )
 
 
 def _write_json_rows(path: Path, rows: list[dict[str, Any]]) -> None:

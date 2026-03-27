@@ -160,6 +160,7 @@ const RUN_LOG_HEADERS = [
   'row_type', 'run_id', 'stage', 'started_at', 'ended_at', 'status', 'reason_code', 'message',
   'fetched_odds', 'fetched_schedule', 'allowed_tournaments', 'matched', 'unmatched', 'signals_found',
   'feature_completeness', 'edge_volatility', 'matched_events', 'scored_signals',
+  'feature_completeness_detail', 'reason_alias_payload', 'schema_violation', 'field_type_error',
   'stake_mode_used', 'raw_risk_mxn', 'raw_target_win_mxn', 'final_risk_mxn', 'final_units',
   'stake_adjustment_reason', 'min_bet_mxn', 'bucket_step_mxn', 'unit_size_mxn',
   'signals_scored', 'signal_decision_summary', 'rejection_codes', 'cooldown_suppressed', 'duplicate_suppressed',

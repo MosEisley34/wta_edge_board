@@ -79,6 +79,39 @@ class MirrorRuntimeCsvToJsonTypingTests(unittest.TestCase):
             self.assertIn("stage=runEdgeBoard", proc.stderr)
             self.assertIn("field=matched_events", proc.stderr)
 
+    def test_feature_completeness_schema_violation_is_sanitized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (root / "Run_Log.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["run_id", "stage", "feature_completeness", "matched_events", "scored_signals"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "run_id": "run-3",
+                        "stage": "runEdgeBoard",
+                        "feature_completeness": "{\"alias\":\"legacy_payload\"}",
+                        "matched_events": "2",
+                        "scored_signals": "1",
+                    }
+                )
+            (root / "State.csv").write_text("run_id,state_key,state_value\nrun-3,k,v\n", encoding="utf-8")
+
+            proc = subprocess.run(
+                ["python3", str(SCRIPT), "--input-dir", str(root)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc.returncode, msg=proc.stderr)
+            payload = json.loads((root / "Run_Log.json").read_text(encoding="utf-8"))
+            self.assertIsNone(payload[0]["feature_completeness"])
+            self.assertEqual("run_log_row_schema_violation", payload[0]["schema_violation"])
+            self.assertIn("feature_completeness_expected_numeric_or_null", payload[0]["field_type_error"])
+
 
 if __name__ == "__main__":
     unittest.main()
