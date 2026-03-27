@@ -253,10 +253,18 @@ def _apply_quality_contract_projection(adapted: dict[str, Any]) -> dict[str, Any
         row["feature_completeness"] = quality_contract.get("feature_completeness")
     if row.get("edge_volatility") in (None, "") and quality_contract.get("edge_volatility") not in (None, ""):
         row["edge_volatility"] = quality_contract.get("edge_volatility")
+    if row.get("matched_events") in (None, "") and quality_contract.get("matched_events") not in (None, ""):
+        row["matched_events"] = quality_contract.get("matched_events")
+    if row.get("scored_signals") in (None, "") and quality_contract.get("scored_signals") not in (None, ""):
+        row["scored_signals"] = quality_contract.get("scored_signals")
     if quality_contract.get("feature_completeness_reason_code") not in (None, ""):
         row["feature_completeness_reason_code"] = str(quality_contract.get("feature_completeness_reason_code"))
     if quality_contract.get("edge_volatility_reason_code") not in (None, ""):
         row["edge_volatility_reason_code"] = str(quality_contract.get("edge_volatility_reason_code"))
+    if quality_contract.get("matched_events_reason_code") not in (None, ""):
+        row["matched_events_reason_code"] = str(quality_contract.get("matched_events_reason_code"))
+    if quality_contract.get("scored_signals_reason_code") not in (None, ""):
+        row["scored_signals_reason_code"] = str(quality_contract.get("scored_signals_reason_code"))
     return row
 
 

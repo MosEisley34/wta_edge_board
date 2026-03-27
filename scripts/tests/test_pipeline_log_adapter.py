@@ -202,6 +202,10 @@ class PipelineLogAdapterTests(unittest.TestCase):
                             "feature_completeness_reason_code": "resolved_rate_from_player_stats_coverage",
                             "edge_volatility": 0.01,
                             "edge_volatility_reason_code": "edge_volatility_abs_delta_p95",
+                            "matched_events": 13,
+                            "matched_events_reason_code": "stage_generate_signals_input_count",
+                            "scored_signals": 9,
+                            "scored_signals_reason_code": "signal_decision_summary_scored_count",
                         }
                     }
                 ),
@@ -209,10 +213,14 @@ class PipelineLogAdapterTests(unittest.TestCase):
         )
         self.assertEqual(0.75, adapted["feature_completeness"])
         self.assertEqual(0.01, adapted["edge_volatility"])
+        self.assertEqual(13, adapted["matched_events"])
+        self.assertEqual(9, adapted["scored_signals"])
         self.assertEqual(
             "resolved_rate_from_player_stats_coverage", adapted["feature_completeness_reason_code"]
         )
         self.assertEqual("edge_volatility_abs_delta_p95", adapted["edge_volatility_reason_code"])
+        self.assertEqual("stage_generate_signals_input_count", adapted["matched_events_reason_code"])
+        self.assertEqual("signal_decision_summary_scored_count", adapted["scored_signals_reason_code"])
 
 
 

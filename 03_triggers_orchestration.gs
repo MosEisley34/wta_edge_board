@@ -569,6 +569,7 @@ function runEdgeBoard() {
         matchMapRejectedCount: matchStage.rejectedCount,
         matchMapDiagnosticRecordsWritten: matchStage.diagnosticRecordsWritten,
         signals: signalStage.rows,
+        signalQualityMetrics: signalStage.signalQualityMetrics,
       });
     });
     appendStageLog_(runId, persistStage.summary);
@@ -1015,6 +1016,10 @@ function runEdgeBoard() {
       odds_non_actionable_count: runHealthMetrics.odds_non_actionable_count,
       signals_found: signalStage.sentCount,
       signals_scored: Number(signalStage.scoredCount || 0),
+      feature_completeness: runQualityContract.feature_completeness,
+      edge_volatility: runQualityContract.edge_volatility,
+      matched_events: runQualityContract.matched_events,
+      scored_signals: runQualityContract.scored_signals,
       stake_mode_used: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
         ? signalDecisionSummary.stake_policy_summary.stake_mode_used
         : '',
@@ -1049,6 +1054,27 @@ function runEdgeBoard() {
       cooldown_suppressed: signalStage.cooldownSuppressedCount,
       duplicate_suppressed: signalStage.duplicateSuppressedCount,
     });
+
+    const unavailableQualityMetrics = ['feature_completeness', 'matched_events', 'scored_signals']
+      .map((field) => ({
+        field: field,
+        value: runQualityContract[field],
+        reason_code: runQualityContract[field + '_reason_code'] || 'unknown_unavailable_reason',
+      }))
+      .filter((entry) => entry.value === null || entry.value === undefined);
+    if (unavailableQualityMetrics.length > 0) {
+      appendLogRow_({
+        row_type: 'ops',
+        run_id: runId,
+        stage: 'run_quality_metric_availability',
+        status: 'warning',
+        reason_code: 'run_quality_metric_unavailable',
+        message: JSON.stringify({
+          run_id: runId,
+          unavailable_metrics: unavailableQualityMetrics,
+        }),
+      });
+    }
 
     const parityContractStatus = buildRunExportParityContractState_(runId, requiredParityStages, {
       latest_run_ids: [runId],
@@ -1155,10 +1181,36 @@ function buildRunQualityContractMetrics_(playerStatsSummary, signalDecisionSumma
   let featureCompleteness = Number.isFinite(resolvedRate) ? Math.max(0, Math.min(1, resolvedRate)) : null;
   let featureReasonCode = 'resolved_rate_from_player_stats_coverage';
   if (!Number.isFinite(featureCompleteness)) {
-    featureCompleteness = 0;
+    featureCompleteness = null;
     featureReasonCode = Number(playerSummary.input_count || 0) === 0
       ? 'upstream_stage_empty_player_stats_default'
-      : 'missing_player_stats_coverage_default';
+      : 'missing_player_stats_coverage_metric';
+  }
+
+  let matchedEvents = Number(stageSummary.input_count);
+  let matchedEventsReasonCode = 'stage_generate_signals_input_count';
+  if (!Number.isFinite(matchedEvents)) {
+    const matchedFromSummary = Number(signalSummary.matched_count);
+    if (Number.isFinite(matchedFromSummary)) {
+      matchedEvents = matchedFromSummary;
+      matchedEventsReasonCode = 'signal_decision_summary_matched_count';
+    } else {
+      matchedEvents = null;
+      matchedEventsReasonCode = 'missing_matched_events_metric';
+    }
+  }
+
+  let scoredSignals = Number(signalSummary.scored_count);
+  let scoredSignalsReasonCode = 'signal_decision_summary_scored_count';
+  if (!Number.isFinite(scoredSignals)) {
+    const scoredFromStage = Number(stageSummary.output_count);
+    if (Number.isFinite(scoredFromStage)) {
+      scoredSignals = scoredFromStage;
+      scoredSignalsReasonCode = 'stage_generate_signals_output_count';
+    } else {
+      scoredSignals = null;
+      scoredSignalsReasonCode = 'missing_scored_signals_metric';
+    }
   }
 
   const edgeQuality = signalSummary.edge_quality && typeof signalSummary.edge_quality === 'object'
@@ -1182,10 +1234,14 @@ function buildRunQualityContractMetrics_(playerStatsSummary, signalDecisionSumma
 
   return {
     schema: 'run_quality_contract_v1',
-    feature_completeness: roundNumber_(featureCompleteness, 4),
+    feature_completeness: Number.isFinite(featureCompleteness) ? roundNumber_(featureCompleteness, 4) : null,
     feature_completeness_reason_code: featureReasonCode,
     edge_volatility: roundNumber_(Math.abs(edgeVolatility), 4),
     edge_volatility_reason_code: edgeReasonCode,
+    matched_events: Number.isFinite(matchedEvents) ? roundNumber_(matchedEvents, 0) : null,
+    matched_events_reason_code: matchedEventsReasonCode,
+    scored_signals: Number.isFinite(scoredSignals) ? roundNumber_(scoredSignals, 0) : null,
+    scored_signals_reason_code: scoredSignalsReasonCode,
   };
 }
 
