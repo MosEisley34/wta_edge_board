@@ -26,6 +26,11 @@ RUN_LOG_TYPED_FIELDS: dict[str, type] = {
     "feature_completeness": float,
     "matched_events": int,
     "scored_signals": int,
+    "no_hit_no_events_from_source_count": int,
+    "no_hit_events_outside_time_window_count": int,
+    "no_hit_tournament_filter_excluded_count": int,
+    "no_hit_odds_present_but_match_failed_count": int,
+    "no_hit_schema_invalid_metrics_count": int,
 }
 
 STANDARD_COMPARE_RUNBOOK_PATH = "runbook/README.md#phase-2--baseline-vs-policy-on-comparison-on-matched-windows"
@@ -793,6 +798,19 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
             round_to_min=bool(config.stake_policy_round_to_min),
         ),
     )
+    no_hit_counters = {}
+    for field in (
+        "no_hit_no_events_from_source_count",
+        "no_hit_events_outside_time_window_count",
+        "no_hit_tournament_filter_excluded_count",
+        "no_hit_odds_present_but_match_failed_count",
+        "no_hit_schema_invalid_metrics_count",
+    ):
+        try:
+            no_hit_counters[field] = int(float(summary.get(field, 0) or 0))
+        except (TypeError, ValueError):
+            no_hit_counters[field] = 0
+    no_hit_terminal_reason_code = str(summary.get("no_hit_terminal_reason_code") or "none")
     return {
         "run_id": run_id,
         "feature_completeness": feature_completeness,
@@ -805,6 +823,8 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
             "tournament": _volatility_context_key(summary)[0],
             "time_block": _volatility_context_key(summary)[1],
         },
+        "no_hit_counters": no_hit_counters,
+        "no_hit_terminal_reason_code": no_hit_terminal_reason_code,
         "schema_markers": schema_markers,
         "stake_policy_summary": stake_policy_summary,
     }
@@ -999,6 +1019,10 @@ def evaluate_edge_quality_gate(
         item.startswith("missing_edge_volatility_metric") for item in failures
     )
     if failures:
+        failures.append(
+            "dominant_no_hit_reason "
+            f"(candidate={candidate.get('no_hit_terminal_reason_code', 'none')})"
+        )
         status = "schema_missing" if has_schema_failure else "fail"
     elif has_insufficient_sample_warning:
         status = "insufficient_sample"

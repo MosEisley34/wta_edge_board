@@ -30,6 +30,11 @@ RUN_LOG_TYPE_RULES: dict[str, type] = {
     "feature_completeness": float,
     "matched_events": int,
     "scored_signals": int,
+    "no_hit_no_events_from_source_count": int,
+    "no_hit_events_outside_time_window_count": int,
+    "no_hit_tournament_filter_excluded_count": int,
+    "no_hit_odds_present_but_match_failed_count": int,
+    "no_hit_schema_invalid_metrics_count": int,
 }
 
 

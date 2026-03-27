@@ -12,6 +12,13 @@ from pipeline_log_adapter import REASON_CODE_ALIAS_DICTIONARIES, REASON_CODE_ALI
 from stake_policy import StakePolicyConfig, summarize_run_stake_policy
 
 METRICS = ["MATCH_CT", "NO_P_MATCH", "REJ_CT", "STATS_ENR", "STATS_MISS_A", "STATS_MISS_B"]
+NO_HIT_COUNTER_FIELDS = (
+    "no_hit_no_events_from_source_count",
+    "no_hit_events_outside_time_window_count",
+    "no_hit_tournament_filter_excluded_count",
+    "no_hit_odds_present_but_match_failed_count",
+    "no_hit_schema_invalid_metrics_count",
+)
 DISALLOWED_RUN_REASON_CODES = {"run_debounced_skip", "run_locked_skip"}
 REQUIRED_STAGE_CHAIN = (
     "stageFetchOdds",
@@ -273,6 +280,20 @@ def _stage_durations(summary: Dict[str, Any]) -> Dict[str, int]:
             continue
         durations[name] = int(stage.get("duration_ms", 0) or 0)
     return durations
+
+
+def _no_hit_counters(summary: Dict[str, Any]) -> Dict[str, int]:
+    counters: Dict[str, int] = {}
+    for field in NO_HIT_COUNTER_FIELDS:
+        try:
+            counters[field] = int(float(summary.get(field, 0) or 0))
+        except (TypeError, ValueError):
+            counters[field] = 0
+    return counters
+
+
+def _no_hit_terminal_reason(summary: Dict[str, Any]) -> str:
+    return str(summary.get("no_hit_terminal_reason_code") or "none")
 
 
 def _parse_reason_metadata(value: Any) -> Dict[str, Any]:
@@ -610,6 +631,24 @@ def build_report(
         )
     )
     lines.extend(_format_side_by_side("per_stage_duration_ms", run_a, run_b, _stage_durations(summary_a), _stage_durations(summary_b)))
+    lines.extend(
+        _format_side_by_side(
+            "run_no_hit_reason_counters",
+            run_a,
+            run_b,
+            _no_hit_counters(summary_a),
+            _no_hit_counters(summary_b),
+        )
+    )
+    lines.extend(
+        _format_side_by_side(
+            "run_no_hit_terminal_reason",
+            run_a,
+            run_b,
+            {_no_hit_terminal_reason(summary_a): 1},
+            {_no_hit_terminal_reason(summary_b): 1},
+        )
+    )
     player_stats_a = _player_stats_comparator(summary_a)
     player_stats_b = _player_stats_comparator(summary_b)
 
