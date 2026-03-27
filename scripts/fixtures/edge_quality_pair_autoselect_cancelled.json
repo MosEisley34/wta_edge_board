@@ -1,0 +1,35 @@
+[
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-prev-valid",
+    "ended_at": "2026-03-24T08:00:00Z",
+    "status": "ok",
+    "feature_completeness": 0.91,
+    "edge_volatility": 0.02,
+    "signal_decision_summary": "{\"suppression_counts\":{}}",
+    "stage_summaries": "[{\"stage\":\"stageGenerateSignals\",\"status\":\"ok\",\"output_count\":12,\"input_count\":12}]"
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-mid-cancelled",
+    "ended_at": "2026-03-24T09:00:00Z",
+    "status": "cancelled",
+    "feature_completeness": 0.50,
+    "edge_volatility": 0.01,
+    "signal_decision_summary": "{\"suppression_counts\":{}}",
+    "stage_summaries": "[{\"stage\":\"stageGenerateSignals\",\"status\":\"cancelled_by_operator\",\"output_count\":0,\"input_count\":0}]"
+  },
+  {
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "run_id": "run-post-valid",
+    "ended_at": "2026-03-24T10:00:00Z",
+    "status": "ok",
+    "feature_completeness": 0.93,
+    "edge_volatility": 0.02,
+    "signal_decision_summary": "{\"suppression_counts\":{}}",
+    "stage_summaries": "[{\"stage\":\"stageGenerateSignals\",\"status\":\"ok\",\"output_count\":13,\"input_count\":13}]"
+  }
+]

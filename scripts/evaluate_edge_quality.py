@@ -219,17 +219,97 @@ def _resolve_compare_set_policy_tags(
 
 
 def _latest_run_ids(rows: list[dict[str, Any]]) -> list[str]:
-    ordered: list[str] = []
+    selected, _ = _select_latest_run_ids(rows, include_cancelled=False, diagnostics_limit=0)
+    return selected
+
+
+def _contains_cancellation_marker(value: Any) -> bool:
+    if value in (None, ""):
+        return False
+    text = str(value).strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in ("cancelled", "canceled", "cancel"))
+
+
+def _summary_has_cancellation_marker(summary_row: dict[str, Any]) -> tuple[bool, list[str]]:
+    fields_to_check = (
+        "status",
+        "stage_status",
+        "run_status",
+        "reason_code",
+        "message",
+    )
+    diagnostics: list[str] = []
+    for field in fields_to_check:
+        raw_value = summary_row.get(field)
+        if _contains_cancellation_marker(raw_value):
+            diagnostics.append(f"{field}={str(raw_value)!r}")
+
+    for stage in _extract_stage_summaries(summary_row):
+        stage_name = str(stage.get("stage") or "unknown_stage")
+        stage_status = stage.get("status")
+        if _contains_cancellation_marker(stage_status):
+            diagnostics.append(f"stage[{stage_name}].status={str(stage_status)!r}")
+        stage_reason_code = stage.get("reason_code")
+        if _contains_cancellation_marker(stage_reason_code):
+            diagnostics.append(f"stage[{stage_name}].reason_code={str(stage_reason_code)!r}")
+    return bool(diagnostics), diagnostics
+
+
+def _select_latest_run_ids(
+    rows: list[dict[str, Any]],
+    *,
+    include_cancelled: bool,
+    diagnostics_limit: int = 6,
+) -> tuple[list[str], list[str]]:
+    latest_summary_by_run: dict[str, dict[str, Any]] = {}
+    latest_ordered_run_ids: list[str] = []
     for row in rows:
         if str(row.get("row_type") or "") != "summary" or str(row.get("stage") or "") != "runEdgeBoard":
             continue
-        run_id = str(row.get("run_id") or "")
-        if run_id:
-            ordered.append(run_id)
-    unique = list(dict.fromkeys(ordered))
-    if len(unique) < 2:
-        raise ValueError("Need at least two runEdgeBoard summary rows to evaluate edge quality gate.")
-    return unique[-2:]
+        run_id = str(row.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        latest_summary_by_run[run_id] = row
+        if run_id in latest_ordered_run_ids:
+            latest_ordered_run_ids.remove(run_id)
+        latest_ordered_run_ids.append(run_id)
+
+    diagnostics: list[str] = []
+    selected_newest_first: list[str] = []
+    for run_id in reversed(latest_ordered_run_ids):
+        summary = latest_summary_by_run[run_id]
+        is_cancelled, cancellation_reasons = _summary_has_cancellation_marker(summary)
+        if is_cancelled and not include_cancelled:
+            diagnostics.append(
+                f"run_id={run_id} rejected (cancelled marker found: {', '.join(cancellation_reasons)})"
+            )
+            continue
+        if is_cancelled and include_cancelled:
+            diagnostics.append(
+                f"run_id={run_id} accepted (cancelled marker retained due to --include-cancelled)"
+            )
+        else:
+            diagnostics.append(f"run_id={run_id} accepted (latest non-cancelled candidate)")
+        selected_newest_first.append(run_id)
+        if len(selected_newest_first) >= 2:
+            break
+
+    if len(selected_newest_first) < 2:
+        diagnostic_suffix = ""
+        if diagnostics:
+            preview = diagnostics if diagnostics_limit <= 0 else diagnostics[: max(1, diagnostics_limit)]
+            diagnostic_suffix = " Diagnostics: " + " | ".join(preview)
+        raise ValueError(
+            "Need at least two runEdgeBoard summary rows to evaluate edge quality gate after cancellation filter."
+            + diagnostic_suffix
+        )
+
+    selected_oldest_first = list(reversed(selected_newest_first))
+    if diagnostics_limit > 0:
+        return selected_oldest_first, diagnostics[:diagnostics_limit]
+    return selected_oldest_first, diagnostics
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -1702,6 +1782,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("path", help="Run_Log file or export directory")
     parser.add_argument("--baseline-run-id", default="", help="Baseline run_id (defaults to second-latest)")
     parser.add_argument("--candidate-run-id", default="", help="Candidate run_id (defaults to latest)")
+    parser.add_argument(
+        "--auto-select-run-pair",
+        action="store_true",
+        help=(
+            "Auto-select PREV/POSTV run IDs from near-latest runEdgeBoard summaries and produce "
+            "a single pair compare report."
+        ),
+    )
+    parser.add_argument(
+        "--include-cancelled",
+        action="store_true",
+        help="Include runs marked as cancelled when auto-selecting PREV/POSTV run IDs.",
+    )
+    parser.add_argument(
+        "--selection-diagnostics-limit",
+        type=int,
+        default=6,
+        help="Maximum number of auto-selection acceptance/rejection diagnostics to include (default: 6).",
+    )
     parser.add_argument("--min-feature-completeness", type=float, default=0.60)
     parser.add_argument("--max-edge-volatility", type=float, default=0.03)
     parser.add_argument("--min-scored-signals-for-volatility", type=int, default=10)
@@ -1885,6 +1984,30 @@ def main() -> int:
 
     if args.baseline_run_id or args.candidate_run_id:
         parser.error("--baseline-run-id and --candidate-run-id must be provided together.")
+
+    if args.auto_select_run_pair:
+        run_pair, selection_diagnostics = _select_latest_run_ids(
+            rows,
+            include_cancelled=bool(args.include_cancelled),
+            diagnostics_limit=max(1, int(args.selection_diagnostics_limit)),
+        )
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id=run_pair[0],
+            candidate_run_id=run_pair[1],
+            config=config,
+            ordered_run_ids=_rolling_run_ids(rows),
+            fallback_recent_run_window_radius=max(1, int(args.fallback_recent_run_window_radius)),
+            fallback_min_neighboring_pairs=max(1, int(args.fallback_min_neighboring_pairs)),
+        )
+        report["selected_run_pair"] = {
+            "baseline_run_id": run_pair[0],
+            "candidate_run_id": run_pair[1],
+            "include_cancelled": bool(args.include_cancelled),
+        }
+        report["selection_diagnostics"] = selection_diagnostics
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 1 if report["status"] != "pass" else 0
 
     report = evaluate_rolling_edge_quality(
         rows=rows,

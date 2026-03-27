@@ -12,6 +12,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from evaluate_edge_quality import (  # noqa: E402
     DailyEdgeQualitySLOConfig,
     EdgeQualityGateConfig,
+    _select_latest_run_ids,
     evaluate_edge_quality_compare_report,
     evaluate_daily_edge_quality_slo,
     evaluate_edge_quality_gate,
@@ -116,6 +117,53 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual(1, proc.returncode)
         payload = json.loads(proc.stdout)
         self.assertEqual("fail", payload["status"])
+
+    def test_autoselect_run_pair_skips_cancelled_runs_by_default(self):
+        rows = load_run_log_rows(
+            str(ROOT / "scripts" / "fixtures" / "edge_quality_pair_autoselect_cancelled.json")
+        )
+        selected, diagnostics = _select_latest_run_ids(
+            rows,
+            include_cancelled=False,
+            diagnostics_limit=6,
+        )
+        self.assertEqual(["run-prev-valid", "run-post-valid"], selected)
+        self.assertTrue(
+            any("run_id=run-mid-cancelled rejected" in item for item in diagnostics),
+            msg=f"expected rejection diagnostics in {diagnostics}",
+        )
+
+    def test_autoselect_run_pair_can_include_cancelled_when_flag_enabled(self):
+        rows = load_run_log_rows(
+            str(ROOT / "scripts" / "fixtures" / "edge_quality_pair_autoselect_cancelled.json")
+        )
+        selected, diagnostics = _select_latest_run_ids(
+            rows,
+            include_cancelled=True,
+            diagnostics_limit=6,
+        )
+        self.assertEqual(["run-mid-cancelled", "run-post-valid"], selected)
+        self.assertTrue(
+            any("retained due to --include-cancelled" in item for item in diagnostics),
+            msg=f"expected include-cancelled diagnostics in {diagnostics}",
+        )
+
+    def test_cli_autoselect_emits_selection_diagnostics(self):
+        cmd = [
+            "python3",
+            str(ROOT / "scripts" / "evaluate_edge_quality.py"),
+            str(ROOT / "scripts" / "fixtures" / "edge_quality_pair_autoselect_cancelled.json"),
+            "--auto-select-run-pair",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(0, proc.returncode, msg=proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual("run-prev-valid", payload["selected_run_pair"]["baseline_run_id"])
+        self.assertEqual("run-post-valid", payload["selected_run_pair"]["candidate_run_id"])
+        self.assertTrue(
+            any("run_id=run-mid-cancelled rejected" in item for item in payload["selection_diagnostics"]),
+            msg=str(payload.get("selection_diagnostics")),
+        )
 
     def test_alias_envelope_csv_pass_derives_non_zero_feature_completeness(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_alias_pass.csv"))
