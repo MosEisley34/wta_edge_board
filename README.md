@@ -329,6 +329,7 @@ Threshold overrides (when explicitly approved for an incident) are available via
 Comparison scripts are now wired to enforce this same gate by default before they print reports. To bypass for emergency/manual debugging only, use:
 - `--skip-player-stats-coverage-gate`, or
 - `--player-stats-gate-override-reason <incident-reference>`.
+- `--player-stats-gate-override-reason` bypasses **coverage threshold checks only**; schema integrity faults still fail with `schema_missing`.
 
 Comparison scripts also enforce preflight sidecar parity for the current export batch (`run_compare_preflight.json` + `runtime_export_manifest.json`). If sidecar/manifest proves preflight was not run for the current batch, compare scripts exit non-zero.
 `run_compare_preflight.json` is required evidence for every comparison report; include it alongside diagnostics/metrics output artifacts in incident or release notes.

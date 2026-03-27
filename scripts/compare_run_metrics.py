@@ -771,14 +771,25 @@ def main() -> int:
             override_reason=str(args.player_stats_gate_override_reason or "").strip(),
         )
         gate_report = evaluate_player_stats_gate(rows, args.run_a, args.run_b, gate_config)
-        if gate_report.get("status") == "fail":
+        coverage_gate = str(gate_report.get("coverage_gate") or gate_report.get("status") or "unknown")
+        schema_integrity = str(gate_report.get("schema_integrity") or "pass")
+        print(
+            "# operator_summary: "
+            f"coverage_gate={coverage_gate} schema_integrity={schema_integrity}"
+        )
+        if gate_report.get("override_used") and schema_integrity == "fail":
+            print(
+                "# WARNING: player-stats coverage override is active, but schema faults remain; "
+                "result stays schema_missing (override does not bypass schema integrity)."
+            )
+        if gate_report.get("status") in {"fail", "schema_missing"}:
             if args.emit_debug_on_gate_fail:
                 print(_debug_gate_failure_report(rows, args.run_a, args.run_b, gate_report))
             else:
                 print(json.dumps(gate_report, indent=2, sort_keys=True))
             raise SystemExit(
-                "Player-stats coverage gate failed; aborting pre/post verdict publication. "
-                "Use --player-stats-gate-override-reason with approved incident context to bypass."
+                "Player-stats coverage/schema gate failed; aborting pre/post verdict publication. "
+                "Use --player-stats-gate-override-reason only for approved coverage-threshold exceptions."
             )
         if gate_report.get("status") == "override":
             print("# player_stats_coverage_gate: override active")

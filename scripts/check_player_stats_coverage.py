@@ -138,9 +138,14 @@ def _extract_player_stats_stage_summary(summary_row: dict[str, Any]) -> dict[str
 
 def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any]:
     stage_summary = _extract_player_stats_stage_summary(summary_row)
+    schema_failures: list[str] = []
+    if not stage_summary:
+        schema_failures.append("stageFetchPlayerStats summary missing")
     metadata = _parse_json_like(stage_summary.get("reason_metadata"), {})
     if not isinstance(metadata, dict):
         metadata = {}
+    if not metadata:
+        schema_failures.append("stageFetchPlayerStats reason_metadata missing")
     coverage = _parse_json_like(metadata.get("coverage"), {})
     if not isinstance(coverage, dict):
         coverage = {}
@@ -178,6 +183,8 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
         requested = _pick_int_optional(metadata, ("requested_player_count", "players_total"))
         resolved = _pick_int_optional(metadata, ("resolved_player_count", "resolved_with_usable_stats_count"))
         unresolved_total = _pick_int_optional(metadata, ("unresolved_player_count", "players_unresolved"))
+    if not has_nested_coverage and requested is None and resolved is None and unresolved_total is None:
+        schema_failures.append("player-stats coverage counters missing")
 
     if requested is None and resolved is not None and unresolved_total is not None:
         requested = resolved + unresolved_total
@@ -197,6 +204,7 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
         "requested": requested,
         "unresolved_total": unresolved_total,
         "resolved_rate": resolved_rate,
+        "schema_failures": schema_failures,
     }
 
 
@@ -221,6 +229,7 @@ def _run_snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         "resolved_rate": rate,
         "stats_missing_player_a": int(reason_codes.get("STATS_MISS_A", 0)),
         "stats_missing_player_b": int(reason_codes.get("STATS_MISS_B", 0)),
+        "schema_failures": list(coverage.get("schema_failures", [])),
     }
 
 
@@ -233,15 +242,20 @@ def evaluate_player_stats_gate(
     baseline = _run_snapshot(rows, baseline_run_id)
     candidate = _run_snapshot(rows, candidate_run_id)
 
-    failures: list[str] = []
+    coverage_failures: list[str] = []
+    schema_failures: list[str] = []
+    for run_label, snapshot in (("baseline", baseline), ("candidate", candidate)):
+        for failure in snapshot.get("schema_failures", []):
+            schema_failures.append(f"{run_label}_{failure}")
+
     if candidate["resolved_rate"] < config.min_resolved_rate:
-        failures.append(
+        coverage_failures.append(
             "player_stats_resolved_rate_below_min "
             f"(candidate={candidate['resolved_rate']:.4f} < min={config.min_resolved_rate:.4f})"
         )
 
     if candidate["unresolved_total"] > config.max_unresolved_players:
-        failures.append(
+        coverage_failures.append(
             "unresolved_players_above_max "
             f"(candidate={candidate['unresolved_total']} > max={config.max_unresolved_players})"
         )
@@ -249,22 +263,37 @@ def evaluate_player_stats_gate(
     delta_a = candidate["stats_missing_player_a"] - baseline["stats_missing_player_a"]
     delta_b = candidate["stats_missing_player_b"] - baseline["stats_missing_player_b"]
     if delta_a > config.max_missing_side_increase:
-        failures.append(
+        coverage_failures.append(
             "stats_missing_player_a_increase_exceeded "
             f"(delta={delta_a} > max_increase={config.max_missing_side_increase})"
         )
     if delta_b > config.max_missing_side_increase:
-        failures.append(
+        coverage_failures.append(
             "stats_missing_player_b_increase_exceeded "
             f"(delta={delta_b} > max_increase={config.max_missing_side_increase})"
         )
 
-    override_used = bool(config.override_reason and failures)
+    override_used = bool(config.override_reason and coverage_failures)
+    coverage_gate = "pass" if not coverage_failures else ("override" if override_used else "fail")
+    schema_integrity = "pass" if not schema_failures else "fail"
+    failures = [*schema_failures, *coverage_failures]
+    if schema_failures:
+        status = "schema_missing"
+    elif coverage_failures and override_used:
+        status = "override"
+    elif coverage_failures:
+        status = "fail"
+    else:
+        status = "pass"
+
     return {
-        "status": "pass" if not failures else ("override" if override_used else "fail"),
+        "status": status,
+        "reason_code": "schema_missing" if schema_failures else "",
         "gate_passed": not failures,
         "override_used": override_used,
         "override_reason": config.override_reason if override_used else "",
+        "coverage_gate": coverage_gate,
+        "schema_integrity": schema_integrity,
         "thresholds": {
             "min_resolved_rate": config.min_resolved_rate,
             "max_unresolved_players": config.max_unresolved_players,
@@ -278,6 +307,8 @@ def evaluate_player_stats_gate(
             "resolved_rate_pp": round((candidate["resolved_rate"] - baseline["resolved_rate"]) * 100.0, 2),
             "unresolved_total": candidate["unresolved_total"] - baseline["unresolved_total"],
         },
+        "schema_failures": schema_failures,
+        "coverage_failures": coverage_failures,
         "failures": failures,
     }
 
