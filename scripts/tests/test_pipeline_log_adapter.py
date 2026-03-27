@@ -11,6 +11,19 @@ from pipeline_log_adapter import adapt_run_log_record_for_legacy  # noqa: E402
 
 
 class PipelineLogAdapterTests(unittest.TestCase):
+    MIXED_QUALITY_CONTRACT_FIXTURE = {
+        "feature_completeness": 0.81,
+        "matched_events": 22,
+        "scored_signals": 14,
+        "reason_aliases": {"UNK_OPEN_TS": "missing_open_timestamp"},
+    }
+
+    LEGACY_ALIAS_IN_METRIC_FIXTURE = {
+        "feature_completeness": json.dumps({"UNK_OPEN_TS": "missing_open_timestamp", "UNK_OPEN_LAG": "opening_lag_exceeded"}),
+        "matched_events": 7,
+        "scored_signals": 3,
+    }
+
     def test_legacy_row_expands_alias_reason_maps(self):
         adapted = adapt_run_log_record_for_legacy(
             {
@@ -221,6 +234,72 @@ class PipelineLogAdapterTests(unittest.TestCase):
         self.assertEqual("edge_volatility_abs_delta_p95", adapted["edge_volatility_reason_code"])
         self.assertEqual("stage_generate_signals_input_count", adapted["matched_events_reason_code"])
         self.assertEqual("signal_decision_summary_scored_count", adapted["scored_signals_reason_code"])
+
+    def test_quality_contract_keeps_alias_payload_in_reason_aliases_field(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "row_type": "summary",
+                "run_id": "run-qc-mixed",
+                "stage": "runEdgeBoard",
+                "signal_decision_summary": json.dumps({"quality_contract": dict(self.MIXED_QUALITY_CONTRACT_FIXTURE)}),
+            }
+        )
+        self.assertEqual(0.81, adapted["feature_completeness"])
+        self.assertEqual(22, adapted["matched_events"])
+        self.assertEqual(14, adapted["scored_signals"])
+        self.assertEqual({"UNK_OPEN_TS": "missing_open_timestamp"}, adapted["reason_aliases"])
+
+    def test_quality_contract_rejects_object_or_string_overwrite_for_numeric_metrics(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "row_type": "summary",
+                "run_id": "run-qc-guard",
+                "stage": "runEdgeBoard",
+                "feature_completeness": 0.64,
+                "matched_events": 11,
+                "scored_signals": 5,
+                "signal_decision_summary": json.dumps(
+                    {
+                        "quality_contract": {
+                            "feature_completeness": {"UNK_OPEN_TS": "missing_open_timestamp"},
+                            "matched_events": "not_a_number",
+                            "scored_signals": {"UNK_OPEN_LAG": "opening_lag_exceeded"},
+                        }
+                    }
+                ),
+            }
+        )
+        self.assertEqual(0.64, adapted["feature_completeness"])
+        self.assertEqual(11, adapted["matched_events"])
+        self.assertEqual(5, adapted["scored_signals"])
+        self.assertEqual("quality_contract_metric_type_mismatch", adapted["schema_violation"])
+        self.assertIn("expected_numeric_received", adapted["field_type_error"])
+        self.assertEqual(
+            {"UNK_OPEN_TS": "missing_open_timestamp", "UNK_OPEN_LAG": "opening_lag_exceeded"},
+            adapted["reason_aliases"],
+        )
+
+    def test_migrates_historical_alias_payload_from_feature_completeness(self):
+        adapted = adapt_run_log_record_for_legacy(
+            {
+                "row_type": "summary",
+                "run_id": "run-qc-migrate",
+                "stage": "runEdgeBoard",
+                "feature_completeness": self.LEGACY_ALIAS_IN_METRIC_FIXTURE["feature_completeness"],
+                "signal_decision_summary": json.dumps({"quality_contract": dict(self.MIXED_QUALITY_CONTRACT_FIXTURE)}),
+            }
+        )
+        self.assertEqual(0.81, adapted["feature_completeness"])
+        self.assertEqual(
+            {
+                "UNK_OPEN_TS": "missing_open_timestamp",
+                "UNK_OPEN_LAG": "opening_lag_exceeded",
+            },
+            {
+                "UNK_OPEN_TS": adapted["reason_aliases"]["UNK_OPEN_TS"],
+                "UNK_OPEN_LAG": adapted["reason_aliases"]["UNK_OPEN_LAG"],
+            },
+        )
 
 
 

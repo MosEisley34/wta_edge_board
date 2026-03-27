@@ -242,21 +242,108 @@ def _legacy_row_type(event_type: str, stage: str) -> str:
 
 
 def _apply_quality_contract_projection(adapted: dict[str, Any]) -> dict[str, Any]:
+    metric_keys = ("feature_completeness", "matched_events", "scored_signals")
+
+    def _extract_reason_aliases_from_legacy_feature_metric(value: Any) -> dict[str, Any] | None:
+        parsed_value = _parse_json_like(value, value)
+        if isinstance(parsed_value, dict):
+            return dict(parsed_value)
+        return None
+
+    def _merge_reason_aliases(existing: Any, incoming: Any) -> dict[str, Any]:
+        merged: dict[str, Any] = {}
+        if isinstance(existing, dict):
+            merged.update(existing)
+        if isinstance(incoming, dict):
+            merged.update(incoming)
+        return merged
+
+    def _coerce_numeric_metric(
+        metric_name: str, current_value: Any, candidate_value: Any, row_ref: dict[str, Any], *, allow_existing: bool = False
+    ) -> Any:
+        if candidate_value in (None, ""):
+            return current_value
+        if isinstance(candidate_value, bool):
+            return current_value
+        if isinstance(candidate_value, (int, float)):
+            if current_value not in (None, "") and not allow_existing:
+                return current_value
+            return candidate_value
+        parsed_candidate = _parse_json_like(candidate_value, candidate_value)
+        if isinstance(parsed_candidate, dict):
+            row_ref["schema_violation"] = "quality_contract_metric_type_mismatch"
+            row_ref["field_type_error"] = f"{metric_name}:expected_numeric_received_object"
+            merged_reason_aliases = _merge_reason_aliases(
+                row_ref.get("reason_aliases"), _extract_reason_aliases_from_legacy_feature_metric(parsed_candidate)
+            )
+            if merged_reason_aliases:
+                row_ref["reason_aliases"] = merged_reason_aliases
+            return current_value
+        if isinstance(parsed_candidate, str):
+            stripped = parsed_candidate.strip()
+            if not stripped:
+                return current_value
+            if stripped.startswith("{") and stripped.endswith("}"):
+                parsed_object = _parse_json_like(stripped, None)
+                if isinstance(parsed_object, dict):
+                    row_ref["schema_violation"] = "quality_contract_metric_type_mismatch"
+                    row_ref["field_type_error"] = f"{metric_name}:expected_numeric_received_object"
+                    merged_reason_aliases = _merge_reason_aliases(
+                        row_ref.get("reason_aliases"),
+                        _extract_reason_aliases_from_legacy_feature_metric(parsed_object),
+                    )
+                    if merged_reason_aliases:
+                        row_ref["reason_aliases"] = merged_reason_aliases
+                    return current_value
+            try:
+                numeric_value = int(stripped) if metric_name in ("matched_events", "scored_signals") else float(stripped)
+                if current_value not in (None, "") and not allow_existing:
+                    return current_value
+                return numeric_value
+            except ValueError:
+                row_ref["schema_violation"] = "quality_contract_metric_type_mismatch"
+                row_ref["field_type_error"] = f"{metric_name}:expected_numeric_received_string"
+                return current_value
+        row_ref["schema_violation"] = "quality_contract_metric_type_mismatch"
+        row_ref["field_type_error"] = f"{metric_name}:expected_numeric_received_{type(parsed_candidate).__name__}"
+        return current_value
+
     row = dict(adapted)
+    migrated_aliases = _extract_reason_aliases_from_legacy_feature_metric(row.get("feature_completeness"))
+    if migrated_aliases:
+        row["reason_aliases"] = _merge_reason_aliases(row.get("reason_aliases"), migrated_aliases)
+        row["feature_completeness"] = None
+
     signal_summary = _parse_json_like(row.get("signal_decision_summary"), {})
     if not isinstance(signal_summary, dict):
         return row
     quality_contract = signal_summary.get("quality_contract")
     if not isinstance(quality_contract, dict):
         return row
-    if row.get("feature_completeness") in (None, "") and quality_contract.get("feature_completeness") not in (None, ""):
-        row["feature_completeness"] = quality_contract.get("feature_completeness")
+    quality_reason_aliases = quality_contract.get("reason_aliases")
+    if isinstance(quality_reason_aliases, dict):
+        row["reason_aliases"] = _merge_reason_aliases(row.get("reason_aliases"), quality_reason_aliases)
+
+    row["feature_completeness"] = _coerce_numeric_metric(
+        "feature_completeness",
+        row.get("feature_completeness"),
+        quality_contract.get("feature_completeness"),
+        row,
+    )
     if row.get("edge_volatility") in (None, "") and quality_contract.get("edge_volatility") not in (None, ""):
         row["edge_volatility"] = quality_contract.get("edge_volatility")
-    if row.get("matched_events") in (None, "") and quality_contract.get("matched_events") not in (None, ""):
-        row["matched_events"] = quality_contract.get("matched_events")
-    if row.get("scored_signals") in (None, "") and quality_contract.get("scored_signals") not in (None, ""):
-        row["scored_signals"] = quality_contract.get("scored_signals")
+    row["matched_events"] = _coerce_numeric_metric(
+        "matched_events",
+        row.get("matched_events"),
+        quality_contract.get("matched_events"),
+        row,
+    )
+    row["scored_signals"] = _coerce_numeric_metric(
+        "scored_signals",
+        row.get("scored_signals"),
+        quality_contract.get("scored_signals"),
+        row,
+    )
     if quality_contract.get("feature_completeness_reason_code") not in (None, ""):
         row["feature_completeness_reason_code"] = str(quality_contract.get("feature_completeness_reason_code"))
     if quality_contract.get("edge_volatility_reason_code") not in (None, ""):
@@ -265,6 +352,8 @@ def _apply_quality_contract_projection(adapted: dict[str, Any]) -> dict[str, Any
         row["matched_events_reason_code"] = str(quality_contract.get("matched_events_reason_code"))
     if quality_contract.get("scored_signals_reason_code") not in (None, ""):
         row["scored_signals_reason_code"] = str(quality_contract.get("scored_signals_reason_code"))
+    for metric_key in metric_keys:
+        row[metric_key] = _coerce_numeric_metric(metric_key, row.get(metric_key), row.get(metric_key), row, allow_existing=True)
     return row
 
 
