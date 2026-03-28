@@ -131,6 +131,21 @@ class PlayerStatsCoverageGateTests(unittest.TestCase):
         self.assertEqual([], report["schema_failures"])
         self.assertIn("candidate_no_demand_not_applicable", report["coverage_notes"])
 
+    def test_requested_zero_missing_counters_only_is_warn(self):
+        rows = self._rows(
+            baseline_meta={"requested_player_count": 5, "resolved_player_count": 5, "unresolved_player_count": 0},
+            candidate_meta={"notes": "no players requested in this run"},
+        )
+        config = GateConfig(min_resolved_rate=0.9, max_unresolved_players=0, max_missing_side_increase=0)
+        report = evaluate_player_stats_gate(rows, "run-a", "run-b", config)
+        self.assertEqual("warn", report["status"])
+        self.assertEqual([], report["schema_failures"])
+        self.assertIn(
+            "player-stats coverage counters missing_without_demand_evidence",
+            report["schema_warnings"]["candidate"],
+        )
+        self.assertIn("candidate_no_demand_not_applicable", report["coverage_notes"])
+
 
 if __name__ == "__main__":
     unittest.main()

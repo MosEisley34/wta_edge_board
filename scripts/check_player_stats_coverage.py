@@ -505,8 +505,23 @@ def evaluate_player_stats_gate(
     coverage_gate = "pass" if not coverage_failures else ("override" if override_used else "fail")
     schema_integrity = "pass" if not schema_failures else "fail"
     failures = [*schema_failures, *coverage_failures]
+    baseline_schema_warnings = list(baseline.get("schema_warnings", []))
+    candidate_schema_warnings = list(candidate.get("schema_warnings", []))
+
+    def _is_missing_without_demand_only(snapshot: dict[str, Any], warnings: list[str]) -> bool:
+        return (
+            bool(warnings)
+            and all(warning == "player-stats coverage counters missing_without_demand_evidence" for warning in warnings)
+            and int(snapshot.get("requested", 0) or 0) == 0
+        )
+
+    non_fatal_schema_warn = _is_missing_without_demand_only(baseline, baseline_schema_warnings) or _is_missing_without_demand_only(
+        candidate, candidate_schema_warnings
+    )
     if schema_failures:
         status = "schema_missing"
+    elif non_fatal_schema_warn:
+        status = "warn"
     elif coverage_failures and override_used:
         status = "override"
     elif coverage_failures:
@@ -540,6 +555,10 @@ def evaluate_player_stats_gate(
             "unresolved_total": candidate["unresolved_total"] - baseline["unresolved_total"],
         },
         "schema_failures": schema_failures,
+        "schema_warnings": {
+            "baseline": baseline_schema_warnings,
+            "candidate": candidate_schema_warnings,
+        },
         "coverage_failures": coverage_failures,
         "coverage_notes": non_fatal_coverage_notes,
         "failures": failures,

@@ -714,6 +714,9 @@ def main() -> int:
         if gate_report.get('status') == 'override':
             print('# player_stats_coverage_gate: override active')
             print(json.dumps(gate_report, indent=2, sort_keys=True))
+        if gate_report.get('status') == 'warn':
+            print('# player_stats_coverage_gate: pass_with_warning')
+            print(json.dumps(gate_report, indent=2, sort_keys=True))
 
     stake_policy_config = StakePolicyConfig.from_legacy(
         enabled=bool(args.stake_policy_enabled),
