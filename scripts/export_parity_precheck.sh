@@ -17,6 +17,8 @@ Fail-fast operational wrapper:
   1) Export Run_Log/State artifacts from a single latest snapshot
   2) Block on Run_Log CSV/JSON parity verification
   3) Block on target run-id precheck before compare/gate steps
+  4) Canonical stageFetchPlayerStats sync path (patch CSV, mirror JSON, validate key fields)
+  5) Re-run precheck after sync before compare/gate steps
 
 Examples:
   scripts/export_parity_precheck.sh runA runB ./runtime
@@ -81,21 +83,31 @@ if [[ "$allow_csv_only_triage" -eq 1 && -z "$incident_tag" ]]; then
   exit 1
 fi
 
-echo "[1/3] Exporting runtime artifacts into ${out_dir}"
+echo "[1/5] Exporting runtime artifacts into ${out_dir}"
 scripts/prepare_runtime_exports.sh --out-dir "$out_dir" "${inputs[@]}"
 
 echo
 
-echo "[2/3] Verifying Run_Log CSV/JSON parity gate"
+echo "[2/5] Verifying Run_Log CSV/JSON parity gate"
 python3 scripts/verify_run_log_parity.py --export-dir "$out_dir"
 
 echo
 
-echo "[3/3] Running run-id precheck gate"
+echo "[3/5] Running run-id precheck gate"
 precheck_args=("$run_id_a" "$run_id_b" --export-dir "$out_dir")
 if [[ "$allow_csv_only_triage" -eq 1 ]]; then
   precheck_args+=(--allow-csv-only-triage --allow-csv-only-triage-incident-tag "$incident_tag")
 fi
+python3 scripts/precheck_run_ids.py "${precheck_args[@]}"
+
+echo
+
+echo "[4/5] Canonical stageFetchPlayerStats sync (CSV -> JSON mirror + key-field validation)"
+python3 scripts/sync_stage_player_stats_contract.py --export-dir "$out_dir" --run-id "$run_id_a" --run-id "$run_id_b" --stage stageFetchPlayerStats
+
+echo
+
+echo "[5/5] Re-running run-id precheck after sync"
 python3 scripts/precheck_run_ids.py "${precheck_args[@]}"
 
 python3 - "$out_dir" "$run_id_a" "$run_id_b" "$allow_csv_only_triage" "$incident_tag" <<'PY'
