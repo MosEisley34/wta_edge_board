@@ -130,6 +130,22 @@ def _metric_reason_codes(summary_row: dict[str, Any]) -> dict[str, int]:
 
 
 def _extract_player_stats_stage_summary(summary_row: dict[str, Any]) -> dict[str, Any]:
+    direct_stage_summary = summary_row.get("stageFetchPlayerStats")
+    if isinstance(direct_stage_summary, dict):
+        return direct_stage_summary
+    parsed_direct_stage_summary = _parse_json_like(direct_stage_summary, {})
+    if isinstance(parsed_direct_stage_summary, dict) and parsed_direct_stage_summary:
+        return parsed_direct_stage_summary
+
+    nested_stage_summaries = _parse_json_like(summary_row.get("stage_summaries"), {})
+    if isinstance(nested_stage_summaries, dict):
+        nested_stage_summary = nested_stage_summaries.get("stageFetchPlayerStats")
+        if isinstance(nested_stage_summary, dict):
+            return nested_stage_summary
+        parsed_nested_stage_summary = _parse_json_like(nested_stage_summary, {})
+        if isinstance(parsed_nested_stage_summary, dict) and parsed_nested_stage_summary:
+            return parsed_nested_stage_summary
+
     for stage in _extract_stage_summaries(summary_row):
         if str(stage.get("stage") or "") == "stageFetchPlayerStats":
             return stage
@@ -140,23 +156,107 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
     stage_summary = _extract_player_stats_stage_summary(summary_row)
     schema_failures: list[str] = []
     schema_warnings: list[str] = []
+    source_paths: dict[str, str] = {}
+    source_order = (
+        "canonical_row",
+        "nested_stage_summary",
+        "message_fallback",
+        "zero_safe_default",
+    )
+
+    def _first_present_dict(
+        sources: dict[str, Any],
+        source_key: str,
+        required: bool = True,
+    ) -> dict[str, Any]:
+        for source_name in source_order:
+            candidate = sources.get(source_name)
+            if isinstance(candidate, dict) and (candidate or not required):
+                source_paths[source_key] = source_name
+                return candidate
+        source_paths[source_key] = "missing"
+        return {}
+
+    def _pick_first_int_from_sources(
+        sources: dict[str, dict[str, Any]],
+        keys: tuple[str, ...],
+        source_key: str,
+    ) -> int | None:
+        for source_name in source_order:
+            values = sources.get(source_name)
+            if not isinstance(values, dict):
+                continue
+            value = _pick_int_optional(values, keys)
+            if value is not None:
+                source_paths[source_key] = source_name
+                return value
+        return None
+
+    def _pick_first_float_from_sources(
+        sources: dict[str, dict[str, Any]],
+        keys: tuple[str, ...],
+        source_key: str,
+    ) -> float | None:
+        for source_name in source_order:
+            values = sources.get(source_name)
+            if not isinstance(values, dict):
+                continue
+            value = _pick_float_optional(values, keys)
+            if value is not None:
+                source_paths[source_key] = source_name
+                return value
+        return None
+
     if not stage_summary:
         schema_failures.append("stageFetchPlayerStats summary missing")
+        source_paths["stageFetchPlayerStats_summary"] = "missing"
+    else:
+        if summary_row.get("stageFetchPlayerStats") not in (None, ""):
+            source_paths["stageFetchPlayerStats_summary"] = "canonical_row"
+        else:
+            nested_stage_summaries = _parse_json_like(summary_row.get("stage_summaries"), {})
+            if isinstance(nested_stage_summaries, dict) and nested_stage_summaries.get("stageFetchPlayerStats") not in (None, ""):
+                source_paths["stageFetchPlayerStats_summary"] = "nested_stage_summary"
+            else:
+                source_paths["stageFetchPlayerStats_summary"] = "message_fallback"
     stage_message = _parse_json_like(stage_summary.get("message"), {})
     if not isinstance(stage_message, dict):
         stage_message = {}
-    metadata = _parse_json_like(stage_summary.get("reason_metadata"), {})
-    if (not isinstance(metadata, dict) or not metadata) and isinstance(stage_message.get("reason_metadata"), dict):
-        metadata = stage_message.get("reason_metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
+
+    nested_stage_summaries = _parse_json_like(summary_row.get("stage_summaries"), {})
+    nested_stage_summary = {}
+    if isinstance(nested_stage_summaries, dict):
+        nested_stage_summary = _parse_json_like(nested_stage_summaries.get("stageFetchPlayerStats"), {})
+    if not isinstance(nested_stage_summary, dict):
+        nested_stage_summary = {}
+    nested_stage_message = _parse_json_like(nested_stage_summary.get("message"), {})
+    if not isinstance(nested_stage_message, dict):
+        nested_stage_message = {}
+
+    canonical_reason_metadata = _parse_json_like(stage_summary.get("reason_metadata"), {})
+    nested_reason_metadata = _parse_json_like(nested_stage_summary.get("reason_metadata"), {})
+    message_reason_metadata = _parse_json_like(stage_message.get("reason_metadata"), {})
+    reason_metadata_candidates = {
+        "canonical_row": canonical_reason_metadata if isinstance(canonical_reason_metadata, dict) else {},
+        "nested_stage_summary": nested_reason_metadata if isinstance(nested_reason_metadata, dict) else {},
+        "message_fallback": message_reason_metadata if isinstance(message_reason_metadata, dict) else {},
+        "zero_safe_default": {},
+    }
+    metadata = _first_present_dict(reason_metadata_candidates, "reason_metadata", required=True)
     if not metadata:
         schema_warnings.append("stageFetchPlayerStats reason_metadata missing")
-    coverage = _parse_json_like(metadata.get("coverage"), {})
-    if not isinstance(coverage, dict):
-        coverage = {}
-    if not coverage and isinstance(stage_message.get("coverage"), dict):
-        coverage = stage_message.get("coverage")
+    canonical_coverage = _parse_json_like(metadata.get("coverage"), {})
+    nested_coverage = _parse_json_like(nested_reason_metadata.get("coverage"), {})
+    message_coverage = _parse_json_like(stage_message.get("coverage"), {})
+    if not isinstance(message_coverage, dict):
+        message_coverage = _parse_json_like(nested_stage_message.get("coverage"), {})
+    coverage_candidates = {
+        "canonical_row": canonical_coverage if isinstance(canonical_coverage, dict) else {},
+        "nested_stage_summary": nested_coverage if isinstance(nested_coverage, dict) else {},
+        "message_fallback": message_coverage if isinstance(message_coverage, dict) else {},
+        "zero_safe_default": {},
+    }
+    coverage = _first_present_dict(coverage_candidates, "coverage", required=False)
 
     def _pick_int_optional(values: dict[str, Any], keys: tuple[str, ...]) -> int | None:
         for key in keys:
@@ -176,29 +276,27 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
                 continue
         return None
 
-    has_nested_coverage = any(
-        key in coverage
-        for key in (
-            "requested",
-            "resolved",
-            "unresolved",
-            "resolved_rate",
-            "requested_players",
-            "resolved_players",
-            "unresolved_players",
-            "coverage_rate",
-        )
-    )
+    coverage_counter_sources = {
+        "canonical_row": coverage if isinstance(coverage, dict) else {},
+        "nested_stage_summary": nested_coverage if isinstance(nested_coverage, dict) else {},
+        "message_fallback": message_coverage if isinstance(message_coverage, dict) else {},
+        "zero_safe_default": {},
+    }
+    metadata_counter_sources = {
+        "canonical_row": metadata if isinstance(metadata, dict) else {},
+        "nested_stage_summary": nested_reason_metadata if isinstance(nested_reason_metadata, dict) else {},
+        "message_fallback": message_reason_metadata if isinstance(message_reason_metadata, dict) else {},
+        "zero_safe_default": {},
+    }
 
-    resolved_rate: float | None = None
-    if has_nested_coverage:
-        requested = _pick_int_optional(coverage, ("requested", "requested_players", "total", "total_players"))
-        resolved = _pick_int_optional(coverage, ("resolved", "resolved_players", "resolved_count"))
-        unresolved_total = _pick_int_optional(coverage, ("unresolved", "unresolved_players", "unresolved_count"))
-        resolved_rate = _pick_float_optional(coverage, ("resolved_rate", "coverage_rate", "resolved_ratio"))
-    else:
-        requested = _pick_int_optional(
-            metadata,
+    requested = _pick_first_int_from_sources(
+        coverage_counter_sources,
+        ("requested", "requested_players", "total", "total_players"),
+        "requested",
+    )
+    if requested is None:
+        requested = _pick_first_int_from_sources(
+            metadata_counter_sources,
             (
                 "requested_player_count",
                 "players_total",
@@ -206,26 +304,51 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
                 "total_players_count",
                 "requested_players_count",
             ),
+            "requested",
         )
-        resolved = _pick_int_optional(
-            metadata,
+
+    resolved = _pick_first_int_from_sources(
+        coverage_counter_sources,
+        ("resolved", "resolved_players", "resolved_count"),
+        "resolved",
+    )
+    if resolved is None:
+        resolved = _pick_first_int_from_sources(
+            metadata_counter_sources,
             (
                 "resolved_player_count",
                 "resolved_with_usable_stats_count",
                 "resolved_players_count",
             ),
+            "resolved",
         )
-        unresolved_total = _pick_int_optional(
-            metadata,
+
+    unresolved_total = _pick_first_int_from_sources(
+        coverage_counter_sources,
+        ("unresolved", "unresolved_players", "unresolved_count"),
+        "unresolved_total",
+    )
+    if unresolved_total is None:
+        unresolved_total = _pick_first_int_from_sources(
+            metadata_counter_sources,
             (
                 "unresolved_player_count",
                 "players_unresolved",
                 "unresolved_players_count",
             ),
+            "unresolved_total",
         )
-        resolved_rate = _pick_float_optional(
-            metadata,
+
+    resolved_rate = _pick_first_float_from_sources(
+        coverage_counter_sources,
+        ("resolved_rate", "coverage_rate", "resolved_ratio"),
+        "resolved_rate",
+    )
+    if resolved_rate is None:
+        resolved_rate = _pick_first_float_from_sources(
+            metadata_counter_sources,
             ("resolved_rate", "coverage_rate", "resolved_ratio"),
+            "resolved_rate",
         )
 
     evidence_stats_expected = False
@@ -253,16 +376,35 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
 
     if requested is None and resolved is not None and unresolved_total is not None:
         requested = resolved + unresolved_total
+        source_paths.setdefault("requested", "derived")
     if unresolved_total is None and requested is not None and resolved is not None:
         unresolved_total = max(0, requested - resolved)
+        source_paths.setdefault("unresolved_total", "derived")
     if resolved is None and requested is not None and unresolved_total is not None:
         resolved = max(0, requested - unresolved_total)
+        source_paths.setdefault("resolved", "derived")
     if requested is None and resolved is not None and resolved_rate and resolved_rate > 0:
         requested = max(resolved, int(round(resolved / resolved_rate)))
+        source_paths.setdefault("requested", "derived")
+
+    if requested == 0:
+        if resolved is None:
+            resolved = 0
+            source_paths["resolved"] = "zero_safe_default"
+        if unresolved_total is None:
+            unresolved_total = 0
+            source_paths["unresolved_total"] = "zero_safe_default"
+        if resolved_rate is None:
+            resolved_rate = 0.0
+            source_paths["resolved_rate"] = "zero_safe_default"
 
     resolved = resolved or 0
     requested = requested or 0
     unresolved_total = unresolved_total or 0
+    source_paths.setdefault("requested", "zero_safe_default")
+    source_paths.setdefault("resolved", "zero_safe_default")
+    source_paths.setdefault("unresolved_total", "zero_safe_default")
+    source_paths.setdefault("resolved_rate", "zero_safe_default")
     applicability = "applicable"
     if requested == 0:
         applicability = "no_demand"
@@ -276,6 +418,7 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
         "schema_warnings": schema_warnings,
         "applicability": applicability,
         "evidence_stats_expected": evidence_stats_expected,
+        "source_paths": source_paths,
     }
 
 
@@ -303,6 +446,7 @@ def _run_snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         "schema_failures": list(coverage.get("schema_failures", [])),
         "schema_warnings": list(coverage.get("schema_warnings", [])),
         "applicability": str(coverage.get("applicability") or "applicable"),
+        "source_paths": dict(coverage.get("source_paths", {})),
     }
 
 
@@ -385,6 +529,10 @@ def evaluate_player_stats_gate(
         },
         "baseline": baseline,
         "candidate": candidate,
+        "source_path_summary": {
+            "baseline": baseline.get("source_paths", {}),
+            "candidate": candidate.get("source_paths", {}),
+        },
         "deltas": {
             "stats_missing_player_a": delta_a,
             "stats_missing_player_b": delta_b,
