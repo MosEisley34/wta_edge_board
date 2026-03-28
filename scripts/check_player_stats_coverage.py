@@ -139,16 +139,24 @@ def _extract_player_stats_stage_summary(summary_row: dict[str, Any]) -> dict[str
 def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any]:
     stage_summary = _extract_player_stats_stage_summary(summary_row)
     schema_failures: list[str] = []
+    schema_warnings: list[str] = []
     if not stage_summary:
         schema_failures.append("stageFetchPlayerStats summary missing")
+    stage_message = _parse_json_like(stage_summary.get("message"), {})
+    if not isinstance(stage_message, dict):
+        stage_message = {}
     metadata = _parse_json_like(stage_summary.get("reason_metadata"), {})
+    if (not isinstance(metadata, dict) or not metadata) and isinstance(stage_message.get("reason_metadata"), dict):
+        metadata = stage_message.get("reason_metadata")
     if not isinstance(metadata, dict):
         metadata = {}
     if not metadata:
-        schema_failures.append("stageFetchPlayerStats reason_metadata missing")
+        schema_warnings.append("stageFetchPlayerStats reason_metadata missing")
     coverage = _parse_json_like(metadata.get("coverage"), {})
     if not isinstance(coverage, dict):
         coverage = {}
+    if not coverage and isinstance(stage_message.get("coverage"), dict):
+        coverage = stage_message.get("coverage")
 
     def _pick_int_optional(values: dict[str, Any], keys: tuple[str, ...]) -> int | None:
         for key in keys:
@@ -170,21 +178,78 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
 
     has_nested_coverage = any(
         key in coverage
-        for key in ("requested", "resolved", "unresolved", "resolved_rate")
+        for key in (
+            "requested",
+            "resolved",
+            "unresolved",
+            "resolved_rate",
+            "requested_players",
+            "resolved_players",
+            "unresolved_players",
+            "coverage_rate",
+        )
     )
 
     resolved_rate: float | None = None
     if has_nested_coverage:
-        requested = _pick_int_optional(coverage, ("requested",))
-        resolved = _pick_int_optional(coverage, ("resolved",))
-        unresolved_total = _pick_int_optional(coverage, ("unresolved",))
-        resolved_rate = _pick_float_optional(coverage, ("resolved_rate",))
+        requested = _pick_int_optional(coverage, ("requested", "requested_players", "total", "total_players"))
+        resolved = _pick_int_optional(coverage, ("resolved", "resolved_players", "resolved_count"))
+        unresolved_total = _pick_int_optional(coverage, ("unresolved", "unresolved_players", "unresolved_count"))
+        resolved_rate = _pick_float_optional(coverage, ("resolved_rate", "coverage_rate", "resolved_ratio"))
     else:
-        requested = _pick_int_optional(metadata, ("requested_player_count", "players_total"))
-        resolved = _pick_int_optional(metadata, ("resolved_player_count", "resolved_with_usable_stats_count"))
-        unresolved_total = _pick_int_optional(metadata, ("unresolved_player_count", "players_unresolved"))
-    if not has_nested_coverage and requested is None and resolved is None and unresolved_total is None:
+        requested = _pick_int_optional(
+            metadata,
+            (
+                "requested_player_count",
+                "players_total",
+                "total_player_count",
+                "total_players_count",
+                "requested_players_count",
+            ),
+        )
+        resolved = _pick_int_optional(
+            metadata,
+            (
+                "resolved_player_count",
+                "resolved_with_usable_stats_count",
+                "resolved_players_count",
+            ),
+        )
+        unresolved_total = _pick_int_optional(
+            metadata,
+            (
+                "unresolved_player_count",
+                "players_unresolved",
+                "unresolved_players_count",
+            ),
+        )
+        resolved_rate = _pick_float_optional(
+            metadata,
+            ("resolved_rate", "coverage_rate", "resolved_ratio"),
+        )
+
+    evidence_stats_expected = False
+    if stage_summary:
+        for evidence_key in ("input_count", "output_count", "processed_count", "candidate_count"):
+            value = _pick_int_optional(stage_summary, (evidence_key,))
+            if value is not None and value > 0:
+                evidence_stats_expected = True
+                break
+        if not evidence_stats_expected:
+            reason_codes = _parse_json_like(stage_summary.get("reason_codes"), {})
+            if not isinstance(reason_codes, dict) and isinstance(stage_message.get("reason_codes"), dict):
+                reason_codes = stage_message.get("reason_codes")
+            if isinstance(reason_codes, dict):
+                if any(str(key).startswith("STATS_") for key in reason_codes.keys()):
+                    evidence_stats_expected = True
+                elif any(int(float(reason_codes.get(key) or 0)) > 0 for key in ("stats_loaded", "stats_missing")):
+                    evidence_stats_expected = True
+
+    has_any_coverage_counter = any(value is not None for value in (requested, resolved, unresolved_total, resolved_rate))
+    if not has_any_coverage_counter and evidence_stats_expected:
         schema_failures.append("player-stats coverage counters missing")
+    elif not has_any_coverage_counter:
+        schema_warnings.append("player-stats coverage counters missing_without_demand_evidence")
 
     if requested is None and resolved is not None and unresolved_total is not None:
         requested = resolved + unresolved_total
@@ -198,6 +263,9 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
     resolved = resolved or 0
     requested = requested or 0
     unresolved_total = unresolved_total or 0
+    applicability = "applicable"
+    if requested == 0:
+        applicability = "no_demand"
 
     return {
         "resolved": resolved,
@@ -205,6 +273,9 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
         "unresolved_total": unresolved_total,
         "resolved_rate": resolved_rate,
         "schema_failures": schema_failures,
+        "schema_warnings": schema_warnings,
+        "applicability": applicability,
+        "evidence_stats_expected": evidence_stats_expected,
     }
 
 
@@ -230,6 +301,8 @@ def _run_snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         "stats_missing_player_a": int(reason_codes.get("STATS_MISS_A", 0)),
         "stats_missing_player_b": int(reason_codes.get("STATS_MISS_B", 0)),
         "schema_failures": list(coverage.get("schema_failures", [])),
+        "schema_warnings": list(coverage.get("schema_warnings", [])),
+        "applicability": str(coverage.get("applicability") or "applicable"),
     }
 
 
@@ -248,13 +321,17 @@ def evaluate_player_stats_gate(
         for failure in snapshot.get("schema_failures", []):
             schema_failures.append(f"{run_label}_{failure}")
 
-    if candidate["resolved_rate"] < config.min_resolved_rate:
+    candidate_not_applicable = candidate.get("applicability") in {"no_demand", "not_applicable"}
+    baseline_not_applicable = baseline.get("applicability") in {"no_demand", "not_applicable"}
+    if candidate_not_applicable:
+        coverage_failures.append("player_stats_not_applicable_no_demand")
+    elif candidate["resolved_rate"] < config.min_resolved_rate:
         coverage_failures.append(
             "player_stats_resolved_rate_below_min "
             f"(candidate={candidate['resolved_rate']:.4f} < min={config.min_resolved_rate:.4f})"
         )
 
-    if candidate["unresolved_total"] > config.max_unresolved_players:
+    if (not candidate_not_applicable) and candidate["unresolved_total"] > config.max_unresolved_players:
         coverage_failures.append(
             "unresolved_players_above_max "
             f"(candidate={candidate['unresolved_total']} > max={config.max_unresolved_players})"
@@ -262,16 +339,23 @@ def evaluate_player_stats_gate(
 
     delta_a = candidate["stats_missing_player_a"] - baseline["stats_missing_player_a"]
     delta_b = candidate["stats_missing_player_b"] - baseline["stats_missing_player_b"]
-    if delta_a > config.max_missing_side_increase:
+    if (not candidate_not_applicable) and delta_a > config.max_missing_side_increase:
         coverage_failures.append(
             "stats_missing_player_a_increase_exceeded "
             f"(delta={delta_a} > max_increase={config.max_missing_side_increase})"
         )
-    if delta_b > config.max_missing_side_increase:
+    if (not candidate_not_applicable) and delta_b > config.max_missing_side_increase:
         coverage_failures.append(
             "stats_missing_player_b_increase_exceeded "
             f"(delta={delta_b} > max_increase={config.max_missing_side_increase})"
         )
+
+    non_fatal_coverage_notes = []
+    if candidate_not_applicable:
+        non_fatal_coverage_notes.append("candidate_no_demand_not_applicable")
+    if baseline_not_applicable:
+        non_fatal_coverage_notes.append("baseline_no_demand_not_applicable")
+    coverage_failures = [failure for failure in coverage_failures if failure != "player_stats_not_applicable_no_demand"]
 
     override_used = bool(config.override_reason and coverage_failures)
     coverage_gate = "pass" if not coverage_failures else ("override" if override_used else "fail")
@@ -309,6 +393,7 @@ def evaluate_player_stats_gate(
         },
         "schema_failures": schema_failures,
         "coverage_failures": coverage_failures,
+        "coverage_notes": non_fatal_coverage_notes,
         "failures": failures,
     }
 

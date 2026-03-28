@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 import sys
+import json
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
@@ -69,6 +70,8 @@ class PlayerStatsCoverageGateTests(unittest.TestCase):
 
     def test_override_does_not_bypass_schema_missing(self):
         rows = self._rows(candidate_meta={})
+        rows[1]["stage_summaries"][0]["input_count"] = 3
+        rows[1]["stage_summaries"][0]["output_count"] = 1
         config = GateConfig(
             min_resolved_rate=0.9,
             max_unresolved_players=0,
@@ -78,10 +81,55 @@ class PlayerStatsCoverageGateTests(unittest.TestCase):
         report = evaluate_player_stats_gate(rows, "run-a", "run-b", config)
         self.assertEqual("schema_missing", report["status"])
         self.assertEqual("schema_missing", report["reason_code"])
-        self.assertEqual("override", report["coverage_gate"])
+        self.assertEqual("pass", report["coverage_gate"])
         self.assertEqual("fail", report["schema_integrity"])
-        self.assertTrue(report["override_used"])
+        self.assertFalse(report["override_used"])
         self.assertTrue(any(failure.startswith("candidate_") for failure in report["schema_failures"]))
+
+    def test_legacy_stage_message_coverage_aliases_are_accepted(self):
+        rows = self._rows(
+            baseline_meta={},
+            candidate_meta={},
+        )
+        rows[0]["stage_summaries"][0] = {
+            "stage": "stageFetchPlayerStats",
+            "input_count": 4,
+            "output_count": 4,
+            "message": {
+                "coverage": {
+                    "requested_players": 4,
+                    "resolved_players": 3,
+                    "unresolved_players": 1,
+                    "coverage_rate": 0.75,
+                }
+            },
+        }
+        rows[1]["stage_summaries"][0] = {
+            "stage": "stageFetchPlayerStats",
+            "input_count": 4,
+            "output_count": 4,
+            "message": {
+                "coverage": {
+                    "requested_players": 4,
+                    "resolved_players": 3,
+                    "unresolved_players": 1,
+                    "coverage_rate": 0.75,
+                }
+            },
+        }
+        config = GateConfig(min_resolved_rate=0.7, max_unresolved_players=2, max_missing_side_increase=0)
+        report = evaluate_player_stats_gate(rows, "run-a", "run-b", config)
+        self.assertEqual("pass", report["status"])
+        self.assertEqual([], report["schema_failures"])
+
+    def test_requested_zero_is_non_fatal_no_demand(self):
+        fixture_path = ROOT / "scripts" / "fixtures" / "player_stats_legacy_window_2026-03-26.json"
+        rows = json.loads(fixture_path.read_text(encoding="utf-8"))
+        config = GateConfig(min_resolved_rate=0.9, max_unresolved_players=0, max_missing_side_increase=0)
+        report = evaluate_player_stats_gate(rows, "legacy-base", "legacy-candidate", config)
+        self.assertEqual("pass", report["status"])
+        self.assertEqual([], report["schema_failures"])
+        self.assertIn("candidate_no_demand_not_applicable", report["coverage_notes"])
 
 
 if __name__ == "__main__":

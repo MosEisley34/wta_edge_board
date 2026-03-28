@@ -319,8 +319,23 @@ def _extract_reason_metadata(rows: List[Dict[str, Any]], run_id: str) -> Dict[st
             if str(stage_summary.get("stage") or "") != "stageFetchPlayerStats":
                 continue
             metadata = stage_summary.get("reason_metadata")
+            stage_message = _parse_message(stage_summary.get("message"))
             if isinstance(metadata, str):
                 metadata = _parse_message(metadata)
+            if not isinstance(metadata, dict) and isinstance(stage_message.get("reason_metadata"), dict):
+                metadata = stage_message.get("reason_metadata")
+            if isinstance(metadata, dict):
+                coverage = _parse_json(metadata.get("coverage"), {})
+                if not isinstance(coverage, dict) and isinstance(stage_message.get("coverage"), dict):
+                    coverage = stage_message.get("coverage")
+                if isinstance(coverage, dict) and coverage:
+                    metadata = dict(metadata)
+                    metadata.setdefault("requested_player_count", coverage.get("requested"))
+                    metadata.setdefault("requested_player_count", coverage.get("requested_players"))
+                    metadata.setdefault("resolved_player_count", coverage.get("resolved"))
+                    metadata.setdefault("resolved_player_count", coverage.get("resolved_players"))
+                    metadata.setdefault("unresolved_player_count", coverage.get("unresolved"))
+                    metadata.setdefault("unresolved_player_count", coverage.get("unresolved_players"))
             if isinstance(metadata, dict):
                 candidates.append(metadata)
     return candidates[-1] if candidates else {}
@@ -358,8 +373,11 @@ def _pick_reason_counts(meta: Dict[str, Any]) -> Dict[str, int]:
 
 def _player_stats_snapshot(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Any]:
     meta = _extract_reason_metadata(rows, run_id)
-    resolved = max(0, _pick_int(meta, ("resolved_player_count", "resolved_players_count")))
-    total = max(0, _pick_int(meta, ("requested_player_count", "total_player_count", "total_players_count")))
+    resolved = max(0, _pick_int(meta, ("resolved_player_count", "resolved_players_count", "resolved_count")))
+    total = max(
+        0,
+        _pick_int(meta, ("requested_player_count", "total_player_count", "total_players_count", "requested_players_count")),
+    )
     unresolved_total = max(0, _pick_int(meta, ("unresolved_player_count", "unresolved_players_count")))
     if total == 0:
         total = resolved + unresolved_total

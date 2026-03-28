@@ -8,6 +8,7 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from compare_run_diagnostics import compare_rows  # noqa: E402
+from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate  # noqa: E402
 from stake_policy import StakePolicyConfig  # noqa: E402
 
 
@@ -23,6 +24,11 @@ def _full_stage_rows(run_id: str):
 
 
 class CompareRunDiagnosticsValidationTests(unittest.TestCase):
+    @staticmethod
+    def _load_legacy_player_stats_fixture():
+        fixture_path = ROOT / "scripts" / "fixtures" / "player_stats_legacy_window_2026-03-26.json"
+        return json.loads(fixture_path.read_text(encoding="utf-8"))
+
     def test_compare_rows_fails_on_disallowed_skip_reason(self):
         rows = _full_stage_rows("run-a") + _full_stage_rows("run-b")
         rows.append({"run_id": "run-b", "stage": "runEdgeBoard", "reason_code": "run_debounced_skip"})
@@ -156,6 +162,18 @@ class CompareRunDiagnosticsValidationTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "Mixed stake_policy_enabled states"):
             compare_rows(rows, "run-a", "run-b", stake_policy_config=StakePolicyConfig(enabled=True))
+
+    def test_legacy_player_stats_shape_is_non_fatal_for_gate(self):
+        rows = self._load_legacy_player_stats_fixture()
+        report = evaluate_player_stats_gate(
+            rows,
+            "legacy-base",
+            "legacy-candidate",
+            GateConfig(min_resolved_rate=0.9, max_unresolved_players=0, max_missing_side_increase=0),
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertEqual([], report["schema_failures"])
+        self.assertIn("candidate_no_demand_not_applicable", report["coverage_notes"])
 
 
 if __name__ == "__main__":
