@@ -16,7 +16,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,34 @@ RUN_LOG_SCHEMA_MAP: dict[str, str] = {
     "no_hit_odds_present_but_match_failed_count": "int",
     "no_hit_schema_invalid_metrics_count": "int",
 }
+
+NUMERIC_FIELD_TOKENS = {
+    "count",
+    "counts",
+    "total",
+    "totals",
+    "duration",
+    "ms",
+    "minute",
+    "minutes",
+    "hour",
+    "hours",
+    "lag",
+    "matched",
+    "scored",
+    "signals",
+    "score",
+    "threshold",
+    "streak",
+    "coverage",
+    "pct",
+    "percent",
+    "rate",
+}
+FLOAT_FIELD_TOKENS = {"rate", "pct", "percent", "coverage", "completeness"}
+NON_NUMERIC_FIELD_TOKENS = {"id", "key", "hash"}
+RUN_WARNING_CAP_PER_RUN = 10
+_INT_LIKE_RE = re.compile(r"^[+-]?\d+$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,18 +129,90 @@ def _is_type_valid(value: Any, expected_type: str) -> bool:
     return True
 
 
+def _infer_numeric_field_type(field: str, value: Any) -> str | None:
+    if field in RUN_LOG_SCHEMA_MAP:
+        return RUN_LOG_SCHEMA_MAP[field]
+    if value is None:
+        return None
+    text = value.strip() if isinstance(value, str) else str(value).strip()
+    if not text:
+        return None
+    lowered_field = field.lower()
+    tokens = [token for token in lowered_field.split("_") if token]
+    if any(token in NON_NUMERIC_FIELD_TOKENS for token in tokens):
+        return None
+    if not any(token in NUMERIC_FIELD_TOKENS for token in tokens):
+        return None
+    if any(token in FLOAT_FIELD_TOKENS for token in tokens):
+        return "float"
+    if _INT_LIKE_RE.match(text):
+        return "int"
+    try:
+        numeric = float(text)
+    except (TypeError, ValueError):
+        return "int"
+    return "int" if numeric.is_integer() else "float"
+
+
+def _emit_schema_warning_summary(violation_counts: Counter[tuple[str, str, str]]) -> None:
+    if not violation_counts:
+        return
+    per_run_counts: Counter[str] = Counter()
+    for (run_id, _, _), count in violation_counts.items():
+        per_run_counts[run_id] += count
+
+    print(
+        "Warning: Run_Log export type violations detected. "
+        f"Summary (deduped by run_id/stage/field; max {RUN_WARNING_CAP_PER_RUN} rows per run):",
+        file=sys.stderr,
+    )
+    print("  run_id | stage | field | occurrences", file=sys.stderr)
+    print("  ------ | ----- | ----- | -----------", file=sys.stderr)
+
+    emitted_per_run: Counter[str] = Counter()
+    suppressed_per_run: Counter[str] = Counter()
+    for run_id, stage, field in sorted(violation_counts):
+        count = violation_counts[(run_id, stage, field)]
+        if emitted_per_run[run_id] >= RUN_WARNING_CAP_PER_RUN:
+            suppressed_per_run[run_id] += count
+            continue
+        print(
+            f"  {run_id or '<missing>'} | {stage or '<missing>'} | {field} | {count}",
+            file=sys.stderr,
+        )
+        emitted_per_run[run_id] += 1
+
+    if suppressed_per_run:
+        print("  ... | ... | ... | ...", file=sys.stderr)
+        for run_id in sorted(suppressed_per_run):
+            print(
+                "  "
+                f"{run_id or '<missing>'} | <suppressed> | <suppressed> | {suppressed_per_run[run_id]}",
+                file=sys.stderr,
+            )
+
+    print("  totals by run_id:", file=sys.stderr)
+    for run_id in sorted(per_run_counts):
+        print(f"  - {run_id or '<missing>'}: {per_run_counts[run_id]} violation(s)", file=sys.stderr)
+
+
 def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
+    violation_counts: Counter[tuple[str, str, str]] = Counter()
     for idx, row in enumerate(rows, start=1):
         converted: dict[str, Any] = dict(row)
         schema_errors: list[dict[str, Any]] = []
-        for field, expected_type in RUN_LOG_SCHEMA_MAP.items():
+        for field, raw_value in tuple(converted.items()):
+            expected_type = _infer_numeric_field_type(field, raw_value)
+            if not expected_type:
+                continue
             raw_value = converted.get(field)
             coerced_value, had_violation = _coerce_value_by_rule(raw_value, expected_type)
             converted[field] = coerced_value
             if had_violation:
                 run_id = str(converted.get("run_id") or "")
                 stage = str(converted.get("stage") or "")
+                violation_counts[(run_id, stage, field)] += 1
                 violation = {
                     "field": field,
                     "expected": f"{expected_type}_or_null",
@@ -119,15 +221,6 @@ def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "action": "set_null",
                 }
                 schema_errors.append(violation)
-                print(
-                    (
-                        "Warning: Run_Log export type violation "
-                        f"run_id={run_id or '<missing>'} stage={stage or '<missing>'} "
-                        f"field={field} expected={expected_type}|null "
-                        f"actual={type(raw_value).__name__} row={idx}"
-                    ),
-                    file=sys.stderr,
-                )
         if schema_errors:
             converted["schema_violation"] = {
                 "artifact": "Run_Log",
@@ -136,6 +229,7 @@ def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "errors": schema_errors,
             }
         normalized.append(converted)
+    _emit_schema_warning_summary(violation_counts)
     return normalized
 
 

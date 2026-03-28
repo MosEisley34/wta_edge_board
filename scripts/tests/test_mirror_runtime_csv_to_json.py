@@ -76,9 +76,36 @@ class MirrorRuntimeCsvToJsonTypingTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(0, proc.returncode, msg=proc.stderr)
-            self.assertIn("run_id=run-2", proc.stderr)
-            self.assertIn("stage=runEdgeBoard", proc.stderr)
-            self.assertIn("field=matched_events", proc.stderr)
+            self.assertIn("Summary (deduped by run_id/stage/field", proc.stderr)
+            self.assertIn("run-2 | runEdgeBoard | matched_events | 1", proc.stderr)
+
+    def test_compact_warning_summary_caps_per_run_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dynamic_fields = [f"metric_{idx}_count" for idx in range(12)]
+            fieldnames = ["run_id", "stage", *dynamic_fields]
+            with (root / "Run_Log.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "run_id": "run-cap",
+                        "stage": "runEdgeBoard",
+                        **{field: "not-a-number" for field in dynamic_fields},
+                    }
+                )
+            (root / "State.csv").write_text("run_id,state_key,state_value\nrun-cap,k,v\n", encoding="utf-8")
+
+            proc = subprocess.run(
+                ["python3", str(SCRIPT), "--input-dir", str(root)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc.returncode, msg=proc.stderr)
+            self.assertIn("run-cap | <suppressed> | <suppressed> | 2", proc.stderr)
+            self.assertIn("- run-cap: 12 violation(s)", proc.stderr)
 
     def test_schema_violation_annotation_is_structured(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,6 +152,49 @@ class MirrorRuntimeCsvToJsonTypingTests(unittest.TestCase):
             self.assertEqual("Run_Log", payload[0]["schema_violation"]["artifact"])
             self.assertEqual("run_log_row_schema_violation", payload[0]["schema_violation"]["code"])
             self.assertEqual(4, len(payload[0]["schema_violation"]["errors"]))
+
+    def test_coerces_generic_numeric_fields_to_json_numbers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (root / "Run_Log.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "run_id",
+                        "stage",
+                        "duration_ms",
+                        "opening_lag_minutes",
+                        "cooldown_rate",
+                        "status",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "run_id": "run-5",
+                        "stage": "runEdgeBoard",
+                        "duration_ms": "123",
+                        "opening_lag_minutes": "15",
+                        "cooldown_rate": "0.25",
+                        "status": "ok",
+                    }
+                )
+            (root / "State.csv").write_text("run_id,state_key,state_value\nrun-5,k,v\n", encoding="utf-8")
+
+            proc = subprocess.run(
+                ["python3", str(SCRIPT), "--input-dir", str(root)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc.returncode, msg=proc.stderr)
+            payload = json.loads((root / "Run_Log.json").read_text(encoding="utf-8"))
+            row = payload[0]
+            self.assertEqual(123, row["duration_ms"])
+            self.assertEqual(15, row["opening_lag_minutes"])
+            self.assertEqual(0.25, row["cooldown_rate"])
+            self.assertEqual("ok", row["status"])
 
     def test_no_string_leakage_for_numeric_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
