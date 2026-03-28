@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from compare_run_diagnostics import compare_rows  # noqa: E402
+from compare_run_diagnostics import compare_rows, _with_reason_code_fallback  # noqa: E402
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate  # noqa: E402
 from stake_policy import StakePolicyConfig  # noqa: E402
 
@@ -174,6 +174,10 @@ class CompareRunDiagnosticsValidationTests(unittest.TestCase):
         self.assertEqual("pass", report["status"])
         self.assertEqual([], report["schema_failures"])
         self.assertIn("candidate_no_demand_not_applicable", report["coverage_notes"])
+
+    def test_reason_code_fallback_is_applied_for_non_pass_status(self):
+        report = _with_reason_code_fallback({"status": "fail", "reason_code": ""})
+        self.assertEqual("gate_fail_no_reason_code", report["reason_code"])
 
 
 if __name__ == "__main__":

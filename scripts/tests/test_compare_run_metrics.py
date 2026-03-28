@@ -7,7 +7,12 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from compare_run_metrics import build_report, _metric_counts, _has_stage_summary_zero_core_metrics  # noqa: E402
+from compare_run_metrics import (  # noqa: E402
+    build_report,
+    _metric_counts,
+    _has_stage_summary_zero_core_metrics,
+    _with_reason_code_fallback,
+)
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate  # noqa: E402
 
 
@@ -142,6 +147,10 @@ class CompareRunMetricsTests(unittest.TestCase):
     def test_build_report_fails_when_missing_run(self):
         with self.assertRaises(ValueError):
             build_report([], "run-a", "run-b")
+
+    def test_reason_code_fallback_is_applied_for_non_pass_status(self):
+        report = _with_reason_code_fallback({"status": "schema_missing", "reason_code": ""})
+        self.assertEqual("gate_schema_missing_no_reason_code", report["reason_code"])
 
     def test_legacy_player_stats_shape_is_non_fatal_for_gate(self):
         rows = self._load_legacy_player_stats_fixture()

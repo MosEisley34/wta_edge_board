@@ -34,6 +34,22 @@ DEBUG_WATERMARK = (
 )
 
 
+def _with_reason_code_fallback(report: Dict[str, Any], prefix: str = "gate") -> Dict[str, Any]:
+    normalized = dict(report) if isinstance(report, dict) else {}
+    status = str(normalized.get("status") or "unknown").strip().lower()
+    reason_code = str(normalized.get("reason_code") or "").strip()
+    if status != "pass" and not reason_code:
+        status_token = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in status) or "unknown"
+        normalized["reason_code"] = f"{prefix}_{status_token}_no_reason_code"
+    return normalized
+
+
+def _emit_error(reason_code: str, message: str, **extra: Any) -> None:
+    payload: Dict[str, Any] = {"status": "error", "reason_code": reason_code, "message": message}
+    payload.update(extra)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
 def _parse_json(value: Any, fallback: Any) -> Any:
     if value is None or value == "":
         return fallback
@@ -804,67 +820,82 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    input_path = _resolve_default_input(args.input)
-    export_dir = str(input_path.parent)
-    preflight_status = enforce_preflight_guard(
-        export_dir,
-        args.run_a,
-        args.run_b,
-        args.emergency_preflight_override_tag,
-    )
-    if preflight_status.get("status") == "emergency_override":
-        print(
-            "# preflight_guard: emergency override active "
-            f"(incident_tag={preflight_status.get('incident_tag')})"
+    try:
+        input_path = _resolve_default_input(args.input)
+        export_dir = str(input_path.parent)
+        preflight_status = enforce_preflight_guard(
+            export_dir,
+            args.run_a,
+            args.run_b,
+            args.emergency_preflight_override_tag,
         )
-        print(
-            "# preflight_evidence: MISSING (override mode); "
-            "rerun scripts/export_parity_precheck.sh to generate run_compare_preflight.json"
-        )
-    else:
-        print(f"# preflight_evidence: {preflight_status.get('sidecar_path', '')}")
-    rows = load_rows(input_path)
-    if not args.skip_player_stats_coverage_gate:
-        gate_config = GateConfig(
-            min_resolved_rate=max(0.0, min(1.0, float(args.player_stats_min_resolved_rate))),
-            max_unresolved_players=max(0, int(args.player_stats_max_unresolved_players)),
-            max_missing_side_increase=max(0, int(args.player_stats_max_missing_side_increase)),
-            override_reason=str(args.player_stats_gate_override_reason or "").strip(),
-        )
-        gate_report = evaluate_player_stats_gate(rows, args.run_a, args.run_b, gate_config)
-        coverage_gate = str(gate_report.get("coverage_gate") or gate_report.get("status") or "unknown")
-        schema_integrity = str(gate_report.get("schema_integrity") or "pass")
-        print(
-            "# operator_summary: "
-            f"coverage_gate={coverage_gate} schema_integrity={schema_integrity}"
-        )
-        if gate_report.get("override_used") and schema_integrity == "fail":
+        if preflight_status.get("status") == "emergency_override":
             print(
-                "# WARNING: player-stats coverage override is active, but schema faults remain; "
-                "result stays schema_missing (override does not bypass schema integrity)."
+                "# preflight_guard: emergency override active "
+                f"(incident_tag={preflight_status.get('incident_tag')})"
             )
-        if gate_report.get("status") in {"fail", "schema_missing"}:
-            if args.emit_debug_on_gate_fail:
-                print(_debug_gate_failure_report(rows, args.run_a, args.run_b, gate_report))
-            else:
+            print(
+                "# preflight_evidence: MISSING (override mode); "
+                "rerun scripts/export_parity_precheck.sh to generate run_compare_preflight.json"
+            )
+        else:
+            print(f"# preflight_evidence: {preflight_status.get('sidecar_path', '')}")
+        rows = load_rows(input_path)
+        if not args.skip_player_stats_coverage_gate:
+            gate_config = GateConfig(
+                min_resolved_rate=max(0.0, min(1.0, float(args.player_stats_min_resolved_rate))),
+                max_unresolved_players=max(0, int(args.player_stats_max_unresolved_players)),
+                max_missing_side_increase=max(0, int(args.player_stats_max_missing_side_increase)),
+                override_reason=str(args.player_stats_gate_override_reason or "").strip(),
+            )
+            gate_report = _with_reason_code_fallback(
+                evaluate_player_stats_gate(rows, args.run_a, args.run_b, gate_config),
+                prefix="gate",
+            )
+            coverage_gate = str(gate_report.get("coverage_gate") or gate_report.get("status") or "unknown")
+            schema_integrity = str(gate_report.get("schema_integrity") or "pass")
+            print(
+                "# operator_summary: "
+                f"coverage_gate={coverage_gate} schema_integrity={schema_integrity}"
+            )
+            if gate_report.get("override_used") and schema_integrity == "fail":
+                print(
+                    "# WARNING: player-stats coverage override is active, but schema faults remain; "
+                    "result stays schema_missing (override does not bypass schema integrity)."
+                )
+            if gate_report.get("status") in {"fail", "schema_missing"}:
+                if args.emit_debug_on_gate_fail:
+                    print(_debug_gate_failure_report(rows, args.run_a, args.run_b, gate_report))
+                else:
+                    print(json.dumps(gate_report, indent=2, sort_keys=True))
+                _emit_error(
+                    str(gate_report.get("reason_code") or "gate_fail_no_reason_code"),
+                    "Player-stats coverage/schema gate failed; aborting pre/post verdict publication. "
+                    "Use --player-stats-gate-override-reason only for approved coverage-threshold exceptions.",
+                )
+                return 2
+            if gate_report.get("status") == "override":
+                print("# player_stats_coverage_gate: override active")
                 print(json.dumps(gate_report, indent=2, sort_keys=True))
-            raise SystemExit(
-                "Player-stats coverage/schema gate failed; aborting pre/post verdict publication. "
-                "Use --player-stats-gate-override-reason only for approved coverage-threshold exceptions."
-            )
-        if gate_report.get("status") == "override":
-            print("# player_stats_coverage_gate: override active")
-            print(json.dumps(gate_report, indent=2, sort_keys=True))
-        if gate_report.get("status") == "warn":
-            print("# player_stats_coverage_gate: pass_with_warning")
-            print(json.dumps(gate_report, indent=2, sort_keys=True))
-    stake_policy_config = StakePolicyConfig.from_legacy(
-        enabled=bool(args.stake_policy_enabled),
-        minimum_stake_mxn=max(0.0, float(args.stake_policy_min_stake_mxn)),
-        round_to_min=bool(args.stake_policy_round_to_min),
-    )
-    print(build_report(rows, args.run_a, args.run_b, stake_policy_config=stake_policy_config))
-    return 0
+            if gate_report.get("status") == "warn":
+                print("# player_stats_coverage_gate: pass_with_warning")
+                print(json.dumps(gate_report, indent=2, sort_keys=True))
+        stake_policy_config = StakePolicyConfig.from_legacy(
+            enabled=bool(args.stake_policy_enabled),
+            minimum_stake_mxn=max(0.0, float(args.stake_policy_min_stake_mxn)),
+            round_to_min=bool(args.stake_policy_round_to_min),
+        )
+        print(build_report(rows, args.run_a, args.run_b, stake_policy_config=stake_policy_config))
+        return 0
+    except ValueError as exc:
+        _emit_error("compare_validation_failed", str(exc))
+        return 1
+    except FileNotFoundError as exc:
+        _emit_error("compare_input_not_found", str(exc))
+        return 1
+    except Exception as exc:
+        _emit_error("compare_unexpected_error", str(exc))
+        return 1
 
 
 if __name__ == "__main__":
