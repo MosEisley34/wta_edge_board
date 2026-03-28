@@ -306,6 +306,22 @@ def _extract_stage_fetch_player_stats_metadata(summary: Dict[str, Any]) -> Dict[
         if str(stage.get("stage") or "").strip() != "stageFetchPlayerStats":
             continue
         metadata = _parse_reason_metadata(stage.get("reason_metadata"))
+        stage_message = _parse_json(stage.get("message"), {})
+        if not metadata and isinstance(stage_message, dict):
+            metadata = _parse_reason_metadata(stage_message.get("reason_metadata"))
+        coverage = _parse_json(metadata.get("coverage") if isinstance(metadata, dict) else None, {})
+        if not isinstance(coverage, dict) and isinstance(stage_message, dict):
+            coverage = _parse_json(stage_message.get("coverage"), {})
+        if isinstance(coverage, dict) and coverage:
+            metadata = dict(metadata)
+            metadata.setdefault("requested_player_count", coverage.get("requested"))
+            metadata.setdefault("requested_player_count", coverage.get("requested_players"))
+            metadata.setdefault("resolved_player_count", coverage.get("resolved"))
+            metadata.setdefault("resolved_player_count", coverage.get("resolved_players"))
+            metadata.setdefault("unresolved_player_count", coverage.get("unresolved"))
+            metadata.setdefault("unresolved_player_count", coverage.get("unresolved_players"))
+            metadata.setdefault("resolved_rate", coverage.get("resolved_rate"))
+            metadata.setdefault("resolved_rate", coverage.get("coverage_rate"))
         if metadata:
             return metadata
     return {}
@@ -339,8 +355,14 @@ def _pick_reason_map(metadata: Dict[str, Any], keys: Tuple[str, ...]) -> Dict[st
 
 def _player_stats_comparator(summary: Dict[str, Any]) -> Dict[str, Any]:
     metadata = _extract_stage_fetch_player_stats_metadata(summary)
-    resolved = max(0, _pick_int(metadata, ("resolved_player_count", "resolved_players_count")))
-    requested = max(0, _pick_int(metadata, ("requested_player_count", "total_player_count", "total_players_count")))
+    resolved = max(0, _pick_int(metadata, ("resolved_player_count", "resolved_players_count", "resolved_count")))
+    requested = max(
+        0,
+        _pick_int(
+            metadata,
+            ("requested_player_count", "total_player_count", "total_players_count", "requested_players_count"),
+        ),
+    )
     if requested == 0:
         requested = resolved + max(0, _pick_int(metadata, ("unresolved_player_count", "unresolved_players_count")))
     unresolved_total = max(0, requested - resolved)

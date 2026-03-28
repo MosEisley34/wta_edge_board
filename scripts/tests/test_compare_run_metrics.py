@@ -8,6 +8,7 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from compare_run_metrics import build_report, _metric_counts, _has_stage_summary_zero_core_metrics  # noqa: E402
+from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate  # noqa: E402
 
 
 class CompareRunMetricsTests(unittest.TestCase):
@@ -27,6 +28,11 @@ class CompareRunMetricsTests(unittest.TestCase):
         fixture_path = ROOT / "scripts" / "fixtures" / "compare_run_metrics_live_runtime_rows.json"
         payload = json.loads(fixture_path.read_text(encoding="utf-8"))
         return payload
+
+    @staticmethod
+    def _load_legacy_player_stats_fixture():
+        fixture_path = ROOT / "scripts" / "fixtures" / "player_stats_legacy_window_2026-03-26.json"
+        return json.loads(fixture_path.read_text(encoding="utf-8"))
 
     def test_build_report_emits_deterministic_sections(self):
         rows = [
@@ -136,6 +142,17 @@ class CompareRunMetricsTests(unittest.TestCase):
     def test_build_report_fails_when_missing_run(self):
         with self.assertRaises(ValueError):
             build_report([], "run-a", "run-b")
+
+    def test_legacy_player_stats_shape_is_non_fatal_for_gate(self):
+        rows = self._load_legacy_player_stats_fixture()
+        report = evaluate_player_stats_gate(
+            rows,
+            "legacy-base",
+            "legacy-candidate",
+            GateConfig(min_resolved_rate=0.9, max_unresolved_players=0, max_missing_side_increase=0),
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertEqual([], report["schema_failures"])
 
     def test_build_report_includes_stake_policy_reason_codes(self):
         rows = [
