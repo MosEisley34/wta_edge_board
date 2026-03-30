@@ -1,0 +1,123 @@
+{
+  "baseline": {
+    "applicability": "no_demand",
+    "requested": 0,
+    "resolved": 0,
+    "resolved_rate": 0.0,
+    "run_id": "test-run",
+    "schema_failures": [
+      "stageFetchPlayerStats summary missing"
+    ],
+    "schema_warnings": [
+      "stageFetchPlayerStats reason_metadata missing",
+      "player-stats coverage counters missing_without_demand_evidence"
+    ],
+    "shape_anomalies": [],
+    "source_paths": {
+      "coverage": "canonical_row",
+      "reason_metadata": "missing",
+      "requested": "zero_safe_default",
+      "resolved": "zero_safe_default",
+      "resolved_rate": "zero_safe_default",
+      "stageFetchPlayerStats_summary": "missing",
+      "unresolved_total": "zero_safe_default"
+    },
+    "stats_missing_player_a": 0,
+    "stats_missing_player_b": 0,
+    "unresolved_total": 0
+  },
+  "candidate": {
+    "applicability": "no_demand",
+    "requested": 0,
+    "resolved": 0,
+    "resolved_rate": 0.0,
+    "run_id": "test-run",
+    "schema_failures": [
+      "stageFetchPlayerStats summary missing"
+    ],
+    "schema_warnings": [
+      "stageFetchPlayerStats reason_metadata missing",
+      "player-stats coverage counters missing_without_demand_evidence"
+    ],
+    "shape_anomalies": [],
+    "source_paths": {
+      "coverage": "canonical_row",
+      "reason_metadata": "missing",
+      "requested": "zero_safe_default",
+      "resolved": "zero_safe_default",
+      "resolved_rate": "zero_safe_default",
+      "stageFetchPlayerStats_summary": "missing",
+      "unresolved_total": "zero_safe_default"
+    },
+    "stats_missing_player_a": 0,
+    "stats_missing_player_b": 0,
+    "unresolved_total": 0
+  },
+  "coverage_failures": [],
+  "coverage_gate": "pass",
+  "coverage_notes": [
+    "candidate_no_demand_not_applicable",
+    "baseline_no_demand_not_applicable"
+  ],
+  "deltas": {
+    "resolved_rate_pp": 0.0,
+    "stats_missing_player_a": 0,
+    "stats_missing_player_b": 0,
+    "unresolved_total": 0
+  },
+  "failures": [
+    "baseline_stageFetchPlayerStats summary missing",
+    "candidate_stageFetchPlayerStats summary missing"
+  ],
+  "gate_passed": false,
+  "override_reason": "",
+  "override_used": false,
+  "reason_code": "schema_missing",
+  "schema_failures": [
+    "baseline_stageFetchPlayerStats summary missing",
+    "candidate_stageFetchPlayerStats summary missing"
+  ],
+  "schema_integrity": "fail",
+  "schema_missing_details": [
+    "missing_summary",
+    "upstream_payload_empty_or_changed_shape",
+    "missing_reason_metadata",
+    "no_demand_not_applicable"
+  ],
+  "schema_warnings": {
+    "baseline": [
+      "stageFetchPlayerStats reason_metadata missing",
+      "player-stats coverage counters missing_without_demand_evidence"
+    ],
+    "candidate": [
+      "stageFetchPlayerStats reason_metadata missing",
+      "player-stats coverage counters missing_without_demand_evidence"
+    ]
+  },
+  "source_path_summary": {
+    "baseline": {
+      "coverage": "canonical_row",
+      "reason_metadata": "missing",
+      "requested": "zero_safe_default",
+      "resolved": "zero_safe_default",
+      "resolved_rate": "zero_safe_default",
+      "stageFetchPlayerStats_summary": "missing",
+      "unresolved_total": "zero_safe_default"
+    },
+    "candidate": {
+      "coverage": "canonical_row",
+      "reason_metadata": "missing",
+      "requested": "zero_safe_default",
+      "resolved": "zero_safe_default",
+      "resolved_rate": "zero_safe_default",
+      "stageFetchPlayerStats_summary": "missing",
+      "unresolved_total": "zero_safe_default"
+    }
+  },
+  "status": "schema_missing",
+  "thresholds": {
+    "max_missing_side_increase": 0,
+    "max_unresolved_players": 8,
+    "min_resolved_rate": 0.6
+  }
+}
