@@ -1,0 +1,33 @@
+{
+  "headers": [
+    "row_type",
+    "run_id",
+    "stage",
+    "started_at",
+    "message",
+    "summary",
+    "reason_metadata",
+    "reason_codes",
+    "stage_summaries"
+  ],
+  "rows": [
+    {
+      "row_type": "stage",
+      "run_id": "run-no-demand",
+      "stage": "stageFetchPlayerStats",
+      "started_at": "2026-03-29T00:00:00Z",
+      "message": "{\"note\":\"player stats intentionally absent\"}",
+      "summary": "",
+      "reason_metadata": "",
+      "reason_codes": ""
+    },
+    {
+      "row_type": "summary",
+      "run_id": "run-no-demand",
+      "stage": "runEdgeBoard",
+      "started_at": "2026-03-29T00:00:01Z",
+      "reason_codes": "{}",
+      "stage_summaries": "{\"stage_summaries\":[{\"stage\":\"stageFetchPlayerStats\"}]}"
+    }
+  ]
+}
