@@ -14,6 +14,37 @@ from typing import Any
 KEY_COUNTERS = ("STATS_ENR", "STATS_MISS_A", "STATS_MISS_B")
 
 
+def _default_reason_metadata() -> dict[str, Any]:
+    return {
+        "coverage": {"requested": 0, "resolved": 0, "resolved_rate": 0, "unresolved": 0},
+        "requested_player_count": 0,
+        "resolved_player_count": 0,
+        "unresolved_player_count": 0,
+        "overlap_ratio": 0,
+        "top_unresolved_player_samples": [],
+        "players_total": 0,
+        "players_found_ta": 0,
+        "players_fallback_provider": 0,
+        "players_fallback_model": 0,
+        "players_unresolved": 0,
+        "player_a_source": "none",
+        "player_b_source": "none",
+        "player_resolution_source_by_player": {},
+    }
+
+
+def _default_stage_contract_payload(stage: str) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "summary": {},
+        "reason_metadata": _default_reason_metadata(),
+        "player_stats_counters": {
+            "summary_reason_codes": {},
+            "stage_reason_codes": {},
+        },
+    }
+
+
 def _parse_json_like(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return value
@@ -51,7 +82,7 @@ def _write_csv(path: Path, rows: list[dict[str, str]], headers: list[str]) -> No
 
 
 def _extract_stage_entry(stage_row: dict[str, str], stage: str) -> dict[str, Any]:
-    payload: dict[str, Any] = {"stage": stage}
+    payload: dict[str, Any] = _default_stage_contract_payload(stage)
     message = _parse_json_like(stage_row.get("message"))
     if isinstance(message, dict):
         if isinstance(message.get("summary"), (dict, list, str, int, float, bool)):
@@ -73,9 +104,40 @@ def _extract_stage_entry(stage_row: dict[str, str], stage: str) -> dict[str, Any
         for key in KEY_COUNTERS:
             if key in reason_codes:
                 counters[key] = int(float(reason_codes.get(key) or 0))
-        if counters:
-            payload["reason_codes"] = counters
-    return payload
+        payload["player_stats_counters"]["stage_reason_codes"] = counters
+
+    return _normalize_stage_contract_payload(payload, stage)
+
+
+def _normalize_stage_contract_payload(payload: dict[str, Any], stage: str) -> dict[str, Any]:
+    normalized = _default_stage_contract_payload(stage)
+
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        normalized["summary"] = dict(summary)
+
+    reason_metadata = payload.get("reason_metadata")
+    if isinstance(reason_metadata, dict):
+        merged_reason_metadata = _default_reason_metadata()
+        merged_reason_metadata.update(reason_metadata)
+        merged_coverage = _parse_json_like(reason_metadata.get("coverage"))
+        if not isinstance(merged_coverage, dict):
+            merged_coverage = {}
+        coverage = dict(_default_reason_metadata()["coverage"])
+        coverage.update(merged_coverage)
+        merged_reason_metadata["coverage"] = coverage
+        normalized["reason_metadata"] = merged_reason_metadata
+
+    counters = payload.get("player_stats_counters")
+    if isinstance(counters, dict):
+        stage_reason_codes = counters.get("stage_reason_codes")
+        summary_reason_codes = counters.get("summary_reason_codes")
+        normalized["player_stats_counters"] = {
+            "stage_reason_codes": dict(stage_reason_codes) if isinstance(stage_reason_codes, dict) else {},
+            "summary_reason_codes": dict(summary_reason_codes) if isinstance(summary_reason_codes, dict) else {},
+        }
+
+    return normalized
 
 
 def _stage_summaries_from_summary_row(summary_row: dict[str, str]) -> tuple[Any, list[dict[str, Any]]]:
@@ -101,7 +163,7 @@ def _stage_snapshot(rows: list[dict[str, Any]], run_id: str, stage: str) -> dict
         None,
     )
     if not summary_row:
-        return {}
+        return _default_stage_contract_payload(stage)
 
     reason_codes = _parse_json_like(summary_row.get("reason_codes"))
     summary_counters = {}
@@ -116,14 +178,18 @@ def _stage_snapshot(rows: list[dict[str, Any]], run_id: str, stage: str) -> dict
     entry_reason_metadata = _parse_json_like(stage_entry.get("reason_metadata"))
     entry_summary = _parse_json_like(stage_entry.get("summary"))
 
-    return {
-        "summary": entry_summary,
-        "reason_metadata": entry_reason_metadata if isinstance(entry_reason_metadata, dict) else {},
-        "player_stats_counters": {
-            "summary_reason_codes": summary_counters,
-            "stage_reason_codes": entry_counters if isinstance(entry_counters, dict) else {},
+    return _normalize_stage_contract_payload(
+        {
+            "stage": stage,
+            "summary": entry_summary if isinstance(entry_summary, dict) else {},
+            "reason_metadata": entry_reason_metadata if isinstance(entry_reason_metadata, dict) else {},
+            "player_stats_counters": {
+                "summary_reason_codes": summary_counters,
+                "stage_reason_codes": entry_counters if isinstance(entry_counters, dict) else {},
+            },
         },
-    }
+        stage,
+    )
 
 
 def _apply_sync(rows: list[dict[str, str]], headers: list[str], run_ids: list[str], stage: str) -> int:
@@ -148,25 +214,41 @@ def _apply_sync(rows: list[dict[str, str]], headers: list[str], run_ids: list[st
 
         stage_row = rows[stage_row_idx]
         summary_row = rows[summary_row_idx]
-        canonical_entry = _extract_stage_entry(stage_row, stage)
+        try:
+            canonical_entry = _extract_stage_entry(stage_row, stage)
+        except Exception:
+            canonical_entry = _default_stage_contract_payload(stage)
 
-        if "summary" in headers and "summary" in canonical_entry:
+        if "summary" in headers:
             stage_row["summary"] = _json_string(canonical_entry["summary"])
-        if "reason_metadata" in headers and "reason_metadata" in canonical_entry:
+        if "reason_metadata" in headers:
             stage_row["reason_metadata"] = _json_string(canonical_entry["reason_metadata"])
-        if "reason_codes" in headers and "reason_codes" in canonical_entry:
-            stage_row["reason_codes"] = _json_string(canonical_entry["reason_codes"])
+        if "reason_codes" in headers:
+            stage_row["reason_codes"] = _json_string(canonical_entry["player_stats_counters"]["stage_reason_codes"])
 
         envelope, stage_entries = _stage_summaries_from_summary_row(summary_row)
         replaced = False
         for idx, entry in enumerate(stage_entries):
             if str(entry.get("stage") or "") != stage:
                 continue
-            stage_entries[idx] = {**entry, **canonical_entry}
+            stage_entries[idx] = {
+                **entry,
+                "stage": canonical_entry["stage"],
+                "summary": canonical_entry["summary"],
+                "reason_metadata": canonical_entry["reason_metadata"],
+                "reason_codes": canonical_entry["player_stats_counters"]["stage_reason_codes"],
+            }
             replaced = True
             break
         if not replaced:
-            stage_entries.append(canonical_entry)
+            stage_entries.append(
+                {
+                    "stage": canonical_entry["stage"],
+                    "summary": canonical_entry["summary"],
+                    "reason_metadata": canonical_entry["reason_metadata"],
+                    "reason_codes": canonical_entry["player_stats_counters"]["stage_reason_codes"],
+                }
+            )
 
         if isinstance(envelope, list):
             summary_row["stage_summaries"] = _json_string(stage_entries)
@@ -178,7 +260,7 @@ def _apply_sync(rows: list[dict[str, str]], headers: list[str], run_ids: list[st
         reason_codes = _parse_json_like(summary_row.get("reason_codes"))
         if not isinstance(reason_codes, dict):
             reason_codes = {}
-        stage_counters = canonical_entry.get("reason_codes") if isinstance(canonical_entry.get("reason_codes"), dict) else {}
+        stage_counters = canonical_entry["player_stats_counters"]["stage_reason_codes"]
         for key in KEY_COUNTERS:
             if key in stage_counters:
                 reason_codes[key] = int(float(stage_counters[key]))

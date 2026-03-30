@@ -10,6 +10,13 @@ SCRIPT = ROOT / "scripts" / "sync_stage_player_stats_contract.py"
 
 
 class SyncStagePlayerStatsContractTests(unittest.TestCase):
+    def _write_csv_fixture(self, fixture_name: str, path: Path) -> None:
+        fixture = json.loads((ROOT / "scripts" / "fixtures" / fixture_name).read_text(encoding="utf-8"))
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fixture["headers"])
+            writer.writeheader()
+            writer.writerows(fixture["rows"])
+
     def _write_run_log_csv(self, path: Path) -> None:
         headers = [
             "row_type",
@@ -95,6 +102,48 @@ class SyncStagePlayerStatsContractTests(unittest.TestCase):
             self.assertEqual(stage_entry["reason_codes"]["STATS_ENR"], 3)
             summary_reason_codes = json.loads(summary_row["reason_codes"])
             self.assertEqual(summary_reason_codes["STATS_MISS_A"], 1)
+
+    def test_no_demand_fixture_normalizes_schema_in_csv_and_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_csv_fixture("sync_stage_player_stats_no_demand.json", root / "Run_Log.csv")
+            (root / "State.csv").write_text("run_id\nrun-no-demand\n", encoding="utf-8")
+            (root / "State.json").write_text("[]\n", encoding="utf-8")
+            (root / "Run_Log.json").write_text("[]\n", encoding="utf-8")
+
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--export-dir",
+                    str(root),
+                    "--run-id",
+                    "run-no-demand",
+                    "--stage",
+                    "stageFetchPlayerStats",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            with (root / "Run_Log.csv").open("r", encoding="utf-8", newline="") as handle:
+                csv_rows = list(csv.DictReader(handle))
+            stage_row = next(row for row in csv_rows if row.get("row_type") == "stage")
+            metadata = json.loads(stage_row["reason_metadata"])
+            self.assertEqual({"requested", "resolved", "resolved_rate", "unresolved"}, set(metadata["coverage"].keys()))
+            self.assertIn("player_a_source", metadata)
+            self.assertIn("player_resolution_source_by_player", metadata)
+            self.assertEqual({}, json.loads(stage_row["summary"]))
+            self.assertEqual({}, json.loads(stage_row["reason_codes"]))
+
+            payload = json.loads((root / "Run_Log.json").read_text(encoding="utf-8"))
+            summary_row = next(row for row in payload if row.get("row_type") == "summary")
+            stage_summaries = json.loads(summary_row["stage_summaries"])
+            stage_entry = next(item for item in stage_summaries["stage_summaries"] if item.get("stage") == "stageFetchPlayerStats")
+            self.assertEqual({}, stage_entry["summary"])
+            self.assertEqual({}, stage_entry["reason_codes"])
+            self.assertEqual({"requested", "resolved", "resolved_rate", "unresolved"}, set(stage_entry["reason_metadata"]["coverage"].keys()))
 
     def test_validate_only_fails_on_key_field_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
