@@ -30,6 +30,11 @@ class GateConfig:
     override_reason: str = ""
 
 
+SCHEMA_DETAIL_UPSTREAM_SHAPE = "upstream_payload_empty_or_changed_shape"
+SCHEMA_DETAIL_PARSER_CONTRACT = "parser_contract_mismatch"
+SCHEMA_DETAIL_NO_DEMAND = "no_demand_not_applicable"
+
+
 def _normalize_schema_missing_details(*detail_lists: list[str]) -> list[str]:
     ordered: list[str] = []
     seen: set[str] = set()
@@ -392,7 +397,7 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
 
     has_any_coverage_counter = any(value is not None for value in (requested, resolved, unresolved_total, resolved_rate))
     if not has_any_coverage_counter and evidence_stats_expected:
-        schema_failures.append("player-stats coverage counters missing")
+        schema_failures.append("player-stats coverage counters missing_parser_contract_mismatch")
     elif not has_any_coverage_counter:
         schema_warnings.append("player-stats coverage counters missing_without_demand_evidence")
 
@@ -492,18 +497,22 @@ def evaluate_player_stats_gate(
     schema_missing_detail_codes: list[str] = []
     if any(failure.endswith("stageFetchPlayerStats summary missing") for failure in schema_failures):
         schema_missing_detail_codes.append("missing_summary")
+        schema_missing_detail_codes.append(SCHEMA_DETAIL_UPSTREAM_SHAPE)
     if any(
         (snapshot.get("source_paths") or {}).get("reason_metadata") == "missing"
         for snapshot in (baseline, candidate)
     ):
         schema_missing_detail_codes.append("missing_reason_metadata")
-    if any(failure.endswith("player-stats coverage counters missing") for failure in schema_failures):
+        schema_missing_detail_codes.append(SCHEMA_DETAIL_UPSTREAM_SHAPE)
+    if any(failure.endswith("player-stats coverage counters missing_parser_contract_mismatch") for failure in schema_failures):
         schema_missing_detail_codes.append("missing_coverage_counters")
+        schema_missing_detail_codes.append(SCHEMA_DETAIL_PARSER_CONTRACT)
     if any(
         any("empty_string" in str(marker or "") for marker in (snapshot.get("shape_anomalies") or []))
         for snapshot in (baseline, candidate)
     ):
         schema_missing_detail_codes.append("empty_string_instead_of_array")
+        schema_missing_detail_codes.append(SCHEMA_DETAIL_UPSTREAM_SHAPE)
 
     candidate_not_applicable = candidate.get("applicability") in {"no_demand", "not_applicable"}
     baseline_not_applicable = baseline.get("applicability") in {"no_demand", "not_applicable"}
@@ -540,6 +549,8 @@ def evaluate_player_stats_gate(
     if baseline_not_applicable:
         non_fatal_coverage_notes.append("baseline_no_demand_not_applicable")
     coverage_failures = [failure for failure in coverage_failures if failure != "player_stats_not_applicable_no_demand"]
+    if candidate_not_applicable or baseline_not_applicable:
+        schema_missing_detail_codes.append(SCHEMA_DETAIL_NO_DEMAND)
 
     override_used = bool(config.override_reason and coverage_failures)
     coverage_gate = "pass" if not coverage_failures else ("override" if override_used else "fail")
@@ -569,7 +580,7 @@ def evaluate_player_stats_gate(
     else:
         status = "pass"
 
-    schema_missing_details = _normalize_schema_missing_details(schema_missing_detail_codes) if schema_failures else []
+    schema_missing_details = _normalize_schema_missing_details(schema_missing_detail_codes)
 
     return {
         "status": status,

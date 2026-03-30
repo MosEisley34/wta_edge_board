@@ -171,6 +171,7 @@ function fetchPlayerStatsBatch_(config, canonicalPlayers, asOfTime) {
 function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
   const players = dedupePlayerNames_(canonicalPlayers || []);
   if (!players.length) {
+    const noDemandPartitions = buildPlayerStatsReasonCodePartitioning_(['player_stats_no_players']);
     return {
       ok: true,
       reason_code: 'player_stats_no_players',
@@ -178,6 +179,9 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       api_credit_usage: 0,
       api_call_count: 0,
       scrape_call_count: 0,
+      selection_metadata: {
+        reason_code_partitioning: noDemandPartitions,
+      },
     };
   }
 
@@ -187,10 +191,12 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
   let totalApiCalls = 0;
   const sourcePayloads = [];
   const sourceAttemptDiagnostics = [];
+  const reasonCodePartitioning = initPlayerStatsReasonCodePartitioning_();
 
   sourceConfigs.forEach(function (sourceConfig) {
     const result = fetchPlayerStatsFromSingleSource_(sourceConfig, config, players, asOfTime);
     attempts.push(result.reason_code || 'player_stats_unknown_source_result');
+    addPlayerStatsReasonCodeToPartitioning_(reasonCodePartitioning, result.reason_code);
     totalApiCalls += Number(result.api_call_count || 0);
     sourceAttemptDiagnostics.push({
       source_name: sourceConfig.source_name,
@@ -229,11 +235,13 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
         trusted_feature_count: Number(finalSelection.trusted_feature_count || 0),
         merge_diagnostics: mergeDiagnostics,
         source_attempts: sourceAttemptDiagnostics,
+        reason_code_partitioning: reasonCodePartitioning,
       },
     };
   }
 
   const leadersSource = fetchPlayerStatsFromLeadersSource_(players, config, asOfTime);
+  addPlayerStatsReasonCodeToPartitioning_(reasonCodePartitioning, leadersSource.reason_code);
   if (leadersSource.ok) {
     const taStatsByPlayer = leadersSource.stats_by_player || {};
     const unresolvedPlayers = players.filter(function (playerName) {
@@ -375,11 +383,13 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       selection_metadata: Object.assign({}, baseSelectionMetadata, {
         fallback_diagnostics: fallbackDiagnostics,
         player_source_by_player: playerSourceByPlayer,
+        reason_code_partitioning: reasonCodePartitioning,
       }),
     };
   }
 
   const scraped = fetchPlayerStatsFromScrapeSources_(config, players);
+  addPlayerStatsReasonCodeToPartitioning_(reasonCodePartitioning, scraped.reason_code);
   if (scraped.ok) {
     return {
       ok: true,
@@ -389,6 +399,9 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
       api_credit_usage: 0,
       api_call_count: totalApiCalls + Number(scraped.api_call_count || 0),
       scrape_call_count: Number(scraped.api_call_count || 0),
+      selection_metadata: {
+        reason_code_partitioning: reasonCodePartitioning,
+      },
     };
   }
 
@@ -399,8 +412,68 @@ function fetchPlayerStatsFromProvider_(config, canonicalPlayers, asOfTime) {
     api_credit_usage: 0,
     api_call_count: totalApiCalls + Number(leadersSource.api_call_count || 0) + Number(scraped.api_call_count || 0),
     scrape_call_count: Number(scraped.api_call_count || 0),
-    selection_metadata: leadersSource.selection_metadata || null,
+    selection_metadata: Object.assign({}, leadersSource.selection_metadata || {}, {
+      reason_code_partitioning: reasonCodePartitioning,
+    }),
   };
+}
+
+function initPlayerStatsReasonCodePartitioning_() {
+  return {
+    upstream_payload_empty_or_changed_shape: [],
+    parser_contract_mismatch: [],
+    no_demand_cases: [],
+  };
+}
+
+function buildPlayerStatsReasonCodePartitioning_(reasonCodes) {
+  const partitioning = initPlayerStatsReasonCodePartitioning_();
+  (reasonCodes || []).forEach(function (code) {
+    addPlayerStatsReasonCodeToPartitioning_(partitioning, code);
+  });
+  return partitioning;
+}
+
+function addPlayerStatsReasonCodeToPartitioning_(partitioning, reasonCode) {
+  const code = String(reasonCode || '').trim();
+  if (!code || !partitioning || typeof partitioning !== 'object') return;
+  if (isPlayerStatsNoDemandReasonCode_(code)) {
+    if (partitioning.no_demand_cases.indexOf(code) === -1) partitioning.no_demand_cases.push(code);
+    return;
+  }
+  if (isPlayerStatsParserContractMismatchReasonCode_(code)) {
+    if (partitioning.parser_contract_mismatch.indexOf(code) === -1) partitioning.parser_contract_mismatch.push(code);
+    return;
+  }
+  if (isPlayerStatsUpstreamPayloadShapeReasonCode_(code)) {
+    if (partitioning.upstream_payload_empty_or_changed_shape.indexOf(code) === -1) partitioning.upstream_payload_empty_or_changed_shape.push(code);
+  }
+}
+
+function isPlayerStatsNoDemandReasonCode_(reasonCode) {
+  return String(reasonCode || '') === 'player_stats_no_players';
+}
+
+function isPlayerStatsParserContractMismatchReasonCode_(reasonCode) {
+  const code = String(reasonCode || '');
+  if (!code) return false;
+  if (code.indexOf('contract') >= 0) return true;
+  if (code.indexOf('parse') >= 0) return true;
+  if (code.indexOf('shape_invalid') >= 0) return true;
+  if (code.indexOf('missing_keys') >= 0) return true;
+  if (code.indexOf('non_json') >= 0) return true;
+  return false;
+}
+
+function isPlayerStatsUpstreamPayloadShapeReasonCode_(reasonCode) {
+  const code = String(reasonCode || '');
+  if (!code) return false;
+  if (code.indexOf('provider_returned_empty') >= 0) return true;
+  if (code.indexOf('no_usable_stats_payload') >= 0) return true;
+  if (code.indexOf('unusable_payload') >= 0) return true;
+  if (code.indexOf('js_url_missing') >= 0) return true;
+  if (code.indexOf('zero_coverage') >= 0) return true;
+  return false;
 }
 
 function fetchPlayerStatsFromLeadersSource_(canonicalPlayers, config, asOfTime) {

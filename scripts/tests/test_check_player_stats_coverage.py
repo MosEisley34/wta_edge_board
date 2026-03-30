@@ -82,6 +82,7 @@ class PlayerStatsCoverageGateTests(unittest.TestCase):
         self.assertEqual("schema_missing", report["status"])
         self.assertEqual("schema_missing", report["reason_code"])
         self.assertIn("missing_coverage_counters", report["schema_missing_details"])
+        self.assertIn("parser_contract_mismatch", report["schema_missing_details"])
         self.assertEqual("pass", report["coverage_gate"])
         self.assertEqual("fail", report["schema_integrity"])
         self.assertFalse(report["override_used"])
@@ -93,6 +94,7 @@ class PlayerStatsCoverageGateTests(unittest.TestCase):
         report = evaluate_player_stats_gate(rows, "run-a", "run-b", GateConfig())
         self.assertEqual("schema_missing", report["status"])
         self.assertIn("missing_summary", report["schema_missing_details"])
+        self.assertIn("upstream_payload_empty_or_changed_shape", report["schema_missing_details"])
 
     def test_legacy_stage_message_coverage_aliases_are_accepted(self):
         rows = self._rows(
@@ -138,6 +140,7 @@ class PlayerStatsCoverageGateTests(unittest.TestCase):
         self.assertEqual("pass", report["status"])
         self.assertEqual([], report["schema_failures"])
         self.assertIn("candidate_no_demand_not_applicable", report["coverage_notes"])
+        self.assertIn("no_demand_not_applicable", report["schema_missing_details"])
 
     def test_requested_zero_missing_counters_only_is_warn(self):
         rows = self._rows(
@@ -153,6 +156,7 @@ class PlayerStatsCoverageGateTests(unittest.TestCase):
             report["schema_warnings"]["candidate"],
         )
         self.assertIn("candidate_no_demand_not_applicable", report["coverage_notes"])
+        self.assertIn("no_demand_not_applicable", report["schema_missing_details"])
 
 
 if __name__ == "__main__":

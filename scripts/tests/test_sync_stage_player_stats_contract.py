@@ -10,6 +10,14 @@ SCRIPT = ROOT / "scripts" / "sync_stage_player_stats_contract.py"
 
 
 class SyncStagePlayerStatsContractTests(unittest.TestCase):
+    @staticmethod
+    def _parse_json_like(value):
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, str):
+            return json.loads(value)
+        return {}
+
     def _write_csv_fixture(self, fixture_name: str, path: Path) -> None:
         fixture = json.loads((ROOT / "scripts" / "fixtures" / fixture_name).read_text(encoding="utf-8"))
         with path.open("w", encoding="utf-8", newline="") as handle:
@@ -94,13 +102,13 @@ class SyncStagePlayerStatsContractTests(unittest.TestCase):
 
             payload = json.loads((root / "Run_Log.json").read_text(encoding="utf-8"))
             summary_row = next(row for row in payload if row.get("row_type") == "summary")
-            stage_summaries = json.loads(summary_row["stage_summaries"])
+            stage_summaries = self._parse_json_like(summary_row["stage_summaries"])
             stage_entry = next(item for item in stage_summaries["stage_summaries"] if item.get("stage") == "stageFetchPlayerStats")
 
             self.assertEqual(stage_entry["summary"]["status"], "ok")
             self.assertEqual(stage_entry["reason_metadata"]["resolved_player_count"], 3)
             self.assertEqual(stage_entry["reason_codes"]["STATS_ENR"], 3)
-            summary_reason_codes = json.loads(summary_row["reason_codes"])
+            summary_reason_codes = self._parse_json_like(summary_row["reason_codes"])
             self.assertEqual(summary_reason_codes["STATS_MISS_A"], 1)
 
     def test_no_demand_fixture_normalizes_schema_in_csv_and_json(self):
@@ -134,16 +142,24 @@ class SyncStagePlayerStatsContractTests(unittest.TestCase):
             self.assertEqual({"requested", "resolved", "resolved_rate", "unresolved"}, set(metadata["coverage"].keys()))
             self.assertIn("player_a_source", metadata)
             self.assertIn("player_resolution_source_by_player", metadata)
+            self.assertEqual(
+                {"upstream_payload_empty_or_changed_shape", "parser_contract_mismatch", "no_demand_cases"},
+                set(metadata["reason_code_partitioning"].keys()),
+            )
             self.assertEqual({}, json.loads(stage_row["summary"]))
             self.assertEqual({}, json.loads(stage_row["reason_codes"]))
 
             payload = json.loads((root / "Run_Log.json").read_text(encoding="utf-8"))
             summary_row = next(row for row in payload if row.get("row_type") == "summary")
-            stage_summaries = json.loads(summary_row["stage_summaries"])
+            stage_summaries = self._parse_json_like(summary_row["stage_summaries"])
             stage_entry = next(item for item in stage_summaries["stage_summaries"] if item.get("stage") == "stageFetchPlayerStats")
             self.assertEqual({}, stage_entry["summary"])
             self.assertEqual({}, stage_entry["reason_codes"])
             self.assertEqual({"requested", "resolved", "resolved_rate", "unresolved"}, set(stage_entry["reason_metadata"]["coverage"].keys()))
+            self.assertEqual(
+                {"upstream_payload_empty_or_changed_shape", "parser_contract_mismatch", "no_demand_cases"},
+                set(stage_entry["reason_metadata"]["reason_code_partitioning"].keys()),
+            )
 
     def test_validate_only_fails_on_key_field_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:

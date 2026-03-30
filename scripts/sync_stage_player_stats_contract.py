@@ -30,6 +30,11 @@ def _default_reason_metadata() -> dict[str, Any]:
         "player_a_source": "none",
         "player_b_source": "none",
         "player_resolution_source_by_player": {},
+        "reason_code_partitioning": {
+            "upstream_payload_empty_or_changed_shape": [],
+            "parser_contract_mismatch": [],
+            "no_demand_cases": [],
+        },
     }
 
 
@@ -126,6 +131,19 @@ def _normalize_stage_contract_payload(payload: dict[str, Any], stage: str) -> di
         coverage = dict(_default_reason_metadata()["coverage"])
         coverage.update(merged_coverage)
         merged_reason_metadata["coverage"] = coverage
+        merged_partitions = _parse_json_like(reason_metadata.get("reason_code_partitioning"))
+        if not isinstance(merged_partitions, dict):
+            merged_partitions = {}
+        partitioning = dict(_default_reason_metadata()["reason_code_partitioning"])
+        for key, default_values in partitioning.items():
+            candidate_values = merged_partitions.get(key)
+            if isinstance(candidate_values, list):
+                partitioning[key] = list(candidate_values)
+            elif isinstance(candidate_values, str) and candidate_values.strip():
+                partitioning[key] = [candidate_values.strip()]
+            else:
+                partitioning[key] = list(default_values)
+        merged_reason_metadata["reason_code_partitioning"] = partitioning
         normalized["reason_metadata"] = merged_reason_metadata
 
     counters = payload.get("player_stats_counters")
