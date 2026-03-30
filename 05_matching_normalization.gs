@@ -258,8 +258,25 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
       fallback.rejection_code = fallback.rejection_code === 'outside_time_tolerance' ? 'fallback_exhausted' : fallback.rejection_code;
       return fallback;
     });
+  const softMatchEnabled = String(config.MATCH_SOFT_MATCH_ENABLED || 'true').toLowerCase() !== 'false';
+  const softMatchedResults = softMatchEnabled
+    ? finalResults.map(function (result) {
+      if (result.matched) return result;
+      const softMatch = trySoftMatchForResult_(result, scheduleEvents, aliasMap, config);
+      if (!softMatch) return result;
+      return softMatch;
+    })
+    : finalResults;
+  if (softMatchEnabled) {
+    softMatchedResults.forEach(function (result, idx) {
+      if (!result || !result.matched || result.match_type !== 'soft_match') return;
+      if (finalResults[idx] && !finalResults[idx].matched) {
+        reasonCounts.soft_match_recovered = (reasonCounts.soft_match_recovered || 0) + 1;
+      }
+    });
+  }
 
-  finalResults.forEach((result) => {
+  softMatchedResults.forEach((result) => {
     const rejectionDiagnostics = buildMatchRejectionDiagnostics_(result);
     if (result.matched) {
       rows.push({
@@ -332,6 +349,7 @@ function stageMatchEvents(runId, config, oddsEvents, scheduleEvents) {
       rejected_count: rejectedCount,
       diagnostic_records_written: diagnosticRecordsWritten,
     }),
+    reason_metadata: buildUnresolvedDriftDiagnostics_(unmatched),
   });
 
   return {
@@ -1045,6 +1063,18 @@ function normalizePlayerNameAliasRules_(normalized) {
     'q zheng': 'qinwen zheng',
     'kalininskaya anna': 'anna kalinskaya',
     'anna kalininskaya': 'anna kalinskaya',
+    'jelena ostapenko': 'jelena ostapenko',
+    'ostapenko jelena': 'jelena ostapenko',
+    'daria kasatkina': 'daria kasatkina',
+    'kasatkina daria': 'daria kasatkina',
+    'ons jabeur': 'ons jabeur',
+    'jabeur ons': 'ons jabeur',
+    'madison keys': 'madison keys',
+    'keys madison': 'madison keys',
+    'beatriz haddad maia': 'beatriz haddad maia',
+    'haddad maia beatriz': 'beatriz haddad maia',
+    'qinwen zheng': 'qinwen zheng',
+    'zheng qinwen': 'qinwen zheng',
   };
   if (aliasRules[value]) return aliasRules[value];
 
@@ -1054,7 +1084,11 @@ function normalizePlayerNameAliasRules_(normalized) {
     const second = tokens[1];
     const firstLooksGiven = knownGivenNames[first] === true || first.length === 1;
     const secondLooksGiven = knownGivenNames[second] === true || second.length === 1;
-    if (!firstLooksGiven && secondLooksGiven) return second + ' ' + first;
+    if (!firstLooksGiven && secondLooksGiven) {
+      const reordered = (second + ' ' + first).trim();
+      if (aliasRules[reordered]) return aliasRules[reordered];
+      return reordered;
+    }
   }
 
   const surnameParticles = ['de', 'del', 'della', 'da', 'di', 'van', 'von', 'la', 'le', 'st', 'saint'];
@@ -1070,7 +1104,9 @@ function normalizePlayerNameAliasRules_(normalized) {
     const firstLooksGiven = knownGivenNames[firstToken] === true || firstToken.length === 1;
     const lastLooksGiven = knownGivenNames[lastToken] === true || lastToken.length === 1;
     if (!firstLooksGiven && lastLooksGiven) {
-      return [lastToken].concat(tokens.slice(0, tokens.length - 1)).join(' ');
+      const reordered = [lastToken].concat(tokens.slice(0, tokens.length - 1)).join(' ');
+      if (aliasRules[reordered]) return aliasRules[reordered];
+      return reordered;
     }
   }
 
@@ -1078,9 +1114,212 @@ function normalizePlayerNameAliasRules_(normalized) {
     const initial = value.split(' ')[0];
     const rest = value.split(' ').slice(1).join(' ');
     if (aliasRules[initial + ' ' + rest]) return aliasRules[initial + ' ' + rest];
+    const expanded = expandPlayerInitialAlias_(initial, rest);
+    if (expanded) return expanded;
+  }
+
+  if (/^[a-z]+(?:\s+[a-z]+)*\s+[a-z]$/.test(value)) {
+    const pieces = value.split(' ');
+    const trailingInitial = pieces[pieces.length - 1];
+    const leading = pieces.slice(0, pieces.length - 1).join(' ');
+    if (aliasRules[leading + ' ' + trailingInitial]) return aliasRules[leading + ' ' + trailingInitial];
+    const expanded = expandPlayerInitialAlias_(trailingInitial, leading);
+    if (expanded) return expanded;
   }
 
   return value;
+}
+
+function expandPlayerInitialAlias_(initial, surnameExpression) {
+  const key = (String(initial || '').trim().charAt(0) + ' ' + String(surnameExpression || '').trim()).trim();
+  const surnameInitialMap = {
+    'i swiatek': 'iga swiatek',
+    'e rybakina': 'elena rybakina',
+    'm kostyuk': 'marta kostyuk',
+    's kartal': 'sonay kartal',
+    'j paolini': 'jasmine paolini',
+    'm keys': 'madison keys',
+    'b haddad maia': 'beatriz haddad maia',
+    'e alexandrova': 'ekaterina alexandrova',
+    'k pliskova': 'karolina pliskova',
+    'v kudermetova': 'veronika kudermetova',
+    'k rakhimova': 'kamilla rakhimova',
+    'd yastremska': 'dayana yastremska',
+    'q zheng': 'qinwen zheng',
+    'o jabeur': 'ons jabeur',
+    'd kasatkina': 'daria kasatkina',
+  };
+  return surnameInitialMap[key] || '';
+}
+
+function trySoftMatchForResult_(result, scheduleEvents, aliasMap, config) {
+  if (!result || !result.odds || !Array.isArray(scheduleEvents) || !scheduleEvents.length) return null;
+  const odds = result.odds;
+  const oddsPlayersPair = normalizePlayerPair_(odds.player_1, odds.player_2, aliasMap);
+  const oddsCompetitionKey = normalizeCompetitionForMatchJoin_(extractCompetitionForMatchJoin_(odds));
+  const softMaxDeltaMin = Math.max(0, Number(config.MATCH_SOFT_MATCH_MAX_DELTA_MIN || 90));
+  const softSimilarityThreshold = Math.max(0, Math.min(1, Number(config.MATCH_SOFT_MATCH_MIN_SIMILARITY || 0.9)));
+  const softAmbiguousWindowMin = Math.max(1, Number(config.MATCH_SOFT_MATCH_AMBIGUOUS_WINDOW_MIN || 15));
+  const softSimilarityMargin = Math.max(0.001, Number(config.MATCH_SOFT_MATCH_SIMILARITY_MARGIN || 0.015));
+
+  const candidates = scheduleEvents.map(function (sched) {
+    const scheduleCompetitionKey = normalizeCompetitionForMatchJoin_(extractCompetitionForMatchJoin_(sched));
+    if (!oddsCompetitionKey || !scheduleCompetitionKey || oddsCompetitionKey !== scheduleCompetitionKey) return null;
+    if (!(odds.commence_time instanceof Date) || !(sched.start_time instanceof Date)) return null;
+    const timeDeltaMin = Math.abs(odds.commence_time.getTime() - sched.start_time.getTime()) / 60000;
+    if (timeDeltaMin > softMaxDeltaMin) return null;
+    const schedPlayersPair = normalizePlayerPair_(sched.player_1, sched.player_2, aliasMap);
+    const playerDistance = computePairKeyDistance_(oddsPlayersPair.key, schedPlayersPair.key);
+    const maxKeyLen = Math.max(String(oddsPlayersPair.key || '').length, String(schedPlayersPair.key || '').length);
+    const similarity = maxKeyLen > 0 ? Number((1 - (playerDistance / maxKeyLen)).toFixed(6)) : 0;
+    if (similarity < softSimilarityThreshold) return null;
+    return {
+      sched: sched,
+      similarity: similarity,
+      timeDeltaMin: timeDeltaMin,
+      playerDistance: playerDistance,
+      normalizedPlayers: schedPlayersPair.players,
+    };
+  }).filter(function (entry) { return !!entry; });
+
+  if (!candidates.length) return null;
+  candidates.sort(function (a, b) {
+    if (a.similarity !== b.similarity) return b.similarity - a.similarity;
+    if (a.timeDeltaMin !== b.timeDeltaMin) return a.timeDeltaMin - b.timeDeltaMin;
+    return String((a.sched || {}).event_id || '').localeCompare(String((b.sched || {}).event_id || ''));
+  });
+  const best = candidates[0];
+  const second = candidates[1];
+  if (second) {
+    const similarBand = (best.similarity - second.similarity) <= softSimilarityMargin;
+    const closeTimeBand = Math.abs(best.timeDeltaMin - second.timeDeltaMin) <= softAmbiguousWindowMin;
+    if (similarBand && closeTimeBand) return null;
+  }
+
+  return {
+    odds: odds,
+    matched: true,
+    match_type: 'soft_match',
+    schedule_event_id: best.sched.event_id,
+    competition_tier: best.sched.canonical_tier || '',
+    time_diff_min: Math.round(best.timeDeltaMin),
+    normalized_odds_players: oddsPlayersPair.players,
+    nearest_schedule_candidate: {
+      event_id: best.sched.event_id || '',
+      player_1: best.sched.player_1 || '',
+      player_2: best.sched.player_2 || '',
+      normalized_players: best.normalizedPlayers,
+      start_time: best.sched.start_time && best.sched.start_time.toISOString ? best.sched.start_time.toISOString() : '',
+      player_distance: best.playerDistance,
+      similarity_score: best.similarity,
+      time_delta_min: Math.round(best.timeDeltaMin),
+      initial_key_match: oddsPlayersPair.initial_key && oddsPlayersPair.initial_key === normalizePlayerPair_(best.sched.player_1, best.sched.player_2, aliasMap).initial_key,
+    },
+    nearest_schedule_candidate_diagnostics: {
+      viability: 'accepted_soft_match',
+      normalized_odds_players: oddsPlayersPair.players.slice(0, 2),
+      normalized_schedule_players: best.normalizedPlayers.slice(0, 2),
+      similarity_score: best.similarity,
+      similarity_threshold: softSimilarityThreshold,
+      time_delta_min: Math.round(best.timeDeltaMin),
+      same_competition_window: true,
+    },
+    best_time_delta_min: Math.round(best.timeDeltaMin),
+    primary_time_delta_min: result.best_time_delta_min,
+    fallback_time_delta_min: result.best_time_delta_min,
+  };
+}
+
+function extractCompetitionForMatchJoin_(event) {
+  if (!event) return '';
+  const fields = [
+    event.competition,
+    event.tournament,
+    event.tournament_name,
+    event.event_name,
+    event.league_name,
+    event.canonical_tier,
+  ];
+  for (let i = 0; i < fields.length; i += 1) {
+    const value = String(fields[i] || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function normalizeCompetitionForMatchJoin_(value) {
+  const normalized = normalizeCompetitionValue_(value)
+    .replace(/\bwta(?:\s+tour)?\b/g, 'wta')
+    .replace(/\bintl\b/g, 'international')
+    .replace(/\bchamps?\b/g, 'championships')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return '';
+  if (normalized === 'wta_500') return 'wta 500';
+  const cityAlias = {
+    doha: 'doha',
+    qatar: 'doha',
+    dubai: 'dubai',
+    abu: 'abu',
+    charleston: 'charleston',
+    san: 'san',
+    stuttgart: 'stuttgart',
+  };
+  let cityToken = '';
+  Object.keys(cityAlias).some(function (token) {
+    if (normalized.indexOf(token) < 0) return false;
+    cityToken = cityAlias[token];
+    return true;
+  });
+  if (normalized.indexOf('wta 500') >= 0 || normalized.indexOf('wta500') >= 0 || normalized.indexOf('wta_500') >= 0) {
+    return cityToken ? ('wta500 ' + cityToken) : 'wta500';
+  }
+  return normalized;
+}
+
+function buildUnresolvedDriftDiagnostics_(unmatched) {
+  const rows = Array.isArray(unmatched) ? unmatched : [];
+  const competitionCounts = {};
+  const playerPairCounts = {};
+  rows.forEach(function (row) {
+    const competitionKey = normalizeCompetitionForMatchJoin_(extractCompetitionForMatchJoin_(row));
+    if (competitionKey) {
+      if (!competitionCounts[competitionKey]) {
+        competitionCounts[competitionKey] = {
+          normalized_competition: competitionKey,
+          count: 0,
+          sample_competition: String((row && row.competition) || ''),
+        };
+      }
+      competitionCounts[competitionKey].count += 1;
+    }
+    const oddsPlayers = Array.isArray(row.normalized_odds_players) ? row.normalized_odds_players : [];
+    const key = oddsPlayers.join('|');
+    if (key) {
+      if (!playerPairCounts[key]) {
+        playerPairCounts[key] = {
+          normalized_players: oddsPlayers.slice(0, 2),
+          count: 0,
+          sample_players: [String((row && row.player_1) || ''), String((row && row.player_2) || '')],
+        };
+      }
+      playerPairCounts[key].count += 1;
+    }
+  });
+  const topUnresolvedCompetitions = Object.keys(competitionCounts)
+    .map(function (key) { return competitionCounts[key]; })
+    .sort(function (a, b) { return b.count - a.count; })
+    .slice(0, 5);
+  const topUnresolvedPlayers = Object.keys(playerPairCounts)
+    .map(function (key) { return playerPairCounts[key]; })
+    .sort(function (a, b) { return b.count - a.count; })
+    .slice(0, 5);
+  return {
+    unresolved_drift_diagnostics_version: 1,
+    unresolved_total: rows.length,
+    top_unresolved_competition_examples: topUnresolvedCompetitions,
+    top_unresolved_player_examples: topUnresolvedPlayers,
+  };
 }
 
 function buildPlayerAliasMap_(json) {
