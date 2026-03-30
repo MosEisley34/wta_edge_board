@@ -13,8 +13,25 @@ from preflight_guard import enforce_preflight_guard, write_preflight_sidecar  # 
 
 class PreflightGuardTests(unittest.TestCase):
     def _write_manifest(self, export_dir: Path, generated_at: str = "2026-03-24T00:00:00+00:00"):
-        payload = {"generated_at_utc": generated_at, "files": []}
+        payload = {
+            "generated_at_utc": generated_at,
+            "files": [
+                {"path": "Run_Log.csv"},
+                {"path": "Run_Log.json"},
+                {"path": "State.csv"},
+                {"path": "State.json"},
+            ],
+        }
         (export_dir / "runtime_export_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+        (export_dir / "Run_Log.json").write_text(
+            json.dumps(
+                [
+                    {"run_id": "run-a", "row_type": "summary", "stage": "runEdgeBoard", "stage_summaries": []},
+                    {"run_id": "run-b", "row_type": "summary", "stage": "runEdgeBoard", "stage_summaries": []},
+                ]
+            ),
+            encoding="utf-8",
+        )
 
     def test_blocks_when_sidecar_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -27,7 +44,9 @@ class PreflightGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write_manifest(root)
-            write_preflight_sidecar(str(root), "run-a", "run-b", False, "")
+            sidecar_path = write_preflight_sidecar(str(root), "run-a", "run-b", False, "")
+            sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+            self.assertIn("run_checklist_by_run_id", sidecar["preflight_evidence"])
             status = enforce_preflight_guard(str(root), "run-b", "run-a", "")
             self.assertEqual(status["status"], "ok")
 

@@ -254,6 +254,25 @@ def _empty_contract() -> dict[str, object]:
     }
 
 
+def _run_checklist(contract: dict[str, object]) -> dict[str, bool]:
+    observed_stages = set(contract["stages"])
+    checklist: dict[str, bool] = {
+        "has_runEdgeBoard_summary": bool(contract["run_summary_exists"]),
+        "has_stageFetchPlayerStats_summary": bool(contract["stage_fetch_player_stats_summary_exists"]),
+    }
+    for stage in REQUIRED_STAGE_CHAIN:
+        checklist[f"has_{stage}"] = stage in observed_stages
+    checklist["has_required_stages"] = all(checklist[f"has_{stage}"] for stage in REQUIRED_STAGE_CHAIN)
+    checklist["compare_ready"] = all(
+        (
+            checklist["has_runEdgeBoard_summary"],
+            checklist["has_stageFetchPlayerStats_summary"],
+            checklist["has_required_stages"],
+        )
+    )
+    return checklist
+
+
 def _format_missing(run_ids: Iterable[str], present_ids: set[str]) -> list[str]:
     return [run_id for run_id in run_ids if run_id not in present_ids]
 
@@ -403,6 +422,9 @@ def main() -> int:
         print(
             f"- {run_id}: {status} (matches={total_matches}, source_files_with_match={matched_files})"
         )
+    print("Preflight evidence checklist (per run):")
+    for run_id in targets:
+        print(f"- {run_id}: {json.dumps(_run_checklist(merged_contracts[run_id]), sort_keys=True)}")
 
     if missing:
         print("Precheck failed: one or more target run IDs are missing from merged JSON/CSV sources.")
@@ -479,7 +501,8 @@ def main() -> int:
         if disallowed:
             contract_failures.append(f"{run_id}: disallowed reason_code(s) {', '.join(disallowed)}")
         if args.require_gate_prereqs:
-            if not merged_contracts[run_id]["run_summary_exists"]:
+            run_checklist = _run_checklist(merged_contracts[run_id])
+            if not run_checklist["has_runEdgeBoard_summary"]:
                 contract_failures.append(
                     f"{run_id}: missing runEdgeBoard summary row (row_type=summary, stage=runEdgeBoard)"
                 )
@@ -489,7 +512,7 @@ def main() -> int:
                 contract_failures.append(
                     f"{run_id}: missing stage chain entries ({', '.join(missing_stages)})"
                 )
-            if not merged_contracts[run_id]["stage_fetch_player_stats_summary_exists"]:
+            if not run_checklist["has_stageFetchPlayerStats_summary"]:
                 contract_failures.append(
                     f"{run_id}: missing stageFetchPlayerStats summary in stage_summaries"
                 )
@@ -506,6 +529,10 @@ def main() -> int:
                 contract_failures.append(f"{run_id}: reason_codes missing STATS_MISS_A")
             if not merged_contracts[run_id]["reason_codes_has_stats_miss_b"]:
                 contract_failures.append(f"{run_id}: reason_codes missing STATS_MISS_B")
+            if not run_checklist["compare_ready"]:
+                contract_failures.append(
+                    f"{run_id}: compare readiness checklist failed (see preflight evidence checklist)"
+                )
 
     if contract_failures:
         print("Precheck failed: compare_validation_failed.")

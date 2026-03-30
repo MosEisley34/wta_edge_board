@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import Any
 
 KEY_COUNTERS = ("STATS_ENR", "STATS_MISS_A", "STATS_MISS_B")
+REQUIRED_COMPARE_STAGES = (
+    "stageFetchOdds",
+    "stageFetchSchedule",
+    "stageMatchEvents",
+    "stageFetchPlayerStats",
+    "stageGenerateSignals",
+    "stagePersist",
+)
 
 
 def _default_reason_metadata() -> dict[str, Any]:
@@ -210,6 +218,85 @@ def _stage_snapshot(rows: list[dict[str, Any]], run_id: str, stage: str) -> dict
     )
 
 
+def _find_summary_row(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
+    return next(
+        (
+            row
+            for row in reversed(rows)
+            if str(row.get("run_id") or "") == run_id
+            and str(row.get("row_type") or "") == "summary"
+            and str(row.get("stage") or "") == "runEdgeBoard"
+        ),
+        None,
+    )
+
+
+def _stage_set_for_run(rows: list[dict[str, Any]], run_id: str) -> set[str]:
+    stages: set[str] = set()
+    for row in rows:
+        if str(row.get("run_id") or "") != run_id:
+            continue
+        stage_name = str(row.get("stage") or "").strip()
+        if stage_name and stage_name != "runEdgeBoard":
+            stages.add(stage_name)
+    summary_row = _find_summary_row(rows, run_id)
+    if not summary_row:
+        return stages
+    _, stage_entries = _stage_summaries_from_summary_row(summary_row)
+    for entry in stage_entries:
+        stage_name = str(entry.get("stage") or "").strip()
+        if stage_name:
+            stages.add(stage_name)
+    return stages
+
+
+def _summary_shape_valid(summary_row: dict[str, Any] | None) -> bool:
+    if not summary_row:
+        return False
+    stage_summaries = _parse_json_like(summary_row.get("stage_summaries"))
+    if isinstance(stage_summaries, list):
+        return True
+    if isinstance(stage_summaries, dict):
+        return isinstance(stage_summaries.get("stage_summaries"), list)
+    return False
+
+
+def _has_stage_summary_entry(summary_row: dict[str, Any] | None, stage: str) -> bool:
+    if not summary_row:
+        return False
+    _, stage_entries = _stage_summaries_from_summary_row(summary_row)
+    return any(str(entry.get("stage") or "") == stage for entry in stage_entries)
+
+
+def _run_checklist(rows: list[dict[str, Any]], run_id: str, stage: str) -> dict[str, bool]:
+    summary_row = _find_summary_row(rows, run_id)
+    stage_set = _stage_set_for_run(rows, run_id)
+    checklist: dict[str, bool] = {
+        "has_runEdgeBoard_summary": bool(summary_row),
+        "runEdgeBoard_summary_shape_valid": _summary_shape_valid(summary_row),
+        f"has_{stage}_summary": _has_stage_summary_entry(summary_row, stage),
+    }
+    for required_stage in REQUIRED_COMPARE_STAGES:
+        checklist[f"has_{required_stage}"] = required_stage in stage_set
+    checklist["has_required_compare_stages"] = all(
+        checklist[f"has_{required_stage}"] for required_stage in REQUIRED_COMPARE_STAGES
+    )
+    checklist["compare_critical_summary_ready"] = all(
+        (
+            checklist["has_runEdgeBoard_summary"],
+            checklist["runEdgeBoard_summary_shape_valid"],
+            checklist[f"has_{stage}_summary"],
+        )
+    )
+    checklist["compare_ready"] = all(
+        (
+            checklist["compare_critical_summary_ready"],
+            checklist["has_required_compare_stages"],
+        )
+    )
+    return checklist
+
+
 def _apply_sync(rows: list[dict[str, str]], headers: list[str], run_ids: list[str], stage: str) -> int:
     updates = 0
     for run_id in run_ids:
@@ -302,16 +389,33 @@ def _print_validation(export_dir: Path, run_ids: list[str], stage: str) -> bool:
         raise RuntimeError("Run_Log.json must contain a list of rows.")
 
     mismatch = False
+    contract_failure = False
+    json_dict_rows = [r for r in json_rows if isinstance(r, dict)]
     print(f"CSV-vs-JSON validation for stage={stage}")
     for run_id in run_ids:
+        csv_checklist = _run_checklist(csv_rows, run_id, stage)
+        json_checklist = _run_checklist(json_dict_rows, run_id, stage)
         csv_snapshot = _stage_snapshot(csv_rows, run_id, stage)
-        json_snapshot = _stage_snapshot([r for r in json_rows if isinstance(r, dict)], run_id, stage)
+        json_snapshot = _stage_snapshot(json_dict_rows, run_id, stage)
         print(f"- run_id={run_id}")
+        compact_checklist = {
+            "csv": csv_checklist,
+            "json": json_checklist,
+        }
+        print(f"  checklist: {json.dumps(compact_checklist, sort_keys=True)}")
         print(f"  csv:  {json.dumps(csv_snapshot, sort_keys=True)}")
         print(f"  json: {json.dumps(json_snapshot, sort_keys=True)}")
         if csv_snapshot != json_snapshot:
             mismatch = True
-    return not mismatch
+        if (not csv_checklist["compare_critical_summary_ready"]) or (not json_checklist["compare_critical_summary_ready"]):
+            contract_failure = True
+    if contract_failure:
+        print(
+            "Error: compare-critical contract rows missing or malformed "
+            "(runEdgeBoard summary + required stages + stageFetchPlayerStats summary).",
+            file=sys.stderr,
+        )
+    return (not mismatch) and (not contract_failure)
 
 
 def main() -> int:

@@ -96,6 +96,8 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertIn("Precheck passed", output)
+            self.assertIn("Preflight evidence checklist (per run):", output)
+            self.assertIn("has_runEdgeBoard_summary", output)
 
     def test_override_allows_csv_only_presence_with_degraded_confidence_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
