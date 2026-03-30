@@ -996,6 +996,7 @@ function runEdgeBoard() {
         signalStage.summary,
         persistStage.summary,
       ],
+      compare_prerequisites: buildRunSummaryComparePrerequisites_(playerStatsStage.summary),
       gs_export_parity_contract: gsParityPrecheck,
       gs_export_parity_readiness_status: gsParityPrecheck.parity_status,
       gs_export_parity_readiness_reason_code: gsParityPrecheck.reason_code,
@@ -2943,6 +2944,30 @@ function resolveRunHealthFetchedOddsCount_(fetchedBeforeGateCount, gatedOddsStag
   const initialCount = Number(fetchedBeforeGateCount || 0);
   const gatedCount = Number((gatedOddsStage && gatedOddsStage.events && gatedOddsStage.events.length) || 0);
   return Math.max(initialCount, gatedCount);
+}
+
+function buildRunSummaryComparePrerequisites_(playerStatsSummary) {
+  const stageSummary = playerStatsSummary && typeof playerStatsSummary === 'object' ? playerStatsSummary : {};
+  const reasonMetadata = stageSummary.reason_metadata && typeof stageSummary.reason_metadata === 'object'
+    ? stageSummary.reason_metadata
+    : {};
+  const coverage = reasonMetadata.coverage && typeof reasonMetadata.coverage === 'object'
+    ? reasonMetadata.coverage
+    : {};
+  const requested = Number(coverage.requested);
+  const resolved = Number(coverage.resolved);
+  const unresolved = Number(coverage.unresolved);
+  return {
+    coverage: {
+      requested: Number.isFinite(requested) ? Math.max(0, requested) : 0,
+      resolved: Number.isFinite(resolved) ? Math.max(0, resolved) : 0,
+      unresolved: Number.isFinite(unresolved) ? Math.max(0, unresolved) : 0,
+    },
+    reason_code_placeholders: {
+      STATS_MISS_A: 0,
+      STATS_MISS_B: 0,
+    },
+  };
 }
 
 function buildStageReasonCodeMutationDiagnostics_(stageSnapshots) {

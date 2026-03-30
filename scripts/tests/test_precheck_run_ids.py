@@ -177,8 +177,71 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
             )
 
             self.assertEqual(code, 2)
-            self.assertIn("compare_validation_failed", output)
+            self.assertIn("compare_contract_missing", output)
             self.assertIn("missing candidate summary row", output)
+
+    def test_gate_prereqs_accepts_compare_prereq_placeholders_from_summary_envelope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = [
+                {
+                    "run_id": "run-a",
+                    "row_type": "summary",
+                    "stage": "runEdgeBoard",
+                    "reason_codes": {},
+                    "stage_summaries": {
+                        "schema_id": "reason_code_aliases.v1",
+                        "stage_summaries": [{"stage": stage} for stage in (
+                            "stageFetchOdds",
+                            "stageFetchSchedule",
+                            "stageMatchEvents",
+                            "stageFetchPlayerStats",
+                            "stageGenerateSignals",
+                            "stagePersist",
+                        )],
+                        "compare_prerequisites": {
+                            "coverage": {"requested": 0, "resolved": 0, "unresolved": 0},
+                            "reason_code_placeholders": {"STATS_MISS_A": 0, "STATS_MISS_B": 0},
+                        },
+                    },
+                },
+                {
+                    "run_id": "run-b",
+                    "row_type": "summary",
+                    "stage": "runEdgeBoard",
+                    "reason_codes": {},
+                    "stage_summaries": {
+                        "schema_id": "reason_code_aliases.v1",
+                        "stage_summaries": [{"stage": stage} for stage in (
+                            "stageFetchOdds",
+                            "stageFetchSchedule",
+                            "stageMatchEvents",
+                            "stageFetchPlayerStats",
+                            "stageGenerateSignals",
+                            "stagePersist",
+                        )],
+                        "compare_prerequisites": {
+                            "coverage": {"requested": 0, "resolved": 0, "unresolved": 0},
+                            "reason_code_placeholders": {"STATS_MISS_A": 0, "STATS_MISS_B": 0},
+                        },
+                    },
+                },
+            ]
+            (root / "Run_Log.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            code, output = self._run_main(
+                [
+                    "precheck_run_ids.py",
+                    "run-a",
+                    "run-b",
+                    "--export-dir",
+                    str(root),
+                    "--require-gate-prereqs",
+                ]
+            )
+
+            self.assertEqual(code, 0)
+            self.assertIn("Precheck passed", output)
 
 
 if __name__ == "__main__":

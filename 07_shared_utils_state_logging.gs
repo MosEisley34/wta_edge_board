@@ -354,7 +354,9 @@ function appendLogRow_(entry) {
   const stakeModeValidation = validateStakeModeUsedForWrite_(normalized);
   projectRunQualityFieldsForSummaryRow_(normalized);
   normalizeFeatureCompletenessForWrite_(normalized);
+  hydrateRunSummaryCompareContractDefaultsForWrite_(normalized);
   validateRunLogRowSchemaForWrite_(normalized);
+  validateRunSummaryCompareContractForWrite_(normalized);
   emitRunQualityMissingFieldGuardLog_(normalized);
   validateRunSummaryQualityContract_(normalized);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -639,6 +641,128 @@ function validateRunSummaryQualityContract_(entry) {
   const edgeReasonCode = String(qualityContract.edge_volatility_reason_code || '').trim();
   if (!edgeReasonCode) {
     throw new Error('run_summary_quality_contract_missing_edge_reason_code');
+  }
+}
+
+function hydrateRunSummaryCompareContractDefaultsForWrite_(entry) {
+  const rowType = String(entry && entry.row_type || '');
+  const stage = String(entry && entry.stage || '');
+  if (rowType !== 'summary' || stage !== 'runEdgeBoard') return;
+
+  const parsedStagePayload = parseLogJsonLike_(entry.stage_summaries, null);
+  const stageEnvelope = parsedStagePayload && typeof parsedStagePayload === 'object' && !Array.isArray(parsedStagePayload)
+    ? Object.assign({}, parsedStagePayload)
+    : { schema_id: REASON_CODE_ALIAS_SCHEMA_ID, stage_summaries: [] };
+
+  if (!Array.isArray(stageEnvelope.stage_summaries)) {
+    stageEnvelope.stage_summaries = Array.isArray(parsedStagePayload) ? parsedStagePayload : [];
+  }
+  if (!stageEnvelope.schema_id) {
+    stageEnvelope.schema_id = REASON_CODE_ALIAS_SCHEMA_ID;
+  }
+
+  let playerStatsSummary = null;
+  for (let i = 0; i < stageEnvelope.stage_summaries.length; i += 1) {
+    const candidate = stageEnvelope.stage_summaries[i];
+    if (!candidate || typeof candidate !== 'object') continue;
+    if (String(candidate.stage || '') !== 'stageFetchPlayerStats') continue;
+    playerStatsSummary = candidate;
+    break;
+  }
+  if (!playerStatsSummary) {
+    playerStatsSummary = {
+      stage: 'stageFetchPlayerStats',
+      input_count: 0,
+      output_count: 0,
+      reason_codes: {},
+      reason_metadata: {},
+    };
+    stageEnvelope.stage_summaries.push(playerStatsSummary);
+  }
+
+  playerStatsSummary.reason_metadata = playerStatsSummary.reason_metadata && typeof playerStatsSummary.reason_metadata === 'object'
+    ? playerStatsSummary.reason_metadata
+    : {};
+  const coverage = playerStatsSummary.reason_metadata.coverage && typeof playerStatsSummary.reason_metadata.coverage === 'object'
+    ? playerStatsSummary.reason_metadata.coverage
+    : {};
+  coverage.requested = Number.isFinite(Number(coverage.requested)) ? Math.max(0, Number(coverage.requested)) : 0;
+  coverage.resolved = Number.isFinite(Number(coverage.resolved)) ? Math.max(0, Number(coverage.resolved)) : 0;
+  coverage.unresolved = Number.isFinite(Number(coverage.unresolved)) ? Math.max(0, Number(coverage.unresolved)) : 0;
+  playerStatsSummary.reason_metadata.coverage = coverage;
+
+  const comparePrereqs = stageEnvelope.compare_prerequisites && typeof stageEnvelope.compare_prerequisites === 'object'
+    ? Object.assign({}, stageEnvelope.compare_prerequisites)
+    : {};
+  const compareCoverage = comparePrereqs.coverage && typeof comparePrereqs.coverage === 'object'
+    ? Object.assign({}, comparePrereqs.coverage)
+    : {};
+  compareCoverage.requested = Number.isFinite(Number(compareCoverage.requested))
+    ? Math.max(0, Number(compareCoverage.requested))
+    : Number(coverage.requested || 0);
+  compareCoverage.resolved = Number.isFinite(Number(compareCoverage.resolved))
+    ? Math.max(0, Number(compareCoverage.resolved))
+    : Number(coverage.resolved || 0);
+  compareCoverage.unresolved = Number.isFinite(Number(compareCoverage.unresolved))
+    ? Math.max(0, Number(compareCoverage.unresolved))
+    : Number(coverage.unresolved || 0);
+  comparePrereqs.coverage = compareCoverage;
+  comparePrereqs.reason_code_placeholders = comparePrereqs.reason_code_placeholders
+    && typeof comparePrereqs.reason_code_placeholders === 'object'
+    ? Object.assign({}, comparePrereqs.reason_code_placeholders)
+    : {};
+  if (!Object.prototype.hasOwnProperty.call(comparePrereqs.reason_code_placeholders, 'STATS_MISS_A')) {
+    comparePrereqs.reason_code_placeholders.STATS_MISS_A = 0;
+  }
+  if (!Object.prototype.hasOwnProperty.call(comparePrereqs.reason_code_placeholders, 'STATS_MISS_B')) {
+    comparePrereqs.reason_code_placeholders.STATS_MISS_B = 0;
+  }
+  stageEnvelope.compare_prerequisites = comparePrereqs;
+  entry.stage_summaries = JSON.stringify(stageEnvelope);
+}
+
+function validateRunSummaryCompareContractForWrite_(entry) {
+  const rowType = String(entry && entry.row_type || '');
+  const stage = String(entry && entry.stage || '');
+  if (rowType !== 'summary' || stage !== 'runEdgeBoard') return;
+
+  const parsedStagePayload = parseLogJsonLike_(entry.stage_summaries, null);
+  if (!parsedStagePayload || typeof parsedStagePayload !== 'object' || Array.isArray(parsedStagePayload)) {
+    throw new Error('run_summary_compare_contract_missing: stage_summaries envelope missing');
+  }
+  const stageSummaries = Array.isArray(parsedStagePayload.stage_summaries) ? parsedStagePayload.stage_summaries : [];
+  const playerStatsSummary = stageSummaries.find(function (summary) {
+    return summary && typeof summary === 'object' && String(summary.stage || '') === 'stageFetchPlayerStats';
+  });
+  if (!playerStatsSummary) {
+    throw new Error('run_summary_compare_contract_missing: stageFetchPlayerStats summary missing');
+  }
+  const reasonMetadata = playerStatsSummary.reason_metadata && typeof playerStatsSummary.reason_metadata === 'object'
+    ? playerStatsSummary.reason_metadata
+    : {};
+  const coverage = reasonMetadata.coverage && typeof reasonMetadata.coverage === 'object'
+    ? reasonMetadata.coverage
+    : {};
+  ['requested', 'resolved', 'unresolved'].forEach(function (key) {
+    const value = Number(coverage[key]);
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error('run_summary_compare_contract_missing: stageFetchPlayerStats coverage.' + key);
+    }
+  });
+
+  const comparePrereqs = parsedStagePayload.compare_prerequisites;
+  if (!comparePrereqs || typeof comparePrereqs !== 'object') {
+    throw new Error('run_summary_compare_contract_missing: compare_prerequisites missing');
+  }
+  const placeholderMap = comparePrereqs.reason_code_placeholders;
+  if (!placeholderMap || typeof placeholderMap !== 'object') {
+    throw new Error('run_summary_compare_contract_missing: reason_code_placeholders missing');
+  }
+  if (!Object.prototype.hasOwnProperty.call(placeholderMap, 'STATS_MISS_A')) {
+    throw new Error('run_summary_compare_contract_missing: reason_code_placeholders.STATS_MISS_A missing');
+  }
+  if (!Object.prototype.hasOwnProperty.call(placeholderMap, 'STATS_MISS_B')) {
+    throw new Error('run_summary_compare_contract_missing: reason_code_placeholders.STATS_MISS_B missing');
   }
 }
 
