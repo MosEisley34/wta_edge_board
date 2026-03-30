@@ -248,6 +248,10 @@ function buildMenuTriggerActionResult_(action, verification) {
   };
 }
 
+function runScheduledTabsZipExport() {
+  return exportAllTabsZip_('auto');
+}
+
 function runEdgeBoard() {
   const runId = buildRunId_();
   const startedAt = new Date();
