@@ -16,17 +16,29 @@ import precheck_run_ids  # noqa: E402
 
 
 class PrecheckRunIdsSourceContractTests(unittest.TestCase):
-    def _write_json(self, path: Path, run_ids):
+    def _write_json(self, path: Path, run_ids, summary_run_ids=None):
+        summary_run_ids = set(run_ids if summary_run_ids is None else summary_run_ids)
         rows = [{"run_id": run_id, "stage": "stageFetchOdds"} for run_id in run_ids]
+        rows.extend(
+            {
+                "run_id": run_id,
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+            }
+            for run_id in summary_run_ids
+        )
         path.write_text(json.dumps(rows), encoding="utf-8")
 
-    def _write_csv(self, path: Path, run_ids):
-        headers = ["run_id", "stage"]
+    def _write_csv(self, path: Path, run_ids, summary_run_ids=None):
+        summary_run_ids = set(run_ids if summary_run_ids is None else summary_run_ids)
+        headers = ["run_id", "stage", "row_type"]
         with path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=headers)
             writer.writeheader()
             for run_id in run_ids:
-                writer.writerow({"run_id": run_id, "stage": "stageFetchOdds"})
+                writer.writerow({"run_id": run_id, "stage": "stageFetchOdds", "row_type": ""})
+            for run_id in summary_run_ids:
+                writer.writerow({"run_id": run_id, "stage": "runEdgeBoard", "row_type": "summary"})
 
     def _run_main(self, argv):
         with patch.object(sys, "argv", argv):
@@ -151,6 +163,20 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
             self.assertIn("Top recent run IDs found (limit=2): run-100, run-101", output)
             self.assertIn("Closest run IDs to run-999:", output)
             self.assertIn("Remediation: point EXPORT_SRC to a fresh batch path", output)
+
+    def test_fails_when_run_id_present_but_candidate_summary_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_csv(root / "Run_Log.csv", ["run-a", "run-b"], summary_run_ids=["run-a"])
+            self._write_json(root / "Run_Log.json", ["run-a", "run-b"], summary_run_ids=["run-a"])
+
+            code, output = self._run_main(
+                ["precheck_run_ids.py", "run-a", "run-b", "--export-dir", str(root)]
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("compare_validation_failed", output)
+            self.assertIn("missing candidate summary row", output)
 
 
 if __name__ == "__main__":
