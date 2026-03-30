@@ -51,6 +51,21 @@ def _emit_error(reason_code: str, message: str, **extra: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def _schema_missing_details_from_gate(gate_report: Dict[str, Any]) -> List[str]:
+    details = gate_report.get("schema_missing_details")
+    if not isinstance(details, list):
+        return []
+    normalized: List[str] = []
+    seen = set()
+    for item in details:
+        code = str(item or "").strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        normalized.append(code)
+    return normalized
+
+
 def _parse_json(value: Any, fallback: Any) -> Any:
     if value is None or value == "":
         return fallback
@@ -865,14 +880,19 @@ def main() -> int:
                     "result stays schema_missing (override does not bypass schema integrity)."
                 )
             if gate_report.get("status") in {"fail", "schema_missing"}:
+                error_extra: Dict[str, Any] = {}
+                reason_code = str(gate_report.get("reason_code") or "gate_fail_no_reason_code")
+                if reason_code == "schema_missing":
+                    error_extra["schema_missing_details"] = _schema_missing_details_from_gate(gate_report)
                 if args.emit_debug_on_gate_fail:
                     print(_debug_gate_failure_report(rows, args.run_a, args.run_b, gate_report))
                 else:
                     print(json.dumps(gate_report, indent=2, sort_keys=True))
                 _emit_error(
-                    str(gate_report.get("reason_code") or "gate_fail_no_reason_code"),
+                    reason_code,
                     "Player-stats coverage/schema gate failed; aborting pre/post verdict publication. "
                     "Use --player-stats-gate-override-reason only for approved coverage-threshold exceptions.",
+                    **error_extra,
                 )
                 return 2
             if gate_report.get("status") == "override":
