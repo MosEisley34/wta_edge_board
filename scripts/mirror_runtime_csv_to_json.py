@@ -22,6 +22,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from runtime_artifact_codec import normalize_run_log_row
+
 
 ARTIFACTS = (
     ("Run_Log", "Run_Log.csv", "Run_Log.json"),
@@ -200,7 +202,7 @@ def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     violation_counts: Counter[tuple[str, str, str]] = Counter()
     for idx, row in enumerate(rows, start=1):
-        converted: dict[str, Any] = dict(row)
+        converted: dict[str, Any] = normalize_run_log_row(dict(row))
         schema_errors: list[dict[str, Any]] = []
         for field, raw_value in tuple(converted.items()):
             expected_type = _infer_numeric_field_type(field, raw_value)

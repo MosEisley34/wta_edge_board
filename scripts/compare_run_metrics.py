@@ -10,6 +10,7 @@ from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate
 from preflight_guard import enforce_preflight_guard
 from pipeline_log_adapter import REASON_CODE_ALIAS_DICTIONARIES, REASON_CODE_ALIAS_SCHEMA_ID, _expand_reason_map
 from stake_policy import StakePolicyConfig, summarize_run_stake_policy
+from runtime_artifact_codec import normalize_run_log_row
 
 METRICS = ["MATCH_CT", "NO_P_MATCH", "REJ_CT", "STATS_ENR", "STATS_MISS_A", "STATS_MISS_B"]
 NO_HIT_COUNTER_FIELDS = (
@@ -168,12 +169,12 @@ def _iter_summary_reason_code_envelopes(summary: Dict[str, Any]):
 def load_rows(path: Path) -> List[Dict[str, Any]]:
     if path.suffix.lower() == ".json":
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, list) else []
+        return [normalize_run_log_row(dict(row)) for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
 
     rows: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
-            rows.append(dict(row))
+            rows.append(normalize_run_log_row(dict(row)))
     return rows
 
 
