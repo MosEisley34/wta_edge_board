@@ -212,6 +212,10 @@ def _scan_run_contracts(path: str, target_run_ids: set[str]) -> dict[str, dict[s
                     contracts[run_id]["reason_codes_has_stats_miss_b"] = True
 
             stage_summaries = _parse_json_like(row.get("stage_summaries"))
+            compare_prerequisites = {}
+            if isinstance(stage_summaries, dict):
+                compare_prerequisites = stage_summaries.get("compare_prerequisites") or {}
+                stage_summaries = stage_summaries.get("stage_summaries")
             if not isinstance(stage_summaries, list):
                 message = _parse_json_like(row.get("message"))
                 if isinstance(message, dict):
@@ -239,6 +243,28 @@ def _scan_run_contracts(path: str, target_run_ids: set[str]) -> dict[str, dict[s
                             has_alias = any(alias in reason_metadata for alias in aliases)
                         if has_alias:
                             contracts[run_id]["coverage_prereq"][prereq_key] = True
+            prereq_coverage = (
+                compare_prerequisites.get("coverage")
+                if isinstance(compare_prerequisites, dict)
+                else None
+            )
+            if isinstance(prereq_coverage, dict):
+                for prereq_key, aliases in REQUIRED_COVERAGE_KEYS.items():
+                    if prereq_key in prereq_coverage:
+                        contracts[run_id]["coverage_prereq"][prereq_key] = True
+                        continue
+                    if any(alias in prereq_coverage for alias in aliases):
+                        contracts[run_id]["coverage_prereq"][prereq_key] = True
+            placeholders = (
+                compare_prerequisites.get("reason_code_placeholders")
+                if isinstance(compare_prerequisites, dict)
+                else None
+            )
+            if isinstance(placeholders, dict):
+                if "STATS_MISS_A" in placeholders:
+                    contracts[run_id]["reason_codes_has_stats_miss_a"] = True
+                if "STATS_MISS_B" in placeholders:
+                    contracts[run_id]["reason_codes_has_stats_miss_b"] = True
     return contracts
 
 
@@ -535,8 +561,9 @@ def main() -> int:
                 )
 
     if contract_failures:
-        print("Precheck failed: compare_validation_failed.")
+        print("Precheck failed: compare_contract_missing.")
         print("Run-pair comparison auto-failed due to invalid run contract.")
+        print("Classification: contract missing (structural); not data_quality_low (metric threshold).")
         if args.require_gate_prereqs:
             print(
                 "Gate prereq mode (--require-gate-prereqs) blocks compare scripts until summary/stage/coverage requirements are met."
@@ -552,7 +579,8 @@ def main() -> int:
     if not merged_contracts[args.run_id_b]["run_summary_exists"]:
         summary_presence_failures.append("missing candidate summary row")
     if summary_presence_failures:
-        print("Precheck failed: compare_validation_failed.")
+        print("Precheck failed: compare_contract_missing.")
+        print("Classification: contract missing (structural); not data_quality_low (metric threshold).")
         for failure in summary_presence_failures:
             print(f"- {failure}")
         print(

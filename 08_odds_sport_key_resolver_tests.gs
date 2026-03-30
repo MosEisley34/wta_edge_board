@@ -1545,6 +1545,154 @@ function testRunEdgeBoard_degradesWhenOddsPresentButNoMatches_() {
   }
 }
 
+function assertRunSummaryComparePrerequisites_(summaryRow, expectedCoverage) {
+  const payload = JSON.parse(summaryRow.stage_summaries || '{}');
+  const prereqs = payload.compare_prerequisites || {};
+  const coverage = prereqs.coverage || {};
+  const placeholders = prereqs.reason_code_placeholders || {};
+  assertEquals_(Number(expectedCoverage.requested || 0), Number(coverage.requested || 0));
+  assertEquals_(Number(expectedCoverage.resolved || 0), Number(coverage.resolved || 0));
+  assertEquals_(Number(expectedCoverage.unresolved || 0), Number(coverage.unresolved || 0));
+  assertEquals_(true, Object.prototype.hasOwnProperty.call(placeholders, 'STATS_MISS_A'));
+  assertEquals_(true, Object.prototype.hasOwnProperty.call(placeholders, 'STATS_MISS_B'));
+}
+
+function runEdgeBoardAllowParityFailure_() {
+  try {
+    runEdgeBoard();
+  } catch (error) {
+    const reasonCode = String(error && error.reason_code || '');
+    if (reasonCode !== 'export_parity_contract_failed') throw error;
+  }
+}
+
+function testRunEdgeBoard_emitsComparePrerequisites_normalRun_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }],
+      oddsRows: [{ key: 'odds_1|book|h2h|p1' }],
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchRows: [{ odds_event_id: 'odds_1', schedule_event_id: 'sch_1' }],
+      matchedCount: 1,
+      matchReasonCodes: { primary_match: 1, matched_count: 1 },
+      playerStatsStageResult: {
+        rows: [{ key: 'odds_1|player a|ts' }],
+        byOddsEventId: { odds_1: { source: 'player_stats_provider_v1' } },
+        summary: {
+          stage: 'stageFetchPlayerStats',
+          input_count: 1,
+          output_count: 2,
+          reason_codes: { stats_enriched: 2 },
+          reason_metadata: { coverage: { requested: 2, resolved: 2, unresolved: 0 } },
+        },
+      },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoardAllowParityFailure_();
+    const summary = harness.logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
+    })[0];
+    assertRunSummaryComparePrerequisites_(summary, { requested: 2, resolved: 2, unresolved: 0 });
+  } finally {
+    harness.restore();
+  }
+}
+
+function testRunEdgeBoard_emitsComparePrerequisites_scheduleOnlyRun_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [],
+      oddsRows: [],
+      oddsReasonCodes: { odds_refresh_skipped_outside_window: 1 },
+      scheduleEvents: [{ event_id: 'sch_1' }],
+      scheduleRows: [{ event_id: 'sch_1' }],
+      matchRows: [{ odds_event_id: 'sch_1', schedule_event_id: 'sch_1', match_type: 'schedule_seed_no_odds' }],
+      matchedCount: 0,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      diagnosticRecordsWritten: 1,
+      matchReasonCodes: { schedule_seed_no_odds: 1, diagnostic_records_written: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoardAllowParityFailure_();
+    const summary = harness.logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
+    })[0];
+    assertRunSummaryComparePrerequisites_(summary, { requested: 0, resolved: 0, unresolved: 0 });
+  } finally {
+    harness.restore();
+  }
+}
+
+function testRunEdgeBoard_emitsComparePrerequisites_oddsNoMatchRun_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [{ event_id: 'odds_1' }],
+      oddsRows: [{ key: 'odds_1|book|h2h|p1' }],
+      scheduleEvents: [],
+      scheduleReasonCodes: { schedule_enrichment_no_schedule_events: 1 },
+      matchedCount: 0,
+      unmatchedCount: 1,
+      rejectedCount: 1,
+      diagnosticRecordsWritten: 1,
+      unmatched: [{ odds_event_id: 'odds_1', rejection_code: 'no_player_match' }],
+      matchReasonCodes: { no_player_match: 1, rejected_count: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoardAllowParityFailure_();
+    const summary = harness.logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
+    })[0];
+    assertRunSummaryComparePrerequisites_(summary, { requested: 0, resolved: 0, unresolved: 0 });
+  } finally {
+    harness.restore();
+  }
+}
+
+function testStageFetchPlayerStats_emitsZeroedSummaryOnNoDemandRun_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    oddsEvents: [],
+    matchRows: [],
+    schedulePayload: { events: [] },
+    batchResult: {
+      stats_by_player: {},
+      provider_available: true,
+      api_credit_usage: 0,
+      reason_code: 'player_stats_api_success_empty',
+    },
+  });
+  const summary = result.stage.summary || {};
+  const meta = summary.reason_metadata || {};
+  assertEquals_(0, Number(summary.input_count || 0));
+  assertEquals_(0, Number(summary.output_count || 0));
+  assertEquals_(0, Number((meta.coverage || {}).requested || 0));
+  assertEquals_(0, Number((meta.coverage || {}).resolved || 0));
+  assertEquals_(0, Number((meta.coverage || {}).unresolved || 0));
+  assertEquals_(0, Number(meta.resolved_with_usable_stats_count || 0));
+}
+
 
 
 function testRunEdgeBoard_treatsExpectedTemporaryNoOddsAsNonFailing_() {
@@ -2974,7 +3122,7 @@ function createRunEdgeBoardTestHarness_(options) {
       return {
         events: (opts.orchestrationScenario.oddsEvents || []).slice(),
         rows: (opts.orchestrationScenario.oddsRows || []).slice(),
-        summary: { reason_codes: Object.assign({}, opts.orchestrationScenario.oddsReasonCodes || {}) },
+        summary: { stage: 'stageFetchOdds', reason_codes: Object.assign({}, opts.orchestrationScenario.oddsReasonCodes || {}) },
         selected_source: 'fallback_static_window',
       };
     };
@@ -2982,7 +3130,7 @@ function createRunEdgeBoardTestHarness_(options) {
       return {
         events: (opts.orchestrationScenario.scheduleEvents || []).slice(),
         rows: (opts.orchestrationScenario.scheduleRows || []).slice(),
-        summary: { reason_codes: Object.assign({}, opts.orchestrationScenario.scheduleReasonCodes || {}) },
+        summary: { stage: 'stageFetchSchedule', reason_codes: Object.assign({}, opts.orchestrationScenario.scheduleReasonCodes || {}) },
         canonicalExamples: [],
         unresolvedCompetitions: [],
         unresolvedCompetitionCounts: {},
@@ -2993,7 +3141,7 @@ function createRunEdgeBoardTestHarness_(options) {
     stageMatchEvents = function () {
       return {
         rows: (opts.orchestrationScenario.matchRows || []).slice(),
-        summary: { reason_codes: Object.assign({}, opts.orchestrationScenario.matchReasonCodes || {}) },
+        summary: { stage: 'stageMatchEvents', reason_codes: Object.assign({}, opts.orchestrationScenario.matchReasonCodes || {}) },
         matchedCount: Number(opts.orchestrationScenario.matchedCount || 0),
         unmatchedCount: Number(opts.orchestrationScenario.unmatchedCount || 0),
         rejectedCount: Number(opts.orchestrationScenario.rejectedCount || 0),
@@ -3005,9 +3153,12 @@ function createRunEdgeBoardTestHarness_(options) {
     stageFetchPlayerStats = function () {
       playerStatsCallCount += 1;
       if (opts.orchestrationScenario.playerStatsStageResult) {
-        return JSON.parse(JSON.stringify(opts.orchestrationScenario.playerStatsStageResult));
+        const stageResult = JSON.parse(JSON.stringify(opts.orchestrationScenario.playerStatsStageResult));
+        stageResult.summary = stageResult.summary || {};
+        if (!stageResult.summary.stage) stageResult.summary.stage = 'stageFetchPlayerStats';
+        return stageResult;
       }
-      return { rows: [], byOddsEventId: {}, summary: { reason_codes: {} } };
+      return { rows: [], byOddsEventId: {}, summary: { stage: 'stageFetchPlayerStats', reason_codes: {} } };
     };
     stageGenerateSignals = function () {
       return {
@@ -3015,11 +3166,11 @@ function createRunEdgeBoardTestHarness_(options) {
         sentCount: Number(opts.orchestrationScenario.sentCount || 0),
         cooldownSuppressedCount: 0,
         duplicateSuppressedCount: 0,
-        summary: { reason_codes: {} },
+        summary: { stage: 'stageGenerateSignals', reason_codes: {} },
       };
     };
     stagePersist = function () {
-      return { summary: { reason_codes: {} } };
+      return { summary: { stage: 'stagePersist', reason_codes: {} } };
     };
   }
 

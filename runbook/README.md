@@ -184,6 +184,9 @@ Operational contract for compare/gate workflows:
 - `scripts/export_parity_precheck.sh` must be the first command in the sequence.
 - If wrapper parity/precheck fails, stop triage and re-export immediately.
 - After wrapper success, run all downstream commands against `./exports_live` only (`precheck_run_ids.py`, `verify_run_log_parity.py`, `compare_*`, `evaluate_edge_quality.py`).
+- Failure classes are split intentionally:
+  - **`compare_contract_missing`** (precheck): missing run summary / stage chain / coverage prerequisite contract.
+  - **`data_quality_low`** (quality gates): data exists but quality metrics fail policy thresholds.
 - Do not mix stale `live_runtime/Run_Log.json` with fresh `Run_Log.csv` in runbook examples or operator commands.
 
 Optional shell muscle-memory helper (ops dotfiles):
