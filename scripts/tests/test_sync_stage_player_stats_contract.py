@@ -202,6 +202,55 @@ class SyncStagePlayerStatsContractTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("CSV/JSON sync mismatch", result.stderr)
 
+    def test_validate_only_fails_when_compare_critical_summary_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            headers = [
+                "row_type",
+                "run_id",
+                "stage",
+                "started_at",
+                "message",
+                "summary",
+                "reason_metadata",
+                "reason_codes",
+                "stage_summaries",
+            ]
+            rows = [
+                {
+                    "row_type": "stage",
+                    "run_id": "run-a",
+                    "stage": "stageFetchPlayerStats",
+                    "started_at": "2026-03-26T00:00:00Z",
+                    "message": json.dumps({"summary": {"status": "ok"}}),
+                    "reason_codes": json.dumps({"STATS_ENR": 1}),
+                }
+            ]
+            with (root / "Run_Log.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(rows)
+            (root / "Run_Log.json").write_text(json.dumps(rows), encoding="utf-8")
+            (root / "State.csv").write_text("run_id\nrun-a\n", encoding="utf-8")
+            (root / "State.json").write_text("[]\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--export-dir",
+                    str(root),
+                    "--run-id",
+                    "run-a",
+                    "--validate-only",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("compare-critical contract rows missing or malformed", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

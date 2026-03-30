@@ -94,7 +94,7 @@ python3 scripts/verify_run_log_parity.py --export-dir "$out_dir"
 echo
 
 echo "[3/5] Running run-id precheck gate"
-precheck_args=("$run_id_a" "$run_id_b" --export-dir "$out_dir")
+precheck_args=("$run_id_a" "$run_id_b" --export-dir "$out_dir" --require-gate-prereqs)
 if [[ "$allow_csv_only_triage" -eq 1 ]]; then
   precheck_args+=(--allow-csv-only-triage --allow-csv-only-triage-incident-tag "$incident_tag")
 fi
@@ -131,4 +131,4 @@ PY
 
 echo
 
-echo "Fail-fast preflight complete. Safe to run compare/gate commands."
+echo "Fail-fast preflight complete. Safe to run compare/gate commands only when summary/stage contract checklist reports compare_ready=true for both runs."
