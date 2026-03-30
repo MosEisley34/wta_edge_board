@@ -96,10 +96,43 @@ def _summarize_payload(path: Path, payload: dict[str, Any]) -> tuple[str, bool]:
         return f"{path}: schema warning unable_to_resolve_status_or_windows", True
 
     window_count = len(windows) if isinstance(windows, list) else "n/a"
+    parity_contract_status = _normalize_status(payload.get("parity_contract_status")) or "not_evaluated"
+    decisionability_status = _normalize_status(payload.get("decisionability_status"))
+    quality_status = _normalize_status(payload.get("quality_status"))
+    gate_reason = str(payload.get("gate_reason") or "").strip() or "unknown"
+
+    if not decisionability_status:
+        decisionable_window_count = int(payload.get("decisionable_window_count") or 0)
+        if gate_reason in {"no_decisionable_windows", "insufficient_sample_floor_not_met_for_all_windows"}:
+            decisionability_status = "insufficient_sample"
+        else:
+            decisionability_status = "pass" if decisionable_window_count > 0 else "insufficient_sample"
+
+    if not quality_status:
+        if gate_reason == "decisionable_window_fail_rate_exceeded_threshold":
+            quality_status = "fail"
+        elif decisionability_status == "insufficient_sample":
+            quality_status = "insufficient_sample"
+        else:
+            quality_status = "pass"
+
+    operator_reason = str(payload.get("operator_composite_reason") or "").strip()
+    if not operator_reason:
+        if parity_contract_status in {"fail", "insufficient_sample"}:
+            operator_reason = f"parity_contract_blocker:{parity_contract_status}"
+        elif decisionability_status != "pass":
+            operator_reason = f"decisionability_blocker:{gate_reason}"
+        elif quality_status != "pass":
+            operator_reason = f"quality_blocker:{gate_reason}"
+        else:
+            operator_reason = "all_components_passing"
+
     source = "reported" if "status" in payload or "gate_verdict" in payload else "derived"
     return (
         f"{path}: status={status} windows={window_count} schema={schema} source={source} "
-        f"verdicts={_format_counts(verdict_counts)}",
+        f"verdicts={_format_counts(verdict_counts)} parity_contract_status={parity_contract_status} "
+        f"decisionability_status={decisionability_status} quality_status={quality_status} "
+        f"operator_reason={operator_reason}",
         False,
     )
 
