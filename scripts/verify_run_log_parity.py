@@ -55,6 +55,7 @@ class ParityError(RuntimeError):
 
 
 REMEDIATION_HINT = "Remediation: re-export source batch."
+REQUIRED_BATCH_FILES = ("Run_Log.csv", "Run_Log.json", "State.csv", "State.json")
 
 
 def _parse_timestamp(raw: Any) -> dt.datetime | None:
@@ -344,6 +345,16 @@ def _write_latest_batch_sidecar(export_dir: str, result: ParityResult) -> str:
 
 
 def verify_run_log_parity(export_dir: str) -> ParityResult:
+    missing_batch_files = [
+        name for name in REQUIRED_BATCH_FILES
+        if not os.path.isfile(os.path.join(export_dir, name))
+    ]
+    if missing_batch_files:
+        raise ParityError(
+            "Run log parity check failed: export batch is incomplete. "
+            f"Missing required artifact(s): {missing_batch_files} in {export_dir}."
+        )
+
     json_files, csv_files = _iter_run_log_files(export_dir)
 
     if not json_files or not csv_files:

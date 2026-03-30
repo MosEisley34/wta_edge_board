@@ -11,18 +11,18 @@ Repeatable pre-step before diagnostics scanning:
   2) Enforce Run_Log CSV/JSON parity for latest batch before publish
   3) Verify expected export files exist before running scan
 
-Expected exported files (at least one must exist):
-  - ./exports/*Run_Log*.csv
-  - ./exports/*Run_Log*.json
-  - ./exports/*State*.csv
-  - ./exports/*State*.json
+Expected exported files (all must exist):
+  - ./exports/Run_Log.csv
+  - ./exports/Run_Log.json
+  - ./exports/State.csv
+  - ./exports/State.json
 
 The pre-step also writes a timestamped export manifest:
   - ./exports/runtime_export_manifest.json
 
 Examples:
   scripts/prepare_runtime_exports.sh ./runtime
-  scripts/prepare_runtime_exports.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
+  scripts/prepare_runtime_exports.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/State.json
 USAGE
 }
 
@@ -72,21 +72,29 @@ rm -rf "$out_dir"
 mkdir -p "$out_dir"
 cp -a "$staging_dir"/. "$out_dir"/
 
-mapfile -t matched_files < <(
-  find "$out_dir" -maxdepth 1 -type f \
-    \( -iname '*run_log*.csv' -o -iname '*run_log*.json' -o -iname '*state*.csv' -o -iname '*state*.json' \) \
-    | sort
+required_files=(
+  "$out_dir/Run_Log.csv"
+  "$out_dir/Run_Log.json"
+  "$out_dir/State.csv"
+  "$out_dir/State.json"
 )
+missing_files=()
+for path in "${required_files[@]}"; do
+  if [[ ! -f "$path" ]]; then
+    missing_files+=("$path")
+  fi
+done
 
-if [[ "${#matched_files[@]}" -eq 0 ]]; then
-  echo "Error: export pre-step completed but expected runtime files were not found in $out_dir." >&2
-  echo "Expected at least one of: $out_dir/*Run_Log*.csv, $out_dir/*Run_Log*.json, $out_dir/*State*.csv, $out_dir/*State*.json" >&2
-  echo "Remediation: rerun scripts/prepare_runtime_exports.sh with paths that contain Run_Log/State CSV/JSON artifacts, then run scripts/scan_runtime_diagnostics.sh $out_dir" >&2
+if [[ "${#missing_files[@]}" -gt 0 ]]; then
+  echo "Error: export pre-step produced an incomplete runtime batch in $out_dir." >&2
+  echo "Missing required files:" >&2
+  printf '  - %s\n' "${missing_files[@]}" >&2
+  echo "Remediation: rerun scripts/prepare_runtime_exports.sh with inputs that include a single source snapshot containing Run_Log.csv, Run_Log.json, State.csv, and State.json." >&2
   exit 1
 fi
 
 manifest_path="$out_dir/runtime_export_manifest.json"
-python3 - "$manifest_path" "${matched_files[@]}" <<'PY'
+python3 - "$manifest_path" "${required_files[@]}" <<'PY'
 import datetime as dt
 import json
 import os

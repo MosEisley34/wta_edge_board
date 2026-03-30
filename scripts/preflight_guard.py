@@ -13,6 +13,7 @@ from typing import Any
 INCIDENT_TAG_PATTERN = re.compile(r"^[A-Za-z]+-[0-9]{3,}$")
 PREFLIGHT_SIDECAR_NAME = "run_compare_preflight.json"
 MANIFEST_NAME = "runtime_export_manifest.json"
+REQUIRED_EXPORT_FILES = ("Run_Log.csv", "Run_Log.json", "State.csv", "State.json")
 
 
 def _utc_now_iso() -> str:
@@ -38,7 +39,28 @@ def load_manifest(export_dir: str) -> dict[str, Any]:
         payload = json.load(handle)
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid {MANIFEST_NAME}: expected JSON object.")
+    _validate_manifest_completeness(payload)
     return payload
+
+
+def _validate_manifest_completeness(payload: dict[str, Any]) -> None:
+    files = payload.get("files")
+    if not isinstance(files, list):
+        raise ValueError(f"Invalid {MANIFEST_NAME}: missing files list.")
+
+    basenames = {
+        Path(str(item.get("path") or "")).name
+        for item in files
+        if isinstance(item, dict)
+    }
+    missing = [name for name in REQUIRED_EXPORT_FILES if name not in basenames]
+    if missing:
+        raise ValueError(
+            "Preflight guard failed: export manifest is incomplete for the runtime batch. "
+            f"Missing required artifact(s): {missing}. "
+            "Remediation: re-export artifacts to regenerate a complete batch with Run_Log.csv, "
+            "Run_Log.json, State.csv, and State.json."
+        )
 
 
 def _canonical_run_pair(run_a: str, run_b: str) -> list[str]:

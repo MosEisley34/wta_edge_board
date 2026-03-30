@@ -11,15 +11,15 @@ Default output directory: ./exports
 
 Matching rules:
   - extension: .csv or .json
-  - basename contains "run_log" or "state" (case-insensitive)
+  - canonical basenames only: Run_Log(.csv/.json) and State(.csv/.json) (case-insensitive)
 
-Run_Log contract:
-  - Run_Log.csv and Run_Log.json are exported as a paired snapshot from the same latest source directory.
-  - both are written with a shared batch timestamp to prevent mixed-staleness analysis.
+Batch contract:
+  - Run_Log.csv, Run_Log.json, State.csv, and State.json are exported together from one source snapshot directory.
+  - all four files are written with a shared batch timestamp to prevent mixed-staleness analysis.
 
 Examples:
   scripts/export_runtime_artifacts.sh ./runtime_dump
-  scripts/export_runtime_artifacts.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
+  scripts/export_runtime_artifacts.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/State.json
 USAGE
 }
 
@@ -55,11 +55,11 @@ if [[ "${#inputs[@]}" -eq 0 ]]; then
 fi
 
 python3 - "$out_dir" "${inputs[@]}" <<'PY'
+import datetime as dt
 import os
 import re
 import shutil
 import sys
-import datetime as dt
 from pathlib import Path
 
 out_dir = Path(sys.argv[1])
@@ -105,87 +105,83 @@ if not selected:
 
 out_dir.mkdir(parents=True, exist_ok=True)
 
-def _canonical_run_log_name(path: Path) -> str | None:
+REMEDIATION = (
+    "Remediation: re-export runtime artifacts so the source snapshot contains "
+    "Run_Log.csv, Run_Log.json, State.csv, and State.json, then rerun "
+    "scripts/prepare_runtime_exports.sh."
+)
+
+
+def _canonical_name(path: Path) -> str | None:
     lower_stem = path.stem.lower()
     if "note" in lower_stem or "manifest" in lower_stem:
         return None
     canonical_stems = {"run_log", "run-log", "runlog"}
-    if lower_stem not in canonical_stems:
+    if lower_stem in canonical_stems:
+        if path.suffix.lower() == ".json":
+            return "Run_Log.json"
+        if path.suffix.lower() == ".csv":
+            return "Run_Log.csv"
         return None
-    if path.suffix.lower() == ".json":
-        return "Run_Log.json"
-    if path.suffix.lower() == ".csv":
-        return "Run_Log.csv"
+    state_stems = {"state"}
+    if lower_stem in state_stems:
+        if path.suffix.lower() == ".json":
+            return "State.json"
+        if path.suffix.lower() == ".csv":
+            return "State.csv"
     return None
 
 
-def _pick_latest_run_log_pair(paths: list[Path]) -> tuple[Path, Path]:
+def _pick_latest_complete_snapshot(paths: list[Path]) -> dict[str, Path]:
     by_parent: dict[Path, dict[str, list[Path]]] = {}
     for src in paths:
-        canonical_name = _canonical_run_log_name(src)
+        canonical_name = _canonical_name(src)
         if canonical_name is None:
             continue
-        parent_map = by_parent.setdefault(src.parent, {"csv": [], "json": []})
-        parent_map[src.suffix.lower().lstrip(".")].append(src)
+        parent_map = by_parent.setdefault(
+            src.parent,
+            {
+                "Run_Log.csv": [],
+                "Run_Log.json": [],
+                "State.csv": [],
+                "State.json": [],
+            },
+        )
+        parent_map[canonical_name].append(src)
 
-    paired: list[tuple[float, Path, Path]] = []
-    for _, grouped in by_parent.items():
-        csv_paths = grouped["csv"]
-        json_paths = grouped["json"]
-        if not csv_paths or not json_paths:
+    complete: list[tuple[float, dict[str, Path]]] = []
+    for grouped in by_parent.values():
+        if any(not grouped[name] for name in grouped):
             continue
-        latest_csv = max(csv_paths, key=lambda p: p.stat().st_mtime)
-        latest_json = max(json_paths, key=lambda p: p.stat().st_mtime)
-        snapshot_mtime = max(latest_csv.stat().st_mtime, latest_json.stat().st_mtime)
-        paired.append((snapshot_mtime, latest_csv, latest_json))
+        chosen = {name: max(items, key=lambda p: p.stat().st_mtime) for name, items in grouped.items()}
+        snapshot_mtime = max(path.stat().st_mtime for path in chosen.values())
+        complete.append((snapshot_mtime, chosen))
 
-    if not paired:
+    if not complete:
         raise RuntimeError(
-            "Run_Log export failed: could not find a directory snapshot containing both "
-            "Run_Log CSV and JSON. Export both from the same source snapshot and retry."
+            "Runtime artifact export failed: no source snapshot directory contains all required "
+            "files (Run_Log.csv, Run_Log.json, State.csv, State.json).\n"
+            f"{REMEDIATION}"
         )
 
-    _, csv_src, json_src = max(paired, key=lambda row: row[0])
-    return csv_src, json_src
+    _, snapshot = max(complete, key=lambda row: row[0])
+    return snapshot
 
 
 selected_unique = sorted(set(selected))
-run_log_csv_src, run_log_json_src = _pick_latest_run_log_pair(selected_unique)
+snapshot_sources = _pick_latest_complete_snapshot(selected_unique)
 
 written = []
-for src, target_name in (
-    (run_log_csv_src, "Run_Log.csv"),
-    (run_log_json_src, "Run_Log.json"),
-):
+for target_name in ("Run_Log.csv", "Run_Log.json", "State.csv", "State.json"):
+    src = snapshot_sources[target_name]
     dst = out_dir / target_name
     shutil.copy2(src, dst)
     written.append((src, dst))
 
-# Normalize exported Run_Log timestamps to one batch timestamp to keep CSV+JSON aligned.
+# Normalize exported artifact timestamps to one batch timestamp to keep the full batch aligned.
 batch_export_ts = dt.datetime.now(tz=dt.timezone.utc).timestamp()
 for _, dst in written:
     os.utime(dst, (batch_export_ts, batch_export_ts))
-
-# Copy State artifacts after canonical Run_Log export. Keep all candidates but deduplicate names.
-state_selected = [
-    src for src in selected_unique
-    if src.suffix.lower() in ext_ok and "state" in src.stem.lower()
-]
-used_names: dict[str, int] = {"Run_Log.csv": 1, "Run_Log.json": 1}
-for src in state_selected:
-    base = src.name
-    n = used_names.get(base, 0)
-    if n == 0:
-        target_name = base
-    else:
-        stem = src.stem
-        suffix = src.suffix
-        target_name = f"{stem}__{n+1}{suffix}"
-    used_names[base] = n + 1
-
-    dst = out_dir / target_name
-    shutil.copy2(src, dst)
-    written.append((src, dst))
 
 print(f"Exported runtime artifacts: {len(written)}")
 print(f"Output directory: {out_dir.resolve()}")
