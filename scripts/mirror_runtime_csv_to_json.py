@@ -6,7 +6,8 @@ This utility converts canonical runtime CSV artifacts:
 - State.csv   -> State.json
 
 Behavior contract:
-- If CSV exists, read and mirror it to JSON.
+- If CSV exists and is newer than JSON (or JSON is missing), mirror CSV to JSON.
+- If CSV exists but is older/equal to JSON, keep JSON as the source of truth.
 - If CSV is missing but JSON already exists, log a skip message and continue.
 - If both CSV and JSON are missing for an artifact, exit with a remediation error.
 """
@@ -242,6 +243,10 @@ def _write_json_rows(path: Path, rows: list[dict[str, Any]]) -> None:
         handle.write("\n")
 
 
+def _is_newer(source: Path, target: Path) -> bool:
+    return source.stat().st_mtime > target.stat().st_mtime
+
+
 def main() -> int:
     args = parse_args()
 
@@ -260,11 +265,28 @@ def main() -> int:
         input_json_path = input_dir / json_name
 
         if csv_path.is_file():
-            rows = _read_csv_rows(csv_path)
-            if label == "Run_Log":
-                rows = _apply_run_log_typing(rows)
-            _write_json_rows(out_json_path, rows)
-            print(f"Mirrored {csv_path} -> {out_json_path} ({len(rows)} rows)")
+            existing_json = out_json_path if out_json_path.is_file() else input_json_path
+            should_mirror_from_csv = not existing_json.is_file() or _is_newer(csv_path, existing_json)
+
+            if should_mirror_from_csv:
+                rows = _read_csv_rows(csv_path)
+                if label == "Run_Log":
+                    rows = _apply_run_log_typing(rows)
+                _write_json_rows(out_json_path, rows)
+                print(f"Mirrored {csv_path} -> {out_json_path} ({len(rows)} rows)")
+            else:
+                if existing_json != out_json_path:
+                    out_json_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_json_path.write_text(existing_json.read_text(encoding='utf-8'), encoding='utf-8')
+                    print(
+                        "Skip: "
+                        f"{csv_path} is not newer than JSON; reused {existing_json} -> {out_json_path}"
+                    )
+                else:
+                    print(
+                        "Skip: "
+                        f"{csv_path} is not newer than JSON; keeping existing JSON {existing_json}"
+                    )
             continue
 
         if out_json_path.is_file() or input_json_path.is_file():
