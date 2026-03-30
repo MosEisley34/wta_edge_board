@@ -5,6 +5,7 @@ function buildWtaPipelineOpsMenu_() {
     .addItem('Deduplicate Config Sheet', 'menuDedupeConfigSheet')
     .addItem('Repair Config (dedupe)', 'menuRepairConfig')
     .addItem('Run Pipeline Now', 'menuRunPipelineNow')
+    .addItem('Export all tabs (ZIP)', 'menuExportAllTabsZip')
     .addSeparator()
     .addItem('Apply Preset: Free-Tier Conservation', 'menuApplyPresetFreeTierConservation')
     .addSeparator()
@@ -71,6 +72,11 @@ function menuRunPipelineNow() {
 
   runEdgeBoard();
   SpreadsheetApp.getUi().alert('Pipeline run complete. Check Run_Log and State.');
+}
+
+
+function menuExportAllTabsZip() {
+  exportAllTabsZip_('manual');
 }
 
 function menuApplyPresetFreeTierConservation() {
