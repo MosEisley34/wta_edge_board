@@ -1,13 +1,17 @@
 import csv
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
+
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
 SCRIPT = ROOT / "scripts" / "mirror_runtime_csv_to_json.py"
+from runtime_artifact_codec import normalize_run_log_row
 FIXTURES = ROOT / "scripts" / "fixtures"
 
 
@@ -263,6 +267,66 @@ class MirrorRuntimeCsvToJsonTypingTests(unittest.TestCase):
             ]
             for field in numeric_fields:
                 self.assertFalse(isinstance(row[field], str), msg=f"{field} leaked as string")
+
+
+    def test_json_csv_round_trip_parity_for_stage_payloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fieldnames = [
+                "run_id",
+                "row_type",
+                "stage",
+                "stage_summaries",
+                "reason_codes",
+                "summary",
+                "reason_metadata",
+            ]
+            with (root / "Run_Log.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "run_id": "run-empty",
+                        "row_type": "summary",
+                        "stage": "runEdgeBoard",
+                        "stage_summaries": "",
+                        "reason_codes": "",
+                        "summary": "",
+                        "reason_metadata": "",
+                    }
+                )
+                writer.writerow(
+                    {
+                        "run_id": "run-full",
+                        "row_type": "summary",
+                        "stage": "runEdgeBoard",
+                        "stage_summaries": json.dumps([{"stage": "stageFetchPlayerStats", "reason_codes": {"STATS_ENR": 2}}]),
+                        "reason_codes": json.dumps({"MATCH_CT": 1}),
+                        "summary": json.dumps({"status": "success"}),
+                        "reason_metadata": json.dumps({"requested_player_count": 2}),
+                    }
+                )
+            (root / "State.csv").write_text("run_id,state_key,state_value\nrun-empty,k,v\n", encoding="utf-8")
+
+            proc = subprocess.run(
+                ["python3", str(SCRIPT), "--input-dir", str(root)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc.returncode, msg=proc.stderr)
+
+            with (root / "Run_Log.csv").open("r", encoding="utf-8", newline="") as handle:
+                csv_rows = [normalize_run_log_row(dict(row)) for row in csv.DictReader(handle)]
+            json_rows = json.loads((root / "Run_Log.json").read_text(encoding="utf-8"))
+            self.assertEqual(csv_rows, [normalize_run_log_row(dict(row)) for row in json_rows])
+
+            empty_row = next(row for row in json_rows if row["run_id"] == "run-empty")
+            self.assertEqual([], empty_row["stage_summaries"])
+            self.assertEqual({}, empty_row["reason_codes"])
+            self.assertEqual({}, empty_row["summary"])
+            self.assertEqual({}, empty_row["reason_metadata"])
 
     def test_reuses_existing_run_log_json_list_and_object_schema_variants(self):
         for fixture_name in ("run_log_rows_list.json", "run_log_rows_object.json"):

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from runtime_artifact_codec import normalize_run_log_row
+
 
 @dataclass(frozen=True)
 class GateConfig:
@@ -89,10 +91,10 @@ def load_run_log_rows(export_dir_or_file: str) -> list[dict[str, Any]]:
             with open(path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
             if isinstance(payload, list):
-                rows.extend(row for row in payload if isinstance(row, dict))
+                rows.extend(normalize_run_log_row(dict(row)) for row in payload if isinstance(row, dict))
             continue
         with open(path, "r", encoding="utf-8", newline="") as handle:
-            rows.extend(dict(row) for row in csv.DictReader(handle))
+            rows.extend(normalize_run_log_row(dict(row)) for row in csv.DictReader(handle))
     return rows
 
 

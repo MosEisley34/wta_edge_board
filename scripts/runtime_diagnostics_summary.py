@@ -21,6 +21,7 @@ from pipeline_log_adapter import (
     adapt_run_log_record_for_legacy,
 )
 from runtime_json_records import iter_json_records as iter_runtime_json_records
+from runtime_artifact_codec import normalize_run_log_row
 
 SUPPORTED_EXTENSIONS = (".csv", ".json")
 WATCHDOG_METRIC_KEYS = ("streak_count", "consecutive_empty_cycles", "diagnostics_counter")
@@ -104,8 +105,8 @@ def _iter_csv_records(path: str):
 
 def _normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     if int(record.get("schema_version") or 0) == 2 or "et" in record:
-        return adapt_run_log_record_for_legacy(record)
-    return dict(record)
+        return normalize_run_log_row(adapt_run_log_record_for_legacy(record))
+    return normalize_run_log_row(dict(record))
 
 
 def _parse_timestamp(value: Any) -> datetime | None:

@@ -13,6 +13,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from runtime_artifact_codec import normalize_run_log_row
+
 
 TIMESTAMP_KEYS = ("ts", "timestamp", "started_at", "time", "created_at")
 REQUIRED_STAGE_SUMMARIES = ("stageFetchPlayerStats",)
@@ -90,17 +92,17 @@ def _load_json_rows(path: str) -> list[dict[str, Any]]:
     with open(path, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if isinstance(payload, list):
-        return [r for r in payload if isinstance(r, dict)]
+        return [normalize_run_log_row(dict(r)) for r in payload if isinstance(r, dict)]
     if isinstance(payload, dict):
         rows = payload.get("rows")
         if isinstance(rows, list):
-            return [r for r in rows if isinstance(r, dict)]
+            return [normalize_run_log_row(dict(r)) for r in rows if isinstance(r, dict)]
     return []
 
 
 def _load_csv_rows(path: str) -> list[dict[str, Any]]:
     with open(path, "r", encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
+        return [normalize_run_log_row(dict(row)) for row in csv.DictReader(handle)]
 
 
 def _parse_json_like(value: Any) -> Any:

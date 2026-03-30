@@ -5,6 +5,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate
 from preflight_guard import enforce_preflight_guard
 from stake_policy import StakePolicyConfig, summarize_run_stake_policy
+from runtime_artifact_codec import normalize_run_log_row
 
 TARGETS = {
     "stageMatchEvents": ["MATCH_CT", "NO_P_MATCH", "REJ_CT"],
@@ -102,12 +103,12 @@ def _read_rows(path: str) -> List[Dict[str, Any]]:
     if path.lower().endswith('.json'):
         payload = json.load(open(path, 'r', encoding='utf-8'))
         if isinstance(payload, list):
-            return [row for row in payload if isinstance(row, dict)]
+            return [normalize_run_log_row(dict(row)) for row in payload if isinstance(row, dict)]
         return []
     rows = []
     with open(path, 'r', encoding='utf-8', newline='') as f:
         for row in csv.DictReader(f):
-            rows.append(dict(row))
+            rows.append(normalize_run_log_row(dict(row)))
     return rows
 
 

@@ -21,6 +21,7 @@ from pipeline_log_adapter import (
     _expand_reason_map,
 )
 from stake_policy import StakePolicyConfig, summarize_run_stake_policy
+from runtime_artifact_codec import normalize_run_log_row
 
 RUN_LOG_TYPED_FIELDS: dict[str, type] = {
     "feature_completeness": float,
@@ -168,10 +169,10 @@ def load_run_log_rows(path_or_dir: str) -> list[dict[str, Any]]:
         if path.lower().endswith(".json"):
             payload = json.loads(Path(path).read_text(encoding="utf-8"))
             if isinstance(payload, list):
-                rows.extend(_normalize_typed_run_log_fields(row) for row in payload if isinstance(row, dict))
+                rows.extend(_normalize_typed_run_log_fields(normalize_run_log_row(dict(row))) for row in payload if isinstance(row, dict))
             continue
         with open(path, "r", encoding="utf-8", newline="") as handle:
-            rows.extend(_normalize_typed_run_log_fields(dict(row)) for row in csv.DictReader(handle))
+            rows.extend(_normalize_typed_run_log_fields(normalize_run_log_row(dict(row))) for row in csv.DictReader(handle))
     return rows
 
 
