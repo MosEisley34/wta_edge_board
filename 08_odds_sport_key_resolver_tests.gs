@@ -5766,6 +5766,34 @@ function testStageMatchEvents_matchesKnownTourFeedNameOrderPatterns_() {
   assertEquals_(0, stage.rejectedCount);
 }
 
+function testStageMatchEvents_softMatch_recoversWta500AliasWindowWithNameDrift_() {
+  const stage = stageMatchEvents('run_soft_match_wta500', {
+    MATCH_TIME_TOLERANCE_MIN: 20,
+    MATCH_FALLBACK_EXPANSION_MIN: 15,
+    MATCH_SOFT_MATCH_MAX_DELTA_MIN: 40,
+    MATCH_SOFT_MATCH_MIN_SIMILARITY: 0.9,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha (Qatar TotalEnergies Open)',
+    player_1: 'Rybakina, E.',
+    player_2: 'Swiatek, I.',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }], [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    competition: 'Qatar Total Energies Open - Doha WTA500',
+    player_1: 'Elena Rybakyna',
+    player_2: 'Iga Swiatiek',
+    start_time: new Date('2025-03-01T12:28:00.000Z'),
+  }]);
+
+  assertEquals_(1, stage.matchedCount);
+  assertEquals_(0, stage.rejectedCount);
+  assertEquals_('soft_match', stage.rows[0].match_type);
+  assertEquals_(1, Number(stage.summary.reason_codes.soft_match_recovered || 0));
+}
+
 function testStageMatchEvents_reducesNoPlayerMatchAcross32RejectionDiagnostics_() {
   const oddsEvents = [
     ['Jeļena Ostapenko', 'Iga Świątek'],
@@ -5921,6 +5949,62 @@ function testStageMatchEvents_reducesNoPlayerMatchAcross32RejectionDiagnostics_(
     setStateValue_ = originalSetStateValue;
     localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
   }
+}
+
+function testCanonicalizePlayerName_handlesPunctuationInitialHyphenOrderingAndDiacriticsDrift_() {
+  const aliasMap = {};
+  assertEquals_('iga swiatek', canonicalizePlayerName_('Świątek, I.', aliasMap));
+  assertEquals_('elena rybakina', canonicalizePlayerName_('Rybakina, E.', aliasMap));
+  assertEquals_('beatriz haddad maia', canonicalizePlayerName_('B. Haddad-Maia', aliasMap));
+  assertEquals_('dayana yastremska', canonicalizePlayerName_('Yastremska D.', aliasMap));
+}
+
+function testStageMatchEvents_recordsStructuredDiagnosticsForUnresolvedSamples_() {
+  const stage = stageMatchEvents('run_unresolved_diagnostics', {
+    MATCH_TIME_TOLERANCE_MIN: 15,
+    MATCH_FALLBACK_EXPANSION_MIN: 10,
+    MATCH_SOFT_MATCH_MAX_DELTA_MIN: 20,
+    MATCH_SOFT_MATCH_MIN_SIMILARITY: 0.97,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, [
+    {
+      event_id: 'odds_1',
+      competition: 'WTA 500 Doha (Qatar TotalEnergies Open)',
+      player_1: 'M. Linette',
+      player_2: 'K. Pliskova',
+      commence_time: new Date('2025-03-01T12:00:00.000Z'),
+    },
+    {
+      event_id: 'odds_2',
+      competition: 'WTA500 Doha',
+      player_1: 'D. Yastremska',
+      player_2: 'Caroline Garcia',
+      commence_time: new Date('2025-03-01T13:00:00.000Z'),
+    },
+  ], [
+    {
+      event_id: 'sched_1',
+      canonical_tier: 'WTA_500',
+      competition: 'Qatar Total Energies Open',
+      player_1: 'Magda Linette',
+      player_2: 'Karolina Pliskova',
+      start_time: new Date('2025-03-01T14:20:00.000Z'),
+    },
+    {
+      event_id: 'sched_2',
+      canonical_tier: 'WTA_500',
+      competition: 'Qatar Total Energies Open',
+      player_1: 'Dayana Yastremska',
+      player_2: 'Caroline Garcia',
+      start_time: new Date('2025-03-01T15:20:00.000Z'),
+    },
+  ]);
+
+  assertEquals_(2, stage.rejectedCount);
+  assertEquals_(2, Number(stage.summary.reason_metadata.unresolved_total || 0));
+  assertTrue_(Array.isArray(stage.summary.reason_metadata.top_unresolved_competition_examples));
+  assertTrue_(Array.isArray(stage.summary.reason_metadata.top_unresolved_player_examples));
+  assertEquals_('wta500 doha', stage.summary.reason_metadata.top_unresolved_competition_examples[0].normalized_competition);
 }
 
 function testStageMatchEvents_reportsPrimaryAndFallbackWindowDeltasWhenFallbackExhausted_() {
