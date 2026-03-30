@@ -166,24 +166,66 @@ def _validate_run_log_row_schema(row: dict[str, Any]) -> None:
 def load_run_log_rows(path_or_dir: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in _iter_run_log_paths(path_or_dir):
+        source_kind = "json" if path.lower().endswith(".json") else "csv"
         if path.lower().endswith(".json"):
             payload = json.loads(Path(path).read_text(encoding="utf-8"))
             if isinstance(payload, list):
-                rows.extend(_normalize_typed_run_log_fields(normalize_run_log_row(dict(row))) for row in payload if isinstance(row, dict))
+                for row in payload:
+                    if not isinstance(row, dict):
+                        continue
+                    normalized = _normalize_typed_run_log_fields(normalize_run_log_row(dict(row)))
+                    normalized.setdefault("_source_file", path)
+                    normalized.setdefault("_source_kind", source_kind)
+                    rows.append(normalized)
             continue
         with open(path, "r", encoding="utf-8", newline="") as handle:
-            rows.extend(_normalize_typed_run_log_fields(normalize_run_log_row(dict(row))) for row in csv.DictReader(handle))
+            for row in csv.DictReader(handle):
+                normalized = _normalize_typed_run_log_fields(normalize_run_log_row(dict(row)))
+                normalized.setdefault("_source_file", path)
+                normalized.setdefault("_source_kind", source_kind)
+                rows.append(normalized)
     return rows
 
 
-def _pick_run_summary(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
-    summary: dict[str, Any] = {}
-    for row in rows:
-        if str(row.get("run_id") or "") != run_id:
-            continue
-        if _is_run_edgeboard_summary_row(row):
-            summary = _normalize_legacy_summary_row(row)
-    return summary
+def _run_summary_selection_diagnostics(
+    run_rows: list[dict[str, Any]],
+    qualifying_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    stage_values = sorted({str(row.get("stage") or "").strip() for row in run_rows if str(row.get("stage") or "").strip()})
+    source_files = sorted(
+        {
+            str(row.get("_source_file") or "unknown")
+            for row in run_rows
+            if str(row.get("_source_file") or "").strip()
+        }
+    )
+    source_kinds = sorted(
+        {
+            str(row.get("_source_kind") or "unknown")
+            for row in run_rows
+            if str(row.get("_source_kind") or "").strip()
+        }
+    )
+    return {
+        "qualifying_row_count": len(qualifying_rows),
+        "stages_seen": stage_values,
+        "source_files": source_files,
+        "source_kinds": source_kinds,
+    }
+
+
+def _pick_run_summary(rows: list[dict[str, Any]], run_id: str, strict_cardinality: bool = False) -> dict[str, Any]:
+    run_rows = [row for row in rows if str(row.get("run_id") or "") == run_id]
+    qualifying_rows = [row for row in run_rows if _is_run_edgeboard_summary_row(row)]
+    if len(qualifying_rows) == 1:
+        return _normalize_legacy_summary_row(qualifying_rows[0])
+    if not strict_cardinality:
+        return {}
+    diagnostics = _run_summary_selection_diagnostics(run_rows, qualifying_rows)
+    raise ValueError(
+        f"Expected exactly one runEdgeBoard summary row for run_id={run_id}; "
+        f"selection_diagnostics={json.dumps(diagnostics, sort_keys=True)}"
+    )
 
 
 def _is_run_edgeboard_summary_row(row: dict[str, Any]) -> bool:
@@ -857,9 +899,7 @@ def _adaptive_volatility_ceiling(
 
 
 def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateConfig) -> dict[str, Any]:
-    summary = _pick_run_summary(rows, run_id)
-    if not summary:
-        raise ValueError(f"Missing runEdgeBoard summary row for run_id={run_id}")
+    summary = _pick_run_summary(rows, run_id, strict_cardinality=True)
     signal_summary = _extract_signal_summary(summary)
     feature_completeness, feature_diag = _extract_feature_completeness(summary)
     edge_volatility, edge_diag = _edge_volatility(summary, signal_summary)

@@ -13,6 +13,7 @@ from evaluate_edge_quality import (  # noqa: E402
     DailyEdgeQualitySLOConfig,
     EdgeQualityGateConfig,
     _select_latest_run_ids,
+    _snapshot,
     evaluate_edge_quality_compare_report,
     evaluate_daily_edge_quality_slo,
     evaluate_edge_quality_gate,
@@ -72,6 +73,51 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertTrue(
             any(item.startswith("HIGH_VISIBILITY_STAKE_POLICY_DISABLED") for item in report["high_visibility_warnings"])
         )
+
+    def test_snapshot_selects_unique_qualifying_row(self):
+        summary = _snapshot(
+            rows=[self._summary_row("run-unique", "2026-03-10T00:00:00Z", edge_volatility=0.01)],
+            run_id="run-unique",
+            config=EdgeQualityGateConfig(),
+        )
+        self.assertEqual("run-unique", summary["run_id"])
+
+    def test_snapshot_raises_when_qualifying_row_missing_with_diagnostics(self):
+        rows = [
+            {
+                "row_type": "trace",
+                "stage": "stageGenerateSignals",
+                "run_id": "run-missing",
+                "_source_file": "Run_Log.csv",
+                "_source_kind": "csv",
+            }
+        ]
+        with self.assertRaisesRegex(ValueError, "Expected exactly one runEdgeBoard summary row"):
+            _snapshot(rows=rows, run_id="run-missing", config=EdgeQualityGateConfig())
+        with self.assertRaises(ValueError) as ctx:
+            _snapshot(rows=rows, run_id="run-missing", config=EdgeQualityGateConfig())
+        self.assertIn('"qualifying_row_count": 0', str(ctx.exception))
+        self.assertIn('"stages_seen": ["stageGenerateSignals"]', str(ctx.exception))
+        self.assertIn('"source_kinds": ["csv"]', str(ctx.exception))
+
+    def test_snapshot_raises_when_multiple_qualifying_rows_with_diagnostics(self):
+        rows = [
+            {
+                **self._summary_row("run-dup", "2026-03-10T00:00:00Z", edge_volatility=0.01),
+                "_source_file": "Run_Log.csv",
+                "_source_kind": "csv",
+            },
+            {
+                **self._summary_row("run-dup", "2026-03-10T00:05:00Z", edge_volatility=0.02),
+                "_source_file": "Run_Log.json",
+                "_source_kind": "json",
+            },
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            _snapshot(rows=rows, run_id="run-dup", config=EdgeQualityGateConfig())
+        self.assertIn('"qualifying_row_count": 2', str(ctx.exception))
+        self.assertIn('"source_files": ["Run_Log.csv", "Run_Log.json"]', str(ctx.exception))
+        self.assertIn('"source_kinds": ["csv", "json"]', str(ctx.exception))
 
     def test_gate_omits_disabled_warning_when_stake_policy_enabled(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_pass.json"))
