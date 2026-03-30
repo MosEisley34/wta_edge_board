@@ -1715,6 +1715,25 @@ def evaluate_daily_edge_quality_slo(
                 for key in stake_policy_aggregate:
                     stake_policy_aggregate[key] += int(summary.get(key, 0) or 0)
 
+    parity_contract_status = "not_evaluated"
+    decisionability_status = "pass"
+    if gate_reason in {"no_decisionable_windows", "insufficient_sample_floor_not_met_for_all_windows"}:
+        decisionability_status = "insufficient_sample"
+    quality_status = "pass"
+    if gate_reason == "decisionable_window_fail_rate_exceeded_threshold":
+        quality_status = "fail"
+    elif not decisionable_windows:
+        quality_status = "insufficient_sample"
+
+    if parity_contract_status in {"fail", "insufficient_sample"}:
+        operator_composite_reason = f"parity_contract_blocker:{parity_contract_status}"
+    elif decisionability_status != "pass":
+        operator_composite_reason = f"decisionability_blocker:{gate_reason}"
+    elif quality_status != "pass":
+        operator_composite_reason = f"quality_blocker:{gate_reason}"
+    else:
+        operator_composite_reason = "all_components_passing"
+
     return {
         "schema": "edge_quality_daily_slo_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -1729,6 +1748,10 @@ def evaluate_daily_edge_quality_slo(
         "window_reports": window_reports,
         "gate_verdict": gate_verdict,
         "gate_reason": gate_reason,
+        "parity_contract_status": parity_contract_status,
+        "decisionability_status": decisionability_status,
+        "quality_status": quality_status,
+        "operator_composite_reason": operator_composite_reason,
         "decisionable_window_count": len(decisionable_windows),
         "failing_decisionable_window_count": len(failing_decisionable_windows),
         "stake_policy_summary_counts": stake_policy_aggregate,
@@ -1745,6 +1768,8 @@ def write_daily_slo_artifacts(
     reports_path.mkdir(parents=True, exist_ok=True)
     daily_output = reports_path / f"edge_quality_daily_slo_{stamp}.json"
     daily_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    markdown_output = reports_path / f"edge_quality_daily_slo_summary_{stamp}.md"
+    markdown_output.write_text(_daily_slo_markdown_summary(report), encoding="utf-8")
 
     archive_root = Path(archive_dir) if archive_dir else reports_path / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -1754,6 +1779,10 @@ def write_daily_slo_artifacts(
         "as_of_utc": report.get("as_of_utc"),
         "gate_verdict": report.get("gate_verdict"),
         "gate_reason": report.get("gate_reason"),
+        "parity_contract_status": report.get("parity_contract_status"),
+        "decisionability_status": report.get("decisionability_status"),
+        "quality_status": report.get("quality_status"),
+        "operator_composite_reason": report.get("operator_composite_reason"),
         "decisionable_window_count": report.get("decisionable_window_count"),
         "failing_decisionable_window_count": report.get("failing_decisionable_window_count"),
         "aggregate_status_counts": report.get("aggregate_status_counts"),
@@ -1776,6 +1805,48 @@ def write_daily_slo_artifacts(
         handle.write(json.dumps(summary_row, sort_keys=True) + "\n")
 
     return daily_output, archive_summary
+
+
+def _daily_slo_markdown_summary(report: dict[str, Any]) -> str:
+    window_lines: list[str] = []
+    for item in report.get("window_reports") or []:
+        window_days = item.get("window_days")
+        pair_count = item.get("pair_count")
+        decisionable_pairs = item.get("decisionable_pair_count")
+        verdict = item.get("verdict")
+        fail_rate = item.get("fail_rate")
+        fail_rate_text = "n/a" if fail_rate is None else f"{float(fail_rate):.2%}"
+        window_lines.append(
+            f"| {window_days} | {pair_count} | {decisionable_pairs} | {fail_rate_text} | {verdict} |"
+        )
+    if not window_lines:
+        window_lines.append("| n/a | 0 | 0 | n/a | insufficient_sample |")
+
+    return "\n".join(
+        [
+            "# Daily Edge Quality SLO Summary",
+            "",
+            f"- **As-of UTC:** `{report.get('as_of_utc', 'n/a')}`",
+            f"- **Overall verdict:** `{report.get('gate_verdict', 'unknown')}`",
+            f"- **Gate reason:** `{report.get('gate_reason', 'unknown')}`",
+            f"- **Operator composite reason:** `{report.get('operator_composite_reason', 'unknown')}`",
+            "",
+            "## Final gate components",
+            "",
+            "| Component | Status |",
+            "|---|---|",
+            f"| parity_contract_status | `{report.get('parity_contract_status', 'unknown')}` |",
+            f"| decisionability_status | `{report.get('decisionability_status', 'unknown')}` |",
+            f"| quality_status | `{report.get('quality_status', 'unknown')}` |",
+            "",
+            "## Window detail",
+            "",
+            "| window_days | pair_count | decisionable_pair_count | fail_rate | verdict |",
+            "|---:|---:|---:|---:|---|",
+            *window_lines,
+            "",
+        ]
+    )
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:

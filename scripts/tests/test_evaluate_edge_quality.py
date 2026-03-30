@@ -769,6 +769,13 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             as_of_utc="2026-03-12T12:00:00Z",
         )
         self.assertEqual("fail", report["gate_verdict"])
+        self.assertEqual("pass", report["decisionability_status"])
+        self.assertEqual("fail", report["quality_status"])
+        self.assertEqual("not_evaluated", report["parity_contract_status"])
+        self.assertEqual(
+            "quality_blocker:decisionable_window_fail_rate_exceeded_threshold",
+            report["operator_composite_reason"],
+        )
         self.assertEqual(1, report["decisionable_window_count"])
         self.assertEqual(1, report["window_reports"][0]["decisionable_status_counts"]["true_fail"])
 
@@ -810,6 +817,9 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("insufficient_sample", report["gate_verdict"])
         self.assertTrue(all(not window["decisionable"] for window in report["window_reports"]))
         self.assertTrue(all(window["decisionable_pair_count"] == 0 for window in report["window_reports"]))
+        self.assertEqual("insufficient_sample", report["decisionability_status"])
+        self.assertEqual("insufficient_sample", report["quality_status"])
+        self.assertEqual("decisionability_blocker:no_decisionable_windows", report["operator_composite_reason"])
 
     def test_daily_slo_blocks_pass_uplift_when_any_window_is_insufficient(self):
         rows = [
@@ -905,6 +915,12 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             self.assertTrue(daily_path.exists())
             self.assertTrue(summary_path.exists())
             self.assertIn("edge_quality_daily_slo_", daily_path.name)
+            markdown_paths = list(temp_reports_dir.glob("edge_quality_daily_slo_summary_*.md"))
+            self.assertEqual(1, len(markdown_paths))
+            markdown = markdown_paths[0].read_text(encoding="utf-8")
+            self.assertIn("parity_contract_status", markdown)
+            self.assertIn("decisionability_status", markdown)
+            self.assertIn("quality_status", markdown)
             summary_lines = summary_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertGreaterEqual(len(summary_lines), 1)
 

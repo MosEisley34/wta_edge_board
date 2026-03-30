@@ -32,6 +32,9 @@ class ReadDailySloStatusTests(unittest.TestCase):
             self.assertIn(str(report), lines[0])
             self.assertIn("status=pass", lines[0])
             self.assertIn("schema=legacy", lines[0])
+            self.assertIn("parity_contract_status=not_evaluated", lines[0])
+            self.assertIn("decisionability_status=insufficient_sample", lines[0])
+            self.assertIn("quality_status=insufficient_sample", lines[0])
 
     def test_current_schema_derives_from_window_verdicts_when_status_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -41,6 +44,8 @@ class ReadDailySloStatusTests(unittest.TestCase):
                 "edge_quality_daily_slo_20260325T010102Z.json",
                 {
                     "schema": "edge_quality_daily_slo_v1",
+                    "gate_reason": "decisionable_window_fail_rate_exceeded_threshold",
+                    "decisionable_window_count": 1,
                     "window_reports": [
                         {"window_days": 3, "verdict": "pass"},
                         {"window_days": 7, "verdict": "fail"},
@@ -55,6 +60,7 @@ class ReadDailySloStatusTests(unittest.TestCase):
             self.assertIn("status=fail", lines[0])
             self.assertIn("schema=current", lines[0])
             self.assertIn("source=derived", lines[0])
+            self.assertIn("quality_status=fail", lines[0])
 
     def test_malformed_and_missing_keys_mark_invalid(self):
         with tempfile.TemporaryDirectory() as tmp:

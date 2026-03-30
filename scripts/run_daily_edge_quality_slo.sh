@@ -82,4 +82,5 @@ fi
 
 "${cmd[@]}"
 
+echo "---- Daily edge-quality SLO final gate ----"
 python3 scripts/read_daily_slo_status.py --reports-dir "${reports_dir}" --limit 1
