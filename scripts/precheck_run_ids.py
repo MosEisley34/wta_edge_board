@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
 
+from evaluate_edge_quality import _is_run_edgeboard_summary_row
 from preflight_guard import validate_incident_tag
 
 @dataclass(frozen=True)
@@ -201,7 +202,7 @@ def _scan_run_contracts(path: str, target_run_ids: set[str]) -> dict[str, dict[s
         if stage and stage != "runEdgeBoard":
             contracts[run_id]["stages"].add(stage)
 
-        if str(row.get("row_type") or "") == "summary" and stage == "runEdgeBoard":
+        if _is_run_edgeboard_summary_row(row):
             contracts[run_id]["run_summary_exists"] = True
             reason_codes = _parse_json_like(row.get("reason_codes"))
             if isinstance(reason_codes, dict):
@@ -507,7 +508,8 @@ def main() -> int:
                 contract_failures.append(f"{run_id}: reason_codes missing STATS_MISS_B")
 
     if contract_failures:
-        print("Precheck failed: run-pair comparison auto-failed due to invalid run contract.")
+        print("Precheck failed: compare_validation_failed.")
+        print("Run-pair comparison auto-failed due to invalid run contract.")
         if args.require_gate_prereqs:
             print(
                 "Gate prereq mode (--require-gate-prereqs) blocks compare scripts until summary/stage/coverage requirements are met."
@@ -515,6 +517,21 @@ def main() -> int:
         for failure in contract_failures:
             print(f"- {failure}")
         print("Replacement run IDs are required before producing pre/post verdict.")
+        return 2
+
+    summary_presence_failures: list[str] = []
+    if not merged_contracts[args.run_id_a]["run_summary_exists"]:
+        summary_presence_failures.append("missing baseline summary row")
+    if not merged_contracts[args.run_id_b]["run_summary_exists"]:
+        summary_presence_failures.append("missing candidate summary row")
+    if summary_presence_failures:
+        print("Precheck failed: compare_validation_failed.")
+        for failure in summary_presence_failures:
+            print(f"- {failure}")
+        print(
+            "Each target run_id must include a qualifying runEdgeBoard summary row "
+            "(row_type=summary, stage=runEdgeBoard)."
+        )
         return 2
 
     print("Precheck passed: both target run IDs are present in merged Run_Log JSON/CSV data.")

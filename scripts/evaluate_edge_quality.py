@@ -181,9 +181,16 @@ def _pick_run_summary(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]
     for row in rows:
         if str(row.get("run_id") or "") != run_id:
             continue
-        if str(row.get("row_type") or "") == "summary" and str(row.get("stage") or "") == "runEdgeBoard":
+        if _is_run_edgeboard_summary_row(row):
             summary = _normalize_legacy_summary_row(row)
     return summary
+
+
+def _is_run_edgeboard_summary_row(row: dict[str, Any]) -> bool:
+    return (
+        str(row.get("row_type") or "").strip() == "summary"
+        and str(row.get("stage") or "").strip() == "runEdgeBoard"
+    )
 
 
 def _summary_stake_policy_enabled(summary: dict[str, Any]) -> bool | None:
