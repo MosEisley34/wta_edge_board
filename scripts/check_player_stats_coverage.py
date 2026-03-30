@@ -30,6 +30,19 @@ class GateConfig:
     override_reason: str = ""
 
 
+def _normalize_schema_missing_details(*detail_lists: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for details in detail_lists:
+        for detail in details:
+            code = str(detail or "").strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            ordered.append(code)
+    return ordered
+
+
 def _parse_json_like(value: Any, fallback: Any) -> Any:
     if value in (None, ""):
         return fallback
@@ -159,6 +172,7 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
     schema_failures: list[str] = []
     schema_warnings: list[str] = []
     source_paths: dict[str, str] = {}
+    shape_anomalies: list[str] = []
     source_order = (
         "canonical_row",
         "nested_stage_summary",
@@ -221,7 +235,11 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
                 source_paths["stageFetchPlayerStats_summary"] = "nested_stage_summary"
             else:
                 source_paths["stageFetchPlayerStats_summary"] = "message_fallback"
+    if summary_row.get("stage_summaries") == "":
+        shape_anomalies.append("empty_string_stage_summaries")
     stage_message = _parse_json_like(stage_summary.get("message"), {})
+    if stage_summary.get("message") == "":
+        shape_anomalies.append("empty_string_stage_message")
     if not isinstance(stage_message, dict):
         stage_message = {}
 
@@ -236,6 +254,8 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
         nested_stage_message = {}
 
     canonical_reason_metadata = _parse_json_like(stage_summary.get("reason_metadata"), {})
+    if stage_summary.get("reason_metadata") == "":
+        shape_anomalies.append("empty_string_reason_metadata")
     nested_reason_metadata = _parse_json_like(nested_stage_summary.get("reason_metadata"), {})
     message_reason_metadata = _parse_json_like(stage_message.get("reason_metadata"), {})
     reason_metadata_candidates = {
@@ -421,6 +441,7 @@ def _extract_player_stats_coverage(summary_row: dict[str, Any]) -> dict[str, Any
         "applicability": applicability,
         "evidence_stats_expected": evidence_stats_expected,
         "source_paths": source_paths,
+        "shape_anomalies": shape_anomalies,
     }
 
 
@@ -449,6 +470,7 @@ def _run_snapshot(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         "schema_warnings": list(coverage.get("schema_warnings", [])),
         "applicability": str(coverage.get("applicability") or "applicable"),
         "source_paths": dict(coverage.get("source_paths", {})),
+        "shape_anomalies": list(coverage.get("shape_anomalies", [])),
     }
 
 
@@ -466,6 +488,22 @@ def evaluate_player_stats_gate(
     for run_label, snapshot in (("baseline", baseline), ("candidate", candidate)):
         for failure in snapshot.get("schema_failures", []):
             schema_failures.append(f"{run_label}_{failure}")
+
+    schema_missing_detail_codes: list[str] = []
+    if any(failure.endswith("stageFetchPlayerStats summary missing") for failure in schema_failures):
+        schema_missing_detail_codes.append("missing_summary")
+    if any(
+        (snapshot.get("source_paths") or {}).get("reason_metadata") == "missing"
+        for snapshot in (baseline, candidate)
+    ):
+        schema_missing_detail_codes.append("missing_reason_metadata")
+    if any(failure.endswith("player-stats coverage counters missing") for failure in schema_failures):
+        schema_missing_detail_codes.append("missing_coverage_counters")
+    if any(
+        any("empty_string" in str(marker or "") for marker in (snapshot.get("shape_anomalies") or []))
+        for snapshot in (baseline, candidate)
+    ):
+        schema_missing_detail_codes.append("empty_string_instead_of_array")
 
     candidate_not_applicable = candidate.get("applicability") in {"no_demand", "not_applicable"}
     baseline_not_applicable = baseline.get("applicability") in {"no_demand", "not_applicable"}
@@ -531,9 +569,12 @@ def evaluate_player_stats_gate(
     else:
         status = "pass"
 
+    schema_missing_details = _normalize_schema_missing_details(schema_missing_detail_codes) if schema_failures else []
+
     return {
         "status": status,
         "reason_code": "schema_missing" if schema_failures else "",
+        "schema_missing_details": schema_missing_details,
         "gate_passed": not failures,
         "override_used": override_used,
         "override_reason": config.override_reason if override_used else "",

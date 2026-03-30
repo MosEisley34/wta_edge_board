@@ -89,4 +89,10 @@ if [[ ! -s "$preflight_sidecar" ]]; then
   echo "Error: expected non-empty preflight sidecar at $preflight_sidecar." >&2
   exit 1
 fi
-python3 scripts/compare_run_metrics.py "$run_a" "$run_b" --input "$out_dir/Run_Log.csv" "${compare_extra_args[@]}"
+compare_log="$out_dir/compare_run_metrics_preflight.log"
+set +e
+python3 scripts/compare_run_metrics.py "$run_a" "$run_b" --input "$out_dir/Run_Log.csv" "${compare_extra_args[@]}" | tee "$compare_log"
+compare_status=${PIPESTATUS[0]}
+set -e
+python3 scripts/extract_schema_missing_triage.py --limit 20 --out "$out_dir/triage_last20_next.csv" "$compare_log" >/dev/null || true
+exit "$compare_status"
