@@ -56,6 +56,10 @@ class EdgeQualityGateConfig:
     volatility_context_min_pairs: int = 4
     volatility_context_quantile: float = 0.90
     volatility_context_ceiling_factor: float = 1.25
+    volatility_dynamic_scaling_enabled: bool = True
+    volatility_dynamic_small_sample_loosen_max: float = 0.20
+    volatility_dynamic_large_sample_tighten_max: float = 0.10
+    volatility_dynamic_target_sample_multiplier: float = 3.0
     max_suppression_drift: float = 0.50
     suppression_min_volume: int = 2
     stake_policy_enabled: bool = False
@@ -1078,6 +1082,48 @@ def _adaptive_volatility_ceiling(
     }
 
 
+def _dynamic_volatility_scale_factor(
+    config: EdgeQualityGateConfig,
+    effective_sample: dict[str, Any],
+    adaptive_ceiling_info: dict[str, Any],
+) -> dict[str, Any]:
+    if not bool(config.volatility_dynamic_scaling_enabled):
+        return {"multiplier": 1.0, "source": "disabled"}
+    if not effective_sample.get("known"):
+        return {"multiplier": 1.0, "source": "unknown_sample"}
+
+    min_scored = max(1, int(config.min_scored_signals_for_volatility))
+    min_matched = max(1, int(config.min_matched_events_for_volatility))
+    scored = max(0, int(effective_sample.get("scored_signals") or 0))
+    matched = max(0, int(effective_sample.get("matched_events") or 0))
+    scored_ratio = scored / float(min_scored)
+    matched_ratio = matched / float(min_matched)
+    coverage_ratio = min(scored_ratio, matched_ratio)
+
+    target_ratio = max(1.0, float(config.volatility_dynamic_target_sample_multiplier))
+    normalized_ratio = min(1.0, max(0.0, coverage_ratio / target_ratio))
+    loosen_max = max(0.0, float(config.volatility_dynamic_small_sample_loosen_max))
+    tighten_max = max(0.0, float(config.volatility_dynamic_large_sample_tighten_max))
+    sample_multiplier = (1.0 + loosen_max) - ((loosen_max + tighten_max) * normalized_ratio)
+
+    cadence_multiplier = 1.0
+    context_sample_size = int(adaptive_ceiling_info.get("sample_size") or 0)
+    context_target = max(1, int(config.volatility_context_min_pairs) * 2)
+    if context_sample_size > 0 and context_target > 0:
+        context_ratio = min(1.0, max(0.0, context_sample_size / float(context_target)))
+        cadence_multiplier = (1.0 + (loosen_max * 0.5)) - ((loosen_max * 0.5 + tighten_max * 0.5) * context_ratio)
+
+    combined = sample_multiplier * cadence_multiplier
+    combined = min(1.0 + loosen_max, max(1.0 - tighten_max, combined))
+    return {
+        "multiplier": combined,
+        "source": "sample_and_context_dynamic",
+        "coverage_ratio": coverage_ratio,
+        "target_ratio": target_ratio,
+        "context_sample_size": context_sample_size,
+    }
+
+
 def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateConfig) -> dict[str, Any]:
     deduped_rows, _ = merge_run_summary_rows_for_cardinality(rows)
     summary = _pick_run_summary(deduped_rows, run_id, strict_cardinality=True)
@@ -1286,7 +1332,14 @@ def evaluate_edge_quality_gate(
         candidate_summary=_pick_run_summary(rows, candidate_run_id),
         config=config,
     )
-    effective_volatility_ceiling = float(adaptive_ceiling_info["ceiling"])
+    dynamic_scale_info = _dynamic_volatility_scale_factor(
+        config=config,
+        effective_sample=effective_sample,
+        adaptive_ceiling_info=adaptive_ceiling_info,
+    )
+    effective_volatility_ceiling = float(adaptive_ceiling_info["ceiling"]) * float(dynamic_scale_info["multiplier"])
+    adaptive_ceiling_info = dict(adaptive_ceiling_info)
+    adaptive_ceiling_info["ceiling_after_dynamic_scale"] = effective_volatility_ceiling
     if sample_strategy != "candidate_only" and enough_sample_for_volatility:
         warnings.append(
             "aggregated_sample_used_for_edge_volatility "
@@ -1353,6 +1406,10 @@ def evaluate_edge_quality_gate(
             "min_scored_signals_for_volatility": config.min_scored_signals_for_volatility,
             "min_matched_events_for_volatility": config.min_matched_events_for_volatility,
             "volatility_sample_window_runs": config.volatility_sample_window_runs,
+            "volatility_dynamic_scaling_enabled": config.volatility_dynamic_scaling_enabled,
+            "volatility_dynamic_small_sample_loosen_max": config.volatility_dynamic_small_sample_loosen_max,
+            "volatility_dynamic_large_sample_tighten_max": config.volatility_dynamic_large_sample_tighten_max,
+            "volatility_dynamic_target_sample_multiplier": config.volatility_dynamic_target_sample_multiplier,
             "max_suppression_drift": config.max_suppression_drift,
             "suppression_min_volume": config.suppression_min_volume,
             "stake_policy_enabled": config.stake_policy_enabled,
@@ -1361,6 +1418,7 @@ def evaluate_edge_quality_gate(
             "stake_policy": canonical_stake_policy.canonical_policy(),
         },
         "effective_volatility_ceiling": adaptive_ceiling_info,
+        "effective_volatility_dynamic_scale": dynamic_scale_info,
         "sample_assessment": {
             "strategy": sample_strategy,
             "known": bool(effective_sample["known"]),
