@@ -1,3 +1,4 @@
+import csv
 import json
 import subprocess
 import sys
@@ -642,6 +643,43 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("not_triggered", report["final_operator_summary"]["windowed_decision_status"])
         self.assertEqual("strict_pair_gate", report["final_operator_summary"]["decision_authoritative_source"])
         self.assertEqual("pass", report["final_operator_summary"]["decision_authoritative_status"])
+
+    def test_compare_report_dedupes_logically_identical_csv_json_summaries(self):
+        run_1 = self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8)
+        run_2 = self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=12, matched_events=8)
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "Run_Log.csv"
+            json_path = Path(tmp) / "Run_Log.json"
+            csv_fields = sorted(set(run_1.keys()) | {"source_kind", "source_path"})
+            with csv_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=csv_fields)
+                writer.writeheader()
+                writer.writerow({**run_1, "source_kind": "csv", "source_path": "exports/Run_Log.csv"})
+                writer.writerow(run_2)
+            json_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            **run_1,
+                            "source_kind": "json",
+                            "source_path": "exports/Run_Log.json",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rows = load_run_log_rows(tmp)
+
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(max_edge_volatility=0.03),
+            ordered_run_ids=["run-1", "run-2"],
+            fallback_recent_run_window_radius=2,
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertEqual("pass", report["pair_level_result"]["status"])
 
     def test_compare_report_expands_fallback_window_to_min_neighboring_pairs(self):
         rows = [
