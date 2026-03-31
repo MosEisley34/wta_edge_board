@@ -84,6 +84,83 @@ if [[ "$allow_csv_only_triage" -eq 1 && -z "$incident_tag" ]]; then
   exit 1
 fi
 
+canonical_source_dirs=()
+for input_path in "${inputs[@]}"; do
+  if [[ -d "$input_path" ]]; then
+    canonical_source_dirs+=("$input_path")
+  fi
+done
+
+if [[ "${#canonical_source_dirs[@]}" -gt 0 ]]; then
+  echo "[0/6] Auto-mirroring canonical CSV tabs in source directory inputs (when present)"
+  python3 - "${canonical_source_dirs[@]}" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+repo_root = Path.cwd()
+sys.path.insert(0, str(repo_root / "scripts"))
+from preflight_guard import CANONICAL_RUNTIME_TABS, evaluate_raw_tab_completeness
+
+dirs = [Path(path).resolve() for path in sys.argv[1:]]
+seen: set[Path] = set()
+for source_dir in dirs:
+    if source_dir in seen:
+        continue
+    seen.add(source_dir)
+    present_csv_tabs = [
+        tab for tab in CANONICAL_RUNTIME_TABS if (source_dir / f"{tab}.csv").is_file()
+    ]
+    if not present_csv_tabs:
+        print(f"- skip {source_dir}: no canonical CSV tabs found")
+        continue
+
+    print(f"- mirror {source_dir}: detected canonical CSV tabs: {', '.join(present_csv_tabs)}")
+    for tab in present_csv_tabs:
+        json_path = source_dir / f"{tab}.json"
+        if json_path.is_file():
+            json_path.unlink()
+
+    proc = subprocess.run(
+        [
+            "python3",
+            str(repo_root / "scripts" / "mirror_all_runtime_tabs_to_json.py"),
+            "--export-dir",
+            str(source_dir),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(
+            "Auto-mirror failed while regenerating canonical tab JSON files in source directory "
+            f"{source_dir}.\n{proc.stderr.strip()}"
+        )
+
+    result = evaluate_raw_tab_completeness(str(source_dir))
+    mismatched = [item for item in result.get("mismatched_tabs", []) if item.get("tab") in present_csv_tabs]
+    missing_json_tabs = [
+        tab for tab in present_csv_tabs if not (source_dir / f"{tab}.json").is_file()
+    ]
+    if mismatched or missing_json_tabs:
+        detail = {
+            "source_dir": str(source_dir),
+            "present_csv_tabs": present_csv_tabs,
+            "missing_json_tabs": missing_json_tabs,
+            "mismatched_tabs": mismatched,
+        }
+        print(json.dumps(detail, indent=2), file=sys.stderr)
+        raise SystemExit(
+            "Preflight raw-tab parity still mismatched after auto-mirror regeneration. "
+            "Source snapshot contains stale canonical tab JSON files that did not self-heal."
+        )
+PY
+  echo
+fi
+
 echo "[1/6] Exporting runtime artifacts into ${out_dir}"
 scripts/prepare_runtime_exports.sh --out-dir "$out_dir" "${inputs[@]}"
 
