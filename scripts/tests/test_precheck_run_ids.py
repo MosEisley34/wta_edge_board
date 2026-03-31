@@ -17,6 +17,31 @@ from evaluate_edge_quality import EdgeQualityGateConfig, _snapshot  # noqa: E402
 
 
 class PrecheckRunIdsSourceContractTests(unittest.TestCase):
+    @staticmethod
+    def _gate_ready_summary_row(run_id: str, ended_at: str):
+        return {
+            "run_id": run_id,
+            "row_type": "summary",
+            "stage": "runEdgeBoard",
+            "ended_at": ended_at,
+            "reason_codes": {},
+            "stage_summaries": {
+                "schema_id": "reason_code_aliases.v1",
+                "stage_summaries": [{"stage": stage} for stage in (
+                    "stageFetchOdds",
+                    "stageFetchSchedule",
+                    "stageMatchEvents",
+                    "stageFetchPlayerStats",
+                    "stageGenerateSignals",
+                    "stagePersist",
+                )],
+                "compare_prerequisites": {
+                    "coverage": {"requested": 0, "resolved": 0, "unresolved": 0},
+                    "reason_code_placeholders": {"STATS_MISS_A": 0, "STATS_MISS_B": 0},
+                },
+            },
+        }
+
     def _write_json(self, path: Path, run_ids, summary_run_ids=None):
         summary_run_ids = set(run_ids if summary_run_ids is None else summary_run_ids)
         rows = [{"run_id": run_id, "stage": "stageFetchOdds"} for run_id in run_ids]
@@ -410,6 +435,37 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
 
             snapshot = _snapshot(rows=rows, run_id="run-a", config=EdgeQualityGateConfig())
             self.assertEqual("run-a", snapshot["run_id"])
+
+    def test_pair_level_contract_fails_when_runs_are_individually_valid_but_duplicates_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_a_json = self._gate_ready_summary_row("run-a", "2026-03-30T00:00:00Z")
+            run_a_csv = self._gate_ready_summary_row("run-a", "2026-03-30T00:05:00Z")
+            run_a_csv["_source_kind"] = "csv"
+            run_b = self._gate_ready_summary_row("run-b", "2026-03-30T00:10:00Z")
+            rows = [run_a_json, run_a_csv, run_b]
+            (root / "Run_Log.json").write_text(json.dumps(rows), encoding="utf-8")
+
+            code, output = self._run_main(
+                [
+                    "precheck_run_ids.py",
+                    "run-a",
+                    "run-b",
+                    "--export-dir",
+                    str(root),
+                    "--require-gate-prereqs",
+                ]
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("\"run_prereq_pass\": true", output)
+            self.assertIn("\"pair_contract_pass\": false", output)
+            self.assertIn("\"compare_contract_pass\": false", output)
+            self.assertIn("\"reason_codes\": [\"pair_duplicate_summary_rows\"]", output)
+            self.assertIn(
+                "pair_contract_pass=false reason_code=pair_duplicate_summary_rows run_ids=run-a",
+                output,
+            )
 
 
 if __name__ == "__main__":

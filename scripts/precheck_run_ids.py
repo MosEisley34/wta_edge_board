@@ -304,7 +304,7 @@ def _scan_rows(path: str, source_kind: str) -> list[dict[str, object]]:
     return normalized_rows
 
 
-def _run_checklist(contract: dict[str, object]) -> dict[str, bool]:
+def _run_checklist(contract: dict[str, object], require_gate_prereqs: bool) -> dict[str, bool]:
     observed_stages = set(contract["stages"])
     coverage_prereq = contract["coverage_prereq"]
     checklist: dict[str, bool] = {
@@ -319,18 +319,52 @@ def _run_checklist(contract: dict[str, object]) -> dict[str, bool]:
     for stage in REQUIRED_STAGE_CHAIN:
         checklist[f"has_{stage}"] = stage in observed_stages
     checklist["has_required_stages"] = all(checklist[f"has_{stage}"] for stage in REQUIRED_STAGE_CHAIN)
-    checklist["compare_contract_pass"] = all(
-        (
-            checklist["has_allowed_reason_codes"],
-            checklist["has_runEdgeBoard_summary"],
-            checklist["has_stageFetchPlayerStats_summary"],
-            checklist["has_required_stages"],
-            checklist["has_coverage_prereqs"],
-            checklist["has_reason_code_placeholders"],
-        )
+    base_prereqs = (
+        checklist["has_allowed_reason_codes"],
+        checklist["has_runEdgeBoard_summary"],
     )
-    checklist["compare_ready"] = checklist["compare_contract_pass"]
+    gate_prereqs = (
+        checklist["has_stageFetchPlayerStats_summary"],
+        checklist["has_required_stages"],
+        checklist["has_coverage_prereqs"],
+        checklist["has_reason_code_placeholders"],
+    )
+    checklist["run_prereq_pass"] = all(base_prereqs + gate_prereqs if require_gate_prereqs else base_prereqs)
+    checklist["compare_ready"] = checklist["run_prereq_pass"]
     return checklist
+
+
+def _pair_checklist(
+    run_checklists: dict[str, dict[str, bool]],
+    duplicate_diagnostics_by_run_id: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    target_run_ids = set(run_checklists)
+    run_prereq_failures = [
+        run_id
+        for run_id, checklist in run_checklists.items()
+        if not bool(checklist.get("run_prereq_pass"))
+    ]
+    duplicate_failures = [
+        run_id
+        for run_id, diagnostics in duplicate_diagnostics_by_run_id.items()
+        if run_id in target_run_ids
+        and bool(diagnostics.get("compare_will_fail_due_to_duplicate_summary_rows"))
+    ]
+
+    reason_codes: list[str] = []
+    if run_prereq_failures:
+        reason_codes.append("run_prereq_failed")
+    if duplicate_failures:
+        reason_codes.append("pair_duplicate_summary_rows")
+
+    pair_contract_pass = not reason_codes
+    return {
+        "pair_contract_pass": pair_contract_pass,
+        "compare_contract_pass": pair_contract_pass,
+        "reason_codes": reason_codes,
+        "run_prereq_failed_run_ids": run_prereq_failures,
+        "pair_duplicate_summary_rows_run_ids": duplicate_failures,
+    }
 
 
 def _format_missing(run_ids: Iterable[str], present_ids: set[str]) -> list[str]:
@@ -488,8 +522,11 @@ def main() -> int:
             f"- {run_id}: {status} (matches={total_matches}, source_files_with_match={matched_files})"
         )
     print("Preflight evidence checklist (per run):")
+    run_checklists: dict[str, dict[str, bool]] = {}
     for run_id in targets:
-        print(f"- {run_id}: {json.dumps(_run_checklist(merged_contracts[run_id]), sort_keys=True)}")
+        run_checklist = _run_checklist(merged_contracts[run_id], args.require_gate_prereqs)
+        run_checklists[run_id] = run_checklist
+        print(f"- {run_id}: {json.dumps(run_checklist, sort_keys=True)}")
 
     freshness = evaluate_export_freshness(args.export_dir, [args.run_id_a, args.run_id_b])
     print(f"Export freshness status: {json.dumps(freshness, sort_keys=True)}")
@@ -575,14 +612,26 @@ def main() -> int:
         for detail in degraded_confidence_reasons:
             print(f"- {detail}")
 
-    contract_failures: list[str] = []
     _, duplicate_diagnostics_by_run_id = merge_run_summary_rows_for_cardinality(merged_rows)
+    pair_checklist = _pair_checklist(run_checklists, duplicate_diagnostics_by_run_id)
+    print(f"Pair-level compare contract checklist: {json.dumps(pair_checklist, sort_keys=True)}")
+
+    contract_failures: list[str] = []
     for run_id in targets:
-        run_checklist = _run_checklist(merged_contracts[run_id])
+        run_checklist = run_checklists[run_id]
         duplicate_diagnostics = duplicate_diagnostics_by_run_id.get(run_id, {})
         disallowed = sorted(merged_contracts[run_id]["disallowed_reasons"])
         if not run_checklist["has_allowed_reason_codes"] and disallowed:
             contract_failures.append(f"{run_id}: disallowed reason_code(s) {', '.join(disallowed)}")
+        if not run_checklist["has_runEdgeBoard_summary"]:
+            if run_id == args.run_id_a:
+                contract_failures.append("missing baseline summary row")
+            elif run_id == args.run_id_b:
+                contract_failures.append("missing candidate summary row")
+            else:
+                contract_failures.append(
+                    f"{run_id}: missing runEdgeBoard summary row (row_type=summary, stage=runEdgeBoard)"
+                )
         if duplicate_diagnostics.get("compare_will_fail_due_to_duplicate_summary_rows"):
             contract_failures.append(
                 f"{run_id}: compare_will_fail_due_to_duplicate_summary_rows=true "
@@ -590,10 +639,6 @@ def main() -> int:
                 f"unique_summary_rows={duplicate_diagnostics.get('unique_summary_rows')})"
             )
         if args.require_gate_prereqs:
-            if not run_checklist["has_runEdgeBoard_summary"]:
-                contract_failures.append(
-                    f"{run_id}: missing runEdgeBoard summary row (row_type=summary, stage=runEdgeBoard)"
-                )
             observed_stages = set(merged_contracts[run_id]["stages"])
             missing_stages = [stage for stage in REQUIRED_STAGE_CHAIN if stage not in observed_stages]
             if missing_stages:
@@ -621,6 +666,21 @@ def main() -> int:
             if not run_checklist["compare_ready"]:
                 contract_failures.append(
                     f"{run_id}: compare contract checklist failed (compare_ready=false; see preflight evidence checklist)"
+                )
+
+    if not pair_checklist["pair_contract_pass"]:
+        for reason_code in pair_checklist["reason_codes"]:
+            if reason_code == "pair_duplicate_summary_rows":
+                failing_runs = pair_checklist["pair_duplicate_summary_rows_run_ids"]
+                contract_failures.append(
+                    "pair_contract_pass=false reason_code=pair_duplicate_summary_rows "
+                    f"run_ids={','.join(failing_runs)}"
+                )
+            elif reason_code == "run_prereq_failed":
+                failing_runs = pair_checklist["run_prereq_failed_run_ids"]
+                contract_failures.append(
+                    "pair_contract_pass=false reason_code=run_prereq_failed "
+                    f"run_ids={','.join(failing_runs)}"
                 )
 
     if contract_failures:
