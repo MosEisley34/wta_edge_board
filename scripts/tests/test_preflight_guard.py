@@ -8,19 +8,30 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from preflight_guard import enforce_preflight_guard, write_preflight_sidecar  # noqa: E402
+from preflight_guard import (  # noqa: E402
+    CANONICAL_RUNTIME_TABS,
+    enforce_preflight_guard,
+    write_preflight_sidecar,
+)
 
 
 class PreflightGuardTests(unittest.TestCase):
     def _write_manifest(self, export_dir: Path, generated_at: str = "2026-03-24T00:00:00+00:00"):
+        files = []
+        for tab in CANONICAL_RUNTIME_TABS:
+            csv_name = f"{tab}.csv"
+            json_name = f"{tab}.json"
+            files.append({"path": csv_name})
+            files.append({"path": json_name})
+            (export_dir / csv_name).write_text("run_id\nrun-a\nrun-b\n", encoding="utf-8")
+            (export_dir / json_name).write_text(
+                json.dumps([{"run_id": "run-a"}, {"run_id": "run-b"}]),
+                encoding="utf-8",
+            )
+
         payload = {
             "generated_at_utc": generated_at,
-            "files": [
-                {"path": "Run_Log.csv"},
-                {"path": "Run_Log.json"},
-                {"path": "State.csv"},
-                {"path": "State.json"},
-            ],
+            "files": files,
         }
         (export_dir / "runtime_export_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
         (export_dir / "Run_Log.json").write_text(
@@ -47,6 +58,7 @@ class PreflightGuardTests(unittest.TestCase):
             sidecar_path = write_preflight_sidecar(str(root), "run-a", "run-b", False, "")
             sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
             self.assertIn("run_checklist_by_run_id", sidecar["preflight_evidence"])
+            self.assertTrue(sidecar["preflight_evidence"]["raw_tab_completeness"]["is_complete"])
             status = enforce_preflight_guard(str(root), "run-b", "run-a", "")
             self.assertEqual(status["status"], "ok")
 
@@ -74,6 +86,47 @@ class PreflightGuardTests(unittest.TestCase):
                 "Re-run scripts/export_parity_precheck.sh for this export directory.",
                 str(ctx.exception),
             )
+
+    def test_sidecar_reports_missing_tab_and_enforce_blocks_compare(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_manifest(root)
+            (root / "ProviderHealth.json").unlink()
+            sidecar_path = write_preflight_sidecar(str(root), "run-a", "run-b", False, "")
+            sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+            raw = sidecar["preflight_evidence"]["raw_tab_completeness"]
+            self.assertFalse(raw["is_complete"])
+            self.assertIn("ProviderHealth", raw["missing_tabs"])
+            with self.assertRaisesRegex(ValueError, r"raw runtime tab completeness check is not satisfied"):
+                enforce_preflight_guard(str(root), "run-a", "run-b", "")
+
+    def test_sidecar_reports_stale_json_row_count_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_manifest(root)
+            (root / "Signals.csv").write_text("run_id\nrun-a\nrun-b\nrun-c\n", encoding="utf-8")
+            sidecar_path = write_preflight_sidecar(str(root), "run-a", "run-b", False, "")
+            sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+            raw = sidecar["preflight_evidence"]["raw_tab_completeness"]
+            self.assertFalse(raw["is_complete"])
+            mismatched_tabs = {item["tab"] for item in raw["mismatched_tabs"]}
+            self.assertIn("Signals", mismatched_tabs)
+            with self.assertRaisesRegex(ValueError, r"mismatched_tabs=\['Signals'\]"):
+                enforce_preflight_guard(str(root), "run-a", "run-b", "")
+
+    def test_sidecar_reports_row_count_mismatch_for_raw_tab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_manifest(root)
+            (root / "Raw_Odds.json").write_text(json.dumps([{"run_id": "run-a"}]), encoding="utf-8")
+            sidecar_path = write_preflight_sidecar(str(root), "run-a", "run-b", False, "")
+            sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+            raw = sidecar["preflight_evidence"]["raw_tab_completeness"]
+            mismatch = next(item for item in raw["mismatched_tabs"] if item["tab"] == "Raw_Odds")
+            self.assertEqual(2, mismatch["csv_rows"])
+            self.assertEqual(1, mismatch["json_rows"])
+            with self.assertRaisesRegex(ValueError, r"mismatched_tabs=\['Raw_Odds'\]"):
+                enforce_preflight_guard(str(root), "run-a", "run-b", "")
 
 
 if __name__ == "__main__":
