@@ -319,6 +319,142 @@ def _summary_has_cancellation_marker(summary_row: dict[str, Any]) -> tuple[bool,
             diagnostics.append(f"stage[{stage_name}].reason_code={str(stage_reason_code)!r}")
     return bool(diagnostics), diagnostics
 
+def _infer_run_role(summary_row: dict[str, Any]) -> str:
+    role_keys = (
+        "compare_role",
+        "run_role",
+        "role",
+        "lane_role",
+        "policy_lane",
+        "variant_role",
+    )
+    for key in role_keys:
+        raw = summary_row.get(key)
+        if raw in (None, ""):
+            continue
+        value = str(raw).strip().lower()
+        if value in {"baseline", "control", "reference", "policy_off"}:
+            return "baseline"
+        if value in {"candidate", "treatment", "variant", "policy_on"}:
+            return "candidate"
+    run_id = str(summary_row.get("run_id") or "").strip().lower()
+    if run_id:
+        if any(token in run_id for token in ("baseline", "control", "reference", "policy-off", "policy_off")):
+            return "baseline"
+        if any(token in run_id for token in ("candidate", "treatment", "variant", "policy-on", "policy_on")):
+            return "candidate"
+    return "unknown"
+
+
+def _infer_run_source(summary_row: dict[str, Any]) -> str:
+    source_keys = (
+        "run_source",
+        "source",
+        "source_kind",
+        "lane",
+        "variant",
+        "policy_tag",
+    )
+    for key in source_keys:
+        raw = summary_row.get(key)
+        if raw in (None, ""):
+            continue
+        return str(raw).strip().lower()
+    stake_policy_enabled = _summary_stake_policy_enabled(summary_row)
+    if stake_policy_enabled is not None:
+        return "policy_on" if stake_policy_enabled else "policy_off"
+    return "unknown"
+
+
+def _strict_pair_precondition_diagnostics(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    baseline_matched_events = int(baseline.get("matched_events") or 0)
+    baseline_terminal_reason = str(baseline.get("no_hit_terminal_reason_code") or "none")
+    baseline_outside_window = baseline_terminal_reason == "events_outside_time_window"
+    baseline_window_counter = int((baseline.get("no_hit_counters") or {}).get("no_hit_events_outside_time_window_count", 0) or 0)
+    candidate_window_counter = int((candidate.get("no_hit_counters") or {}).get("no_hit_events_outside_time_window_count", 0) or 0)
+    baseline_window_constrained = baseline_outside_window or baseline_window_counter > 0
+    candidate_window_constrained = (str(candidate.get("no_hit_terminal_reason_code") or "none") == "events_outside_time_window") or candidate_window_counter > 0
+
+    reason_codes: list[str] = []
+    if baseline_matched_events <= 0:
+        reason_codes.append("invalid_strict_pair_baseline")
+        reason_codes.append("baseline_has_no_matched_events")
+    if baseline_outside_window:
+        reason_codes.append("invalid_strict_pair_baseline")
+        reason_codes.append("baseline_terminal_events_outside_time_window")
+    if baseline_window_constrained != candidate_window_constrained:
+        reason_codes.append("invalid_strict_pair_baseline")
+        reason_codes.append("window_constraint_mismatch")
+
+    normalized_reason_codes = sorted(set(reason_codes))
+    return {
+        "ok": len(normalized_reason_codes) == 0,
+        "reason_codes": normalized_reason_codes,
+        "baseline": {
+            "run_id": baseline.get("run_id"),
+            "matched_events": baseline_matched_events,
+            "no_hit_terminal_reason_code": baseline_terminal_reason,
+            "no_hit_events_outside_time_window_count": baseline_window_counter,
+            "window_constrained": baseline_window_constrained,
+        },
+        "candidate": {
+            "run_id": candidate.get("run_id"),
+            "no_hit_terminal_reason_code": str(candidate.get("no_hit_terminal_reason_code") or "none"),
+            "no_hit_events_outside_time_window_count": candidate_window_counter,
+            "window_constrained": candidate_window_constrained,
+        },
+    }
+
+
+def _invalid_strict_pair_result(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    config: EdgeQualityGateConfig,
+    reason_codes: list[str],
+) -> dict[str, Any]:
+    canonical_stake_policy = StakePolicyConfig.from_legacy(
+        enabled=bool(config.stake_policy_enabled),
+        minimum_stake_mxn=float(config.stake_policy_min_stake_mxn),
+        round_to_min=bool(config.stake_policy_round_to_min),
+    ).with_canonicalized_fields()
+    return {
+        "status": "insufficient_sample",
+        "baseline": baseline,
+        "candidate": candidate,
+        "thresholds": {
+            "min_feature_completeness": config.min_feature_completeness,
+            "max_edge_volatility": config.max_edge_volatility,
+            "min_scored_signals_for_volatility": config.min_scored_signals_for_volatility,
+            "min_matched_events_for_volatility": config.min_matched_events_for_volatility,
+            "volatility_sample_window_runs": config.volatility_sample_window_runs,
+            "max_suppression_drift": config.max_suppression_drift,
+            "suppression_min_volume": config.suppression_min_volume,
+            "stake_policy_enabled": config.stake_policy_enabled,
+            "stake_policy_min_stake_mxn": config.stake_policy_min_stake_mxn,
+            "stake_policy_round_to_min": config.stake_policy_round_to_min,
+            "stake_policy": canonical_stake_policy.canonical_policy(),
+        },
+        "effective_volatility_ceiling": {"ceiling": float(config.max_edge_volatility), "source": "configured", "sample_size": 0},
+        "sample_assessment": {
+            "strategy": "strict_pair_precondition_failed",
+            "known": True,
+            "scored_signals": candidate.get("scored_signals"),
+            "matched_events": candidate.get("matched_events"),
+            "run_ids": [candidate.get("run_id")],
+            "enough_sample_for_volatility": False,
+        },
+        "suppression_drifts": {},
+        "warnings": [f"strict_pair_precondition_failed reason_codes={','.join(reason_codes)}"],
+        "high_visibility_warnings": [],
+        "failures": [],
+        "strict_pair_precondition": {
+            "ok": False,
+            "reason_codes": sorted(set(reason_codes)),
+            "fallback_route": "windowed_fallback_result",
+        },
+    }
+
+
 
 def _select_latest_run_ids(
     rows: list[dict[str, Any]],
@@ -341,20 +477,51 @@ def _select_latest_run_ids(
 
     diagnostics: list[str] = []
     selected_newest_first: list[str] = []
+    selected_role = "unknown"
+    selected_source = "unknown"
     for run_id in reversed(latest_ordered_run_ids):
         summary = latest_summary_by_run[run_id]
+        role = _infer_run_role(summary)
+        source = _infer_run_source(summary)
         is_cancelled, cancellation_reasons = _summary_has_cancellation_marker(summary)
         if is_cancelled and not include_cancelled:
             diagnostics.append(
                 f"run_id={run_id} rejected (cancelled marker found: {', '.join(cancellation_reasons)})"
             )
             continue
+        if not selected_newest_first:
+            if is_cancelled and include_cancelled:
+                diagnostics.append(
+                    f"run_id={run_id} accepted (cancelled marker retained due to --include-cancelled; role={role}; source={source})"
+                )
+            else:
+                diagnostics.append(
+                    f"run_id={run_id} accepted (latest non-cancelled candidate; role={role}; source={source})"
+                )
+            selected_newest_first.append(run_id)
+            selected_role = role
+            selected_source = source
+            continue
+
+        if selected_role == "candidate" and role == "candidate":
+            diagnostics.append(
+                f"run_id={run_id} rejected (role/source mismatch: candidate_like_pair_disallowed; run_role={role}; selected_role={selected_role}; reason_code=invalid_strict_pair_baseline)"
+            )
+            continue
+        if selected_role != "unknown" and role != "unknown" and selected_role == role and selected_source == source:
+            diagnostics.append(
+                f"run_id={run_id} rejected (role/source mismatch: identical_role_and_source; run_role={role}; run_source={source}; reason_code=invalid_strict_pair_baseline)"
+            )
+            continue
+
         if is_cancelled and include_cancelled:
             diagnostics.append(
-                f"run_id={run_id} accepted (cancelled marker retained due to --include-cancelled)"
+                f"run_id={run_id} accepted (cancelled marker retained due to --include-cancelled; selected as baseline; role={role}; source={source}; candidate_role={selected_role}; candidate_source={selected_source})"
             )
         else:
-            diagnostics.append(f"run_id={run_id} accepted (latest non-cancelled candidate)")
+            diagnostics.append(
+                f"run_id={run_id} accepted (selected as baseline; role={role}; source={source}; candidate_role={selected_role}; candidate_source={selected_source})"
+            )
         selected_newest_first.append(run_id)
         if len(selected_newest_first) >= 2:
             break
@@ -1362,13 +1529,25 @@ def evaluate_edge_quality_compare_report(
             f"refuse to produce comparison report. compare_set={mixed_runs}"
         )
 
-    pair_level_result = evaluate_edge_quality_gate(
-        rows=rows,
-        baseline_run_id=baseline_run_id,
-        candidate_run_id=candidate_run_id,
-        config=config,
-        ordered_run_ids=ordered_run_ids,
-    )
+    baseline_snapshot = _snapshot(rows, baseline_run_id, config)
+    candidate_snapshot = _snapshot(rows, candidate_run_id, config)
+    strict_pair_preconditions = _strict_pair_precondition_diagnostics(baseline_snapshot, candidate_snapshot)
+    if strict_pair_preconditions["ok"]:
+        pair_level_result = evaluate_edge_quality_gate(
+            rows=rows,
+            baseline_run_id=baseline_run_id,
+            candidate_run_id=candidate_run_id,
+            config=config,
+            ordered_run_ids=ordered_run_ids,
+        )
+    else:
+        pair_level_result = _invalid_strict_pair_result(
+            baseline=baseline_snapshot,
+            candidate=candidate_snapshot,
+            config=config,
+            reason_codes=list(strict_pair_preconditions.get("reason_codes") or ["invalid_strict_pair_baseline"]),
+        )
+
     fallback_result: dict[str, Any] | None = None
     if str(pair_level_result.get("status") or "") == "insufficient_sample":
         fallback_result = _windowed_fallback_assessment(
@@ -1511,6 +1690,7 @@ def evaluate_edge_quality_compare_report(
             ),
             "decision_authoritative_source": decision_authoritative_source,
             "decision_authoritative_status": decision_authoritative_status,
+            "strict_pair_preconditions": strict_pair_preconditions,
             "runbook_branch": runbook_branch,
             "stake_policy_enabled": bool(config.stake_policy_enabled),
         },
