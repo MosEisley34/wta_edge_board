@@ -723,6 +723,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   let lastH2hDecision = null;
   const h2hDecisionCounts = { h2h_applied: 0, h2h_low_sample: 0, h2h_unavailable: 0 };
   const sampledDecisionLimit = Number(config.SIGNAL_DECISION_SAMPLE_LIMIT || 50);
+  const staleSuppressionDiagnosticLimit = Math.max(0, Number(config.STALE_ODDS_SUPPRESSION_DIAGNOSTIC_LIMIT || 10));
+  const staleSuppressionDiagnostics = [];
   const suppressionPrecheckSkipScoring = toBoolean_(
     config.SIGNAL_SUPPRESSION_PRECHECK_SKIP_SCORING,
     toBoolean_(DEFAULT_CONFIG.SIGNAL_SUPPRESSION_PRECHECK_SKIP_SCORING, true)
@@ -860,7 +862,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     }
 
     const startCutoffMs = config.MINUTES_BEFORE_START_CUTOFF * 60000;
-    if (event.commence_time.getTime() <= nowMs + startCutoffMs) {
+    const commenceMs = event.commence_time.getTime();
+    const minutesToStart = roundNumber_((commenceMs - nowMs) / 60000, 2);
+    if (commenceMs <= nowMs + startCutoffMs) {
       let modelProbabilityTooClose = null;
       if (!suppressionPrecheckSkipScoring) {
         modelProbabilityTooClose = estimateFairProbability_(impliedProbability, match.competition_tier, enrichedStatsBundle, reasonCounts, config);
@@ -882,12 +886,36 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         scored: !suppressionPrecheckSkipScoring,
         stats_confidence: resolvedStatsConfidence,
         suppression_precheck_skip_scoring: suppressionPrecheckSkipScoring,
+        timestamp_field: 'commence_time',
+        reference_timestamp_field: 'now',
+        commence_time_utc: event.commence_time.toISOString(),
+        reference_timestamp_utc: new Date(nowMs).toISOString(),
+        minutes_to_start: minutesToStart,
+        threshold_minutes: Number(config.MINUTES_BEFORE_START_CUTOFF || 0),
       });
       return;
     }
 
     const staleThresholdMs = config.STALE_ODDS_WINDOW_MIN * 60000;
-    if (nowMs - event.odds_updated_time.getTime() > staleThresholdMs) {
+    const oddsUpdatedMs = event.odds_updated_time.getTime();
+    const staleAgeMs = nowMs - oddsUpdatedMs;
+    if (staleAgeMs > staleThresholdMs) {
+      const staleAgeMinutes = roundNumber_(staleAgeMs / 60000, 2);
+      if (staleSuppressionDiagnostics.length < staleSuppressionDiagnosticLimit) {
+        staleSuppressionDiagnostics.push({
+          odds_event_id: event && event.event_id ? String(event.event_id) : '',
+          timestamp_field: 'odds_updated_time',
+          odds_timestamp_local: formatLocalIso_(event.odds_updated_time),
+          odds_timestamp_utc: event.odds_updated_time.toISOString(),
+          reference_timestamp_field: 'now',
+          reference_timestamp_local: formatLocalIso_(new Date(nowMs)),
+          reference_timestamp_utc: new Date(nowMs).toISOString(),
+          computed_age_minutes: staleAgeMinutes,
+          computed_age_ms: staleAgeMs,
+          threshold_minutes: Number(config.STALE_ODDS_WINDOW_MIN || 0),
+          threshold_ms: staleThresholdMs,
+        });
+      }
       let modelProbabilityStale = null;
       if (!suppressionPrecheckSkipScoring) {
         modelProbabilityStale = estimateFairProbability_(impliedProbability, match.competition_tier, enrichedStatsBundle, reasonCounts, config);
@@ -909,6 +937,12 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         scored: !suppressionPrecheckSkipScoring,
         stats_confidence: resolvedStatsConfidence,
         suppression_precheck_skip_scoring: suppressionPrecheckSkipScoring,
+        timestamp_field: 'odds_updated_time',
+        reference_timestamp_field: 'now',
+        odds_updated_time_utc: event.odds_updated_time.toISOString(),
+        reference_timestamp_utc: new Date(nowMs).toISOString(),
+        stale_age_minutes: staleAgeMinutes,
+        threshold_minutes: Number(config.STALE_ODDS_WINDOW_MIN || 0),
       });
       return;
     }
@@ -1353,6 +1387,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     reason_counts: reasonCounts,
     sampled_decisions: sampledDecisions,
     signal_rows: rows,
+    stale_suppression_diagnostics: staleSuppressionDiagnostics,
     previous_summary: previousSignalDecisionSummary,
     config: config || {},
   });
@@ -1374,6 +1409,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const summaryReasonMetadata = {
     signal_decision_summary: JSON.stringify(signalDecisionSummary),
     signal_quality_metrics: JSON.stringify(signalQualityMetrics),
+    stale_suppression_diagnostics: JSON.stringify(staleSuppressionDiagnostics),
   };
   if (oddsEvents.length === 0) {
     summaryReasonMetadata.upstream_gate_reason = normalizedUpstreamGateReason;
@@ -1406,6 +1442,9 @@ function buildSignalDecisionRunSummary_(payload) {
   const reasonCounts = Object.assign({}, safe.reason_counts || {});
   const sampledDecisions = Array.isArray(safe.sampled_decisions) ? safe.sampled_decisions : [];
   const signalRows = Array.isArray(safe.signal_rows) ? safe.signal_rows : [];
+  const staleSuppressionDiagnostics = Array.isArray(safe.stale_suppression_diagnostics)
+    ? safe.stale_suppression_diagnostics
+    : [];
   const previousSummary = safe.previous_summary && typeof safe.previous_summary === 'object'
     ? safe.previous_summary
     : {};
@@ -1536,6 +1575,20 @@ function buildSignalDecisionRunSummary_(payload) {
   const sentCount = Number(safe.sent_count || 0);
   const scoredCount = Number(safe.scored_count || 0);
   const stakePolicySummary = summarizeSignalRowsStakePolicy_(signalRows, config);
+  const suppressionPolicy = {
+    stale_odds_skip: {
+      timestamp_field: 'odds_updated_time',
+      reference_timestamp_field: 'now',
+      freshness_threshold_minutes: Number(config.STALE_ODDS_WINDOW_MIN || 0),
+      timezone_normalization: 'Date epoch milliseconds (UTC absolute comparison); diagnostics include local+UTC strings',
+    },
+    too_close_to_start_skip: {
+      timestamp_field: 'commence_time',
+      reference_timestamp_field: 'now_plus_cutoff',
+      freshness_threshold_minutes: Number(config.MINUTES_BEFORE_START_CUTOFF || 0),
+      timezone_normalization: 'Date epoch milliseconds (UTC absolute comparison)',
+    },
+  };
 
   return {
     run_id: String(safe.run_id || ''),
@@ -1544,6 +1597,8 @@ function buildSignalDecisionRunSummary_(payload) {
     scored_count: scoredCount,
     sent_count: sentCount,
     suppression_counts: suppressionSummary,
+    suppression_policy: suppressionPolicy,
+    stale_suppression_diagnostics: staleSuppressionDiagnostics,
     sampled_top_suppressions: sampledSuppressionExamples,
     stake_policy_summary: stakePolicySummary,
     edge_quality: {
