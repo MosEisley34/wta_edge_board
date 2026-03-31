@@ -81,8 +81,15 @@ scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <baseline_
 scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <baseline_run_id> <candidate_run_id> <live_runtime_dir_or_files>
 
 # 4) Edge-quality gate comparison on same matched run pair.
-python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <baseline_run_id> --candidate-run-id <candidate_run_id>
+python3 scripts/evaluate_edge_quality.py ./exports_live \
+  --baseline-run-id <baseline_run_id> \
+  --candidate-run-id <candidate_run_id> \
+  --out-json ./artifacts/compare/<baseline_run_id>_vs_<candidate_run_id>.json
 ```
+
+Artifact query contract (required):
+- Use the resolved compare artifact path printed by `evaluate_edge_quality.py` (or your explicit `--out-json` path) for any downstream `jq`/`rg` inspection.
+- Do **not** inspect ephemeral `/tmp` compare outputs unless an incident runbook explicitly requires `/tmp` and records why.
 
 ### Stake-policy enabled compare lane (policy-on only)
 
@@ -365,8 +372,16 @@ bash -c '
 '
 
 # 5) Evaluate edge quality only after the same source lock/precheck has succeeded.
+EDGE_COMPARE_ARTIFACT="./artifacts/compare/<run_id_a>_vs_<run_id_b>.json"
 python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b> \
+  --out-json "$EDGE_COMPARE_ARTIFACT" \
   | tee "$RUN_REPORT_DIR/evaluate_edge_quality.report.log"
+
+[[ -s "$EDGE_COMPARE_ARTIFACT" ]] || {
+  echo "Error: missing edge compare artifact at $EDGE_COMPARE_ARTIFACT" >&2
+  echo "Hint: regenerate via: python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b> --out-json \"$EDGE_COMPARE_ARTIFACT\"" >&2
+  exit 1
+}
 
 # 6) Strict post-run evidence/report validation (copy/paste as-is).
 bash -c '
@@ -379,6 +394,7 @@ bash -c '
   test -s "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log"
   test -s "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log"
   test -s "'"$RUN_REPORT_DIR"'/evaluate_edge_quality.report.log"
+  test -s "'"$EDGE_COMPARE_ARTIFACT"'"
   test "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log" -nt "'"$RUN_START_MARKER"'"
   test "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log" -nt "'"$RUN_START_MARKER"'"
   test "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log" -nt "'"$RUN_START_MARKER"'"

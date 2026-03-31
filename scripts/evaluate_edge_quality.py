@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -2239,6 +2240,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baseline-run-id", default="", help="Baseline run_id (defaults to second-latest)")
     parser.add_argument("--candidate-run-id", default="", help="Candidate run_id (defaults to latest)")
     parser.add_argument(
+        "--out-json",
+        default="",
+        help=(
+            "Optional output path for compare report JSON artifact. "
+            "When omitted for compare mode, defaults to "
+            "./artifacts/compare/<baseline_run_id>_vs_<candidate_run_id>.json."
+        ),
+    )
+    parser.add_argument(
         "--auto-select-run-pair",
         action="store_true",
         help=(
@@ -2338,6 +2348,39 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Emit traceback details for CLI failures.",
     )
     return parser
+
+
+def _slugify_run_id(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    return cleaned.strip("._-") or "unknown"
+
+
+def _resolve_compare_out_path(baseline_run_id: str, candidate_run_id: str, out_json: str) -> Path:
+    if str(out_json or "").strip():
+        return Path(str(out_json).strip()).expanduser()
+    baseline_slug = _slugify_run_id(baseline_run_id)
+    candidate_slug = _slugify_run_id(candidate_run_id)
+    return Path("artifacts") / "compare" / f"{baseline_slug}_vs_{candidate_slug}.json"
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> Path:
+    target = path.expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=str(target.parent),
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(rendered)
+        handle.flush()
+        os.fsync(handle.fileno())
+        tmp_name = handle.name
+    os.replace(tmp_name, target)
+    return target.resolve()
 
 
 
@@ -2519,7 +2562,10 @@ def main() -> int:
             if "Expected exactly one runEdgeBoard summary row for run_id=" not in str(exc):
                 raise
             return _emit_strict_cardinality_failure(exc, debug=bool(args.debug))
+        compare_out_path = _resolve_compare_out_path(run_pair[0], run_pair[1], str(args.out_json or ""))
+        resolved_artifact = _write_json_atomic(compare_out_path, report)
         print(json.dumps(report, indent=2, sort_keys=True))
+        print(f"Compare report artifact: {resolved_artifact}", file=sys.stderr)
         return 1 if report["status"] != "pass" else 0
 
     if args.baseline_run_id or args.candidate_run_id:
@@ -2558,7 +2604,10 @@ def main() -> int:
             "include_cancelled": bool(args.include_cancelled),
         }
         report["selection_diagnostics"] = selection_diagnostics
+        compare_out_path = _resolve_compare_out_path(run_pair[0], run_pair[1], str(args.out_json or ""))
+        resolved_artifact = _write_json_atomic(compare_out_path, report)
         print(json.dumps(report, indent=2, sort_keys=True))
+        print(f"Compare report artifact: {resolved_artifact}", file=sys.stderr)
         return 1 if report["status"] != "pass" else 0
 
     report = evaluate_rolling_edge_quality(

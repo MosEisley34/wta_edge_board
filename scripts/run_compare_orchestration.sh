@@ -11,7 +11,7 @@ cd "$repo_root"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/run_compare_orchestration.sh [--out-dir <dir>] [--allow-csv-only-triage --incident-tag <TAG>] [--min-feature-completeness <float>] [--force-full-compare] <run_id_a> <run_id_b> <live_runtime_dir_or_files> [more paths...]
+  scripts/run_compare_orchestration.sh [--out-dir <dir>] [--allow-csv-only-triage --incident-tag <TAG>] [--min-feature-completeness <float>] [--edge-compare-out-json <path>] [--force-full-compare] <run_id_a> <run_id_b> <live_runtime_dir_or_files> [more paths...]
 
 Runs this orchestration sequence:
   1) scripts/export_parity_precheck.sh
@@ -27,6 +27,7 @@ USAGE
 }
 
 out_dir="./exports_live"
+edge_compare_out_json=""
 allow_csv_only_triage=0
 incident_tag=""
 min_feature_completeness="0.60"
@@ -41,6 +42,11 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --allow-csv-only-triage)
       allow_csv_only_triage=1
+      shift
+      ;;
+    --edge-compare-out-json)
+      shift
+      edge_compare_out_json="$1"
       shift
       ;;
     --incident-tag)
@@ -103,4 +109,24 @@ python3 scripts/check_feature_completeness_preflight.py "${feature_gate_args[@]}
 
 scripts/compare_run_diagnostics_preflight.sh "${preflight_args[@]}" "$run_a" "$run_b" "${runtime_inputs[@]}"
 scripts/compare_run_metrics_preflight.sh "${preflight_args[@]}" "$run_a" "$run_b" "${runtime_inputs[@]}"
-python3 scripts/evaluate_edge_quality.py "$out_dir" --baseline-run-id "$run_a" --candidate-run-id "$run_b"
+eval_args=("$out_dir" --baseline-run-id "$run_a" --candidate-run-id "$run_b")
+if [[ -n "$edge_compare_out_json" ]]; then
+  eval_args+=(--out-json "$edge_compare_out_json")
+fi
+python3 scripts/evaluate_edge_quality.py "${eval_args[@]}"
+
+resolved_compare_artifact="$edge_compare_out_json"
+if [[ -z "$resolved_compare_artifact" ]]; then
+  safe_run_a="$(printf '%s' "$run_a" | sed -E 's/[^A-Za-z0-9._-]+/_/g; s/^[._-]+//; s/[._-]+$//')"
+  safe_run_b="$(printf '%s' "$run_b" | sed -E 's/[^A-Za-z0-9._-]+/_/g; s/^[._-]+//; s/[._-]+$//')"
+  [[ -n "$safe_run_a" ]] || safe_run_a="unknown"
+  [[ -n "$safe_run_b" ]] || safe_run_b="unknown"
+  resolved_compare_artifact="./artifacts/compare/${safe_run_a}_vs_${safe_run_b}.json"
+fi
+
+if [[ ! -s "$resolved_compare_artifact" ]]; then
+  echo "Error: missing compare artifact at $resolved_compare_artifact." >&2
+  echo "Hint: regenerate with: python3 scripts/evaluate_edge_quality.py \"$out_dir\" --baseline-run-id \"$run_a\" --candidate-run-id \"$run_b\" --out-json \"$resolved_compare_artifact\"" >&2
+  exit 1
+fi
+echo "Edge-quality compare artifact ready: $resolved_compare_artifact"
