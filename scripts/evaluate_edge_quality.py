@@ -461,6 +461,8 @@ def _invalid_strict_pair_result(
             "enough_sample_for_volatility": False,
         },
         "suppression_drifts": {},
+        "suppression_drift_details": {},
+        "failure_diagnostics": {"suppression_drift": {"failing_reasons": {}}},
         "warnings": [f"strict_pair_precondition_failed reason_codes={','.join(reason_codes)}"],
         "high_visibility_warnings": [],
         "failures": [],
@@ -976,6 +978,112 @@ def _flatten_suppression_counts(signal_summary: dict[str, Any]) -> dict[str, int
     return counts
 
 
+def _normalize_event_ids(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    event_ids: list[str] = []
+    for item in value:
+        event_id = str(item or "").strip()
+        if event_id:
+            event_ids.append(event_id)
+    return sorted(set(event_ids))
+
+
+def _extract_suppression_reason_context(summary_row: dict[str, Any], signal_summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    context: dict[str, dict[str, Any]] = {}
+
+    def _merge_reason(reason: str, payload: dict[str, Any]) -> None:
+        reason_key = str(reason or "").strip()
+        if not reason_key or not isinstance(payload, dict):
+            return
+        entry = context.setdefault(reason_key, {})
+        for key in ("count", "raw_count", "minutes_to_start_snapshot", "odds_freshness_metadata"):
+            if payload.get(key) is not None:
+                entry[key] = payload.get(key)
+        if payload.get("event_ids") is not None:
+            merged_ids = _normalize_event_ids(entry.get("event_ids")) + _normalize_event_ids(payload.get("event_ids"))
+            entry["event_ids"] = sorted(set(merged_ids))
+
+    def _merge_container(payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        for reason, reason_payload in payload.items():
+            if isinstance(reason_payload, dict):
+                _merge_reason(str(reason), reason_payload)
+
+    if isinstance(signal_summary, dict):
+        _merge_container(signal_summary.get("suppression_reason_context"))
+        _merge_container(signal_summary.get("suppression_reasons_context"))
+
+    for stage in _extract_stage_summaries(summary_row):
+        if str(stage.get("stage") or "").strip() != "stageGenerateSignals":
+            continue
+        metadata = _parse_json_like(stage.get("reason_metadata"), {})
+        if not isinstance(metadata, dict):
+            continue
+        _merge_container(metadata.get("suppression_reason_context"))
+        _merge_container(metadata.get("suppression_reasons_context"))
+    return context
+
+
+def _build_suppression_drift_failure_diagnostics(
+    reason: str,
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    base = int(baseline["suppression_counts"].get(reason, 0) or 0)
+    cand = int(candidate["suppression_counts"].get(reason, 0) or 0)
+    denominator = max(base, 1)
+    numerator = abs(cand - base)
+    drift = numerator / float(denominator)
+
+    baseline_context = (baseline.get("suppression_reason_context") or {}).get(reason) or {}
+    candidate_context = (candidate.get("suppression_reason_context") or {}).get(reason) or {}
+    baseline_events = _normalize_event_ids(baseline_context.get("event_ids"))
+    candidate_events = _normalize_event_ids(candidate_context.get("event_ids"))
+
+    event_delta: dict[str, int] = {}
+    for event_id in baseline_events:
+        event_delta[event_id] = event_delta.get(event_id, 0) - 1
+    for event_id in candidate_events:
+        event_delta[event_id] = event_delta.get(event_id, 0) + 1
+
+    top_contributing_events = [
+        {"event_id": event_id, "delta": delta}
+        for event_id, delta in sorted(event_delta.items(), key=lambda item: (-abs(item[1]), item[0]))[:5]
+    ]
+
+    return {
+        "reason": reason,
+        "drift_fraction": {
+            "numerator": numerator,
+            "denominator": denominator,
+            "value": drift,
+            "formula": "abs(candidate_count - baseline_count) / max(baseline_count, 1)",
+        },
+        "raw_counts": {
+            "baseline": base,
+            "candidate": cand,
+            "delta": cand - base,
+        },
+        "event_ids": {
+            "baseline": baseline_events,
+            "candidate": candidate_events,
+        },
+        "minutes_to_start_snapshot": {
+            "baseline": baseline_context.get("minutes_to_start_snapshot"),
+            "candidate": candidate_context.get("minutes_to_start_snapshot"),
+        },
+        "odds_freshness_metadata": {
+            "baseline": baseline_context.get("odds_freshness_metadata"),
+            "candidate": candidate_context.get("odds_freshness_metadata"),
+        },
+        "top_contributing_events": top_contributing_events,
+    }
+
+
 def _edge_volatility(summary_row: dict[str, Any], signal_summary: dict[str, Any]) -> tuple[float | None, str | None]:
     for field in (
         "edge_volatility",
@@ -1253,6 +1361,7 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
         "scored_signals": _extract_scored_signals(summary, signal_summary),
         "matched_events": _extract_matched_events(summary),
         "suppression_counts": _flatten_suppression_counts(signal_summary),
+        "suppression_reason_context": _extract_suppression_reason_context(summary, signal_summary),
         "diagnostics": diagnostics,
         "context": {
             "tournament": _volatility_context_key(summary)[0],
@@ -1444,13 +1553,34 @@ def evaluate_edge_quality_gate(
 
     suppression_reasons = sorted(set(baseline["suppression_counts"].keys()) | set(candidate["suppression_counts"].keys()))
     suppression_drifts: dict[str, float] = {}
+    suppression_drift_details: dict[str, dict[str, Any]] = {}
+    failure_diagnostics = {
+        "suppression_drift": {
+            "failing_reasons": {},
+        }
+    }
     for reason in suppression_reasons:
         base = int(baseline["suppression_counts"].get(reason, 0))
         cand = int(candidate["suppression_counts"].get(reason, 0))
         denom = max(base, 1)
-        drift = abs(cand - base) / float(denom)
+        numerator = abs(cand - base)
+        drift = numerator / float(denom)
         suppression_drifts[reason] = drift
+        suppression_drift_details[reason] = {
+            "reason": reason,
+            "numerator": numerator,
+            "denominator": denom,
+            "baseline_count": base,
+            "candidate_count": cand,
+            "delta_count": cand - base,
+            "drift": drift,
+        }
         if max(base, cand) >= config.suppression_min_volume and drift > config.max_suppression_drift:
+            failure_diagnostics["suppression_drift"]["failing_reasons"][reason] = _build_suppression_drift_failure_diagnostics(
+                reason=reason,
+                baseline=baseline,
+                candidate=candidate,
+            )
             failures.append(
                 "suppression_drift_exceeded "
                 f"(reason={reason} baseline={base} candidate={cand} drift={drift:.4f} > bound={config.max_suppression_drift:.4f})"
@@ -1508,6 +1638,8 @@ def evaluate_edge_quality_gate(
             "enough_sample_for_volatility": enough_sample_for_volatility,
         },
         "suppression_drifts": suppression_drifts,
+        "suppression_drift_details": suppression_drift_details,
+        "failure_diagnostics": failure_diagnostics,
         "warnings": warnings,
         "high_visibility_warnings": high_visibility_warnings,
         "failures": failures,
