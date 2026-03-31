@@ -729,6 +729,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   );
   let processedCandidateCount = 0;
   let scoredCandidateCount = 0;
+  const pendingNotificationCandidates = [];
   const reasonCounts = {
     sent: 0,
     missing_match: 0,
@@ -741,6 +742,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     notify_disabled: 0,
     duplicate_suppressed: 0,
     cooldown_suppressed: 0,
+    opposite_side_conflict_suppressed: 0,
     edge_below_threshold: 0,
     too_close_to_start_skip: 0,
     stale_odds_skip: 0,
@@ -1023,41 +1025,134 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       return;
     }
 
-    const notifyDecision = maybeNotifySignal_(signalState, seenHashesThisRun, signalHash, nowMs, config.SIGNAL_COOLDOWN_MIN);
+    pendingNotificationCandidates.push({
+      event: event,
+      match: match,
+      signal_hash: signalHash,
+      model_version: modelVersion,
+      model_probability: modelProbability,
+      market_implied_probability: impliedProbability,
+      edge_value: edgeValue,
+      edge_tier: edgeTierAndStake.edge_tier,
+      stake_units: edgeTierAndStake.stake_units,
+      stake_policy_decision: stakePolicyDecision,
+      stats_confidence: resolvedStatsConfidence,
+      h2h_decision: lastH2hDecision,
+      enriched_stats_bundle: enrichedStatsBundle,
+    });
+    return;
+  });
+
+  const preferredH2hCandidateByGroup = {};
+  pendingNotificationCandidates.forEach(function (candidate, index) {
+    const event = candidate.event || {};
+    if (String(event.market || '').toLowerCase() !== 'h2h') return;
+    const groupKey = [runId, String(event.event_id || ''), 'h2h'].join('|');
+    const currentBestIndex = preferredH2hCandidateByGroup[groupKey];
+    if (currentBestIndex === undefined) {
+      preferredH2hCandidateByGroup[groupKey] = index;
+      return;
+    }
+    const currentBest = pendingNotificationCandidates[currentBestIndex];
+    const currentRank = [
+      Number(candidate.edge_value || 0),
+      Number(candidate.model_probability || 0),
+      String((candidate.event && candidate.event.outcome) || ''),
+      String((candidate.event && candidate.event.bookmaker) || ''),
+      String((candidate.signal_hash) || ''),
+    ];
+    const bestRank = [
+      Number(currentBest.edge_value || 0),
+      Number(currentBest.model_probability || 0),
+      String((currentBest.event && currentBest.event.outcome) || ''),
+      String((currentBest.event && currentBest.event.bookmaker) || ''),
+      String((currentBest.signal_hash) || ''),
+    ];
+    if (
+      currentRank[0] > bestRank[0]
+      || (currentRank[0] === bestRank[0] && currentRank[1] > bestRank[1])
+      || (currentRank[0] === bestRank[0] && currentRank[1] === bestRank[1] && currentRank[2] < bestRank[2])
+      || (currentRank[0] === bestRank[0] && currentRank[1] === bestRank[1] && currentRank[2] === bestRank[2] && currentRank[3] < bestRank[3])
+      || (currentRank[0] === bestRank[0] && currentRank[1] === bestRank[1] && currentRank[2] === bestRank[2] && currentRank[3] === bestRank[3] && currentRank[4] < bestRank[4])
+    ) {
+      preferredH2hCandidateByGroup[groupKey] = index;
+    }
+  });
+
+  pendingNotificationCandidates.forEach(function (candidate, index) {
+    const event = candidate.event;
+    const match = candidate.match;
+    const isH2h = String(event && event.market || '').toLowerCase() === 'h2h';
+    const groupKey = [runId, String(event && event.event_id || ''), 'h2h'].join('|');
+    const preferredIndex = preferredH2hCandidateByGroup[groupKey];
+    const isSuppressedByConflict = isH2h
+      && preferredIndex !== undefined
+      && preferredIndex !== index;
+
+    if (isSuppressedByConflict) {
+      const winningCandidate = pendingNotificationCandidates[preferredIndex] || {};
+      captureDecision_(event, match, 'opposite_side_conflict_suppressed', {
+        scored: true,
+        model_probability: candidate.model_probability,
+        market_implied_probability: candidate.market_implied_probability,
+        edge_value: candidate.edge_value,
+        edge_tier: candidate.edge_tier,
+        stake_units: candidate.stake_units,
+        stats_confidence: candidate.stats_confidence,
+        conflict_winner_side: String((winningCandidate.event && winningCandidate.event.outcome) || ''),
+        conflict_winner_edge_value: Number(winningCandidate.edge_value || 0),
+      });
+      rows.push(buildSignalRow_(runId, config, event, match, {
+        notification_outcome: 'opposite_side_conflict_suppressed',
+        model_probability: candidate.model_probability,
+        market_implied_probability: candidate.market_implied_probability,
+        edge_value: candidate.edge_value,
+        edge_tier: 'NONE',
+        stake_units: 0,
+        signal_hash: candidate.signal_hash,
+        model_version: candidate.model_version,
+        stats_confidence: candidate.stats_confidence,
+        signal_delivery_mode: 'h2h_conflict_suppressed',
+        stake_policy_decision: candidate.stake_policy_decision,
+      }));
+      return;
+    }
+
+    const notifyDecision = maybeNotifySignal_(signalState, seenHashesThisRun, candidate.signal_hash, nowMs, config.SIGNAL_COOLDOWN_MIN);
     let notifyOutcome = notifyDecision.outcome;
     let notifyDiagnostics = null;
 
     if (notifyDecision.outcome === 'sent' && fallbackOnlyMode) {
       notifyOutcome = 'fallback_only';
     } else if (notifyDecision.outcome === 'sent') {
-      const sendResult = sendSignalNotification_(config, runId, signalHash, {
+      const sendResult = sendSignalNotification_(config, runId, candidate.signal_hash, {
         side: event.outcome,
         market: event.market,
         bookmaker: event.bookmaker,
         competition_tier: match.competition_tier,
-        edge_tier: edgeTierAndStake.edge_tier,
-        edge_value: edgeValue,
-        stake_units: edgeTierAndStake.stake_units,
-        recommended_stake: stakePolicyDecision.final_stake,
-        recommended_stake_currency: stakePolicyDecision.account_currency,
-        model_probability: modelProbability,
-        market_implied_probability: impliedProbability,
+        edge_tier: candidate.edge_tier,
+        edge_value: candidate.edge_value,
+        stake_units: candidate.stake_units,
+        recommended_stake: candidate.stake_policy_decision.final_stake,
+        recommended_stake_currency: candidate.stake_policy_decision.account_currency,
+        model_probability: candidate.model_probability,
+        market_implied_probability: candidate.market_implied_probability,
         commence_time: event.commence_time,
         odds_event_id: event.event_id,
         rationale_context: {
-          edge_value: edgeValue,
-          model_probability: modelProbability,
-          market_implied_probability: impliedProbability,
-          stats_bundle: enrichedStatsBundle,
-          stats_confidence: resolvedStatsConfidence,
-          h2h_decision: lastH2hDecision,
+          edge_value: candidate.edge_value,
+          model_probability: candidate.model_probability,
+          market_implied_probability: candidate.market_implied_probability,
+          stats_bundle: candidate.enriched_stats_bundle,
+          stats_confidence: candidate.stats_confidence,
+          h2h_decision: candidate.h2h_decision,
         },
       });
       notifyOutcome = sendResult.outcome;
       const notifyLoggedAt = localAndUtcTimestamps_(new Date());
       notifyDiagnostics = {
         run_id: runId,
-        signal_hash: signalHash,
+        signal_hash: candidate.signal_hash,
         notification_outcome: notifyOutcome,
         logged_at: notifyLoggedAt.local,
         logged_at_utc: notifyLoggedAt.utc,
@@ -1070,7 +1165,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       };
 
       if (notifyOutcome === 'sent') {
-        signalState.sent_hashes[signalHash] = nowMs;
+        signalState.sent_hashes[candidate.signal_hash] = nowMs;
       }
 
       appendLogRow_({
@@ -1085,28 +1180,28 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
 
     captureDecision_(event, match, notifyOutcome, {
       scored: true,
-      model_probability: modelProbability,
-      market_implied_probability: impliedProbability,
-      edge_value: edgeValue,
-      edge_tier: edgeTierAndStake.edge_tier,
-      stake_units: edgeTierAndStake.stake_units,
-      stats_confidence: resolvedStatsConfidence,
-      stake_policy_decision: stakePolicyDecision,
+      model_probability: candidate.model_probability,
+      market_implied_probability: candidate.market_implied_probability,
+      edge_value: candidate.edge_value,
+      edge_tier: candidate.edge_tier,
+      stake_units: candidate.stake_units,
+      stats_confidence: candidate.stats_confidence,
+      stake_policy_decision: candidate.stake_policy_decision,
     });
 
     rows.push(buildSignalRow_(runId, config, event, match, {
       notification_outcome: notifyOutcome,
-      model_probability: modelProbability,
-      market_implied_probability: impliedProbability,
-      edge_value: edgeValue,
-      edge_tier: edgeTierAndStake.edge_tier,
-      stake_units: edgeTierAndStake.stake_units,
-      signal_hash: signalHash,
-      model_version: modelVersion,
+      model_probability: candidate.model_probability,
+      market_implied_probability: candidate.market_implied_probability,
+      edge_value: candidate.edge_value,
+      edge_tier: candidate.edge_tier,
+      stake_units: candidate.stake_units,
+      signal_hash: candidate.signal_hash,
+      model_version: candidate.model_version,
       notification_metadata: notifyDiagnostics,
-      stats_confidence: resolvedStatsConfidence,
+      stats_confidence: candidate.stats_confidence,
       signal_delivery_mode: fallbackOnlyMode ? 'fallback_only' : 'normal',
-      stake_policy_decision: stakePolicyDecision,
+      stake_policy_decision: candidate.stake_policy_decision,
     }));
   });
 
@@ -1317,6 +1412,7 @@ function buildSignalDecisionRunSummary_(payload) {
   const config = safe.config && typeof safe.config === 'object' ? safe.config : {};
   const suppressionReasonGroups = {
     cooldown: ['cooldown_suppressed'],
+    conflict: ['opposite_side_conflict_suppressed'],
     edge: ['edge_below_threshold'],
     stale: ['stale_odds_skip'],
     timing: ['too_close_to_start_skip'],
@@ -1460,6 +1556,7 @@ function buildSignalDecisionRunSummary_(payload) {
     alignment_checks: {
       sent_matches_reason_counts: sentCount === Number(reasonCounts.sent || 0),
       cooldown_matches_reason_counts: Number((suppressionSummary.cooldown && suppressionSummary.cooldown.by_reason && suppressionSummary.cooldown.by_reason.cooldown_suppressed) || 0) === Number(reasonCounts.cooldown_suppressed || 0),
+      conflict_matches_reason_counts: Number((suppressionSummary.conflict && suppressionSummary.conflict.by_reason && suppressionSummary.conflict.by_reason.opposite_side_conflict_suppressed) || 0) === Number(reasonCounts.opposite_side_conflict_suppressed || 0),
       edge_matches_reason_counts: Number((suppressionSummary.edge && suppressionSummary.edge.by_reason && suppressionSummary.edge.by_reason.edge_below_threshold) || 0) === Number(reasonCounts.edge_below_threshold || 0),
       stale_matches_reason_counts: Number((suppressionSummary.stale && suppressionSummary.stale.by_reason && suppressionSummary.stale.by_reason.stale_odds_skip) || 0) === Number(reasonCounts.stale_odds_skip || 0),
       timing_matches_reason_counts: Number((suppressionSummary.timing && suppressionSummary.timing.by_reason && suppressionSummary.timing.by_reason.too_close_to_start_skip) || 0) === Number(reasonCounts.too_close_to_start_skip || 0),

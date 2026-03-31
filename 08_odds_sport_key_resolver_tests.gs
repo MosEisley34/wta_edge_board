@@ -4012,6 +4012,132 @@ function testStageGenerateSignals_thresholdRejectionIncludedInDecisionDiagnostic
   }
 }
 
+function testStageGenerateSignals_h2hOppositeSideConflictSuppressesLowerPriorityCandidate_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const originalSendSignalNotification = sendSignalNotification_;
+  const originalMaybeNotifySignal = maybeNotifySignal_;
+  const originalAppendLogRow = appendLogRow_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+  const sentPayloads = [];
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return {
+      local: '2026-01-01T00:00:00-07:00',
+      utc: '2026-01-01T07:00:00.000Z',
+    };
+  };
+  sendSignalNotification_ = function (config, runId, signalHash, payload) {
+    sentPayloads.push({ run_id: runId, signal_hash: signalHash, payload: payload });
+    return {
+      outcome: 'sent',
+      http_status: 204,
+      response_body_preview: '',
+      test_mode: true,
+      transport: 'test_transport',
+    };
+  };
+  maybeNotifySignal_ = function () {
+    return { outcome: 'sent', diagnostics: {} };
+  };
+  appendLogRow_ = function () {};
+
+  try {
+    const events = [
+      {
+        event_id: 'evt_belinda_dayana',
+        market: 'h2h',
+        outcome: 'Belinda Bencic',
+        bookmaker: 'book_a',
+        price: 2.2,
+        commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+        odds_updated_time: new Date(nowMs),
+      },
+      {
+        event_id: 'evt_belinda_dayana',
+        market: 'h2h',
+        outcome: 'Dayana Yastremska',
+        bookmaker: 'book_a',
+        price: 2.2,
+        commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)),
+        odds_updated_time: new Date(nowMs),
+      },
+    ];
+    const matches = [
+      { odds_event_id: 'evt_belinda_dayana', schedule_event_id: 'sched_belinda_dayana', competition_tier: 'WTA_500' },
+    ];
+    const stats = {
+      evt_belinda_dayana: {
+        player_a: {
+          has_stats: true,
+          features: { ranking: 8, recent_form: 0.76, surface_win_rate: 0.67, hold_pct: 0.72, break_pct: 0.39 },
+        },
+        player_b: {
+          has_stats: true,
+          features: { ranking: 27, recent_form: 0.46, surface_win_rate: 0.49, hold_pct: 0.6, break_pct: 0.28 },
+        },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: true,
+      NOTIFY_TEST_MODE: true,
+      DISCORD_WEBHOOK: 'https://hooks.slack.com/services/mock',
+      ACCOUNT_CURRENCY: 'MXN',
+      MIN_STAKE_PER_CURRENCY_JSON: '{"MXN":20}',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_belinda_dayana_conflict', config, events, matches, stats);
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+    const decisionSummaryState = JSON.parse(stateWrites.LAST_SIGNAL_DECISION_SUMMARY || '{}');
+
+    assertEquals_(2, result.rows.length);
+    assertEquals_(1, Number(result.summary.reason_codes.sent || 0));
+    assertEquals_(1, Number(result.summary.reason_codes.opposite_side_conflict_suppressed || 0));
+    assertEquals_(1, sentPayloads.length);
+    assertEquals_('Belinda Bencic', sentPayloads[0].payload.side);
+    assertEquals_(1, Number((decisionState.reason_counts || {}).opposite_side_conflict_suppressed || 0));
+    assertEquals_(1, Number((((decisionSummaryState.suppression_counts || {}).conflict || {}).total || 0)));
+    assertEquals_(true, !!((decisionSummaryState.alignment_checks || {}).conflict_matches_reason_counts));
+
+    const suppressedRows = result.rows.filter(function (row) {
+      return row.notification_outcome === 'opposite_side_conflict_suppressed';
+    });
+    assertEquals_(1, suppressedRows.length);
+    assertEquals_('h2h_conflict_suppressed', suppressedRows[0].signal_delivery_mode || '');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+    sendSignalNotification_ = originalSendSignalNotification;
+    maybeNotifySignal_ = originalMaybeNotifySignal;
+    appendLogRow_ = originalAppendLogRow;
+  }
+}
+
 
 
 function testStageGenerateSignals_richPlayerStatsInfluenceEdgeAndTier_() {
