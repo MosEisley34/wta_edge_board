@@ -13,6 +13,7 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import precheck_run_ids  # noqa: E402
+from evaluate_edge_quality import EdgeQualityGateConfig, _snapshot  # noqa: E402
 
 
 class PrecheckRunIdsSourceContractTests(unittest.TestCase):
@@ -308,6 +309,63 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
             self.assertIn("compare_ready\": false", output)
             self.assertIn("reason_codes missing STATS_MISS_A", output)
             self.assertIn("reason_codes missing STATS_MISS_B", output)
+
+    def test_cross_tool_non_identical_duplicate_summaries_fail_precheck_and_compare_cardinality(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [
+                {"run_id": "run-a", "row_type": "summary", "stage": "runEdgeBoard", "ended_at": "2026-03-30T00:00:00Z"},
+                {"run_id": "run-a", "row_type": "summary", "stage": "runEdgeBoard", "ended_at": "2026-03-30T00:05:00Z"},
+                {"run_id": "run-b", "row_type": "summary", "stage": "runEdgeBoard", "ended_at": "2026-03-30T00:10:00Z"},
+            ]
+            (root / "Run_Log.json").write_text(json.dumps(rows), encoding="utf-8")
+
+            code, output = self._run_main(
+                ["precheck_run_ids.py", "run-a", "run-b", "--export-dir", str(root)]
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("compare_will_fail_due_to_duplicate_summary_rows=true", output)
+
+            with self.assertRaisesRegex(ValueError, "Expected exactly one runEdgeBoard summary row"):
+                _snapshot(rows=rows, run_id="run-a", config=EdgeQualityGateConfig())
+
+    def test_cross_tool_identical_duplicate_summaries_pass_precheck_and_compare_cardinality(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            duplicate = {
+                "run_id": "run-a",
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "ended_at": "2026-03-30T00:00:00Z",
+                "feature_completeness": 0.9,
+                "edge_volatility": 0.01,
+                "signal_decision_summary": "{}",
+                "stage_summaries": "[]",
+            }
+            rows = [
+                {**duplicate, "_source_kind": "csv"},
+                {**duplicate, "_source_kind": "json"},
+                {
+                    "run_id": "run-b",
+                    "row_type": "summary",
+                    "stage": "runEdgeBoard",
+                    "ended_at": "2026-03-30T00:10:00Z",
+                    "feature_completeness": 0.9,
+                    "edge_volatility": 0.01,
+                    "signal_decision_summary": "{}",
+                    "stage_summaries": "[]",
+                },
+            ]
+            (root / "Run_Log.json").write_text(json.dumps(rows), encoding="utf-8")
+
+            code, output = self._run_main(
+                ["precheck_run_ids.py", "run-a", "run-b", "--export-dir", str(root)]
+            )
+            self.assertEqual(code, 0, msg=output)
+            self.assertIn("Precheck passed", output)
+
+            snapshot = _snapshot(rows=rows, run_id="run-a", config=EdgeQualityGateConfig())
+            self.assertEqual("run-a", snapshot["run_id"])
 
 
 if __name__ == "__main__":

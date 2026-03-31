@@ -58,9 +58,29 @@ class PreflightGuardTests(unittest.TestCase):
             sidecar_path = write_preflight_sidecar(str(root), "run-a", "run-b", False, "")
             sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
             self.assertIn("run_checklist_by_run_id", sidecar["preflight_evidence"])
+            self.assertIn("duplicate_summary_diagnostics_by_run_id", sidecar["preflight_evidence"])
             self.assertTrue(sidecar["preflight_evidence"]["raw_tab_completeness"]["is_complete"])
             status = enforce_preflight_guard(str(root), "run-b", "run-a", "")
             self.assertEqual(status["status"], "ok")
+
+    def test_sidecar_includes_non_identical_duplicate_summary_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_manifest(root)
+            (root / "Run_Log.json").write_text(
+                json.dumps(
+                    [
+                        {"run_id": "run-a", "row_type": "summary", "stage": "runEdgeBoard", "ended_at": "2026-03-30T00:00:00Z"},
+                        {"run_id": "run-a", "row_type": "summary", "stage": "runEdgeBoard", "ended_at": "2026-03-30T00:01:00Z"},
+                        {"run_id": "run-b", "row_type": "summary", "stage": "runEdgeBoard", "ended_at": "2026-03-30T00:02:00Z"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            sidecar_path = write_preflight_sidecar(str(root), "run-a", "run-b", False, "")
+            sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+            duplicate_diag = sidecar["preflight_evidence"]["duplicate_summary_diagnostics_by_run_id"]["run-a"]
+            self.assertTrue(duplicate_diag["compare_will_fail_due_to_duplicate_summary_rows"])
 
     def test_emergency_override_requires_valid_incident_tag(self):
         with tempfile.TemporaryDirectory() as tmp:
