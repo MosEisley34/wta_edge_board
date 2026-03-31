@@ -39,6 +39,10 @@ class GoogleSheetIngestionExportE2ETests(unittest.TestCase):
                 {"stage": "stageGenerateSignals", "duration_ms": 10},
                 {"stage": "stagePersist", "duration_ms": 10},
             ],
+            "compare_prerequisites": {
+                "coverage": {"requested": 0, "resolved": 0, "unresolved": 0},
+                "reason_code_placeholders": {"STATS_MISS_A": 0, "STATS_MISS_B": 0},
+            },
             "gs_export_parity_contract": {
                 "contract_name": "run_log_export_parity_contract_v1",
                 "latest_run_ids": latest_run_ids,
@@ -69,12 +73,36 @@ class GoogleSheetIngestionExportE2ETests(unittest.TestCase):
         }
 
     def _write_runtime_csv_batch(self, source: Path) -> None:
+        (source / "Config.csv").write_text("key,value\nRUN_ENABLED,true\n", encoding="utf-8")
+        (source / "Raw_Odds.csv").write_text("event_id,odds\nmatch-1,-120\n", encoding="utf-8")
+        (source / "Raw_Schedule.csv").write_text(
+            "event_id,start_time\nmatch-1,2026-03-26T00:00:00Z\n",
+            encoding="utf-8",
+        )
+        (source / "Raw_Player_Stats.csv").write_text(
+            "player,metric,value\nPlayer A,serve_pct,0.62\n",
+            encoding="utf-8",
+        )
+        (source / "Match_Map.csv").write_text(
+            "source_event_id,canonical_event_id\nmatch-1,match-1\n",
+            encoding="utf-8",
+        )
+        (source / "Signals.csv").write_text(
+            "run_id,event_id,signal\nrun-a,match-1,bet\n",
+            encoding="utf-8",
+        )
+        (source / "ProviderHealth.csv").write_text(
+            "provider,status\nodds_api,ok\n",
+            encoding="utf-8",
+        )
+
         run_log_headers = [
             "row_type",
             "run_id",
             "stage",
             "started_at",
             "stage_summaries",
+            "reason_codes",
             "signal_decision_summary",
             "stake_mxn",
             "odds_american",
@@ -119,6 +147,7 @@ class GoogleSheetIngestionExportE2ETests(unittest.TestCase):
                 "stage": "runEdgeBoard",
                 "started_at": "2026-03-26T00:00:00Z",
                 "stage_summaries": self._stage_summaries_payload("run-a"),
+                "reason_codes": {"STATS_MISS_A": 0, "STATS_MISS_B": 0},
                 "signal_decision_summary": self._signal_summary_payload(),
             },
             {
@@ -157,6 +186,7 @@ class GoogleSheetIngestionExportE2ETests(unittest.TestCase):
                 "stage": "runEdgeBoard",
                 "started_at": "2026-03-26T00:00:00Z",
                 "stage_summaries": self._stage_summaries_payload("run-b"),
+                "reason_codes": {"STATS_MISS_A": 0, "STATS_MISS_B": 0},
                 "signal_decision_summary": self._signal_summary_payload(),
             },
             {
@@ -357,6 +387,43 @@ class GoogleSheetIngestionExportE2ETests(unittest.TestCase):
             self.assertEqual(0, diagnostics.returncode, msg=diagnostics.stderr)
             self.assertIn("## stake-policy stake_mode_used counts", diagnostics.stdout)
             self.assertIn("## stake-policy final_risk_mxn aggregates", diagnostics.stdout)
+
+    def test_precheck_auto_repairs_stale_source_json_tabs_before_staging_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "source"
+            export_dir = root / "exports"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            self._write_runtime_csv_batch(source_dir)
+
+            # Seed stale JSON tabs that do not match CSV row counts.
+            (source_dir / "Run_Log.json").write_text("[]\n", encoding="utf-8")
+            (source_dir / "State.json").write_text("[]\n", encoding="utf-8")
+
+            precheck = subprocess.run(
+                ["bash", str(PRECHECK_SCRIPT), "--out-dir", str(export_dir), "run-a", "run-b", str(source_dir)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, precheck.returncode, msg=precheck.stderr)
+
+            with (source_dir / "Run_Log.csv").open("r", encoding="utf-8", newline="") as handle:
+                source_run_log_csv_rows = list(csv.DictReader(handle))
+            with (source_dir / "State.csv").open("r", encoding="utf-8", newline="") as handle:
+                source_state_csv_rows = list(csv.DictReader(handle))
+            source_run_log_json_rows = json.loads((source_dir / "Run_Log.json").read_text(encoding="utf-8"))
+            source_state_json_rows = json.loads((source_dir / "State.json").read_text(encoding="utf-8"))
+
+            # Auto-mirror in source should repair stale JSON before staging/export.
+            self.assertEqual(len(source_run_log_csv_rows), len(source_run_log_json_rows))
+            self.assertEqual(len(source_state_csv_rows), len(source_state_json_rows))
+
+            exported_run_log_json_rows = json.loads((export_dir / "Run_Log.json").read_text(encoding="utf-8"))
+            exported_state_json_rows = json.loads((export_dir / "State.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(source_run_log_json_rows), len(exported_run_log_json_rows))
+            self.assertEqual(len(source_state_json_rows), len(exported_state_json_rows))
 
 
 if __name__ == "__main__":
