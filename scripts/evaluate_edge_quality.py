@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
+import hashlib
 import json
 import os
 import re
@@ -206,12 +207,81 @@ def _run_summary_selection_diagnostics(
             if str(row.get("_source_kind") or "").strip()
         }
     )
+    qualifying_row_diagnostics: list[dict[str, Any]] = []
+    for row in qualifying_rows:
+        row_diagnostic = {
+            "run_id": str(row.get("run_id") or ""),
+            "row_type": str(row.get("row_type") or ""),
+            "stage": str(row.get("stage") or ""),
+            "started_at": str(row.get("started_at") or ""),
+            "ended_at": str(row.get("ended_at") or ""),
+        }
+        merged_from_sources = row.get("merged_from_sources")
+        if isinstance(merged_from_sources, list) and merged_from_sources:
+            row_diagnostic["merged_from_sources"] = [str(item) for item in merged_from_sources]
+        qualifying_row_diagnostics.append(row_diagnostic)
     return {
         "qualifying_row_count": len(qualifying_rows),
         "stages_seen": stage_values,
         "source_files": source_files,
         "source_kinds": source_kinds,
+        "qualifying_rows": qualifying_row_diagnostics,
     }
+
+
+def _summary_identity_payload_hash(row: dict[str, Any]) -> str:
+    normalized_payload = {
+        key: value
+        for key, value in row.items()
+        if key
+        not in {
+            "_source_file",
+            "_source_kind",
+            "merged_from_sources",
+        }
+    }
+    encoded = json.dumps(normalized_payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _summary_identity_key(row: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    return (
+        str(row.get("run_id") or ""),
+        str(row.get("row_type") or ""),
+        str(row.get("stage") or ""),
+        str(row.get("started_at") or ""),
+        str(row.get("ended_at") or ""),
+        _summary_identity_payload_hash(row),
+    )
+
+
+def _dedupe_summary_rows_for_cardinality(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped_rows: list[dict[str, Any]] = []
+    summary_row_indexes_by_identity: dict[tuple[str, str, str, str, str, str], int] = {}
+
+    for row in rows:
+        if not _is_run_edgeboard_summary_row(row):
+            deduped_rows.append(row)
+            continue
+        identity_key = _summary_identity_key(row)
+        existing_index = summary_row_indexes_by_identity.get(identity_key)
+        if existing_index is None:
+            deduped_row = dict(row)
+            source_kind = str(row.get("_source_kind") or "unknown")
+            deduped_row["merged_from_sources"] = [source_kind]
+            deduped_rows.append(deduped_row)
+            summary_row_indexes_by_identity[identity_key] = len(deduped_rows) - 1
+            continue
+        existing_row = deduped_rows[existing_index]
+        merged_sources = existing_row.get("merged_from_sources")
+        if not isinstance(merged_sources, list):
+            merged_sources = []
+        source_kind = str(row.get("_source_kind") or "unknown")
+        if source_kind not in merged_sources:
+            merged_sources.append(source_kind)
+            merged_sources.sort()
+        existing_row["merged_from_sources"] = merged_sources
+    return deduped_rows
 
 
 def _pick_run_summary(rows: list[dict[str, Any]], run_id: str, strict_cardinality: bool = False) -> dict[str, Any]:
@@ -899,7 +969,8 @@ def _adaptive_volatility_ceiling(
 
 
 def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateConfig) -> dict[str, Any]:
-    summary = _pick_run_summary(rows, run_id, strict_cardinality=True)
+    deduped_rows = _dedupe_summary_rows_for_cardinality(rows)
+    summary = _pick_run_summary(deduped_rows, run_id, strict_cardinality=True)
     signal_summary = _extract_signal_summary(summary)
     feature_completeness, feature_diag = _extract_feature_completeness(summary)
     edge_volatility, edge_diag = _edge_volatility(summary, signal_summary)
