@@ -181,6 +181,50 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
             self.assertIn("compare_contract_missing", output)
             self.assertIn("missing candidate summary row", output)
 
+    def test_fails_fast_when_requested_run_ids_are_newer_than_export_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_csv(root / "Run_Log.csv", ["run-20260330-0000", "run-20260330-0100"])
+            self._write_json(root / "Run_Log.json", ["run-20260330-0000", "run-20260330-0100"])
+
+            code, output = self._run_main(
+                [
+                    "precheck_run_ids.py",
+                    "run-20260401-0000",
+                    "run-20260331-0000",
+                    "--export-dir",
+                    str(root),
+                ]
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("Precheck failed: stale_export_dir.", output)
+            self.assertIn("suggested_export_command", output)
+            self.assertIn(
+                f"scripts/export_parity_precheck.sh --out-dir {root} run-20260401-0000 run-20260331-0000 <fresh-runtime-export-path>",
+                output,
+            )
+
+    def test_fresh_export_status_does_not_trigger_stale_export_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_csv(root / "Run_Log.csv", ["run-20260330-0000", "run-20260330-0100"])
+            self._write_json(root / "Run_Log.json", ["run-20260330-0000", "run-20260330-0100"])
+
+            code, output = self._run_main(
+                [
+                    "precheck_run_ids.py",
+                    "run-20260330-0000",
+                    "run-20260330-0100",
+                    "--export-dir",
+                    str(root),
+                ]
+            )
+
+            self.assertEqual(code, 0)
+            self.assertIn('"reason_code": "fresh_export_dir"', output)
+            self.assertIn("Precheck passed", output)
+
     def test_gate_prereqs_accepts_compare_prereq_placeholders_from_summary_envelope(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

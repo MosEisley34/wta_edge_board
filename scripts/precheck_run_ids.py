@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
 
-from preflight_guard import validate_incident_tag
+from preflight_guard import evaluate_export_freshness, validate_incident_tag
 from run_summary_cardinality import (
     is_run_edgeboard_summary_row,
     merge_run_summary_rows_for_cardinality,
@@ -490,6 +490,21 @@ def main() -> int:
     print("Preflight evidence checklist (per run):")
     for run_id in targets:
         print(f"- {run_id}: {json.dumps(_run_checklist(merged_contracts[run_id]), sort_keys=True)}")
+
+    freshness = evaluate_export_freshness(args.export_dir, [args.run_id_a, args.run_id_b])
+    print(f"Export freshness status: {json.dumps(freshness, sort_keys=True)}")
+    if str(freshness.get("reason_code") or "") == "stale_export_dir":
+        print("Precheck failed: stale_export_dir.")
+        print(
+            "Requested run IDs are newer than the latest run_id timestamp available in the current export directory."
+        )
+        print(
+            f"Requested latest timestamp: {freshness.get('latest_requested_run_id_timestamp_utc')}; "
+            f"export latest timestamp: {freshness.get('max_export_run_id_timestamp_utc')}."
+        )
+        print(f"Suggested export command: {freshness.get('suggested_export_command')}")
+        print("Stop triage and re-export from the sheet before further analysis.")
+        return 2
 
     if missing:
         print("Precheck failed: one or more target run IDs are missing from merged JSON/CSV sources.")

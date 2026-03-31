@@ -35,6 +35,10 @@ REQUIRED_COMPARE_STAGES = (
     "stageGenerateSignals",
     "stagePersist",
 )
+RUN_ID_TIMESTAMP_PATTERNS = (
+    re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})[-_]?(\d{2})(\d{2})(\d{2})?(?!\d)"),
+    re.compile(r"(?<!\d)(20\d{2})-(\d{2})-(\d{2})[Tt_ -]?(\d{2}):?(\d{2})(?::?(\d{2}))?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?(?!\d)"),
+)
 
 
 def _utc_now_iso() -> str:
@@ -122,6 +126,105 @@ def _load_run_log_rows(export_dir: str) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         return []
     return [row for row in payload if isinstance(row, dict)]
+
+
+def parse_run_id_timestamp(run_id: str) -> datetime | None:
+    value = str(run_id or "").strip()
+    if not value:
+        return None
+    for pattern in RUN_ID_TIMESTAMP_PATTERNS:
+        match = pattern.search(value)
+        if not match:
+            continue
+        year, month, day, hour, minute, second = match.groups()
+        second = second or "00"
+        try:
+            return datetime(
+                int(year),
+                int(month),
+                int(day),
+                int(hour),
+                int(minute),
+                int(second),
+                tzinfo=timezone.utc,
+            )
+        except ValueError:
+            continue
+    return None
+
+
+def _collect_export_run_ids(export_dir: str) -> set[str]:
+    run_ids: set[str] = set()
+    run_log_json = Path(export_dir) / "Run_Log.json"
+    run_log_csv = Path(export_dir) / "Run_Log.csv"
+    if run_log_json.is_file():
+        with run_log_json.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        rows = payload if isinstance(payload, list) else []
+        for row in rows:
+            if isinstance(row, dict):
+                run_id = str(row.get("run_id") or "").strip()
+                if run_id:
+                    run_ids.add(run_id)
+    if run_log_csv.is_file():
+        with run_log_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                run_id = str(row.get("run_id") or "").strip()
+                if run_id:
+                    run_ids.add(run_id)
+    return run_ids
+
+
+def evaluate_export_freshness(export_dir: str, requested_run_ids: list[str]) -> dict[str, Any]:
+    requested = [str(run_id or "").strip() for run_id in requested_run_ids if str(run_id or "").strip()]
+    requested_ts = {
+        run_id: parse_run_id_timestamp(run_id)
+        for run_id in requested
+    }
+    requested_parsed = {run_id: ts for run_id, ts in requested_ts.items() if ts is not None}
+    export_run_ids = _collect_export_run_ids(export_dir)
+    export_parsed: dict[str, datetime] = {}
+    for run_id in export_run_ids:
+        parsed = parse_run_id_timestamp(run_id)
+        if parsed is not None:
+            export_parsed[run_id] = parsed
+
+    latest_export = None
+    if export_parsed:
+        latest_export = max(export_parsed.items(), key=lambda item: item[1])
+
+    latest_requested = None
+    if requested_parsed:
+        latest_requested = max(requested_parsed.items(), key=lambda item: item[1])
+
+    command = (
+        f"scripts/export_parity_precheck.sh --out-dir {os.path.normpath(export_dir)} "
+        f"{' '.join(requested)} <fresh-runtime-export-path>"
+    )
+    result: dict[str, Any] = {
+        "status": "ok",
+        "reason_code": "fresh_export_dir",
+        "requested_run_ids": requested,
+        "requested_run_id_timestamps_utc": {run_id: ts.isoformat() for run_id, ts in requested_parsed.items()},
+        "latest_requested_run_id": latest_requested[0] if latest_requested else "",
+        "latest_requested_run_id_timestamp_utc": latest_requested[1].isoformat() if latest_requested else "",
+        "max_export_run_id": latest_export[0] if latest_export else "",
+        "max_export_run_id_timestamp_utc": latest_export[1].isoformat() if latest_export else "",
+        "suggested_export_command": command,
+    }
+
+    if not requested_parsed:
+        result["status"] = "warning"
+        result["reason_code"] = "requested_run_id_timestamp_unparseable"
+        return result
+    if not latest_export:
+        result["status"] = "warning"
+        result["reason_code"] = "export_run_id_timestamp_unparseable"
+        return result
+    if latest_requested[1] > latest_export[1]:
+        result["status"] = "error"
+        result["reason_code"] = "stale_export_dir"
+    return result
 
 
 def _count_csv_rows(path: Path) -> int:
@@ -257,6 +360,7 @@ def write_preflight_sidecar(
     _, duplicate_diagnostics_by_run_id = merge_run_summary_rows_for_cardinality(run_rows)
     raw_tab_completeness = evaluate_raw_tab_completeness(export_dir)
     canonical_pair = _canonical_run_pair(run_a, run_b)
+    export_freshness = evaluate_export_freshness(export_dir, canonical_pair)
     sidecar = {
         "schema": "wta_edge_board.preflight.v1",
         "recorded_at_utc": _utc_now_iso(),
@@ -267,6 +371,7 @@ def write_preflight_sidecar(
         "incident_tag": str(incident_tag or "").strip(),
         "preflight_evidence": {
             "raw_tab_completeness": raw_tab_completeness,
+            "export_freshness": export_freshness,
             "run_checklist_by_run_id": {
                 run_id: _run_checklist(run_rows, run_id)
                 for run_id in canonical_pair
