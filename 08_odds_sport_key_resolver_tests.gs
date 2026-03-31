@@ -4372,6 +4372,8 @@ function testStageGenerateSignals_staleSuppressionDiagnosticsCaptureAgeThreshold
       MINUTES_BEFORE_START_CUTOFF: 60,
       STALE_ODDS_WINDOW_MIN: 60,
       STALE_ODDS_SUPPRESSION_DIAGNOSTIC_LIMIT: 2,
+      SUPPRESSION_CONCENTRATION_THRESHOLD_PCT: 60,
+      SUPPRESSION_FAMILY_EVENT_SAMPLE_LIMIT: 2,
       NOTIFY_ENABLED: false,
       NOTIFY_TEST_MODE: false,
       DISCORD_WEBHOOK: '',
@@ -4382,6 +4384,9 @@ function testStageGenerateSignals_staleSuppressionDiagnosticsCaptureAgeThreshold
     const decisionSummary = JSON.parse(stateWrites.LAST_SIGNAL_DECISION_SUMMARY || '{}');
     const staleDiagnostics = decisionSummary.stale_suppression_diagnostics || [];
     const stalePolicy = (decisionSummary.suppression_policy || {}).stale_odds_skip || {};
+    const familyDiagnostics = decisionSummary.suppression_family_diagnostics || {};
+    const trendDiagnostics = (decisionSummary.suppression_trends || {}).suppression_family_diagnostics || {};
+    const trendGovernance = ((decisionSummary.suppression_trends || {}).governance_rollup || {}).suppression_family_concentration_warning || {};
 
     assertEquals_(1, result.rows.length);
     assertEquals_('stale_odds_skip', result.rows[0].notification_outcome);
@@ -4392,6 +4397,14 @@ function testStageGenerateSignals_staleSuppressionDiagnosticsCaptureAgeThreshold
     assertEquals_(60, Number(staleDiagnostics[0].threshold_minutes || 0));
     assertEquals_('odds_updated_time', stalePolicy.timestamp_field || '');
     assertEquals_(60, Number(stalePolicy.freshness_threshold_minutes || 0));
+    assertEquals_(1, Number((familyDiagnostics.total_suppressions || 0)));
+    assertEquals_(100, Number((((familyDiagnostics.by_family || {}).stale || {}).share_pct || 0)));
+    assertEquals_('stale_odds_skip', String(((((familyDiagnostics.by_family || {}).stale || {}).top_reason || {}).reason_code) || ''));
+    assertEquals_('evt_stale_diag', String((((familyDiagnostics.by_family || {}).stale || {}).example_event_ids || [])[0] || ''));
+    assertEquals_(true, !!((familyDiagnostics.concentration_warning || {}).warning_needed));
+    assertEquals_(true, !!(trendGovernance.warning_needed));
+    assertEquals_('stale', String(trendGovernance.dominant_family || ''));
+    assertEquals_(100, Number((((trendDiagnostics.by_family || {}).stale || {}).share_pct || 0)));
   } finally {
     Date.now = originalDateNow;
     getSignalState_ = originalGetSignalState;

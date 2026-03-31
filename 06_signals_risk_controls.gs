@@ -1683,6 +1683,15 @@ function buildSignalDecisionRunSummary_(payload) {
       timezone_normalization: 'Date epoch milliseconds (UTC absolute comparison)',
     },
   };
+  const suppressionFamilyDiagnostics = buildSuppressionFamilyDiagnostics_(reasonCounts, sampledDecisions, config);
+  const governanceWarnings = [];
+  if (suppressionFamilyDiagnostics.concentration_warning && suppressionFamilyDiagnostics.concentration_warning.warning_needed) {
+    governanceWarnings.push({
+      warning_code: 'suppression_family_concentration_high',
+      severity: 'warning',
+      detail: suppressionFamilyDiagnostics.concentration_warning,
+    });
+  }
 
   return {
     run_id: String(safe.run_id || ''),
@@ -1691,6 +1700,7 @@ function buildSignalDecisionRunSummary_(payload) {
     scored_count: scoredCount,
     sent_count: sentCount,
     suppression_counts: suppressionSummary,
+    suppression_family_diagnostics: suppressionFamilyDiagnostics,
     suppression_policy: suppressionPolicy,
     stale_suppression_diagnostics: staleSuppressionDiagnostics,
     sampled_top_suppressions: sampledSuppressionExamples,
@@ -1712,6 +1722,7 @@ function buildSignalDecisionRunSummary_(payload) {
       config_matches_reason_counts: Number((suppressionSummary.config && suppressionSummary.config.total) || 0) === Number(reasonCounts.notify_disabled || 0) + Number(reasonCounts.notify_missing_config || 0),
       scored_not_less_than_sent: scoredCount >= sentCount,
     },
+    governance_warnings: governanceWarnings,
   };
 }
 
@@ -1791,17 +1802,119 @@ function buildSignalSuppressionTrendSummary_(payload) {
     const winnerSide = String(decision && decision.detail && decision.detail.conflict_winner_side || '');
     return [loserSide || 'unknown_loser', winnerSide || 'unknown_winner'].join(' -> ');
   }, 5);
+  const familyDiagnostics = buildSuppressionFamilyDiagnostics_(totals.reason_counts, allSampledSuppressed, config);
+  const governanceRollup = {
+    suppression_family_concentration_warning: familyDiagnostics.concentration_warning,
+  };
 
   return {
     run_window_size: windowSize,
     runs_analyzed: nextHistory.length,
     total_inputs_analyzed: totals.input_count,
     suppression_rates_by_reason: suppressionRatesByReason,
+    suppression_family_diagnostics: familyDiagnostics,
+    governance_rollup: governanceRollup,
     recurring_edge_cases: {
       tournaments: recurringTournaments,
       start_time_windows: recurringStartTimeWindows,
       side_conflicts: recurringSideConflicts,
     },
+  };
+}
+
+function buildSuppressionFamilyDiagnostics_(reasonCounts, sampledDecisions, config) {
+  const safeReasonCounts = Object.assign({}, reasonCounts || {});
+  const safeSampledDecisions = Array.isArray(sampledDecisions) ? sampledDecisions : [];
+  const safeConfig = config && typeof config === 'object' ? config : {};
+  const concentrationThresholdPct = Number(safeConfig.SUPPRESSION_CONCENTRATION_THRESHOLD_PCT || 60);
+  const exampleCap = Math.max(1, Number(safeConfig.SUPPRESSION_FAMILY_EVENT_SAMPLE_LIMIT || 3));
+  const familyReasonGroups = {
+    timing: ['too_close_to_start_skip'],
+    stale: ['stale_odds_skip'],
+    edge: ['edge_below_threshold'],
+    cooldown: ['cooldown_suppressed'],
+  };
+  const familyNames = Object.keys(familyReasonGroups);
+  const familyTotals = familyNames.reduce(function (acc, familyName) {
+    const reasons = familyReasonGroups[familyName];
+    acc[familyName] = reasons.reduce(function (sum, reasonCode) {
+      return sum + Number(safeReasonCounts[reasonCode] || 0);
+    }, 0);
+    return acc;
+  }, {});
+  const totalSuppressions = familyNames.reduce(function (sum, familyName) {
+    return sum + Number(familyTotals[familyName] || 0);
+  }, 0);
+
+  const byFamily = familyNames.reduce(function (acc, familyName) {
+    const reasons = familyReasonGroups[familyName];
+    const sortedReasons = reasons
+      .map(function (reasonCode) {
+        return { reason_code: reasonCode, count: Number(safeReasonCounts[reasonCode] || 0) };
+      })
+      .sort(function (a, b) {
+        if (b.count !== a.count) return b.count - a.count;
+        return a.reason_code < b.reason_code ? -1 : (a.reason_code > b.reason_code ? 1 : 0);
+      });
+    const topReason = sortedReasons.length && sortedReasons[0].count > 0
+      ? sortedReasons[0]
+      : { reason_code: '', count: 0 };
+    const exampleEventIds = [];
+    safeSampledDecisions.forEach(function (decision) {
+      if (exampleEventIds.length >= exampleCap) return;
+      const reasonCode = String(decision && decision.decision_reason_code || '');
+      if (reasons.indexOf(reasonCode) === -1) return;
+      const eventId = String(decision && decision.odds_event_id || '').trim();
+      if (!eventId || exampleEventIds.indexOf(eventId) >= 0) return;
+      exampleEventIds.push(eventId);
+    });
+    const familyTotal = Number(familyTotals[familyName] || 0);
+    acc[familyName] = {
+      total: familyTotal,
+      share_pct: totalSuppressions > 0 ? roundNumber_((familyTotal / totalSuppressions) * 100, 2) : 0,
+      top_reason: topReason,
+      example_event_ids: exampleEventIds,
+    };
+    return acc;
+  }, {});
+
+  const rankedFamilies = familyNames
+    .map(function (familyName) {
+      const familyEntry = byFamily[familyName] || {};
+      return {
+        family: familyName,
+        total: Number(familyEntry.total || 0),
+        share_pct: Number(familyEntry.share_pct || 0),
+      };
+    })
+    .sort(function (a, b) {
+      if (b.total !== a.total) return b.total - a.total;
+      return a.family < b.family ? -1 : (a.family > b.family ? 1 : 0);
+    });
+  const dominantFamily = rankedFamilies[0] || { family: '', total: 0, share_pct: 0 };
+  const warningNeeded = dominantFamily.total > 0
+    && Number.isFinite(concentrationThresholdPct)
+    && dominantFamily.share_pct > concentrationThresholdPct;
+  const concentrationWarning = {
+    warning_needed: warningNeeded,
+    threshold_pct: concentrationThresholdPct,
+    dominant_family: dominantFamily.family,
+    dominant_share_pct: dominantFamily.share_pct,
+    dominant_total: dominantFamily.total,
+    total_suppressions: totalSuppressions,
+    top_reason: dominantFamily.family && byFamily[dominantFamily.family]
+      ? byFamily[dominantFamily.family].top_reason
+      : { reason_code: '', count: 0 },
+    message: warningNeeded
+      ? 'single_suppression_family_exceeds_concentration_threshold'
+      : '',
+  };
+
+  return {
+    total_suppressions: totalSuppressions,
+    concentration_threshold_pct: concentrationThresholdPct,
+    by_family: byFamily,
+    concentration_warning: concentrationWarning,
   };
 }
 
