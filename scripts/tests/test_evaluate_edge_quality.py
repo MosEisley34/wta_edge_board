@@ -119,6 +119,55 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertIn('"source_files": ["Run_Log.csv", "Run_Log.json"]', str(ctx.exception))
         self.assertIn('"source_kinds": ["csv", "json"]', str(ctx.exception))
 
+    def test_snapshot_dedupes_identical_csv_json_summary_rows_for_cardinality(self):
+        duplicate_summary = self._summary_row("run-dup-same", "2026-03-10T00:00:00Z", edge_volatility=0.01)
+        rows = [
+            {
+                **duplicate_summary,
+                "_source_file": "Run_Log.csv",
+                "_source_kind": "csv",
+            },
+            {
+                **duplicate_summary,
+                "_source_file": "Run_Log.json",
+                "_source_kind": "json",
+            },
+        ]
+        summary = _snapshot(rows=rows, run_id="run-dup-same", config=EdgeQualityGateConfig())
+        self.assertEqual("run-dup-same", summary["run_id"])
+        self.assertEqual(0.9, summary["feature_completeness"])
+        self.assertEqual(0.01, summary["edge_volatility"])
+
+    def test_snapshot_diagnostics_include_merged_source_provenance(self):
+        duplicate_a = self._summary_row("run-dup-multi", "2026-03-10T00:00:00Z", edge_volatility=0.01)
+        duplicate_b = self._summary_row("run-dup-multi", "2026-03-10T00:05:00Z", edge_volatility=0.02)
+        rows = [
+            {
+                **duplicate_a,
+                "_source_file": "Run_Log.csv",
+                "_source_kind": "csv",
+            },
+            {
+                **duplicate_a,
+                "_source_file": "Run_Log.json",
+                "_source_kind": "json",
+            },
+            {
+                **duplicate_b,
+                "_source_file": "Run_Log.csv",
+                "_source_kind": "csv",
+            },
+            {
+                **duplicate_b,
+                "_source_file": "Run_Log.json",
+                "_source_kind": "json",
+            },
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            _snapshot(rows=rows, run_id="run-dup-multi", config=EdgeQualityGateConfig())
+        self.assertIn('"qualifying_row_count": 2', str(ctx.exception))
+        self.assertIn('"merged_from_sources": ["csv", "json"]', str(ctx.exception))
+
     def test_gate_omits_disabled_warning_when_stake_policy_enabled(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_pass.json"))
         report = evaluate_edge_quality_gate(
