@@ -2010,6 +2010,39 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+
+
+def _preflight_validate_run_ids(rows: list[dict[str, Any]], run_ids: list[str]) -> list[str]:
+    errors: list[str] = []
+    requested_ids: list[str] = []
+    seen: set[str] = set()
+    for item in run_ids:
+        run_id = str(item or "").strip()
+        if not run_id or run_id in seen:
+            continue
+        seen.add(run_id)
+        requested_ids.append(run_id)
+
+    if not requested_ids:
+        return errors
+
+    existing_run_ids = {str(row.get("run_id") or "").strip() for row in rows if str(row.get("run_id") or "").strip()}
+    for run_id in requested_ids:
+        if run_id not in existing_run_ids:
+            errors.append(f"run_id `{run_id}` not found in loaded Run_Log rows")
+            continue
+
+        has_summary = any(
+            str(row.get("run_id") or "").strip() == run_id and is_run_edgeboard_summary_row(row)
+            for row in rows
+        )
+        if not has_summary:
+            errors.append(
+                f"run_id `{run_id}` is present but missing required row_type=summary + stage=runEdgeBoard row"
+            )
+    return errors
+
+
 def _parse_window_thresholds(raw: str, field_name: str) -> dict[int, int]:
     parsed: dict[int, int] = {}
     if not str(raw or "").strip():
@@ -2101,6 +2134,13 @@ def main() -> int:
 
     if args.baseline_run_id and args.candidate_run_id:
         run_pair = [args.baseline_run_id, args.candidate_run_id]
+        preflight_errors = _preflight_validate_run_ids(rows, run_pair)
+        if preflight_errors:
+            parser.error(
+                "Run-ID preflight failed:\n"
+                + "\n".join(f"- {item}" for item in preflight_errors)
+                + "\nRemediation: run `precheck_run_ids.py --require-gate-prereqs` for the target run IDs before re-running evaluate_edge_quality.py."
+            )
         report = evaluate_edge_quality_compare_report(
             rows=rows,
             baseline_run_id=run_pair[0],
@@ -2122,6 +2162,13 @@ def main() -> int:
             include_cancelled=bool(args.include_cancelled),
             diagnostics_limit=max(1, int(args.selection_diagnostics_limit)),
         )
+        preflight_errors = _preflight_validate_run_ids(rows, run_pair)
+        if preflight_errors:
+            parser.error(
+                "Run-ID preflight failed:\n"
+                + "\n".join(f"- {item}" for item in preflight_errors)
+                + "\nRemediation: run `precheck_run_ids.py --require-gate-prereqs` for the target run IDs before re-running evaluate_edge_quality.py."
+            )
         report = evaluate_edge_quality_compare_report(
             rows=rows,
             baseline_run_id=run_pair[0],
