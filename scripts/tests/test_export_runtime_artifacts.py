@@ -17,10 +17,14 @@ class ExportRuntimeArtifactsTests(unittest.TestCase):
 
             run_log_csv = source / "Run_Log.csv"
             run_log_json = source / "Run_Log.json"
+            state_csv = source / "State.csv"
+            state_json = source / "State.json"
             sidecar_note = source / "run_log_latest_batch_note.json"
 
             run_log_csv.write_text("row_type,run_id\nsummary,run-1\n", encoding="utf-8")
             run_log_json.write_text('{"rows":[{"run_id":"run-1"}]}', encoding="utf-8")
+            state_csv.write_text("run_id,state_key,state_value\nrun-1,k,v\n", encoding="utf-8")
+            state_json.write_text('[{"run_id":"run-1","state_key":"k","state_value":"v"}]', encoding="utf-8")
             sidecar_note.write_text('{"note":"sidecar"}', encoding="utf-8")
 
             proc = subprocess.run(
@@ -57,7 +61,7 @@ class ExportRuntimeArtifactsTests(unittest.TestCase):
             )
 
             self.assertNotEqual(0, proc.returncode)
-            self.assertIn("could not find a directory snapshot", proc.stderr)
+            self.assertIn("no source snapshot directory contains all required files", proc.stderr)
 
 
 if __name__ == "__main__":

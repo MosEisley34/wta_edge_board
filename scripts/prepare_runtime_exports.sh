@@ -8,8 +8,9 @@ Usage:
 
 Repeatable pre-step before diagnostics scanning:
   1) Export Run_Log/State CSV/JSON artifacts into ./exports (default)
-  2) Enforce Run_Log CSV/JSON parity for latest batch before publish
-  3) Verify expected export files exist before running scan
+  2) Mirror canonical runtime CSV tabs to JSON and enforce CSV↔JSON row parity
+  3) Enforce Run_Log CSV/JSON parity for latest batch before publish
+  4) Verify expected export files exist before running scan
 
 Expected exported files (all must exist):
   - ./exports/Run_Log.csv
@@ -66,6 +67,7 @@ cleanup_staging_dir() {
 trap cleanup_staging_dir EXIT
 
 scripts/export_runtime_artifacts.sh --out-dir "$staging_dir" "${inputs[@]}"
+python3 scripts/mirror_all_runtime_tabs_to_json.py --export-dir "$staging_dir"
 python3 scripts/verify_run_log_parity.py --export-dir "$staging_dir"
 
 rm -rf "$out_dir"
@@ -77,6 +79,7 @@ required_files=(
   "$out_dir/Run_Log.json"
   "$out_dir/State.csv"
   "$out_dir/State.json"
+  "$out_dir/runtime_tab_json_mirror_summary.json"
 )
 missing_files=()
 for path in "${required_files[@]}"; do
@@ -113,6 +116,7 @@ manifest = {
         "*Run_Log*.json",
         "*State*.csv",
         "*State*.json",
+        "runtime_tab_json_mirror_summary.json",
     ],
     "files": [],
 }
