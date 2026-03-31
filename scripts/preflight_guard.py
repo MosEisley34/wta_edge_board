@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import csv
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,17 @@ INCIDENT_TAG_PATTERN = re.compile(r"^[A-Za-z]+-[0-9]{3,}$")
 PREFLIGHT_SIDECAR_NAME = "run_compare_preflight.json"
 MANIFEST_NAME = "runtime_export_manifest.json"
 REQUIRED_EXPORT_FILES = ("Run_Log.csv", "Run_Log.json", "State.csv", "State.json")
+CANONICAL_RUNTIME_TABS = (
+    "Config",
+    "Run_Log",
+    "Raw_Odds",
+    "Raw_Schedule",
+    "Raw_Player_Stats",
+    "Match_Map",
+    "Signals",
+    "State",
+    "ProviderHealth",
+)
 REQUIRED_COMPARE_STAGES = (
     "stageFetchOdds",
     "stageFetchSchedule",
@@ -111,6 +123,78 @@ def _load_run_log_rows(export_dir: str) -> list[dict[str, Any]]:
     return [row for row in payload if isinstance(row, dict)]
 
 
+def _count_csv_rows(path: Path) -> int:
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        return sum(1 for _ in csv.DictReader(handle))
+
+
+def _count_json_rows(path: Path) -> int:
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, list):
+        return -1
+    return len(payload)
+
+
+def evaluate_raw_tab_completeness(export_dir: str) -> dict[str, Any]:
+    export_path = Path(export_dir)
+    per_tab: dict[str, dict[str, Any]] = {}
+    missing_files: list[str] = []
+    mismatched_tabs: list[dict[str, Any]] = []
+    missing_tabs: list[str] = []
+
+    for tab in CANONICAL_RUNTIME_TABS:
+        csv_path = export_path / f"{tab}.csv"
+        json_path = export_path / f"{tab}.json"
+        csv_exists = csv_path.is_file()
+        json_exists = json_path.is_file()
+
+        if not csv_exists:
+            missing_files.append(str(csv_path))
+        if not json_exists:
+            missing_files.append(str(json_path))
+
+        csv_rows = _count_csv_rows(csv_path) if csv_exists else None
+        json_rows = _count_json_rows(json_path) if json_exists else None
+
+        status = "ok"
+        if not csv_exists or not json_exists:
+            status = "missing_file"
+            missing_tabs.append(tab)
+        elif csv_rows != json_rows:
+            status = "row_count_mismatch"
+            mismatch = {
+                "tab": tab,
+                "csv_path": str(csv_path),
+                "json_path": str(json_path),
+                "csv_rows": csv_rows,
+                "json_rows": json_rows,
+            }
+            mismatched_tabs.append(mismatch)
+
+        per_tab[tab] = {
+            "csv_path": str(csv_path),
+            "json_path": str(json_path),
+            "csv_exists": csv_exists,
+            "json_exists": json_exists,
+            "csv_rows": csv_rows,
+            "json_rows": json_rows,
+            "status": status,
+        }
+
+    is_complete = not missing_tabs and not mismatched_tabs
+    return {
+        "status": "ok" if is_complete else "error",
+        "is_complete": is_complete,
+        "canonical_tab_count": len(CANONICAL_RUNTIME_TABS),
+        "expected_file_count": len(CANONICAL_RUNTIME_TABS) * 2,
+        "missing_tabs": sorted(set(missing_tabs)),
+        "missing_files": sorted(set(missing_files)),
+        "mismatched_tabs": mismatched_tabs,
+        "per_tab": per_tab,
+    }
+
+
 def _run_checklist(rows: list[dict[str, Any]], run_id: str) -> dict[str, bool]:
     summary_row = next(
         (
@@ -169,6 +253,7 @@ def write_preflight_sidecar(
         raise ValueError(f"Invalid {MANIFEST_NAME}: missing generated_at_utc.")
 
     run_rows = _load_run_log_rows(export_dir)
+    raw_tab_completeness = evaluate_raw_tab_completeness(export_dir)
     sidecar = {
         "schema": "wta_edge_board.preflight.v1",
         "recorded_at_utc": _utc_now_iso(),
@@ -178,6 +263,7 @@ def write_preflight_sidecar(
         "allow_csv_only_triage": bool(allow_csv_only_triage),
         "incident_tag": str(incident_tag or "").strip(),
         "preflight_evidence": {
+            "raw_tab_completeness": raw_tab_completeness,
             "run_checklist_by_run_id": {
                 run_id: _run_checklist(run_rows, run_id)
                 for run_id in _canonical_run_pair(run_a, run_b)
@@ -237,6 +323,28 @@ def enforce_preflight_guard(
         raise ValueError(
             "Preflight guard failed: sidecar run pair does not match requested compare run IDs. "
             "Re-run scripts/export_parity_precheck.sh with the same run ID pair."
+        )
+
+    preflight_evidence = sidecar.get("preflight_evidence")
+    raw_tab_completeness = (
+        preflight_evidence.get("raw_tab_completeness")
+        if isinstance(preflight_evidence, dict)
+        else None
+    )
+    if not isinstance(raw_tab_completeness, dict) or not bool(raw_tab_completeness.get("is_complete")):
+        missing_tabs = []
+        mismatched_tabs: list[str] = []
+        if isinstance(raw_tab_completeness, dict):
+            missing_tabs = [str(tab) for tab in raw_tab_completeness.get("missing_tabs") or []]
+            mismatched_tabs = [
+                str(item.get("tab"))
+                for item in raw_tab_completeness.get("mismatched_tabs") or []
+                if isinstance(item, dict) and item.get("tab")
+            ]
+        raise ValueError(
+            "Preflight guard failed: raw runtime tab completeness check is not satisfied. "
+            f"missing_tabs={missing_tabs}, mismatched_tabs={mismatched_tabs}. "
+            "Re-run scripts/export_parity_precheck.sh to regenerate complete CSV/JSON tab exports."
         )
 
     return {"status": "ok", "sidecar_path": str(sidecar_path)}
