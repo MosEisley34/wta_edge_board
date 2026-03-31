@@ -9,6 +9,8 @@ import glob
 import json
 import os
 import re
+import sys
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from statistics import quantiles
@@ -2007,6 +2009,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional ISO-8601 timestamp for deterministic daily-SLO window boundaries.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Emit traceback details for CLI failures.",
+    )
     return parser
 
 
@@ -2062,6 +2069,40 @@ def _parse_window_thresholds(raw: str, field_name: str) -> dict[int, int]:
             raise ValueError(f"{field_name} value must be non-negative: `{token}`")
         parsed[day] = value
     return parsed
+
+
+def _emit_strict_cardinality_failure(exc: ValueError, *, debug: bool) -> int:
+    message = str(exc)
+    diagnostics: dict[str, Any] = {}
+    run_id = ""
+    match = re.search(
+        r"Expected exactly one runEdgeBoard summary row for run_id=(?P<run_id>[^;]+);\s*selection_diagnostics=(?P<diag>\{.*\})$",
+        message,
+    )
+    if match:
+        run_id = str(match.group("run_id") or "").strip()
+        diagnostics_raw = str(match.group("diag") or "").strip()
+        if diagnostics_raw:
+            try:
+                parsed_diagnostics = json.loads(diagnostics_raw)
+                if isinstance(parsed_diagnostics, dict):
+                    diagnostics = parsed_diagnostics
+            except json.JSONDecodeError:
+                diagnostics = {"raw_selection_diagnostics": diagnostics_raw}
+
+    qualifying_row_count = int(diagnostics.get("qualifying_row_count", -1))
+    classification = "contract_missing" if qualifying_row_count == 0 else "duplicate_summary_rows"
+    payload = {
+        "error_type": "run_summary_cardinality_mismatch",
+        "classification": classification,
+        "run_id": run_id,
+        "diagnostics": diagnostics,
+    }
+    print(classification, file=sys.stderr)
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+    if debug:
+        traceback.print_exc()
+    return 2
 
 
 def main() -> int:
@@ -2141,15 +2182,20 @@ def main() -> int:
                 + "\n".join(f"- {item}" for item in preflight_errors)
                 + "\nRemediation: run `precheck_run_ids.py --require-gate-prereqs` for the target run IDs before re-running evaluate_edge_quality.py."
             )
-        report = evaluate_edge_quality_compare_report(
-            rows=rows,
-            baseline_run_id=run_pair[0],
-            candidate_run_id=run_pair[1],
-            config=config,
-            ordered_run_ids=_rolling_run_ids(rows),
-            fallback_recent_run_window_radius=max(1, int(args.fallback_recent_run_window_radius)),
-            fallback_min_neighboring_pairs=max(1, int(args.fallback_min_neighboring_pairs)),
-        )
+        try:
+            report = evaluate_edge_quality_compare_report(
+                rows=rows,
+                baseline_run_id=run_pair[0],
+                candidate_run_id=run_pair[1],
+                config=config,
+                ordered_run_ids=_rolling_run_ids(rows),
+                fallback_recent_run_window_radius=max(1, int(args.fallback_recent_run_window_radius)),
+                fallback_min_neighboring_pairs=max(1, int(args.fallback_min_neighboring_pairs)),
+            )
+        except ValueError as exc:
+            if "Expected exactly one runEdgeBoard summary row for run_id=" not in str(exc):
+                raise
+            return _emit_strict_cardinality_failure(exc, debug=bool(args.debug))
         print(json.dumps(report, indent=2, sort_keys=True))
         return 1 if report["status"] != "pass" else 0
 
@@ -2169,15 +2215,20 @@ def main() -> int:
                 + "\n".join(f"- {item}" for item in preflight_errors)
                 + "\nRemediation: run `precheck_run_ids.py --require-gate-prereqs` for the target run IDs before re-running evaluate_edge_quality.py."
             )
-        report = evaluate_edge_quality_compare_report(
-            rows=rows,
-            baseline_run_id=run_pair[0],
-            candidate_run_id=run_pair[1],
-            config=config,
-            ordered_run_ids=_rolling_run_ids(rows),
-            fallback_recent_run_window_radius=max(1, int(args.fallback_recent_run_window_radius)),
-            fallback_min_neighboring_pairs=max(1, int(args.fallback_min_neighboring_pairs)),
-        )
+        try:
+            report = evaluate_edge_quality_compare_report(
+                rows=rows,
+                baseline_run_id=run_pair[0],
+                candidate_run_id=run_pair[1],
+                config=config,
+                ordered_run_ids=_rolling_run_ids(rows),
+                fallback_recent_run_window_radius=max(1, int(args.fallback_recent_run_window_radius)),
+                fallback_min_neighboring_pairs=max(1, int(args.fallback_min_neighboring_pairs)),
+            )
+        except ValueError as exc:
+            if "Expected exactly one runEdgeBoard summary row for run_id=" not in str(exc):
+                raise
+            return _emit_strict_cardinality_failure(exc, debug=bool(args.debug))
         report["selected_run_pair"] = {
             "baseline_run_id": run_pair[0],
             "candidate_run_id": run_pair[1],
