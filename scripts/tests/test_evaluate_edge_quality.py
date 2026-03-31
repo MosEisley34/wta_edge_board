@@ -213,6 +213,67 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual("fail", payload["status"])
 
+
+    def test_cli_preflight_fails_when_run_id_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "Run_Log.json"
+            fixture.write_text(
+                json.dumps(
+                    [
+                        self._summary_row("run-baseline", "2026-03-01T00:00:00Z", edge_volatility=0.01),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            cmd = [
+                "python3",
+                str(ROOT / "scripts" / "evaluate_edge_quality.py"),
+                str(fixture),
+                "--baseline-run-id",
+                "run-baseline",
+                "--candidate-run-id",
+                "run-missing",
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(2, proc.returncode)
+        self.assertIn("Run-ID preflight failed", proc.stderr)
+        self.assertIn("run_id `run-missing` not found", proc.stderr)
+        self.assertIn("precheck_run_ids.py --require-gate-prereqs", proc.stderr)
+
+    def test_cli_preflight_fails_when_run_summary_row_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "Run_Log.json"
+            fixture.write_text(
+                json.dumps(
+                    [
+                        self._summary_row("run-baseline", "2026-03-01T00:00:00Z", edge_volatility=0.01),
+                        {
+                            "row_type": "trace",
+                            "stage": "stageGenerateSignals",
+                            "run_id": "run-candidate",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            cmd = [
+                "python3",
+                str(ROOT / "scripts" / "evaluate_edge_quality.py"),
+                str(fixture),
+                "--baseline-run-id",
+                "run-baseline",
+                "--candidate-run-id",
+                "run-candidate",
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(2, proc.returncode)
+        self.assertIn("Run-ID preflight failed", proc.stderr)
+        self.assertIn(
+            "run_id `run-candidate` is present but missing required row_type=summary + stage=runEdgeBoard row",
+            proc.stderr,
+        )
+        self.assertIn("precheck_run_ids.py --require-gate-prereqs", proc.stderr)
+
     def test_autoselect_run_pair_skips_cancelled_runs_by_default(self):
         rows = load_run_log_rows(
             str(ROOT / "scripts" / "fixtures" / "edge_quality_pair_autoselect_cancelled.json")
