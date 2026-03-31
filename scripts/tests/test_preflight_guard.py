@@ -59,9 +59,39 @@ class PreflightGuardTests(unittest.TestCase):
             sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
             self.assertIn("run_checklist_by_run_id", sidecar["preflight_evidence"])
             self.assertIn("duplicate_summary_diagnostics_by_run_id", sidecar["preflight_evidence"])
+            self.assertIn("export_freshness", sidecar["preflight_evidence"])
             self.assertTrue(sidecar["preflight_evidence"]["raw_tab_completeness"]["is_complete"])
             status = enforce_preflight_guard(str(root), "run-b", "run-a", "")
             self.assertEqual(status["status"], "ok")
+
+    def test_sidecar_export_freshness_marks_fresh_export_dir_for_parseable_run_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_manifest(root)
+            (root / "Run_Log.csv").write_text(
+                "run_id,stage,row_type\nrun-20260330-0000,stageFetchOdds,\nrun-20260330-0100,runEdgeBoard,summary\n",
+                encoding="utf-8",
+            )
+            (root / "Run_Log.json").write_text(
+                json.dumps(
+                    [
+                        {"run_id": "run-20260330-0000", "stage": "stageFetchOdds"},
+                        {"run_id": "run-20260330-0100", "row_type": "summary", "stage": "runEdgeBoard", "stage_summaries": []},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            sidecar_path = write_preflight_sidecar(
+                str(root),
+                "run-20260330-0000",
+                "run-20260330-0100",
+                False,
+                "",
+            )
+            sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+            freshness = sidecar["preflight_evidence"]["export_freshness"]
+            self.assertEqual("fresh_export_dir", freshness["reason_code"])
 
     def test_sidecar_includes_non_identical_duplicate_summary_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
