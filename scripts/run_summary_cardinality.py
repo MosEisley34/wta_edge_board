@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections import defaultdict
 from typing import Any
 
@@ -16,24 +14,13 @@ def is_run_edgeboard_summary_row(row: dict[str, Any]) -> bool:
     )
 
 
-def _summary_identity_payload_hash(row: dict[str, Any]) -> str:
-    normalized_payload = {
-        key: value
-        for key, value in row.items()
-        if key not in {"_source_file", "_source_kind", "merged_from_sources"}
-    }
-    encoded = json.dumps(normalized_payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _summary_identity_key(row: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+def _summary_identity_key(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
     return (
         str(row.get("run_id") or ""),
         str(row.get("row_type") or ""),
         str(row.get("stage") or ""),
         str(row.get("started_at") or ""),
         str(row.get("ended_at") or ""),
-        _summary_identity_payload_hash(row),
     )
 
 
@@ -41,8 +28,8 @@ def merge_run_summary_rows_for_cardinality(
     rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     deduped_rows: list[dict[str, Any]] = []
-    summary_row_indexes_by_identity: dict[tuple[str, str, str, str, str, str], int] = {}
-    summary_identity_counts_by_run_id: dict[str, dict[tuple[str, str, str, str, str, str], int]] = defaultdict(dict)
+    summary_row_indexes_by_identity: dict[tuple[str, str, str, str, str], int] = {}
+    summary_identity_counts_by_run_id: dict[str, dict[tuple[str, str, str, str, str], int]] = defaultdict(dict)
     summary_raw_count_by_run_id: dict[str, int] = defaultdict(int)
 
     for row in rows:
