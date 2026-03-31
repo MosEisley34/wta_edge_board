@@ -282,20 +282,30 @@ def _empty_contract() -> dict[str, object]:
 
 def _run_checklist(contract: dict[str, object]) -> dict[str, bool]:
     observed_stages = set(contract["stages"])
+    coverage_prereq = contract["coverage_prereq"]
     checklist: dict[str, bool] = {
+        "has_allowed_reason_codes": len(contract["disallowed_reasons"]) == 0,
         "has_runEdgeBoard_summary": bool(contract["run_summary_exists"]),
         "has_stageFetchPlayerStats_summary": bool(contract["stage_fetch_player_stats_summary_exists"]),
+        "has_coverage_prereqs": all(bool(coverage_prereq.get(key)) for key in REQUIRED_COVERAGE_KEYS),
+        "has_reason_code_placeholders": bool(
+            contract["reason_codes_has_stats_miss_a"] and contract["reason_codes_has_stats_miss_b"]
+        ),
     }
     for stage in REQUIRED_STAGE_CHAIN:
         checklist[f"has_{stage}"] = stage in observed_stages
     checklist["has_required_stages"] = all(checklist[f"has_{stage}"] for stage in REQUIRED_STAGE_CHAIN)
-    checklist["compare_ready"] = all(
+    checklist["compare_contract_pass"] = all(
         (
+            checklist["has_allowed_reason_codes"],
             checklist["has_runEdgeBoard_summary"],
             checklist["has_stageFetchPlayerStats_summary"],
             checklist["has_required_stages"],
+            checklist["has_coverage_prereqs"],
+            checklist["has_reason_code_placeholders"],
         )
     )
+    checklist["compare_ready"] = checklist["compare_contract_pass"]
     return checklist
 
 
@@ -523,11 +533,11 @@ def main() -> int:
 
     contract_failures: list[str] = []
     for run_id in targets:
+        run_checklist = _run_checklist(merged_contracts[run_id])
         disallowed = sorted(merged_contracts[run_id]["disallowed_reasons"])
-        if disallowed:
+        if not run_checklist["has_allowed_reason_codes"] and disallowed:
             contract_failures.append(f"{run_id}: disallowed reason_code(s) {', '.join(disallowed)}")
         if args.require_gate_prereqs:
-            run_checklist = _run_checklist(merged_contracts[run_id])
             if not run_checklist["has_runEdgeBoard_summary"]:
                 contract_failures.append(
                     f"{run_id}: missing runEdgeBoard summary row (row_type=summary, stage=runEdgeBoard)"
@@ -542,22 +552,23 @@ def main() -> int:
                 contract_failures.append(
                     f"{run_id}: missing stageFetchPlayerStats summary in stage_summaries"
                 )
-            missing_coverage = [
-                key
-                for key, present in merged_contracts[run_id]["coverage_prereq"].items()
-                if not present
-            ]
-            if missing_coverage:
+            if not run_checklist["has_coverage_prereqs"]:
+                missing_coverage = [
+                    key
+                    for key, present in merged_contracts[run_id]["coverage_prereq"].items()
+                    if not present
+                ]
                 contract_failures.append(
                     f"{run_id}: missing coverage metadata field group(s) for gate ({', '.join(missing_coverage)})"
                 )
-            if not merged_contracts[run_id]["reason_codes_has_stats_miss_a"]:
-                contract_failures.append(f"{run_id}: reason_codes missing STATS_MISS_A")
-            if not merged_contracts[run_id]["reason_codes_has_stats_miss_b"]:
-                contract_failures.append(f"{run_id}: reason_codes missing STATS_MISS_B")
+            if not run_checklist["has_reason_code_placeholders"]:
+                if not merged_contracts[run_id]["reason_codes_has_stats_miss_a"]:
+                    contract_failures.append(f"{run_id}: reason_codes missing STATS_MISS_A")
+                if not merged_contracts[run_id]["reason_codes_has_stats_miss_b"]:
+                    contract_failures.append(f"{run_id}: reason_codes missing STATS_MISS_B")
             if not run_checklist["compare_ready"]:
                 contract_failures.append(
-                    f"{run_id}: compare readiness checklist failed (see preflight evidence checklist)"
+                    f"{run_id}: compare contract checklist failed (compare_ready=false; see preflight evidence checklist)"
                 )
 
     if contract_failures:
@@ -589,7 +600,7 @@ def main() -> int:
         )
         return 2
 
-    print("Precheck passed: both target run IDs are present in merged Run_Log JSON/CSV data.")
+    print("Precheck passed: both target run IDs are present and compare contract checks are satisfied.")
     return 0
 
 

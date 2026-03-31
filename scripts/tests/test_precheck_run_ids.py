@@ -243,6 +243,72 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("Precheck passed", output)
 
+    def test_gate_prereqs_fails_when_placeholders_missing_even_with_stages_and_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = [
+                {
+                    "run_id": "run-a",
+                    "row_type": "summary",
+                    "stage": "runEdgeBoard",
+                    "reason_codes": {},
+                    "stage_summaries": {
+                        "schema_id": "reason_code_aliases.v1",
+                        "stage_summaries": [{"stage": stage} for stage in (
+                            "stageFetchOdds",
+                            "stageFetchSchedule",
+                            "stageMatchEvents",
+                            "stageFetchPlayerStats",
+                            "stageGenerateSignals",
+                            "stagePersist",
+                        )],
+                        "compare_prerequisites": {
+                            "coverage": {"requested": 0, "resolved": 0, "unresolved": 0},
+                            "reason_code_placeholders": {},
+                        },
+                    },
+                },
+                {
+                    "run_id": "run-b",
+                    "row_type": "summary",
+                    "stage": "runEdgeBoard",
+                    "reason_codes": {},
+                    "stage_summaries": {
+                        "schema_id": "reason_code_aliases.v1",
+                        "stage_summaries": [{"stage": stage} for stage in (
+                            "stageFetchOdds",
+                            "stageFetchSchedule",
+                            "stageMatchEvents",
+                            "stageFetchPlayerStats",
+                            "stageGenerateSignals",
+                            "stagePersist",
+                        )],
+                        "compare_prerequisites": {
+                            "coverage": {"requested": 0, "resolved": 0, "unresolved": 0},
+                            "reason_code_placeholders": {},
+                        },
+                    },
+                },
+            ]
+            (root / "Run_Log.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            code, output = self._run_main(
+                [
+                    "precheck_run_ids.py",
+                    "run-a",
+                    "run-b",
+                    "--export-dir",
+                    str(root),
+                    "--require-gate-prereqs",
+                ]
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("compare_contract_missing", output)
+            self.assertIn("compare_ready\": false", output)
+            self.assertIn("reason_codes missing STATS_MISS_A", output)
+            self.assertIn("reason_codes missing STATS_MISS_B", output)
+
 
 if __name__ == "__main__":
     unittest.main()
