@@ -1475,6 +1475,67 @@ def _sample_volume_review(rows: list[dict[str, Any]], config: EdgeQualityGateCon
     }
 
 
+def _sample_confidence(
+    *,
+    sample_known: bool,
+    scored_signals: int | None,
+    matched_events: int | None,
+    min_scored: int,
+    min_matched: int,
+) -> float | None:
+    if not sample_known:
+        return None
+    scored_floor = max(1, int(min_scored))
+    matched_floor = max(1, int(min_matched))
+    scored_ratio = max(0.0, float(int(scored_signals or 0)) / float(scored_floor))
+    matched_ratio = max(0.0, float(int(matched_events or 0)) / float(matched_floor))
+    return min(1.0, min(scored_ratio, matched_ratio))
+
+
+def _top_volatility_contributors(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    contributions: list[dict[str, Any]] = []
+    baseline_counts = baseline.get("suppression_counts") or {}
+    candidate_counts = candidate.get("suppression_counts") or {}
+    for key in sorted(set(baseline_counts.keys()) | set(candidate_counts.keys())):
+        baseline_value = int(baseline_counts.get(key, 0) or 0)
+        candidate_value = int(candidate_counts.get(key, 0) or 0)
+        delta = candidate_value - baseline_value
+        if delta == 0:
+            continue
+        contributions.append(
+            {
+                "kind": "suppression_reason",
+                "key": key,
+                "baseline": baseline_value,
+                "candidate": candidate_value,
+                "delta": delta,
+                "abs_delta": abs(delta),
+            }
+        )
+
+    for segment in ("tournament", "time_block"):
+        base_segment = str((baseline.get("context") or {}).get(segment) or "")
+        cand_segment = str((candidate.get("context") or {}).get(segment) or "")
+        if base_segment != cand_segment:
+            contributions.append(
+                {
+                    "kind": "context_segment",
+                    "key": segment,
+                    "baseline": base_segment,
+                    "candidate": cand_segment,
+                    "delta": None,
+                    "abs_delta": 1,
+                }
+            )
+
+    contributions.sort(key=lambda item: (-int(item.get("abs_delta", 0) or 0), str(item.get("key") or "")))
+    return contributions[: max(1, int(limit))]
+
+
 def evaluate_edge_quality_gate(
     rows: list[dict[str, Any]],
     baseline_run_id: str,
@@ -1547,6 +1608,18 @@ def evaluate_edge_quality_gate(
                 min_scored_signals_for_volatility=config.min_scored_signals_for_volatility,
                 min_matched_events_for_volatility=config.min_matched_events_for_volatility,
             )
+    confidence = _sample_confidence(
+        sample_known=bool(effective_sample["known"]),
+        scored_signals=effective_sample["scored_signals"],
+        matched_events=effective_sample["matched_events"],
+        min_scored=int(config.min_scored_signals_for_volatility),
+        min_matched=int(config.min_matched_events_for_volatility),
+    )
+    confidence_threshold = 1.0
+    confidence_adequate = confidence is None or confidence >= confidence_threshold
+    volatility_gate_phase = "strict_gate"
+    if confidence is not None and not confidence_adequate:
+        volatility_gate_phase = "pre_gate_insufficient_sample"
     adaptive_ceiling_info = _adaptive_volatility_ceiling(
         rows=rows,
         baseline_summary=_pick_run_summary(rows, baseline_run_id),
@@ -1567,6 +1640,36 @@ def evaluate_edge_quality_gate(
             f"(window_runs={config.volatility_sample_window_runs}; runs={','.join(effective_sample['run_ids'])})"
         )
 
+    volatility_gate_diagnostic = {
+        "phase": volatility_gate_phase,
+        "pre_gate": {
+            "sample_confidence": confidence,
+            "confidence_threshold": confidence_threshold,
+            "insufficient_sample": bool(not confidence_adequate) if confidence is not None else False,
+        },
+        "strict_gate": {
+            "enforced": bool(confidence_adequate),
+            "hard_fail_applied": False,
+        },
+        "comparison": {
+            "observed_volatility": candidate_edge_volatility,
+            "threshold_used": effective_volatility_ceiling,
+            "pair_count": 1,
+            "decision_count": 1 if confidence_adequate else 0,
+            "sample_preconditions": {
+                "known": bool(effective_sample["known"]),
+                "strategy": sample_strategy,
+                "reason_code": sample_reason_code,
+                "scored_signals": effective_sample["scored_signals"],
+                "matched_events": effective_sample["matched_events"],
+                "min_scored_signals_for_volatility": int(config.min_scored_signals_for_volatility),
+                "min_matched_events_for_volatility": int(config.min_matched_events_for_volatility),
+                "enough_sample_for_volatility": bool(enough_sample_for_volatility),
+            },
+        },
+        "top_contributors": _top_volatility_contributors(baseline=baseline, candidate=candidate),
+    }
+
     if candidate_edge_volatility is None:
         diag = candidate["diagnostics"].get("edge_volatility_reason_code", "missing_field_edge_volatility")
         failures.append(f"missing_edge_volatility_metric reason_code={diag}")
@@ -1577,7 +1680,14 @@ def evaluate_edge_quality_gate(
             f"matched_events={effective_sample['matched_events']} required>={config.min_matched_events_for_volatility}; "
             f"strategy={sample_strategy}; reason_code={sample_reason_code})"
         )
+    elif not confidence_adequate:
+        warnings.append(
+            "insufficient_sample_for_edge_volatility "
+            f"(confidence={confidence:.3f} threshold>={confidence_threshold:.3f}; "
+            f"strategy={sample_strategy}; reason_code=insufficient_sample_confidence)"
+        )
     elif candidate_edge_volatility > effective_volatility_ceiling:
+        volatility_gate_diagnostic["strict_gate"]["hard_fail_applied"] = True
         failures.append(
             "edge_volatility_above_ceiling "
             f"(candidate={candidate_edge_volatility:.4f} > ceiling={effective_volatility_ceiling:.4f})"
@@ -1671,7 +1781,11 @@ def evaluate_edge_quality_gate(
             "run_ids": effective_sample["run_ids"],
             "enough_sample_for_volatility": enough_sample_for_volatility,
             "reason_code": sample_reason_code,
+            "confidence": confidence,
+            "confidence_threshold": confidence_threshold,
+            "confidence_adequate": confidence_adequate,
         },
+        "volatility_diagnostic": volatility_gate_diagnostic,
         "suppression_drifts": suppression_drifts,
         "suppression_drift_details": suppression_drift_details,
         "failure_diagnostics": failure_diagnostics,
@@ -2173,6 +2287,7 @@ def evaluate_daily_edge_quality_slo(
                         "candidate_run_id": candidate.get("run_id"),
                         "status": report.get("status"),
                         "reasons": reasons,
+                        "volatility_diagnostic": report.get("volatility_diagnostic"),
                         "baseline_activity": {
                             "scored_signals": baseline_scored,
                             "matched_events": baseline_matched,
