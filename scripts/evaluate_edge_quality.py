@@ -459,6 +459,7 @@ def _invalid_strict_pair_result(
             "matched_events": candidate.get("matched_events"),
             "run_ids": [candidate.get("run_id")],
             "enough_sample_for_volatility": False,
+            "reason_code": "strict_pair_precondition_failed",
         },
         "suppression_drifts": {},
         "suppression_drift_details": {},
@@ -1202,6 +1203,29 @@ def _extract_matched_events(summary_row: dict[str, Any]) -> int | None:
     return None
 
 
+def _resolve_sample_assessment_reason(
+    *,
+    sample_known: bool,
+    scored_signals: int | None,
+    matched_events: int | None,
+    min_scored_signals_for_volatility: int,
+    min_matched_events_for_volatility: int,
+) -> tuple[bool, str]:
+    if not sample_known:
+        return True, "sample_counts_unknown"
+    scored_value = max(0, int(scored_signals or 0))
+    matched_value = max(0, int(matched_events or 0))
+    effective_scored_floor = max(1, int(min_scored_signals_for_volatility))
+    effective_matched_floor = max(0, int(min_matched_events_for_volatility))
+    if scored_value == 0:
+        return False, "no_scored_signals"
+    if scored_value < effective_scored_floor:
+        return False, "insufficient_scored_signals"
+    if matched_value < effective_matched_floor:
+        return False, "insufficient_matched_events"
+    return True, "sufficient_sample"
+
+
 def _context_value(summary_row: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = summary_row.get(key)
@@ -1492,8 +1516,6 @@ def evaluate_edge_quality_gate(
     scored_signals = candidate.get("scored_signals")
     matched_events = candidate.get("matched_events")
     sample_known = scored_signals is not None and matched_events is not None
-    sufficient_scored = (scored_signals or 0) >= config.min_scored_signals_for_volatility
-    sufficient_matched = (matched_events or 0) >= config.min_matched_events_for_volatility
     sample_strategy = "candidate_only"
     effective_sample = {
         "known": sample_known,
@@ -1501,7 +1523,13 @@ def evaluate_edge_quality_gate(
         "matched_events": matched_events,
         "run_ids": [candidate_run_id],
     }
-    enough_sample_for_volatility = (not sample_known) or (sufficient_scored and sufficient_matched)
+    enough_sample_for_volatility, sample_reason_code = _resolve_sample_assessment_reason(
+        sample_known=sample_known,
+        scored_signals=scored_signals,
+        matched_events=matched_events,
+        min_scored_signals_for_volatility=config.min_scored_signals_for_volatility,
+        min_matched_events_for_volatility=config.min_matched_events_for_volatility,
+    )
     if (not enough_sample_for_volatility) and int(config.volatility_sample_window_runs) > 1:
         candidate_window = _window_sample_activity(
             rows=rows,
@@ -1512,9 +1540,13 @@ def evaluate_edge_quality_gate(
         if candidate_window["known"]:
             effective_sample = candidate_window
             sample_strategy = "candidate_window_aggregate"
-            sufficient_scored = int(candidate_window["scored_signals"]) >= config.min_scored_signals_for_volatility
-            sufficient_matched = int(candidate_window["matched_events"]) >= config.min_matched_events_for_volatility
-            enough_sample_for_volatility = sufficient_scored and sufficient_matched
+            enough_sample_for_volatility, sample_reason_code = _resolve_sample_assessment_reason(
+                sample_known=bool(candidate_window["known"]),
+                scored_signals=candidate_window["scored_signals"],
+                matched_events=candidate_window["matched_events"],
+                min_scored_signals_for_volatility=config.min_scored_signals_for_volatility,
+                min_matched_events_for_volatility=config.min_matched_events_for_volatility,
+            )
     adaptive_ceiling_info = _adaptive_volatility_ceiling(
         rows=rows,
         baseline_summary=_pick_run_summary(rows, baseline_run_id),
@@ -1543,7 +1575,7 @@ def evaluate_edge_quality_gate(
             "insufficient_sample_for_edge_volatility "
             f"(scored_signals={effective_sample['scored_signals']} required>={config.min_scored_signals_for_volatility}; "
             f"matched_events={effective_sample['matched_events']} required>={config.min_matched_events_for_volatility}; "
-            f"strategy={sample_strategy})"
+            f"strategy={sample_strategy}; reason_code={sample_reason_code})"
         )
     elif candidate_edge_volatility > effective_volatility_ceiling:
         failures.append(
@@ -1559,32 +1591,34 @@ def evaluate_edge_quality_gate(
             "failing_reasons": {},
         }
     }
-    for reason in suppression_reasons:
-        base = int(baseline["suppression_counts"].get(reason, 0))
-        cand = int(candidate["suppression_counts"].get(reason, 0))
-        denom = max(base, 1)
-        numerator = abs(cand - base)
-        drift = numerator / float(denom)
-        suppression_drifts[reason] = drift
-        suppression_drift_details[reason] = {
-            "reason": reason,
-            "numerator": numerator,
-            "denominator": denom,
-            "baseline_count": base,
-            "candidate_count": cand,
-            "delta_count": cand - base,
-            "drift": drift,
-        }
-        if max(base, cand) >= config.suppression_min_volume and drift > config.max_suppression_drift:
-            failure_diagnostics["suppression_drift"]["failing_reasons"][reason] = _build_suppression_drift_failure_diagnostics(
-                reason=reason,
-                baseline=baseline,
-                candidate=candidate,
-            )
-            failures.append(
-                "suppression_drift_exceeded "
-                f"(reason={reason} baseline={base} candidate={cand} drift={drift:.4f} > bound={config.max_suppression_drift:.4f})"
-            )
+    can_evaluate_drift = (not effective_sample["known"]) or enough_sample_for_volatility
+    if can_evaluate_drift:
+        for reason in suppression_reasons:
+            base = int(baseline["suppression_counts"].get(reason, 0))
+            cand = int(candidate["suppression_counts"].get(reason, 0))
+            denom = max(base, 1)
+            numerator = abs(cand - base)
+            drift = numerator / float(denom)
+            suppression_drifts[reason] = drift
+            suppression_drift_details[reason] = {
+                "reason": reason,
+                "numerator": numerator,
+                "denominator": denom,
+                "baseline_count": base,
+                "candidate_count": cand,
+                "delta_count": cand - base,
+                "drift": drift,
+            }
+            if max(base, cand) >= config.suppression_min_volume and drift > config.max_suppression_drift:
+                failure_diagnostics["suppression_drift"]["failing_reasons"][reason] = _build_suppression_drift_failure_diagnostics(
+                    reason=reason,
+                    baseline=baseline,
+                    candidate=candidate,
+                )
+                failures.append(
+                    "suppression_drift_exceeded "
+                    f"(reason={reason} baseline={base} candidate={cand} drift={drift:.4f} > bound={config.max_suppression_drift:.4f})"
+                )
 
     has_insufficient_sample_warning = any(item.startswith("insufficient_sample_for_edge_volatility") for item in warnings)
     has_schema_failure = any(item.startswith("missing_feature_completeness_metric") for item in failures) or any(
@@ -1636,6 +1670,7 @@ def evaluate_edge_quality_gate(
             "matched_events": effective_sample["matched_events"],
             "run_ids": effective_sample["run_ids"],
             "enough_sample_for_volatility": enough_sample_for_volatility,
+            "reason_code": sample_reason_code,
         },
         "suppression_drifts": suppression_drifts,
         "suppression_drift_details": suppression_drift_details,
@@ -1837,8 +1872,10 @@ def evaluate_edge_quality_compare_report(
         )
 
     strict_status = str(pair_level_result.get("status") or "unknown")
+    strict_status_reason = str((pair_level_result.get("sample_assessment") or {}).get("reason_code") or strict_status)
     windowed_status = "not_triggered"
     if fallback_result is not None:
+        fallback_result["triggered_by_reason"] = strict_status_reason
         if bool(fallback_result.get("available")):
             windowed_status = str(fallback_result.get("decision_support_status") or "insufficient_sample")
         else:
@@ -1957,6 +1994,7 @@ def evaluate_edge_quality_compare_report(
         "windowed_fallback_result": fallback_result,
         "final_operator_summary": {
             "strict_pair_status": strict_status,
+            "strict_pair_status_reason": strict_status_reason,
             "windowed_decision_status": windowed_status,
             "strict_pair_sample_assessment": (pair_level_result.get("sample_assessment") or {}),
             "fallback_effective_sample_counts": (

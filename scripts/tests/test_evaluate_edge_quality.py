@@ -995,6 +995,85 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("candidate_window_aggregate", report["sample_assessment"]["strategy"])
         self.assertTrue(any("aggregated_sample_used_for_edge_volatility" in item for item in report["warnings"]))
 
+    def test_candidate_only_marks_zero_scored_signals_as_non_decisive(self):
+        rows = [
+            self._summary_row(
+                "run-1",
+                "2026-03-01T00:00:00Z",
+                edge_volatility=0.01,
+                scored_signals=12,
+                matched_events=8,
+                suppression_counts={"edge_below_threshold": 1},
+            ),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=0,
+                matched_events=8,
+                suppression_counts={"edge_below_threshold": 50},
+            ),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=0,
+                min_matched_events_for_volatility=5,
+                max_suppression_drift=0.1,
+                suppression_min_volume=1,
+                volatility_sample_window_runs=1,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        self.assertEqual("insufficient_sample", report["status"])
+        self.assertEqual("no_scored_signals", report["sample_assessment"]["reason_code"])
+        self.assertEqual({}, report["suppression_drifts"])
+        self.assertFalse(any(item.startswith("suppression_drift_exceeded") for item in report["failures"]))
+        self.assertTrue(any("reason_code=no_scored_signals" in item for item in report["warnings"]))
+
+    def test_candidate_only_marks_low_matched_events_as_non_decisive(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=12, matched_events=4),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                volatility_sample_window_runs=1,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        self.assertEqual("insufficient_sample", report["status"])
+        self.assertEqual("insufficient_matched_events", report["sample_assessment"]["reason_code"])
+
+    def test_candidate_only_accepts_scored_signals_at_threshold(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=10, matched_events=5),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=10, matched_events=5),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                volatility_sample_window_runs=1,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertEqual("sufficient_sample", report["sample_assessment"]["reason_code"])
+
     def test_compare_report_triggers_windowed_fallback_when_pair_is_insufficient_sample(self):
         rows = [
             self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
@@ -1020,9 +1099,11 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertIsNotNone(report["windowed_fallback_result"])
         self.assertEqual("fallback_window_assessment", report["windowed_fallback_result"]["label"])
         self.assertEqual("insufficient_sample", report["windowed_fallback_result"]["triggered_by_status"])
+        self.assertEqual("insufficient_scored_signals", report["windowed_fallback_result"]["triggered_by_reason"])
         self.assertEqual(3, report["windowed_fallback_result"]["pair_count"])
         self.assertEqual("pass", report["windowed_fallback_result"]["decision_support_status"])
         self.assertEqual("insufficient_sample", report["final_operator_summary"]["strict_pair_status"])
+        self.assertEqual("insufficient_scored_signals", report["final_operator_summary"]["strict_pair_status_reason"])
         self.assertEqual("pass", report["final_operator_summary"]["windowed_decision_status"])
         self.assertEqual("windowed_fallback_result", report["final_operator_summary"]["decision_authoritative_source"])
         self.assertEqual("pass", report["final_operator_summary"]["decision_authoritative_status"])
