@@ -199,6 +199,66 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertTrue(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
         self.assertTrue(any("suppression_drift_exceeded" in item for item in report["failures"]))
 
+    def test_dynamic_volatility_policy_passes_moderate_volatility_with_adequate_sample(self):
+        rows = [
+            {
+                **self._summary_row("run-baseline", "2026-03-01T00:00:00Z", edge_volatility=0.020, scored_signals=30, matched_events=15),
+                "tournament": "wta-miami",
+                "time_block": "2026-03-01T12",
+            },
+            {
+                **self._summary_row("run-candidate", "2026-03-01T01:00:00Z", edge_volatility=0.026, scored_signals=30, matched_events=15),
+                "tournament": "wta-miami",
+                "time_block": "2026-03-01T12",
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(max_edge_volatility=0.03, volatility_context_min_pairs=99),
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertLess(report["effective_volatility_ceiling"]["ceiling_after_dynamic_scale"], 0.03)
+
+    def test_dynamic_volatility_policy_fails_true_spike(self):
+        rows = [
+            {
+                **self._summary_row("run-baseline", "2026-03-02T00:00:00Z", edge_volatility=0.015, scored_signals=10, matched_events=5),
+                "tournament": "wta-miami",
+                "time_block": "2026-03-02T12",
+            },
+            {
+                **self._summary_row("run-candidate", "2026-03-02T01:00:00Z", edge_volatility=0.060, scored_signals=10, matched_events=5),
+                "tournament": "wta-miami",
+                "time_block": "2026-03-02T12",
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(max_edge_volatility=0.03, volatility_context_min_pairs=99),
+        )
+        self.assertEqual("fail", report["status"])
+        self.assertTrue(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
+
+    def test_dynamic_volatility_policy_is_stable_across_back_to_back_normal_drift(self):
+        rows = [
+            {**self._summary_row("run-1", "2026-03-03T00:00:00Z", edge_volatility=0.019, scored_signals=20, matched_events=10), "time_block": "2026-03-03T12"},
+            {**self._summary_row("run-2", "2026-03-03T01:00:00Z", edge_volatility=0.021, scored_signals=21, matched_events=11), "time_block": "2026-03-03T12"},
+            {**self._summary_row("run-3", "2026-03-03T02:00:00Z", edge_volatility=0.022, scored_signals=19, matched_events=10), "time_block": "2026-03-03T12"},
+        ]
+        first = evaluate_edge_quality_gate(rows, "run-1", "run-2", EdgeQualityGateConfig(max_edge_volatility=0.03))
+        second = evaluate_edge_quality_gate(rows, "run-2", "run-3", EdgeQualityGateConfig(max_edge_volatility=0.03))
+        self.assertEqual("pass", first["status"])
+        self.assertEqual("pass", second["status"])
+        self.assertAlmostEqual(
+            first["effective_volatility_ceiling"]["ceiling_after_dynamic_scale"],
+            second["effective_volatility_ceiling"]["ceiling_after_dynamic_scale"],
+            places=2,
+        )
+
     def test_candidate_with_hits_and_none_no_hit_reason_does_not_emit_dominant_no_hit_reason(self):
         rows = [
             {
