@@ -707,6 +707,51 @@ function resolveFeatureWithFallback_(features, preferredKey, fallbackKey) {
   return Number.isFinite(fallback) ? fallback : 0;
 }
 
+function resolveStartCutoffMinutes_(event, statsConfidence, config) {
+  const baseCutoffMinutes = Math.max(0, Number(config && config.MINUTES_BEFORE_START_CUTOFF || 0));
+  const eventMarket = String(event && event.market || '').toLowerCase();
+  const h2hRelaxedCutoffMinutes = Math.max(0, Number(config && config.MINUTES_BEFORE_START_CUTOFF_H2H || baseCutoffMinutes));
+  const minimumStatsConfidenceForRelaxation = Number(config && config.MIN_START_CUTOFF_RELAXED_STATS_CONFIDENCE || 0);
+  const resolvedStatsConfidence = Number(statsConfidence);
+  const confidenceEligible = Number.isFinite(resolvedStatsConfidence) && resolvedStatsConfidence >= minimumStatsConfidenceForRelaxation;
+  const h2hEligible = eventMarket === 'h2h' && confidenceEligible;
+  return {
+    base_cutoff_minutes: baseCutoffMinutes,
+    applied_cutoff_minutes: h2hEligible ? Math.min(baseCutoffMinutes, h2hRelaxedCutoffMinutes) : baseCutoffMinutes,
+    h2h_relaxed_cutoff_minutes: h2hRelaxedCutoffMinutes,
+    minimum_stats_confidence_for_relaxation: minimumStatsConfidenceForRelaxation,
+    relaxation_applied: h2hEligible && h2hRelaxedCutoffMinutes < baseCutoffMinutes,
+  };
+}
+
+function compareSignalCandidatePriority_(candidate, currentBest) {
+  const candidateRank = [
+    Number(candidate && candidate.edge_value || 0),
+    Number(candidate && candidate.model_probability || 0),
+    String((candidate && candidate.event && candidate.event.outcome) || ''),
+    String((candidate && candidate.event && candidate.event.bookmaker) || ''),
+    String((candidate && candidate.signal_hash) || ''),
+  ];
+  const bestRank = [
+    Number(currentBest && currentBest.edge_value || 0),
+    Number(currentBest && currentBest.model_probability || 0),
+    String((currentBest && currentBest.event && currentBest.event.outcome) || ''),
+    String((currentBest && currentBest.event && currentBest.event.bookmaker) || ''),
+    String((currentBest && currentBest.signal_hash) || ''),
+  ];
+  if (candidateRank[0] > bestRank[0]) return 1;
+  if (candidateRank[0] < bestRank[0]) return -1;
+  if (candidateRank[1] > bestRank[1]) return 1;
+  if (candidateRank[1] < bestRank[1]) return -1;
+  if (candidateRank[2] < bestRank[2]) return 1;
+  if (candidateRank[2] > bestRank[2]) return -1;
+  if (candidateRank[3] < bestRank[3]) return 1;
+  if (candidateRank[3] > bestRank[3]) return -1;
+  if (candidateRank[4] < bestRank[4]) return 1;
+  if (candidateRank[4] > bestRank[4]) return -1;
+  return 0;
+}
+
 function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsByOddsEventId, stageMeta) {
   const start = Date.now();
   const nowMs = Date.now();
@@ -745,6 +790,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     duplicate_suppressed: 0,
     cooldown_suppressed: 0,
     opposite_side_conflict_suppressed: 0,
+    same_side_conflict_suppressed: 0,
     edge_below_threshold: 0,
     too_close_to_start_skip: 0,
     stale_odds_skip: 0,
@@ -778,7 +824,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     }
 
     if (sampledDecisions.length < sampledDecisionLimit) {
-      const detailWithH2h = Object.assign({}, detail || {});
+      const detailWithH2h = Object.assign({
+        competition_tier: String(match && match.competition_tier || ''),
+      }, detail || {});
       if (lastH2hDecision) {
         detailWithH2h.h2h_decision = lastH2hDecision;
       }
@@ -861,7 +909,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       return;
     }
 
-    const startCutoffMs = config.MINUTES_BEFORE_START_CUTOFF * 60000;
+    const startCutoffPolicy = resolveStartCutoffMinutes_(event, resolvedStatsConfidence, config || {});
+    const startCutoffMs = Number(startCutoffPolicy.applied_cutoff_minutes || 0) * 60000;
     const commenceMs = event.commence_time.getTime();
     const minutesToStart = roundNumber_((commenceMs - nowMs) / 60000, 2);
     if (commenceMs <= nowMs + startCutoffMs) {
@@ -891,7 +940,10 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         commence_time_utc: event.commence_time.toISOString(),
         reference_timestamp_utc: new Date(nowMs).toISOString(),
         minutes_to_start: minutesToStart,
-        threshold_minutes: Number(config.MINUTES_BEFORE_START_CUTOFF || 0),
+        threshold_minutes: Number(startCutoffPolicy.applied_cutoff_minutes || 0),
+        threshold_minutes_base: Number(startCutoffPolicy.base_cutoff_minutes || 0),
+        threshold_minutes_h2h_relaxed: Number(startCutoffPolicy.h2h_relaxed_cutoff_minutes || 0),
+        start_cutoff_relaxation_applied: !!startCutoffPolicy.relaxation_applied,
       });
       return;
     }
@@ -1078,37 +1130,29 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   });
 
   const preferredH2hCandidateByGroup = {};
+  const preferredH2hCandidateByGroupAndSide = {};
   pendingNotificationCandidates.forEach(function (candidate, index) {
     const event = candidate.event || {};
     if (String(event.market || '').toLowerCase() !== 'h2h') return;
     const groupKey = [runId, String(event.event_id || ''), 'h2h'].join('|');
+    const sideKey = String(event.outcome || '');
+    const groupSideKey = [groupKey, sideKey].join('|');
+    const currentBestSideIndex = preferredH2hCandidateByGroupAndSide[groupSideKey];
+    if (currentBestSideIndex === undefined) {
+      preferredH2hCandidateByGroupAndSide[groupSideKey] = index;
+    } else {
+      const currentBestSideCandidate = pendingNotificationCandidates[currentBestSideIndex];
+      if (compareSignalCandidatePriority_(candidate, currentBestSideCandidate) > 0) {
+        preferredH2hCandidateByGroupAndSide[groupSideKey] = index;
+      }
+    }
     const currentBestIndex = preferredH2hCandidateByGroup[groupKey];
     if (currentBestIndex === undefined) {
       preferredH2hCandidateByGroup[groupKey] = index;
       return;
     }
     const currentBest = pendingNotificationCandidates[currentBestIndex];
-    const currentRank = [
-      Number(candidate.edge_value || 0),
-      Number(candidate.model_probability || 0),
-      String((candidate.event && candidate.event.outcome) || ''),
-      String((candidate.event && candidate.event.bookmaker) || ''),
-      String((candidate.signal_hash) || ''),
-    ];
-    const bestRank = [
-      Number(currentBest.edge_value || 0),
-      Number(currentBest.model_probability || 0),
-      String((currentBest.event && currentBest.event.outcome) || ''),
-      String((currentBest.event && currentBest.event.bookmaker) || ''),
-      String((currentBest.signal_hash) || ''),
-    ];
-    if (
-      currentRank[0] > bestRank[0]
-      || (currentRank[0] === bestRank[0] && currentRank[1] > bestRank[1])
-      || (currentRank[0] === bestRank[0] && currentRank[1] === bestRank[1] && currentRank[2] < bestRank[2])
-      || (currentRank[0] === bestRank[0] && currentRank[1] === bestRank[1] && currentRank[2] === bestRank[2] && currentRank[3] < bestRank[3])
-      || (currentRank[0] === bestRank[0] && currentRank[1] === bestRank[1] && currentRank[2] === bestRank[2] && currentRank[3] === bestRank[3] && currentRank[4] < bestRank[4])
-    ) {
+    if (compareSignalCandidatePriority_(candidate, currentBest) > 0) {
       preferredH2hCandidateByGroup[groupKey] = index;
     }
   });
@@ -1118,13 +1162,21 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     const match = candidate.match;
     const isH2h = String(event && event.market || '').toLowerCase() === 'h2h';
     const groupKey = [runId, String(event && event.event_id || ''), 'h2h'].join('|');
+    const sideKey = String(event && event.outcome || '');
     const preferredIndex = preferredH2hCandidateByGroup[groupKey];
-    const isSuppressedByConflict = isH2h
+    const preferredBySideIndex = preferredH2hCandidateByGroupAndSide[[groupKey, sideKey].join('|')];
+    const winningCandidate = pendingNotificationCandidates[preferredIndex] || {};
+    const winningSide = String((winningCandidate.event && winningCandidate.event.outcome) || '');
+    const suppressedByOppositeSideConflict = isH2h
       && preferredIndex !== undefined
-      && preferredIndex !== index;
+      && preferredIndex !== index
+      && sideKey !== winningSide;
+    const suppressedBySameSideConflict = isH2h
+      && preferredBySideIndex !== undefined
+      && preferredBySideIndex !== index
+      && sideKey === winningSide;
 
-    if (isSuppressedByConflict) {
-      const winningCandidate = pendingNotificationCandidates[preferredIndex] || {};
+    if (suppressedByOppositeSideConflict) {
       captureDecision_(event, match, 'opposite_side_conflict_suppressed', {
         scored: true,
         model_probability: candidate.model_probability,
@@ -1133,8 +1185,10 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         edge_tier: candidate.edge_tier,
         stake_units: candidate.stake_units,
         stats_confidence: candidate.stats_confidence,
+        conflict_loser_side: sideKey,
         conflict_winner_side: String((winningCandidate.event && winningCandidate.event.outcome) || ''),
         conflict_winner_edge_value: Number(winningCandidate.edge_value || 0),
+        conflict_resolution: 'strongest_side_preserved',
       });
       rows.push(buildSignalRow_(runId, config, event, match, {
         notification_outcome: 'opposite_side_conflict_suppressed',
@@ -1147,6 +1201,36 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         model_version: candidate.model_version,
         stats_confidence: candidate.stats_confidence,
         signal_delivery_mode: 'h2h_conflict_suppressed',
+        stake_policy_decision: candidate.stake_policy_decision,
+      }));
+      return;
+    }
+    if (suppressedBySameSideConflict) {
+      const winningSideCandidate = pendingNotificationCandidates[preferredBySideIndex] || {};
+      captureDecision_(event, match, 'same_side_conflict_suppressed', {
+        scored: true,
+        model_probability: candidate.model_probability,
+        market_implied_probability: candidate.market_implied_probability,
+        edge_value: candidate.edge_value,
+        edge_tier: candidate.edge_tier,
+        stake_units: candidate.stake_units,
+        stats_confidence: candidate.stats_confidence,
+        conflict_loser_side: sideKey,
+        conflict_winner_side: String((winningSideCandidate.event && winningSideCandidate.event.outcome) || ''),
+        conflict_winner_edge_value: Number(winningSideCandidate.edge_value || 0),
+        conflict_resolution: 'same_side_best_price_preserved',
+      });
+      rows.push(buildSignalRow_(runId, config, event, match, {
+        notification_outcome: 'same_side_conflict_suppressed',
+        model_probability: candidate.model_probability,
+        market_implied_probability: candidate.market_implied_probability,
+        edge_value: candidate.edge_value,
+        edge_tier: 'NONE',
+        stake_units: 0,
+        signal_hash: candidate.signal_hash,
+        model_version: candidate.model_version,
+        stats_confidence: candidate.stats_confidence,
+        signal_delivery_mode: 'h2h_same_side_conflict_suppressed',
         stake_policy_decision: candidate.stake_policy_decision,
       }));
       return;
@@ -1391,6 +1475,14 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     previous_summary: previousSignalDecisionSummary,
     config: config || {},
   });
+  const suppressionTrendSummary = buildSignalSuppressionTrendSummary_({
+    run_id: runId,
+    input_count: oddsEvents.length,
+    reason_counts: reasonCounts,
+    sampled_decisions: sampledDecisions,
+    config: config || {},
+  });
+  signalDecisionSummary.suppression_trends = suppressionTrendSummary;
   setStateValue_('LAST_SIGNAL_DECISION_SUMMARY', JSON.stringify(signalDecisionSummary));
 
   const summaryReasonCodes = Object.assign({}, reasonCounts);
@@ -1451,7 +1543,7 @@ function buildSignalDecisionRunSummary_(payload) {
   const config = safe.config && typeof safe.config === 'object' ? safe.config : {};
   const suppressionReasonGroups = {
     cooldown: ['cooldown_suppressed'],
-    conflict: ['opposite_side_conflict_suppressed'],
+    conflict: ['opposite_side_conflict_suppressed', 'same_side_conflict_suppressed'],
     edge: ['edge_below_threshold'],
     stale: ['stale_odds_skip'],
     timing: ['too_close_to_start_skip'],
@@ -1586,6 +1678,8 @@ function buildSignalDecisionRunSummary_(payload) {
       timestamp_field: 'commence_time',
       reference_timestamp_field: 'now_plus_cutoff',
       freshness_threshold_minutes: Number(config.MINUTES_BEFORE_START_CUTOFF || 0),
+      h2h_relaxed_threshold_minutes: Number(config.MINUTES_BEFORE_START_CUTOFF_H2H || config.MINUTES_BEFORE_START_CUTOFF || 0),
+      minimum_stats_confidence_for_relaxation: Number(config.MIN_START_CUTOFF_RELAXED_STATS_CONFIDENCE || 0),
       timezone_normalization: 'Date epoch milliseconds (UTC absolute comparison)',
     },
   };
@@ -1611,7 +1705,7 @@ function buildSignalDecisionRunSummary_(payload) {
     alignment_checks: {
       sent_matches_reason_counts: sentCount === Number(reasonCounts.sent || 0),
       cooldown_matches_reason_counts: Number((suppressionSummary.cooldown && suppressionSummary.cooldown.by_reason && suppressionSummary.cooldown.by_reason.cooldown_suppressed) || 0) === Number(reasonCounts.cooldown_suppressed || 0),
-      conflict_matches_reason_counts: Number((suppressionSummary.conflict && suppressionSummary.conflict.by_reason && suppressionSummary.conflict.by_reason.opposite_side_conflict_suppressed) || 0) === Number(reasonCounts.opposite_side_conflict_suppressed || 0),
+      conflict_matches_reason_counts: Number((suppressionSummary.conflict && suppressionSummary.conflict.total) || 0) === Number(reasonCounts.opposite_side_conflict_suppressed || 0) + Number(reasonCounts.same_side_conflict_suppressed || 0),
       edge_matches_reason_counts: Number((suppressionSummary.edge && suppressionSummary.edge.by_reason && suppressionSummary.edge.by_reason.edge_below_threshold) || 0) === Number(reasonCounts.edge_below_threshold || 0),
       stale_matches_reason_counts: Number((suppressionSummary.stale && suppressionSummary.stale.by_reason && suppressionSummary.stale.by_reason.stale_odds_skip) || 0) === Number(reasonCounts.stale_odds_skip || 0),
       timing_matches_reason_counts: Number((suppressionSummary.timing && suppressionSummary.timing.by_reason && suppressionSummary.timing.by_reason.too_close_to_start_skip) || 0) === Number(reasonCounts.too_close_to_start_skip || 0),
@@ -1619,6 +1713,112 @@ function buildSignalDecisionRunSummary_(payload) {
       scored_not_less_than_sent: scoredCount >= sentCount,
     },
   };
+}
+
+function buildSignalSuppressionTrendSummary_(payload) {
+  const safe = payload || {};
+  const runId = String(safe.run_id || '');
+  const inputCount = Number(safe.input_count || 0);
+  const reasonCounts = Object.assign({}, safe.reason_counts || {});
+  const sampledDecisions = Array.isArray(safe.sampled_decisions) ? safe.sampled_decisions : [];
+  const config = safe.config && typeof safe.config === 'object' ? safe.config : {};
+  const windowSize = Math.max(1, Number(config.SUPPRESSION_ANALYTICS_RUN_WINDOW || 20));
+  const history = getStateJson_('LAST_SIGNAL_SUPPRESSION_HISTORY');
+  const existingHistory = Array.isArray(history) ? history : [];
+  const nextEntry = {
+    run_id: runId,
+    input_count: inputCount,
+    reason_counts: reasonCounts,
+    sampled_decisions: sampledDecisions,
+  };
+  const nextHistory = existingHistory
+    .concat([nextEntry])
+    .slice(-windowSize);
+  setStateValue_('LAST_SIGNAL_SUPPRESSION_HISTORY', JSON.stringify(nextHistory));
+
+  const totals = nextHistory.reduce(function (acc, entry) {
+    acc.input_count += Number(entry && entry.input_count || 0);
+    const entryReasonCounts = (entry && entry.reason_counts) || {};
+    Object.keys(entryReasonCounts).forEach(function (reasonCode) {
+      acc.reason_counts[reasonCode] = Number(acc.reason_counts[reasonCode] || 0) + Number(entryReasonCounts[reasonCode] || 0);
+    });
+    return acc;
+  }, { input_count: 0, reason_counts: {} });
+
+  const suppressionRatesByReason = Object.keys(totals.reason_counts || {})
+    .filter(function (reasonCode) {
+      return /(?:_suppressed|_skip$|edge_below_threshold|line_drift_exceeded|edge_decay_exceeded|liquidity_too_low)/.test(reasonCode);
+    })
+    .sort()
+    .reduce(function (acc, reasonCode) {
+      const count = Number(totals.reason_counts[reasonCode] || 0);
+      acc[reasonCode] = {
+        count: count,
+        rate_pct_of_inputs: totals.input_count > 0 ? roundNumber_((count / totals.input_count) * 100, 2) : 0,
+      };
+      return acc;
+    }, {});
+
+  const allSampledSuppressed = nextHistory.reduce(function (acc, entry) {
+    const sampled = Array.isArray(entry && entry.sampled_decisions) ? entry.sampled_decisions : [];
+    sampled.forEach(function (decision) {
+      const reasonCode = String(decision && decision.decision_reason_code || '');
+      if (!/(?:_suppressed|_skip$)/.test(reasonCode)) return;
+      acc.push(decision);
+    });
+    return acc;
+  }, []);
+
+  const recurringTournaments = aggregateTopKeyedCounts_(allSampledSuppressed, function (decision) {
+    return String(decision && decision.detail && decision.detail.competition_tier || 'unknown_tier');
+  }, 3);
+  const recurringStartTimeWindows = aggregateTopKeyedCounts_(allSampledSuppressed.filter(function (decision) {
+    return String(decision && decision.decision_reason_code || '') === 'too_close_to_start_skip';
+  }), function (decision) {
+    const minutes = Number(decision && decision.detail && decision.detail.minutes_to_start);
+    if (!Number.isFinite(minutes)) return 'unknown_window';
+    if (minutes <= 5) return '<=5m';
+    if (minutes <= 15) return '5m_to_15m';
+    if (minutes <= 30) return '15m_to_30m';
+    if (minutes <= 60) return '30m_to_60m';
+    return '>60m';
+  }, 5);
+  const recurringSideConflicts = aggregateTopKeyedCounts_(allSampledSuppressed.filter(function (decision) {
+    const reasonCode = String(decision && decision.decision_reason_code || '');
+    return reasonCode === 'opposite_side_conflict_suppressed' || reasonCode === 'same_side_conflict_suppressed';
+  }), function (decision) {
+    const loserSide = String(decision && decision.detail && decision.detail.conflict_loser_side || '');
+    const winnerSide = String(decision && decision.detail && decision.detail.conflict_winner_side || '');
+    return [loserSide || 'unknown_loser', winnerSide || 'unknown_winner'].join(' -> ');
+  }, 5);
+
+  return {
+    run_window_size: windowSize,
+    runs_analyzed: nextHistory.length,
+    total_inputs_analyzed: totals.input_count,
+    suppression_rates_by_reason: suppressionRatesByReason,
+    recurring_edge_cases: {
+      tournaments: recurringTournaments,
+      start_time_windows: recurringStartTimeWindows,
+      side_conflicts: recurringSideConflicts,
+    },
+  };
+}
+
+function aggregateTopKeyedCounts_(rows, keyResolver, limit) {
+  const counts = {};
+  (rows || []).forEach(function (row) {
+    const key = String(keyResolver(row) || '').trim();
+    if (!key) return;
+    counts[key] = Number(counts[key] || 0) + 1;
+  });
+  return Object.keys(counts)
+    .map(function (key) { return { key: key, count: counts[key] }; })
+    .sort(function (a, b) {
+      if (b.count !== a.count) return b.count - a.count;
+      return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0);
+    })
+    .slice(0, Math.max(1, Number(limit || 3)));
 }
 
 function percentileFromSortedValues_(values, quantile) {
