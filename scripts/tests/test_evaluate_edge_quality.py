@@ -343,7 +343,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             "--auto-select-run-pair",
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True)
-        self.assertEqual(0, proc.returncode, msg=proc.stdout + proc.stderr)
+        self.assertEqual(1, proc.returncode, msg=proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertEqual("run-prev-valid", payload["selected_run_pair"]["baseline_run_id"])
         self.assertEqual("run-post-valid", payload["selected_run_pair"]["candidate_run_id"])
@@ -351,6 +351,37 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             any("run_id=run-mid-cancelled rejected" in item for item in payload["selection_diagnostics"]),
             msg=str(payload.get("selection_diagnostics")),
         )
+        preconditions = payload["final_operator_summary"]["strict_pair_preconditions"]
+        self.assertFalse(preconditions["ok"])
+        self.assertIn("invalid_strict_pair_baseline", preconditions["reason_codes"])
+
+    def test_autoselect_rejects_candidate_like_baseline_pair(self):
+        rows = [
+            self._summary_row("run-baseline-oldest", "2026-03-24T07:00:00Z", edge_volatility=0.01),
+            self._summary_row("run-candidate-older", "2026-03-24T08:00:00Z", edge_volatility=0.01),
+            self._summary_row("run-candidate-newer", "2026-03-24T09:00:00Z", edge_volatility=0.02),
+        ]
+        selected, diagnostics = _select_latest_run_ids(rows, include_cancelled=False, diagnostics_limit=10)
+        self.assertEqual(["run-baseline-oldest", "run-candidate-newer"], selected)
+        self.assertTrue(any("candidate_like_pair_disallowed" in item for item in diagnostics))
+
+    def test_compare_report_precondition_failure_routes_to_fallback_with_reason_code(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, matched_events=0),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, matched_events=8),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.02, matched_events=8),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(max_edge_volatility=0.03),
+            ordered_run_ids=["run-1", "run-2", "run-3"],
+        )
+        self.assertEqual("insufficient_sample", report["pair_level_result"]["status"])
+        self.assertIn("invalid_strict_pair_baseline", report["pair_level_result"]["strict_pair_precondition"]["reason_codes"])
+        self.assertIsNotNone(report["windowed_fallback_result"])
+        self.assertEqual("windowed_fallback_result", report["final_operator_summary"]["decision_authoritative_source"])
 
     def test_alias_envelope_csv_pass_derives_non_zero_feature_completeness(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_alias_pass.csv"))
