@@ -139,6 +139,10 @@ Document and enforce explicit criteria in release notes for the rollout window. 
 2. **Suppression distribution stability**
    - No material new drift in suppression reason distribution versus baseline (use configured `max_suppression_drift` / `suppression_min_volume` guardrails).
    - Stake-policy reason-code distribution is stable across matched windows (no single new reason dominates unexpectedly without incident review).
+   - Interpret `windowed_fallback_result.pairs[].failure_diagnostics.suppression_drift.failing_reasons` before escalating:
+     - Treat as a likely **policy regression** when drift repeats across neighboring pairs and the same event IDs persist while minutes-to-start and odds freshness snapshots remain comparable.
+     - Treat as a likely **time-window / market-state artifact** when top contributing events are mostly new rotations, minutes-to-start skews toward kickoff windows (`too_close_to_start_skip`), or odds freshness metadata shifts toward stale bursts (`stale_odds_skip`) in only one side of the pair.
+     - Use the deterministic `top_contributing_events` sample as first-pass evidence; only rehydrate raw logs when this sample is insufficient for incident classification.
 3. **Stake-policy outcome sanity**
    - `suppressed_count`, `adjusted_count`, and `passed_count` deltas are directionally consistent with rollout intent and within predeclared tolerances.
    - Coverage-gate pass/fail parity is maintained versus baseline.

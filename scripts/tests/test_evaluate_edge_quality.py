@@ -32,7 +32,10 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         edge_volatility: float,
         scored_signals: int = 12,
         matched_events: int = 8,
+        suppression_counts: dict[str, int] | None = None,
+        suppression_reason_context: dict[str, dict[str, object]] | None = None,
     ) -> dict[str, object]:
+        suppression_counts = suppression_counts or {}
         return {
             "row_type": "summary",
             "stage": "runEdgeBoard",
@@ -40,7 +43,16 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             "ended_at": ended_at,
             "feature_completeness": 0.9,
             "edge_volatility": edge_volatility,
-            "signal_decision_summary": json.dumps({"suppression_counts": {}}),
+            "signal_decision_summary": json.dumps(
+                {
+                    "suppression_counts": {
+                        "all": {
+                            "by_reason": suppression_counts,
+                        }
+                    },
+                    "suppression_reason_context": suppression_reason_context or {},
+                }
+            ),
             "stage_summaries": json.dumps(
                 [
                     {
@@ -198,6 +210,57 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertTrue(any("feature_completeness_below_floor" in item for item in report["failures"]))
         self.assertTrue(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
         self.assertTrue(any("suppression_drift_exceeded" in item for item in report["failures"]))
+        self.assertIsInstance(report["suppression_drift_details"], dict)
+        self.assertIn("suppression_drift", report["failure_diagnostics"])
+
+    def test_suppression_drift_failure_emits_pair_level_causal_diagnostics(self):
+        rows = [
+            self._summary_row(
+                "run-1",
+                "2026-03-01T00:00:00Z",
+                edge_volatility=0.01,
+                suppression_counts={"stale_odds_skip": 2},
+                suppression_reason_context={
+                    "stale_odds_skip": {
+                        "raw_count": 2,
+                        "event_ids": ["evt-1", "evt-2"],
+                        "minutes_to_start_snapshot": {"min": 8, "max": 12},
+                        "odds_freshness_metadata": {"max_age_seconds": 420, "stale_threshold_seconds": 300},
+                    }
+                },
+            ),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.01,
+                suppression_counts={"stale_odds_skip": 6},
+                suppression_reason_context={
+                    "stale_odds_skip": {
+                        "raw_count": 6,
+                        "event_ids": ["evt-2", "evt-3", "evt-4"],
+                        "minutes_to_start_snapshot": {"min": 4, "max": 9},
+                        "odds_freshness_metadata": {"max_age_seconds": 840, "stale_threshold_seconds": 300},
+                    }
+                },
+            ),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(max_suppression_drift=0.5, suppression_min_volume=2),
+        )
+        self.assertEqual("fail", report["status"])
+        reason_diag = report["failure_diagnostics"]["suppression_drift"]["failing_reasons"]["stale_odds_skip"]
+        self.assertEqual(4, reason_diag["drift_fraction"]["numerator"])
+        self.assertEqual(2, reason_diag["drift_fraction"]["denominator"])
+        self.assertEqual(2, reason_diag["raw_counts"]["baseline"])
+        self.assertEqual(6, reason_diag["raw_counts"]["candidate"])
+        self.assertEqual(["evt-1", "evt-2"], reason_diag["event_ids"]["baseline"])
+        self.assertEqual(["evt-2", "evt-3", "evt-4"], reason_diag["event_ids"]["candidate"])
+        self.assertEqual(8, reason_diag["minutes_to_start_snapshot"]["baseline"]["min"])
+        self.assertEqual(840, reason_diag["odds_freshness_metadata"]["candidate"]["max_age_seconds"])
+        self.assertEqual("evt-1", reason_diag["top_contributing_events"][0]["event_id"])
 
     def test_dynamic_volatility_policy_passes_moderate_volatility_with_adequate_sample(self):
         rows = [
@@ -963,6 +1026,9 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("pass", report["final_operator_summary"]["windowed_decision_status"])
         self.assertEqual("windowed_fallback_result", report["final_operator_summary"]["decision_authoritative_source"])
         self.assertEqual("pass", report["final_operator_summary"]["decision_authoritative_status"])
+        self.assertTrue(
+            all("failure_diagnostics" in pair for pair in report["windowed_fallback_result"]["pairs"])
+        )
 
     def test_compare_report_keeps_windowed_fallback_null_when_pair_is_decisionable(self):
         rows = [
