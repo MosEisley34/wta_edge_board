@@ -94,5 +94,10 @@ set +e
 python3 scripts/compare_run_diagnostics.py "$run_a" "$run_b" --export-dir "$out_dir" "${compare_extra_args[@]}" | tee "$compare_log"
 compare_status=${PIPESTATUS[0]}
 set -e
+if [[ ! -s "$compare_log" ]]; then
+  echo "Error: missing diagnostics compare log at $compare_log." >&2
+  echo "Hint: regenerate with: scripts/compare_run_diagnostics_preflight.sh --out-dir \"$out_dir\" \"$run_a\" \"$run_b\" ${runtime_inputs[*]}" >&2
+  exit 1
+fi
 python3 scripts/extract_schema_missing_triage.py --limit 20 --out "$out_dir/triage_last20_next.csv" "$compare_log" >/dev/null || true
 exit "$compare_status"

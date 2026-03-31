@@ -323,6 +323,45 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual("fail", payload["status"])
 
+    def test_cli_compare_writes_default_artifact_atomically_and_prints_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = [
+                "python3",
+                str(ROOT / "scripts" / "evaluate_edge_quality.py"),
+                str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_fail.json"),
+                "--baseline-run-id",
+                "run-baseline",
+                "--candidate-run-id",
+                "run-candidate",
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(1, proc.returncode, msg=proc.stdout + proc.stderr)
+            artifact = Path(tmp) / "artifacts" / "compare" / "run-baseline_vs_run-candidate.json"
+            self.assertTrue(artifact.exists(), msg=f"missing artifact: {artifact}")
+            written = json.loads(artifact.read_text(encoding="utf-8"))
+            streamed = json.loads(proc.stdout)
+            self.assertEqual(streamed["schema"], written["schema"])
+            self.assertIn(str(artifact.resolve()), proc.stderr)
+
+    def test_cli_compare_respects_out_json_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "custom" / "edge_compare.json"
+            cmd = [
+                "python3",
+                str(ROOT / "scripts" / "evaluate_edge_quality.py"),
+                str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_fail.json"),
+                "--baseline-run-id",
+                "run-baseline",
+                "--candidate-run-id",
+                "run-candidate",
+                "--out-json",
+                str(out_path),
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(1, proc.returncode, msg=proc.stdout + proc.stderr)
+            self.assertTrue(out_path.exists(), msg=f"missing artifact: {out_path}")
+            self.assertIn(str(out_path.resolve()), proc.stderr)
+
     def test_cli_compare_duplicate_summary_rows_emits_structured_failure_without_traceback(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = Path(tmp) / "Run_Log.json"
