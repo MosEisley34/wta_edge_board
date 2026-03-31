@@ -4138,6 +4138,176 @@ function testStageGenerateSignals_h2hOppositeSideConflictSuppressesLowerPriority
   }
 }
 
+function testStageGenerateSignals_h2hConflictTracksSameSideSuppressionReason_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+  const originalSendSignalNotification = sendSignalNotification_;
+  const originalMaybeNotifySignal = maybeNotifySignal_;
+  const originalAppendLogRow = appendLogRow_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+  const sentPayloads = [];
+
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return { local: '2026-01-01T00:00:00-07:00', utc: '2026-01-01T07:00:00.000Z' };
+  };
+  sendSignalNotification_ = function (config, runId, signalHash, payload) {
+    sentPayloads.push(payload);
+    return { outcome: 'sent', http_status: 204, response_body_preview: '', test_mode: true, transport: 'test_transport' };
+  };
+  maybeNotifySignal_ = function () { return { outcome: 'sent', diagnostics: {} }; };
+  appendLogRow_ = function () {};
+
+  try {
+    const events = [
+      { event_id: 'evt_conflict_same_side', market: 'h2h', outcome: 'Belinda Bencic', bookmaker: 'book_a', price: 2.2, commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs) },
+      { event_id: 'evt_conflict_same_side', market: 'h2h', outcome: 'Belinda Bencic', bookmaker: 'book_b', price: 2.2, commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs) },
+      { event_id: 'evt_conflict_same_side', market: 'h2h', outcome: 'Dayana Yastremska', bookmaker: 'book_a', price: 2.2, commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs) },
+    ];
+    const matches = [{ odds_event_id: 'evt_conflict_same_side', schedule_event_id: 'sched_conflict_same_side', competition_tier: 'WTA_500' }];
+    const stats = {
+      evt_conflict_same_side: {
+        player_a: { has_stats: true, features: { ranking: 8, recent_form: 0.76, surface_win_rate: 0.67, hold_pct: 0.72, break_pct: 0.39 } },
+        player_b: { has_stats: true, features: { ranking: 27, recent_form: 0.46, surface_win_rate: 0.49, hold_pct: 0.6, break_pct: 0.28 } },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      MINUTES_BEFORE_START_CUTOFF_H2H: 45,
+      MIN_START_CUTOFF_RELAXED_STATS_CONFIDENCE: 0.85,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: true,
+      NOTIFY_TEST_MODE: true,
+      DISCORD_WEBHOOK: 'https://hooks.slack.com/services/mock',
+      ACCOUNT_CURRENCY: 'MXN',
+      MIN_STAKE_PER_CURRENCY_JSON: '{"MXN":20}',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 20,
+    };
+
+    const result = stageGenerateSignals('run_conflict_same_side', config, events, matches, stats);
+    const decisionSummaryState = JSON.parse(stateWrites.LAST_SIGNAL_DECISION_SUMMARY || '{}');
+    const suppressionTrends = decisionSummaryState.suppression_trends || {};
+    assertEquals_(3, result.rows.length);
+    assertEquals_(1, Number((result.summary.reason_codes || {}).sent || 0));
+    assertEquals_(1, Number((result.summary.reason_codes || {}).opposite_side_conflict_suppressed || 0));
+    assertEquals_(1, Number((result.summary.reason_codes || {}).same_side_conflict_suppressed || 0));
+    assertEquals_(1, sentPayloads.length);
+    assertEquals_(2, Number((((decisionSummaryState.suppression_counts || {}).conflict || {}).total || 0)));
+    assertEquals_(1, Number((suppressionTrends.runs_analyzed || 0)));
+    assertEquals_(33.33, Number((((suppressionTrends.suppression_rates_by_reason || {}).same_side_conflict_suppressed || {}).rate_pct_of_inputs || 0)));
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+    sendSignalNotification_ = originalSendSignalNotification;
+    maybeNotifySignal_ = originalMaybeNotifySignal;
+    appendLogRow_ = originalAppendLogRow;
+  }
+}
+
+function testStageGenerateSignals_startCutoffH2hRelaxationUsesConfidenceGate_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return { local: '2026-01-01T00:00:00-07:00', utc: '2026-01-01T07:00:00.000Z' };
+  };
+
+  try {
+    const events = [{
+      event_id: 'evt_start_cutoff_relaxed',
+      market: 'h2h',
+      outcome: 'player_a',
+      bookmaker: 'book_x',
+      price: 1.95,
+      commence_time: new Date(nowMs + (50 * 60 * 1000)),
+      odds_updated_time: new Date(nowMs),
+    }];
+    const matches = [{ odds_event_id: 'evt_start_cutoff_relaxed', schedule_event_id: 'sched_start_cutoff_relaxed', competition_tier: 'WTA_500' }];
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.02,
+      EDGE_THRESHOLD_SMALL: 0.03,
+      EDGE_THRESHOLD_MED: 0.05,
+      EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25,
+      STAKE_UNITS_SMALL: 0.5,
+      STAKE_UNITS_MED: 1,
+      STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180,
+      MINUTES_BEFORE_START_CUTOFF: 60,
+      MINUTES_BEFORE_START_CUTOFF_H2H: 45,
+      MIN_START_CUTOFF_RELAXED_STATS_CONFIDENCE: 0.85,
+      STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false,
+      NOTIFY_TEST_MODE: false,
+      DISCORD_WEBHOOK: '',
+      SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+    const highConfidenceStats = {
+      evt_start_cutoff_relaxed: {
+        stats_confidence: 0.9,
+        player_a: { has_stats: true, features: { ranking: 10, recent_form: 0.63, surface_win_rate: 0.62, hold_pct: 0.69, break_pct: 0.37 } },
+        player_b: { has_stats: true, features: { ranking: 20, recent_form: 0.5, surface_win_rate: 0.48, hold_pct: 0.61, break_pct: 0.29 } },
+      },
+    };
+    const lowConfidenceStats = {
+      evt_start_cutoff_relaxed: {
+        stats_confidence: 0.7,
+        player_a: { has_stats: true, features: { ranking: 10, recent_form: 0.63, surface_win_rate: 0.62, hold_pct: 0.69, break_pct: 0.37 } },
+        player_b: { has_stats: true, features: { ranking: 20, recent_form: 0.5, surface_win_rate: 0.48, hold_pct: 0.61, break_pct: 0.29 } },
+      },
+    };
+
+    const relaxedResult = stageGenerateSignals('run_start_cutoff_relaxed', config, events, matches, highConfidenceStats);
+    const strictResult = stageGenerateSignals('run_start_cutoff_strict', config, events, matches, lowConfidenceStats);
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+    const strictDecision = (decisionState.sampled_decisions || []).filter(function (row) {
+      return row.decision_reason_code === 'too_close_to_start_skip';
+    })[0] || {};
+
+    assertTrue_(String((relaxedResult.rows[0] || {}).notification_outcome || '') !== 'too_close_to_start_skip', 'high confidence H2H should relax cutoff');
+    assertEquals_('too_close_to_start_skip', String((strictResult.rows[0] || {}).notification_outcome || ''));
+    assertEquals_(60, Number((strictDecision.detail || {}).threshold_minutes_base || 0));
+    assertEquals_(45, Number((strictDecision.detail || {}).threshold_minutes_h2h_relaxed || 0));
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
 
 
 function testStageGenerateSignals_staleSuppressionDiagnosticsCaptureAgeThresholdAndTimestamps_() {
