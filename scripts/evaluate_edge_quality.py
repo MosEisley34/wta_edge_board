@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
-import hashlib
 import json
 import os
 import re
@@ -23,6 +22,10 @@ from pipeline_log_adapter import (
 )
 from stake_policy import StakePolicyConfig, summarize_run_stake_policy
 from runtime_artifact_codec import normalize_run_log_row
+from run_summary_cardinality import (
+    is_run_edgeboard_summary_row,
+    merge_run_summary_rows_for_cardinality,
+)
 
 RUN_LOG_TYPED_FIELDS: dict[str, type] = {
     "feature_completeness": float,
@@ -229,64 +232,9 @@ def _run_summary_selection_diagnostics(
     }
 
 
-def _summary_identity_payload_hash(row: dict[str, Any]) -> str:
-    normalized_payload = {
-        key: value
-        for key, value in row.items()
-        if key
-        not in {
-            "_source_file",
-            "_source_kind",
-            "merged_from_sources",
-        }
-    }
-    encoded = json.dumps(normalized_payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _summary_identity_key(row: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
-    return (
-        str(row.get("run_id") or ""),
-        str(row.get("row_type") or ""),
-        str(row.get("stage") or ""),
-        str(row.get("started_at") or ""),
-        str(row.get("ended_at") or ""),
-        _summary_identity_payload_hash(row),
-    )
-
-
-def _dedupe_summary_rows_for_cardinality(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    deduped_rows: list[dict[str, Any]] = []
-    summary_row_indexes_by_identity: dict[tuple[str, str, str, str, str, str], int] = {}
-
-    for row in rows:
-        if not _is_run_edgeboard_summary_row(row):
-            deduped_rows.append(row)
-            continue
-        identity_key = _summary_identity_key(row)
-        existing_index = summary_row_indexes_by_identity.get(identity_key)
-        if existing_index is None:
-            deduped_row = dict(row)
-            source_kind = str(row.get("_source_kind") or "unknown")
-            deduped_row["merged_from_sources"] = [source_kind]
-            deduped_rows.append(deduped_row)
-            summary_row_indexes_by_identity[identity_key] = len(deduped_rows) - 1
-            continue
-        existing_row = deduped_rows[existing_index]
-        merged_sources = existing_row.get("merged_from_sources")
-        if not isinstance(merged_sources, list):
-            merged_sources = []
-        source_kind = str(row.get("_source_kind") or "unknown")
-        if source_kind not in merged_sources:
-            merged_sources.append(source_kind)
-            merged_sources.sort()
-        existing_row["merged_from_sources"] = merged_sources
-    return deduped_rows
-
-
 def _pick_run_summary(rows: list[dict[str, Any]], run_id: str, strict_cardinality: bool = False) -> dict[str, Any]:
     run_rows = [row for row in rows if str(row.get("run_id") or "") == run_id]
-    qualifying_rows = [row for row in run_rows if _is_run_edgeboard_summary_row(row)]
+    qualifying_rows = [row for row in run_rows if is_run_edgeboard_summary_row(row)]
     if len(qualifying_rows) == 1:
         return _normalize_legacy_summary_row(qualifying_rows[0])
     if not strict_cardinality:
@@ -295,13 +243,6 @@ def _pick_run_summary(rows: list[dict[str, Any]], run_id: str, strict_cardinalit
     raise ValueError(
         f"Expected exactly one runEdgeBoard summary row for run_id={run_id}; "
         f"selection_diagnostics={json.dumps(diagnostics, sort_keys=True)}"
-    )
-
-
-def _is_run_edgeboard_summary_row(row: dict[str, Any]) -> bool:
-    return (
-        str(row.get("row_type") or "").strip() == "summary"
-        and str(row.get("stage") or "").strip() == "runEdgeBoard"
     )
 
 
@@ -969,7 +910,7 @@ def _adaptive_volatility_ceiling(
 
 
 def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateConfig) -> dict[str, Any]:
-    deduped_rows = _dedupe_summary_rows_for_cardinality(rows)
+    deduped_rows, _ = merge_run_summary_rows_for_cardinality(rows)
     summary = _pick_run_summary(deduped_rows, run_id, strict_cardinality=True)
     signal_summary = _extract_signal_summary(summary)
     feature_completeness, feature_diag = _extract_feature_completeness(summary)

@@ -14,8 +14,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
 
-from evaluate_edge_quality import _is_run_edgeboard_summary_row
 from preflight_guard import validate_incident_tag
+from run_summary_cardinality import (
+    is_run_edgeboard_summary_row,
+    merge_run_summary_rows_for_cardinality,
+)
+from runtime_artifact_codec import normalize_run_log_row
 
 @dataclass(frozen=True)
 class RunLogSource:
@@ -202,7 +206,7 @@ def _scan_run_contracts(path: str, target_run_ids: set[str]) -> dict[str, dict[s
         if stage and stage != "runEdgeBoard":
             contracts[run_id]["stages"].add(stage)
 
-        if _is_run_edgeboard_summary_row(row):
+        if is_run_edgeboard_summary_row(row):
             contracts[run_id]["run_summary_exists"] = True
             reason_codes = _parse_json_like(row.get("reason_codes"))
             if isinstance(reason_codes, dict):
@@ -278,6 +282,26 @@ def _empty_contract() -> dict[str, object]:
         "reason_codes_has_stats_miss_a": False,
         "reason_codes_has_stats_miss_b": False,
     }
+
+
+def _scan_rows(path: str, source_kind: str) -> list[dict[str, object]]:
+    if path.lower().endswith(".json"):
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        rows = payload if isinstance(payload, list) else []
+    else:
+        with open(path, "r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+
+    normalized_rows: list[dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        normalized = normalize_run_log_row(dict(row))
+        normalized["_source_kind"] = source_kind
+        normalized["_source_file"] = os.path.normpath(path)
+        normalized_rows.append(normalized)
+    return normalized_rows
 
 
 def _run_checklist(contract: dict[str, object]) -> dict[str, bool]:
@@ -385,6 +409,7 @@ def main() -> int:
         args.run_id_b: _empty_contract(),
     }
     kind_counts = Counter(source.kind for source in sources)
+    merged_rows: list[dict[str, object]] = []
 
     print(f"Precheck source files under {args.export_dir} (newest first):")
     for source in sources:
@@ -399,6 +424,10 @@ def main() -> int:
 
         source_counts[source.path] = source_counter
         merged_counts.update(source_counter)
+        try:
+            merged_rows.extend(_scan_rows(source.path, source.kind))
+        except Exception as exc:  # noqa: BLE001
+            print(f"Warning: failed to read row-level details in {source.path}: {exc}")
         try:
             source_contracts = _scan_run_contracts(source.path, {args.run_id_a, args.run_id_b})
         except Exception as exc:  # noqa: BLE001 - continue scanning other artifacts
@@ -532,11 +561,19 @@ def main() -> int:
             print(f"- {detail}")
 
     contract_failures: list[str] = []
+    _, duplicate_diagnostics_by_run_id = merge_run_summary_rows_for_cardinality(merged_rows)
     for run_id in targets:
         run_checklist = _run_checklist(merged_contracts[run_id])
+        duplicate_diagnostics = duplicate_diagnostics_by_run_id.get(run_id, {})
         disallowed = sorted(merged_contracts[run_id]["disallowed_reasons"])
         if not run_checklist["has_allowed_reason_codes"] and disallowed:
             contract_failures.append(f"{run_id}: disallowed reason_code(s) {', '.join(disallowed)}")
+        if duplicate_diagnostics.get("compare_will_fail_due_to_duplicate_summary_rows"):
+            contract_failures.append(
+                f"{run_id}: compare_will_fail_due_to_duplicate_summary_rows=true "
+                f"(raw_summary_rows={duplicate_diagnostics.get('raw_summary_rows')}, "
+                f"unique_summary_rows={duplicate_diagnostics.get('unique_summary_rows')})"
+            )
         if args.require_gate_prereqs:
             if not run_checklist["has_runEdgeBoard_summary"]:
                 contract_failures.append(
@@ -579,6 +616,9 @@ def main() -> int:
             print(
                 "Gate prereq mode (--require-gate-prereqs) blocks compare scripts until summary/stage/coverage requirements are met."
             )
+        print("Duplicate summary diagnostics (per run):")
+        for run_id in targets:
+            print(f"- {run_id}: {json.dumps(duplicate_diagnostics_by_run_id.get(run_id, {}), sort_keys=True)}")
         for failure in contract_failures:
             print(f"- {failure}")
         print("Replacement run IDs are required before producing pre/post verdict.")

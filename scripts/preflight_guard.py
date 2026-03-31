@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from run_summary_cardinality import merge_run_summary_rows_for_cardinality
 INCIDENT_TAG_PATTERN = re.compile(r"^[A-Za-z]+-[0-9]{3,}$")
 PREFLIGHT_SIDECAR_NAME = "run_compare_preflight.json"
 MANIFEST_NAME = "runtime_export_manifest.json"
@@ -253,21 +254,38 @@ def write_preflight_sidecar(
         raise ValueError(f"Invalid {MANIFEST_NAME}: missing generated_at_utc.")
 
     run_rows = _load_run_log_rows(export_dir)
+    _, duplicate_diagnostics_by_run_id = merge_run_summary_rows_for_cardinality(run_rows)
     raw_tab_completeness = evaluate_raw_tab_completeness(export_dir)
+    canonical_pair = _canonical_run_pair(run_a, run_b)
     sidecar = {
         "schema": "wta_edge_board.preflight.v1",
         "recorded_at_utc": _utc_now_iso(),
         "export_dir": os.path.normpath(export_dir),
         "manifest_generated_at_utc": manifest_generated_at,
-        "run_pair": _canonical_run_pair(run_a, run_b),
+        "run_pair": canonical_pair,
         "allow_csv_only_triage": bool(allow_csv_only_triage),
         "incident_tag": str(incident_tag or "").strip(),
         "preflight_evidence": {
             "raw_tab_completeness": raw_tab_completeness,
             "run_checklist_by_run_id": {
                 run_id: _run_checklist(run_rows, run_id)
-                for run_id in _canonical_run_pair(run_a, run_b)
-            }
+                for run_id in canonical_pair
+            },
+            "duplicate_summary_diagnostics_by_run_id": {
+                run_id: duplicate_diagnostics_by_run_id.get(
+                    run_id,
+                    {
+                        "raw_summary_rows": 0,
+                        "unique_summary_rows": 0,
+                        "duplicate_instances": 0,
+                        "identical_duplicate_groups": 0,
+                        "has_duplicate_summary_rows": False,
+                        "has_non_identical_duplicate_summary_rows": False,
+                        "compare_will_fail_due_to_duplicate_summary_rows": False,
+                    },
+                )
+                for run_id in canonical_pair
+            },
         },
     }
     output_path = Path(export_dir) / PREFLIGHT_SIDECAR_NAME
