@@ -1584,7 +1584,40 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             "decisionable_window_count": 2,
             "failing_decisionable_window_count": 0,
             "aggregate_status_counts": {"pass": 4, "true_fail": 0, "insufficient_sample": 1, "schema_missing": 0},
-            "window_reports": [{"window_days": 3, "pair_count": 2, "decisionable": True, "fail_rate": 0.0, "verdict": "pass"}],
+            "window_reports": [
+                {
+                    "window_days": 3,
+                    "pair_count": 2,
+                    "decisionable": True,
+                    "fail_rate": 0.0,
+                    "verdict": "pass",
+                    "pairs": [
+                        {
+                            "status": "fail",
+                            "failures": [
+                                "edge_volatility_above_ceiling (candidate=0.0500 > ceiling=0.0300)",
+                                "edge_volatility_above_ceiling (candidate=0.0500 > ceiling=0.0300)",
+                                "suppression_drift_exceeded (reason=foo)",
+                            ],
+                            "warnings": [
+                                "insufficient_sample_for_edge_volatility (scored_signals=3 required>=10)",
+                            ],
+                            "candidate": {"ended_at": "2026-03-24T00:10:00+00:00"},
+                        },
+                        {
+                            "status": "insufficient_sample",
+                            "failures": [
+                                "suppression_drift_exceeded (reason=bar)",
+                            ],
+                            "warnings": [
+                                "insufficient_sample_for_edge_volatility (scored_signals=2 required>=10)",
+                                "windowed_fallback_not_triggered (pair_count=0)",
+                            ],
+                            "candidate": {"ended_at": "2026-03-24T00:20:00+00:00"},
+                        },
+                    ],
+                }
+            ],
         }
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_reports_dir = Path(temp_dir) / "reports"
@@ -1603,8 +1636,20 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             self.assertIn("parity_contract_status", markdown)
             self.assertIn("decisionability_status", markdown)
             self.assertIn("quality_status", markdown)
+            self.assertIn("## Quality summary (compact)", markdown)
+            self.assertIn("edge_quality_daily_slo_quality_summary_v1", markdown)
             summary_lines = summary_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertGreaterEqual(len(summary_lines), 1)
+            quality_paths = list(temp_reports_dir.glob("edge_quality_daily_slo_quality_summary_*.json"))
+            self.assertEqual(1, len(quality_paths))
+            quality_summary = json.loads(quality_paths[0].read_text(encoding="utf-8"))
+            self.assertEqual({"pass": 0, "fail": 1, "insufficient_sample": 1}, quality_summary["status_counts"])
+            self.assertEqual("edge_volatility_above_ceiling", quality_summary["top_failure_codes"][0]["code"])
+            self.assertEqual(2, quality_summary["top_failure_codes"][0]["count"])
+            self.assertEqual("2026-03-24T00:10:00+00:00", quality_summary["top_failure_codes"][0]["first_seen_utc"])
+            self.assertEqual("2026-03-24T00:10:00+00:00", quality_summary["top_failure_codes"][0]["last_seen_utc"])
+            self.assertEqual("insufficient_sample_for_edge_volatility", quality_summary["top_warning_codes"][0]["code"])
+            self.assertEqual(2, quality_summary["top_warning_codes"][0]["count"])
 
 
 if __name__ == "__main__":

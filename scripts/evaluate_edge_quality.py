@@ -2438,8 +2438,11 @@ def write_daily_slo_artifacts(
     reports_path.mkdir(parents=True, exist_ok=True)
     daily_output = reports_path / f"edge_quality_daily_slo_{stamp}.json"
     daily_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    quality_summary = _build_daily_slo_quality_summary(report)
+    quality_summary_output = reports_path / f"edge_quality_daily_slo_quality_summary_{stamp}.json"
+    quality_summary_output.write_text(json.dumps(quality_summary, separators=(",", ":"), sort_keys=True) + "\n", encoding="utf-8")
     markdown_output = reports_path / f"edge_quality_daily_slo_summary_{stamp}.md"
-    markdown_output.write_text(_daily_slo_markdown_summary(report), encoding="utf-8")
+    markdown_output.write_text(_daily_slo_markdown_summary(report, quality_summary), encoding="utf-8")
 
     archive_root = Path(archive_dir) if archive_dir else reports_path / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -2477,7 +2480,83 @@ def write_daily_slo_artifacts(
     return daily_output, archive_summary
 
 
-def _daily_slo_markdown_summary(report: dict[str, Any]) -> str:
+def _extract_issue_code(item: Any) -> str:
+    token = str(item or "").strip()
+    if not token:
+        return "unknown"
+    return token.split()[0]
+
+
+def _resolve_pair_timestamp(pair: dict[str, Any]) -> str:
+    candidate = pair.get("candidate") or {}
+    baseline = pair.get("baseline") or {}
+    for key in ("ended_at", "endedAt"):
+        value = candidate.get(key) or baseline.get(key)
+        text = str(value or "").strip()
+        if text:
+            return text
+    return "unknown"
+
+
+def _build_daily_slo_quality_summary(report: dict[str, Any], top_n: int = 5) -> dict[str, Any]:
+    status_counts = {"pass": 0, "fail": 0, "insufficient_sample": 0}
+    failure_counts: dict[str, int] = {}
+    warning_counts: dict[str, int] = {}
+    failure_timestamps: dict[str, list[str]] = {}
+    pair_count = 0
+
+    for window in report.get("window_reports") or []:
+        for pair in window.get("pairs") or []:
+            pair_count += 1
+            status = str(pair.get("status") or "").strip().lower()
+            if status in status_counts:
+                status_counts[status] += 1
+
+            pair_timestamp = _resolve_pair_timestamp(pair)
+            for failure in pair.get("failures") or []:
+                code = _extract_issue_code(failure)
+                failure_counts[code] = failure_counts.get(code, 0) + 1
+                failure_timestamps.setdefault(code, []).append(pair_timestamp)
+
+            for warning in pair.get("warnings") or []:
+                code = _extract_issue_code(warning)
+                warning_counts[code] = warning_counts.get(code, 0) + 1
+
+    top_failure_codes = sorted(
+        failure_counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[: max(0, int(top_n))]
+    top_warning_codes = sorted(
+        warning_counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[: max(0, int(top_n))]
+
+    top_failures = []
+    for code, count in top_failure_codes:
+        timestamps = sorted(ts for ts in failure_timestamps.get(code, []) if ts and ts != "unknown")
+        top_failures.append(
+            {
+                "code": code,
+                "count": count,
+                "first_seen_utc": timestamps[0] if timestamps else "unknown",
+                "last_seen_utc": timestamps[-1] if timestamps else "unknown",
+            }
+        )
+
+    top_warnings = [{"code": code, "count": count} for code, count in top_warning_codes]
+    return {
+        "schema": "edge_quality_daily_slo_quality_summary_v1",
+        "generated_at_utc": report.get("generated_at_utc"),
+        "as_of_utc": report.get("as_of_utc"),
+        "pair_count": pair_count,
+        "status_counts": status_counts,
+        "top_failure_codes": top_failures,
+        "top_warning_codes": top_warnings,
+    }
+
+
+def _daily_slo_markdown_summary(report: dict[str, Any], quality_summary: dict[str, Any] | None = None) -> str:
+    summary = quality_summary or _build_daily_slo_quality_summary(report)
     window_lines: list[str] = []
     for item in report.get("window_reports") or []:
         window_days = item.get("window_days")
@@ -2514,6 +2593,33 @@ def _daily_slo_markdown_summary(report: dict[str, Any]) -> str:
             "| window_days | pair_count | decisionable_pair_count | fail_rate | verdict |",
             "|---:|---:|---:|---:|---|",
             *window_lines,
+            "",
+            "## Quality summary (compact)",
+            "",
+            "```json",
+            json.dumps(summary, separators=(",", ":"), sort_keys=True),
+            "```",
+            "",
+            "### Top failure codes",
+            "",
+            "| code | count | first_seen_utc | last_seen_utc |",
+            "|---|---:|---|---|",
+            *(
+                f"| `{item.get('code', 'unknown')}` | {int(item.get('count', 0) or 0)} | "
+                f"`{item.get('first_seen_utc', 'unknown')}` | `{item.get('last_seen_utc', 'unknown')}` |"
+                for item in (summary.get("top_failure_codes") or [])
+            ),
+            "" if summary.get("top_failure_codes") else "| `none` | 0 | `n/a` | `n/a` |",
+            "",
+            "### Top warning codes",
+            "",
+            "| code | count |",
+            "|---|---:|",
+            *(
+                f"| `{item.get('code', 'unknown')}` | {int(item.get('count', 0) or 0)} |"
+                for item in (summary.get("top_warning_codes") or [])
+            ),
+            "" if summary.get("top_warning_codes") else "| `none` | 0 |",
             "",
         ]
     )
