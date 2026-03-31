@@ -1328,10 +1328,16 @@ def evaluate_edge_quality_gate(
         item.startswith("missing_edge_volatility_metric") for item in failures
     )
     if failures:
-        failures.append(
-            "dominant_no_hit_reason "
-            f"(candidate={candidate.get('no_hit_terminal_reason_code', 'none')})"
-        )
+        candidate_terminal_reason = str(candidate.get("no_hit_terminal_reason_code") or "none")
+        baseline_terminal_reason = str(baseline.get("no_hit_terminal_reason_code") or "none")
+        candidate_matched_events = int(candidate.get("matched_events") or 0)
+        baseline_matched_events = int(baseline.get("matched_events") or 0)
+        candidate_has_no_actionable_hits = candidate_matched_events <= 0 or candidate_terminal_reason != "none"
+        baseline_has_no_actionable_hits = baseline_matched_events <= 0 or baseline_terminal_reason != "none"
+        if candidate_has_no_actionable_hits:
+            failures.append(f"dominant_no_hit_reason (candidate={candidate_terminal_reason})")
+        elif baseline_has_no_actionable_hits:
+            failures.append(f"dominant_no_hit_reason_baseline (baseline={baseline_terminal_reason})")
         status = "schema_missing" if has_schema_failure else "fail"
     elif has_insufficient_sample_warning:
         status = "insufficient_sample"

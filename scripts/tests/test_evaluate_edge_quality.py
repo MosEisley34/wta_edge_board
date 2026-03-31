@@ -199,6 +199,55 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertTrue(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
         self.assertTrue(any("suppression_drift_exceeded" in item for item in report["failures"]))
 
+    def test_candidate_with_hits_and_none_no_hit_reason_does_not_emit_dominant_no_hit_reason(self):
+        rows = [
+            {
+                **self._summary_row("run-baseline", "2026-03-01T00:00:00Z", edge_volatility=0.01),
+                "feature_completeness": 0.9,
+                "no_hit_terminal_reason_code": "none",
+            },
+            {
+                **self._summary_row("run-candidate", "2026-03-02T00:00:00Z", edge_volatility=0.01, matched_events=8),
+                "feature_completeness": 0.4,
+                "no_hit_terminal_reason_code": "none",
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(min_feature_completeness=0.6, max_edge_volatility=0.03),
+        )
+        self.assertEqual("fail", report["status"])
+        self.assertTrue(any("feature_completeness_below_floor" in item for item in report["failures"]))
+        self.assertFalse(any(item.startswith("dominant_no_hit_reason") for item in report["failures"]))
+
+    def test_baseline_only_no_hit_emits_baseline_scoped_failure_code(self):
+        rows = [
+            {
+                **self._summary_row("run-baseline", "2026-03-01T00:00:00Z", edge_volatility=0.01, matched_events=0),
+                "feature_completeness": 0.9,
+                "no_hit_terminal_reason_code": "events_outside_time_window",
+            },
+            {
+                **self._summary_row("run-candidate", "2026-03-02T00:00:00Z", edge_volatility=0.01, matched_events=8),
+                "feature_completeness": 0.4,
+                "no_hit_terminal_reason_code": "none",
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(min_feature_completeness=0.6, max_edge_volatility=0.03),
+        )
+        self.assertEqual("fail", report["status"])
+        self.assertTrue(any("feature_completeness_below_floor" in item for item in report["failures"]))
+        self.assertIn(
+            "dominant_no_hit_reason_baseline (baseline=events_outside_time_window)",
+            report["failures"],
+        )
+
     def test_cli_returns_non_zero_for_failures(self):
         cmd = [
             "python3",
