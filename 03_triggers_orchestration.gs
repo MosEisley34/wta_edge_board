@@ -719,6 +719,12 @@ function runEdgeBoard() {
     const reasonMetadataMaps = stageSummarySnapshots.map((summary) => summary.reason_metadata);
 
     const combinedReasonCodes = mergeReasonCounts_(reasonCodeMaps);
+    if (!Object.prototype.hasOwnProperty.call(combinedReasonCodes, 'STATS_MISS_A')) {
+      combinedReasonCodes.STATS_MISS_A = 0;
+    }
+    if (!Object.prototype.hasOwnProperty.call(combinedReasonCodes, 'STATS_MISS_B')) {
+      combinedReasonCodes.STATS_MISS_B = 0;
+    }
     const stageReasonCodeMutationDiagnostics = buildStageReasonCodeMutationDiagnostics_([
       { stage: 'stageFetchOdds', summary: oddsStage.summary, snapshot: stageSummarySnapshots[0].reason_codes },
       { stage: 'stageFetchSchedule', summary: scheduleStage.summary, snapshot: stageSummarySnapshots[1].reason_codes },

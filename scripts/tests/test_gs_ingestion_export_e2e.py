@@ -347,6 +347,39 @@ class GoogleSheetIngestionExportE2ETests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(0, precheck.returncode, msg=precheck.stderr)
+            with (export_dir / "Run_Log.csv").open("r", encoding="utf-8", newline="") as handle:
+                exported_run_log_csv_rows = list(csv.DictReader(handle))
+            exported_run_log_json_rows = json.loads((export_dir / "Run_Log.json").read_text(encoding="utf-8"))
+            exported_summary_csv_rows = [
+                row
+                for row in exported_run_log_csv_rows
+                if row.get("row_type") == "summary" and row.get("stage") == "runEdgeBoard"
+            ]
+            exported_summary_json_rows = [
+                row
+                for row in exported_run_log_json_rows
+                if str(row.get("row_type")) == "summary" and str(row.get("stage")) == "runEdgeBoard"
+            ]
+            self.assertGreaterEqual(len(exported_summary_csv_rows), 2)
+            self.assertGreaterEqual(len(exported_summary_json_rows), 2)
+            for row in exported_summary_csv_rows:
+                payload = json.loads(row.get("stage_summaries") or "{}")
+                placeholders = (
+                    payload.get("compare_prerequisites", {}).get("reason_code_placeholders", {})
+                    if isinstance(payload, dict)
+                    else {}
+                )
+                self.assertIn("STATS_MISS_A", placeholders)
+                self.assertIn("STATS_MISS_B", placeholders)
+            for row in exported_summary_json_rows:
+                payload = row.get("stage_summaries") or {}
+                placeholders = (
+                    payload.get("compare_prerequisites", {}).get("reason_code_placeholders", {})
+                    if isinstance(payload, dict)
+                    else {}
+                )
+                self.assertIn("STATS_MISS_A", placeholders)
+                self.assertIn("STATS_MISS_B", placeholders)
 
             metrics = subprocess.run(
                 [
