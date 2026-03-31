@@ -1671,6 +1671,41 @@ function testRunEdgeBoard_emitsComparePrerequisites_oddsNoMatchRun_() {
   }
 }
 
+function testRunEdgeBoard_emitsComparePrerequisites_stageFetchPlayerStatsSkippedNoDemand_() {
+  const harness = createRunEdgeBoardTestHarness_({
+    nowMs: 1000000,
+    lastRunTs: 0,
+    debounceMs: 1000,
+    orchestrationScenario: {
+      oddsEvents: [],
+      oddsRows: [],
+      scheduleEvents: [],
+      scheduleRows: [],
+      matchedCount: 0,
+      unmatchedCount: 0,
+      rejectedCount: 0,
+      matchReasonCodes: { no_odds_candidates: 1 },
+      signalRows: [],
+      sentCount: 0,
+    },
+  });
+
+  try {
+    runEdgeBoardAllowParityFailure_();
+    const summary = harness.logs.filter(function (row) {
+      return row.row_type === 'summary' && row.stage === 'runEdgeBoard';
+    })[0];
+    assertRunSummaryComparePrerequisites_(summary, { requested: 0, resolved: 0, unresolved: 0 });
+    const reasonCodes = summary.reason_codes || {};
+    assertEquals_(true, Object.prototype.hasOwnProperty.call(reasonCodes, 'STATS_MISS_A'));
+    assertEquals_(0, Number(reasonCodes.STATS_MISS_A || 0));
+    assertEquals_(true, Object.prototype.hasOwnProperty.call(reasonCodes, 'STATS_MISS_B'));
+    assertEquals_(0, Number(reasonCodes.STATS_MISS_B || 0));
+  } finally {
+    harness.restore();
+  }
+}
+
 function testStageFetchPlayerStats_emitsZeroedSummaryOnNoDemandRun_() {
   const result = runStageFetchPlayerStatsScenario_({
     oddsEvents: [],
