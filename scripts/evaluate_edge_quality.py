@@ -39,6 +39,12 @@ RUN_LOG_TYPED_FIELDS: dict[str, type] = {
     "no_hit_odds_present_but_match_failed_count": int,
     "no_hit_schema_invalid_metrics_count": int,
 }
+RUN_LOG_JSON_OBJECT_FIELDS: tuple[str, ...] = (
+    "reason_alias_payload",
+    "reason_aliases",
+    "fallback_aliases",
+    "reason_code_aliases",
+)
 
 STANDARD_COMPARE_RUNBOOK_PATH = "runbook/README.md#phase-2--baseline-vs-policy-on-comparison-on-matched-windows"
 STAKE_POLICY_ENABLED_COMPARE_RUNBOOK_PATH = (
@@ -142,6 +148,12 @@ def _normalize_typed_run_log_fields(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     for field, expected_type in RUN_LOG_TYPED_FIELDS.items():
         normalized[field] = _coerce_typed_field(normalized.get(field), expected_type)
+    for field in RUN_LOG_JSON_OBJECT_FIELDS:
+        parsed = _parse_json_like(normalized.get(field), None)
+        if isinstance(parsed, dict):
+            normalized[field] = parsed
+        elif normalized.get(field) in ("", None):
+            normalized[field] = {}
     _validate_run_log_row_schema(normalized)
     return normalized
 
@@ -738,24 +750,80 @@ def _normalize_legacy_summary_row(summary_row: dict[str, Any]) -> dict[str, Any]
     return normalized
 
 
-def _reason_code_totals(summary_row: dict[str, Any]) -> tuple[dict[str, float], str | None]:
+def _collect_fallback_aliases(summary_row: dict[str, Any], payload: dict[str, Any] | None = None) -> dict[str, str]:
+    fallback_aliases: dict[str, str] = {}
+
+    def _merge(candidate: Any) -> None:
+        if not isinstance(candidate, dict):
+            return
+        for alias, canonical in candidate.items():
+            alias_text = str(alias or "").strip()
+            canonical_text = str(canonical or "").strip()
+            if not alias_text or not canonical_text:
+                continue
+            fallback_aliases[alias_text] = canonical_text
+
+    _merge(summary_row.get("fallback_aliases"))
+    _merge(summary_row.get("reason_code_aliases"))
+    if isinstance(payload, dict):
+        _merge(payload.get("fallback_aliases"))
+        _merge(payload.get("reason_code_aliases"))
+    for stage in _extract_stage_summaries(summary_row):
+        _merge(stage.get("fallback_aliases"))
+        metadata = _parse_json_like(stage.get("reason_metadata"), {})
+        if isinstance(metadata, dict):
+            _merge(metadata.get("fallback_aliases"))
+            _merge(metadata.get("reason_code_aliases"))
+    return fallback_aliases
+
+
+def _reason_code_totals(summary_row: dict[str, Any]) -> tuple[dict[str, float], str | None, dict[str, Any]]:
     payload = _parse_json_like(summary_row.get("reason_codes"), {})
-    fallback_aliases = _parse_json_like(summary_row.get("fallback_aliases"), {})
     schema_id = str(summary_row.get("schema_id") or REASON_CODE_ALIAS_SCHEMA_ID)
+    resolution = {
+        "fallback_only_aliases_used": [],
+        "canonical_precedence_applied": [],
+    }
 
     reason_map = payload
     if isinstance(payload, dict) and isinstance(payload.get("reason_codes"), dict):
         reason_map = payload.get("reason_codes")
-        fallback_aliases = payload.get("fallback_aliases") or fallback_aliases
         schema_id = str(payload.get("schema_id") or schema_id)
 
     if not isinstance(reason_map, dict):
-        return {}, "unsupported_artifact_shape_reason_codes"
-    if not isinstance(fallback_aliases, dict):
-        fallback_aliases = {}
+        return {}, "unsupported_artifact_shape_reason_codes", resolution
+    fallback_aliases = _collect_fallback_aliases(summary_row, payload if isinstance(payload, dict) else None)
 
-    expanded = _expand_reason_map(reason_map, schema_id=schema_id, fallback_aliases=fallback_aliases)
     canonical_to_alias = REASON_CODE_ALIAS_DICTIONARIES.get(schema_id) or {}
+    alias_to_canonical = {alias: canonical for canonical, alias in canonical_to_alias.items()}
+    canonical_values: dict[str, float] = {}
+    fallback_values: dict[str, float] = {}
+    for raw_key, raw_value in reason_map.items():
+        key = str(raw_key)
+        try:
+            numeric = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        canonical_key = alias_to_canonical.get(key) or fallback_aliases.get(key) or key
+        if canonical_key == key:
+            canonical_values[canonical_key] = canonical_values.get(canonical_key, 0.0) + numeric
+            continue
+        if key in fallback_aliases and key not in alias_to_canonical:
+            resolution["fallback_only_aliases_used"].append(key)
+            fallback_values[canonical_key] = fallback_values.get(canonical_key, 0.0) + numeric
+        else:
+            canonical_values[canonical_key] = canonical_values.get(canonical_key, 0.0) + numeric
+
+    expanded = _expand_reason_map(
+        canonical_values if canonical_values else reason_map,
+        schema_id=schema_id,
+        fallback_aliases=fallback_aliases,
+    )
+    for canonical_key, numeric in fallback_values.items():
+        if canonical_key not in expanded:
+            expanded[canonical_key] = numeric
+    for canonical_key in sorted(set(canonical_values).intersection(fallback_values)):
+        resolution["canonical_precedence_applied"].append(canonical_key)
     normalized: dict[str, float] = {}
     for key, value in expanded.items():
         try:
@@ -766,7 +834,11 @@ def _reason_code_totals(summary_row: dict[str, Any]) -> tuple[dict[str, float], 
         alias = canonical_to_alias.get(str(key))
         if alias:
             normalized[alias] = normalized.get(alias, 0.0) + numeric
-    return normalized, None
+    resolution["fallback_only_aliases_used"] = sorted(set(str(item) for item in resolution["fallback_only_aliases_used"]))
+    resolution["canonical_precedence_applied"] = sorted(
+        set(str(item) for item in resolution["canonical_precedence_applied"])
+    )
+    return normalized, None, resolution
 
 
 def _extract_feature_completeness(summary_row: dict[str, Any]) -> tuple[float | None, str | None]:
@@ -817,7 +889,7 @@ def _extract_feature_completeness(summary_row: dict[str, Any]) -> tuple[float | 
         except (TypeError, ValueError, ZeroDivisionError):
             continue
 
-    reason_totals, reason_diag = _reason_code_totals(summary_row)
+    reason_totals, reason_diag, _ = _reason_code_totals(summary_row)
     enriched = float(reason_totals.get("stats_enriched", reason_totals.get("STATS_ENR", 0.0)) or 0.0)
     missing_a = float(reason_totals.get("stats_missing_player_a", reason_totals.get("STATS_MISS_A", 0.0)) or 0.0)
     missing_b = float(reason_totals.get("stats_missing_player_b", reason_totals.get("STATS_MISS_B", 0.0)) or 0.0)
@@ -1135,6 +1207,13 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
         diagnostics["feature_completeness_reason_code"] = feature_diag
     if edge_diag:
         diagnostics["edge_volatility_reason_code"] = edge_diag
+    _, _, reason_resolution = _reason_code_totals(summary)
+    if reason_resolution.get("canonical_precedence_applied"):
+        diagnostics["reason_canonical_precedence_applied"] = ",".join(
+            reason_resolution["canonical_precedence_applied"]
+        )
+    if reason_resolution.get("fallback_only_aliases_used"):
+        diagnostics["reason_fallback_only_aliases_used"] = ",".join(reason_resolution["fallback_only_aliases_used"])
     legacy_normalization = summary.get("_legacy_normalization") if isinstance(summary, dict) else None
     if isinstance(legacy_normalization, dict):
         markers = legacy_normalization.get("applied_markers")

@@ -527,6 +527,109 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertTrue(any("feature_completeness_below_floor" in item for item in report["failures"]))
         self.assertTrue(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
 
+    def test_reason_mapping_prefers_canonical_codes_over_fallback_alias_duplicates(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-baseline",
+                "ended_at": "2026-03-01T00:00:00Z",
+                "edge_volatility": 0.01,
+                "reason_codes": json.dumps(
+                    {
+                        "schema_id": "reason_code_alias_v1",
+                        "reason_codes": {"STATS_ENR": 6, "STATS_MISS_A": 1, "STATS_MISS_B": 1},
+                    }
+                ),
+                "stage_summaries": "[]",
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-candidate",
+                "ended_at": "2026-03-02T00:00:00Z",
+                "edge_volatility": 0.01,
+                "reason_codes": json.dumps(
+                    {
+                        "schema_id": "reason_code_alias_v1",
+                        "reason_codes": {"STATS_ENR": 7, "UNK_STATS_ENR": 1, "STATS_MISS_A": 1, "STATS_MISS_B": 1},
+                        "fallback_aliases": {"UNK_STATS_ENR": "stats_enriched"},
+                    }
+                ),
+                "stage_summaries": json.dumps(
+                    [
+                        {
+                            "stage": "stageFetchPlayerStats",
+                            "reason_metadata": {"fallback_aliases": {"UNK_STATS_ENR": "stats_enriched"}},
+                        }
+                    ]
+                ),
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(min_feature_completeness=0.7, max_edge_volatility=0.03),
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertAlmostEqual(0.7777777777, report["candidate"]["feature_completeness"], places=6)
+        self.assertIn("stats_enriched", report["candidate"]["diagnostics"]["reason_canonical_precedence_applied"])
+
+    def test_reason_mapping_accepts_fallback_aliases_from_stage_reason_metadata(self):
+        rows = [
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-baseline",
+                "ended_at": "2026-03-01T00:00:00Z",
+                "edge_volatility": 0.01,
+                "reason_codes": json.dumps(
+                    {
+                        "schema_id": "reason_code_alias_v1",
+                        "reason_codes": {"STATS_ENR": 6, "STATS_MISS_A": 1, "STATS_MISS_B": 1},
+                    }
+                ),
+                "stage_summaries": "[]",
+            },
+            {
+                "row_type": "summary",
+                "stage": "runEdgeBoard",
+                "run_id": "run-candidate",
+                "ended_at": "2026-03-02T00:00:00Z",
+                "edge_volatility": 0.01,
+                "reason_codes": json.dumps(
+                    {
+                        "schema_id": "reason_code_alias_v1",
+                        "reason_codes": {"UNK_A": 4, "UNK_B": 1, "UNK_C": 1},
+                    }
+                ),
+                "stage_summaries": json.dumps(
+                    [
+                        {
+                            "stage": "stageFetchPlayerStats",
+                            "reason_metadata": {
+                                "fallback_aliases": {
+                                    "UNK_A": "stats_enriched",
+                                    "UNK_B": "stats_missing_player_a",
+                                    "UNK_C": "stats_missing_player_b",
+                                }
+                            },
+                        }
+                    ]
+                ),
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(min_feature_completeness=0.6, max_edge_volatility=0.03),
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertAlmostEqual(4 / 6, report["candidate"]["feature_completeness"], places=6)
+        self.assertEqual("UNK_A,UNK_B,UNK_C", report["candidate"]["diagnostics"]["reason_fallback_only_aliases_used"])
+
     def test_missing_metrics_emit_reason_code_diagnostics(self):
         rows = [
             {
@@ -579,6 +682,35 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             self.assertEqual(0.8, rows[0]["feature_completeness"])
             self.assertEqual(4, rows[0]["matched_events"])
             self.assertIsNone(rows[0]["scored_signals"])
+            self.assertEqual({}, rows[0]["fallback_aliases"])
+            self.assertEqual({}, rows[0]["reason_aliases"])
+
+    def test_load_run_log_rows_preserves_numeric_types_and_json_fields_without_coercion_regression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Run_Log.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "row_type": "summary",
+                            "stage": "runEdgeBoard",
+                            "run_id": "run-typed-no-regression",
+                            "feature_completeness": 0.75,
+                            "matched_events": 5,
+                            "scored_signals": 2,
+                            "fallback_aliases": "{\"UNK_A\":\"stats_enriched\"}",
+                            "reason_aliases": {"UNK_A": "stats_enriched"},
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rows = load_run_log_rows(str(path))
+            self.assertIsInstance(rows[0]["feature_completeness"], float)
+            self.assertIsInstance(rows[0]["matched_events"], int)
+            self.assertIsInstance(rows[0]["scored_signals"], int)
+            self.assertEqual({"UNK_A": "stats_enriched"}, rows[0]["fallback_aliases"])
+            self.assertEqual({"UNK_A": "stats_enriched"}, rows[0]["reason_aliases"])
 
     def test_load_run_log_rows_marks_feature_completeness_schema_violation(self):
         with tempfile.TemporaryDirectory() as tmp:
