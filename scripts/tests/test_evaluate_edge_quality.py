@@ -214,6 +214,36 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual("fail", payload["status"])
 
+    def test_cli_compare_duplicate_summary_rows_emits_structured_failure_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "Run_Log.json"
+            fixture.write_text(
+                json.dumps(
+                    [
+                        self._summary_row("run-baseline", "2026-03-01T00:00:00Z", edge_volatility=0.01),
+                        self._summary_row("run-candidate", "2026-03-02T00:00:00Z", edge_volatility=0.02),
+                        self._summary_row("run-candidate", "2026-03-02T00:05:00Z", edge_volatility=0.03),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            cmd = [
+                "python3",
+                str(ROOT / "scripts" / "evaluate_edge_quality.py"),
+                str(fixture),
+                "--baseline-run-id",
+                "run-baseline",
+                "--candidate-run-id",
+                "run-candidate",
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(2, proc.returncode, msg=proc.stdout + proc.stderr)
+        self.assertEqual("", proc.stdout)
+        self.assertIn("duplicate_summary_rows", proc.stderr)
+        self.assertIn('"error_type": "run_summary_cardinality_mismatch"', proc.stderr)
+        self.assertIn('"qualifying_row_count": 2', proc.stderr)
+        self.assertNotIn("Traceback (most recent call last)", proc.stderr)
+
 
     def test_cli_preflight_fails_when_run_id_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
