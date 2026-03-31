@@ -23,7 +23,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from runtime_artifact_codec import normalize_run_log_row
+from runtime_artifact_codec import (
+    RUN_LOG_STRUCTURED_FIELD_KINDS,
+    is_object_string_sentinel,
+    normalize_run_log_row,
+    normalize_state_row,
+)
 
 
 ARTIFACTS = (
@@ -224,6 +229,49 @@ def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "action": "set_null",
                 }
                 schema_errors.append(violation)
+        for field, kind in RUN_LOG_STRUCTURED_FIELD_KINDS.items():
+            if field not in row:
+                continue
+            raw_value = row.get(field)
+            normalized_value = converted.get(field)
+            if normalized_value is not None:
+                continue
+            raw_text = raw_value.strip() if isinstance(raw_value, str) else raw_value
+            if raw_text in ("", None):
+                continue
+            if isinstance(raw_text, str) and is_object_string_sentinel(raw_text):
+                run_id = str(converted.get("run_id") or "")
+                stage = str(converted.get("stage") or "")
+                violation_counts[(run_id, stage, field)] += 1
+                schema_errors.append(
+                    {
+                        "field": field,
+                        "expected": f"{kind}_or_null",
+                        "actual": "object_string_sentinel",
+                        "raw": raw_value,
+                        "action": "set_null",
+                    }
+                )
+                continue
+            if isinstance(raw_text, str):
+                parsed = None
+                try:
+                    parsed = json.loads(raw_text)
+                except Exception:
+                    parsed = None
+                if parsed is None or not isinstance(parsed, (dict, list)):
+                    run_id = str(converted.get("run_id") or "")
+                    stage = str(converted.get("stage") or "")
+                    violation_counts[(run_id, stage, field)] += 1
+                    schema_errors.append(
+                        {
+                            "field": field,
+                            "expected": f"{kind}_or_null",
+                            "actual": type(raw_value).__name__,
+                            "raw": raw_value,
+                            "action": "set_null",
+                        }
+                    )
         if schema_errors:
             converted["schema_violation"] = {
                 "artifact": "Run_Log",
@@ -233,6 +281,13 @@ def _apply_run_log_typing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         normalized.append(converted)
     _emit_schema_warning_summary(violation_counts)
+    return normalized
+
+
+def _apply_state_normalization(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        normalized.append(normalize_state_row(dict(row)))
     return normalized
 
 
@@ -272,6 +327,8 @@ def main() -> int:
                 rows = _read_csv_rows(csv_path)
                 if label == "Run_Log":
                     rows = _apply_run_log_typing(rows)
+                elif label == "State":
+                    rows = _apply_state_normalization(rows)
                 _write_json_rows(out_json_path, rows)
                 print(f"Mirrored {csv_path} -> {out_json_path} ({len(rows)} rows)")
             else:

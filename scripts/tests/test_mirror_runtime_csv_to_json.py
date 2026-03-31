@@ -323,10 +323,68 @@ class MirrorRuntimeCsvToJsonTypingTests(unittest.TestCase):
             self.assertEqual(csv_rows, [normalize_run_log_row(dict(row)) for row in json_rows])
 
             empty_row = next(row for row in json_rows if row["run_id"] == "run-empty")
-            self.assertEqual([], empty_row["stage_summaries"])
-            self.assertEqual({}, empty_row["reason_codes"])
-            self.assertEqual({}, empty_row["summary"])
-            self.assertEqual({}, empty_row["reason_metadata"])
+            self.assertIsNone(empty_row["stage_summaries"])
+            self.assertIsNone(empty_row["reason_codes"])
+            self.assertIsNone(empty_row["summary"])
+            self.assertIsNone(empty_row["reason_metadata"])
+
+    def test_object_string_sentinel_is_flagged_and_nullified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (root / "Run_Log.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["run_id", "stage", "reason_codes", "stage_summaries"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "run_id": "run-sentinel",
+                        "stage": "runEdgeBoard",
+                        "reason_codes": "[object Object]",
+                        "stage_summaries": "[object Object]",
+                    }
+                )
+            (root / "State.csv").write_text("run_id,state_key,state_value\nrun-sentinel,k,v\n", encoding="utf-8")
+
+            proc = subprocess.run(
+                ["python3", str(SCRIPT), "--input-dir", str(root)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc.returncode, msg=proc.stderr)
+            payload = json.loads((root / "Run_Log.json").read_text(encoding="utf-8"))
+            row = payload[0]
+            self.assertIsNone(row["reason_codes"])
+            self.assertIsNone(row["stage_summaries"])
+            self.assertIn("schema_violation", row)
+            self.assertEqual(2, len(row["schema_violation"]["errors"]))
+
+    def test_state_object_values_are_preserved_and_absent_is_null(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Run_Log.csv").write_text("run_id,stage\nrun-state,runEdgeBoard\n", encoding="utf-8")
+            with (root / "State.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["run_id", "state_key", "state_value"])
+                writer.writeheader()
+                writer.writerow({"run_id": "run-state", "state_key": "a", "state_value": "{\"x\":1}"})
+                writer.writerow({"run_id": "run-state", "state_key": "b", "state_value": ""})
+                writer.writerow({"run_id": "run-state", "state_key": "c", "state_value": "[object Object]"})
+
+            proc = subprocess.run(
+                ["python3", str(SCRIPT), "--input-dir", str(root)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc.returncode, msg=proc.stderr)
+            state_payload = json.loads((root / "State.json").read_text(encoding="utf-8"))
+            self.assertEqual({"x": 1}, state_payload[0]["state_value"])
+            self.assertIsNone(state_payload[1]["state_value"])
+            self.assertIsNone(state_payload[2]["state_value"])
 
     def test_reuses_existing_run_log_json_list_and_object_schema_variants(self):
         for fixture_name in ("run_log_rows_list.json", "run_log_rows_object.json"):
