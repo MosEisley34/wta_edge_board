@@ -6014,6 +6014,10 @@ function testStageMatchEvents_reducesNoPlayerMatchAcross32RejectionDiagnostics_(
     ['B. Haddad Maia', 'Emma Navarro'],
     ['V. Kudermetova', 'Q. Zheng'],
     ['K. Pliskova', 'Magda Linette'],
+    ['S. Bejlek', 'A. Urhobo'],
+    ['H. Baptiste', 'R. Zarazua'],
+    ['Akasha Urhobo', 'Sara Bejlek'],
+    ['Renata Zarazua', 'Hailey Baptiste'],
   ].map(function (pair, idx) {
     return {
       event_id: 'odds_' + (idx + 1),
@@ -6056,6 +6060,10 @@ function testStageMatchEvents_reducesNoPlayerMatchAcross32RejectionDiagnostics_(
     ['Beatriz Haddad Maia', 'Emma Navarro'],
     ['Veronika Kudermetova', 'Qinwen Zheng'],
     ['Karolina Pliskova', 'Magda Linette'],
+    ['Sara Bejlek', 'Akasha Urhobo'],
+    ['Hailey Baptiste', 'Renata Zarazua'],
+    ['Sara Bejlek', 'Akasha Urhobo'],
+    ['Hailey Baptiste', 'Renata Zarazua'],
   ].map(function (pair, idx) {
     return {
       event_id: 'sched_' + (idx + 1),
@@ -6086,9 +6094,9 @@ function testStageMatchEvents_reducesNoPlayerMatchAcross32RejectionDiagnostics_(
     return b.count - a.count;
   }).slice(0, 3);
 
-  assertEquals_(32, stage.summary.input_count);
-  assertTrue_(stage.matchedCount > 8, 'expected MATCH_CT increase above 8 for alias-heavy diagnostics');
-  assertTrue_((stage.summary.reason_codes.no_player_match || 0) < 18, 'expected NO_P_MATCH decrease below 18');
+  assertEquals_(36, stage.summary.input_count);
+  assertTrue_(stage.matchedCount > 12, 'expected MATCH_CT increase above 12 for alias-heavy diagnostics');
+  assertTrue_((stage.summary.reason_codes.no_player_match || 0) < 20, 'expected NO_P_MATCH decrease below 20');
   assertTrue_(topRepeated.length <= 3, 'expected top repeated unmatched extraction to remain bounded');
 
   const originalDateNow = Date.now;
@@ -6190,7 +6198,40 @@ function testStageMatchEvents_recordsStructuredDiagnosticsForUnresolvedSamples_(
   assertEquals_(2, Number(stage.summary.reason_metadata.unresolved_total || 0));
   assertTrue_(Array.isArray(stage.summary.reason_metadata.top_unresolved_competition_examples));
   assertTrue_(Array.isArray(stage.summary.reason_metadata.top_unresolved_player_examples));
+  assertTrue_(Array.isArray(stage.summary.reason_metadata.top_unresolved_competition_failure_examples));
+  assertTrue_(Number((stage.summary.reason_metadata.normalization_failure_type_counts || {}).time_window_drift || 0) >= 1);
   assertEquals_('wta500 doha', stage.summary.reason_metadata.top_unresolved_competition_examples[0].normalized_competition);
+}
+
+function testStageMatchEvents_promotesNearestCandidateForHighConfidenceUnresolvedPair_() {
+  const stage = stageMatchEvents('run_nearest_promotion', {
+    MATCH_TIME_TOLERANCE_MIN: 5,
+    MATCH_FALLBACK_EXPANSION_MIN: 5,
+    MATCH_SOFT_MATCH_ENABLED: 'false',
+    MATCH_NEAREST_CANDIDATE_MIN_SIMILARITY: 0.99,
+    MATCH_NEAREST_PROMOTION_ENABLED: true,
+    MATCH_NEAREST_PROMOTION_MIN_SIMILARITY: 0.94,
+    MATCH_NEAREST_PROMOTION_MAX_DELTA_MIN: 40,
+    PLAYER_ALIAS_MAP_JSON: '{}',
+  }, [{
+    event_id: 'odds_1',
+    competition: 'WTA 500 Doha (Qatar TotalEnergies Open)',
+    player_1: 'Hailey Baptiste',
+    player_2: 'Renata Zarazuaa',
+    commence_time: new Date('2025-03-01T12:00:00.000Z'),
+  }], [{
+    event_id: 'sched_1',
+    canonical_tier: 'WTA_500',
+    competition: 'Qatar Total Energies Open - Doha WTA500',
+    player_1: 'Hailey Baptiste',
+    player_2: 'Renata Zarazua',
+    start_time: new Date('2025-03-01T12:18:00.000Z'),
+  }]);
+
+  assertEquals_(1, stage.matchedCount);
+  assertEquals_(0, stage.rejectedCount);
+  assertEquals_('nearest_candidate_promoted', stage.rows[0].match_type);
+  assertEquals_(1, Number(stage.summary.reason_codes.nearest_candidate_promoted || 0));
 }
 
 function testStageMatchEvents_reportsPrimaryAndFallbackWindowDeltasWhenFallbackExhausted_() {
