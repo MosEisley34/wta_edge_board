@@ -2128,9 +2128,41 @@ def evaluate_edge_quality_compare_report(
         runbook_branch = "stake_policy_enabled_compare_runbook"
         runbook_path = STAKE_POLICY_ENABLED_COMPARE_RUNBOOK_PATH
 
+    fallback_status_counts = {"pass": 0, "insufficient_sample": 0, "true_fail": 0, "schema_missing": 0}
+    if isinstance(fallback_result, dict):
+        raw_status_counts = fallback_result.get("status_counts") or {}
+        for key in tuple(fallback_status_counts.keys()):
+            fallback_status_counts[key] = int(raw_status_counts.get(key, 0) or 0)
+    window_run_ids = []
+    if isinstance(fallback_result, dict):
+        raw_window_run_ids = fallback_result.get("window_run_ids") or []
+        if isinstance(raw_window_run_ids, list):
+            window_run_ids = [str(item) for item in raw_window_run_ids if str(item or "").strip()]
+    window_run_id_range: dict[str, Any] = {"first": None, "last": None}
+    if window_run_ids:
+        window_run_id_range = {"first": window_run_ids[0], "last": window_run_ids[-1]}
+    window_health_summary = {
+        "status_counts": fallback_status_counts,
+        "triggered_by_reason": (
+            str((fallback_result or {}).get("triggered_by_reason") or strict_status_reason)
+            if strict_status == "insufficient_sample"
+            else "not_triggered"
+        ),
+        "triggered_by_status": (
+            str((fallback_result or {}).get("triggered_by_status") or strict_status)
+            if strict_status == "insufficient_sample"
+            else "not_triggered"
+        ),
+        "window_run_ids": {
+            "count": len(window_run_ids),
+            "range": window_run_id_range,
+        },
+    }
+
     return {
         "schema": "edge_quality_compare_report_v1",
         "comparison_scope": "strict_pair_with_optional_window_fallback",
+        "window_health_summary": window_health_summary,
         "runbook_branch": runbook_branch,
         "runbook_path": runbook_path,
         "stake_policy_enabled": bool(config.stake_policy_enabled),
