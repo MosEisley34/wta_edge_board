@@ -1378,6 +1378,16 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
         except (TypeError, ValueError):
             no_hit_counters[field] = 0
     no_hit_terminal_reason_code = str(summary.get("no_hit_terminal_reason_code") or "none")
+    source_fetch_counts: dict[str, int | None] = {}
+    for field in ("fetched_odds", "fetched_schedule"):
+        raw_value = summary.get(field)
+        if raw_value in (None, ""):
+            source_fetch_counts[field] = None
+            continue
+        try:
+            source_fetch_counts[field] = max(0, int(float(raw_value)))
+        except (TypeError, ValueError):
+            source_fetch_counts[field] = None
     return {
         "run_id": run_id,
         "feature_completeness": feature_completeness,
@@ -1392,9 +1402,32 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
             "time_block": _volatility_context_key(summary)[1],
         },
         "no_hit_counters": no_hit_counters,
+        "source_fetch_counts": source_fetch_counts,
         "no_hit_terminal_reason_code": no_hit_terminal_reason_code,
         "schema_markers": schema_markers,
         "stake_policy_summary": stake_policy_summary,
+    }
+
+
+def _insufficient_source_activity_pre_gate(snapshot: dict[str, Any]) -> dict[str, Any]:
+    counters = snapshot.get("no_hit_counters") or {}
+    no_events_from_source = int(counters.get("no_hit_no_events_from_source_count", 0) or 0)
+    fetch_counts = snapshot.get("source_fetch_counts") or {}
+    fetched_odds = fetch_counts.get("fetched_odds")
+    fetched_schedule = fetch_counts.get("fetched_schedule")
+    known_fetch_counts = fetched_odds is not None and fetched_schedule is not None
+    low_source_fetch_activity = bool(known_fetch_counts and int(fetched_odds) <= 0 and int(fetched_schedule) <= 0)
+    triggered = no_events_from_source > 0 or low_source_fetch_activity
+    return {
+        "triggered": triggered,
+        "reason_code": "insufficient_source_activity" if triggered else "none",
+        "details": {
+            "no_events_from_source_count": no_events_from_source,
+            "fetched_odds": fetched_odds,
+            "fetched_schedule": fetched_schedule,
+            "known_fetch_counts": known_fetch_counts,
+            "zero_fetch_counts": low_source_fetch_activity,
+        },
     }
 
 
@@ -1550,6 +1583,8 @@ def evaluate_edge_quality_gate(
     ).with_canonicalized_fields()
     baseline = _snapshot(rows, baseline_run_id, config)
     candidate = _snapshot(rows, candidate_run_id, config)
+    source_activity_pre_gate = _insufficient_source_activity_pre_gate(candidate)
+    source_activity_insufficient = bool(source_activity_pre_gate.get("triggered"))
 
     failures: list[str] = []
     warnings: list[str] = []
@@ -1560,18 +1595,27 @@ def evaluate_edge_quality_gate(
             "(stake_policy_summary counters are not policy outcomes; enable --stake-policy-enabled to validate behavior)"
         )
     candidate_feature_completeness = candidate["feature_completeness"]
-    if candidate_feature_completeness is None:
-        if candidate.get("schema_markers", {}).get("legacy_feature_contract"):
-            markers = ",".join(candidate.get("schema_markers", {}).get("markers", [])) or "unknown"
-            warnings.append(f"legacy_schema_insufficient_feature_contract markers={markers}")
-        else:
-            diag = candidate["diagnostics"].get("feature_completeness_reason_code", "missing_field_feature_completeness")
-            failures.append(f"missing_feature_completeness_metric reason_code={diag}")
-    elif candidate_feature_completeness < config.min_feature_completeness:
-        failures.append(
-            "feature_completeness_below_floor "
-            f"(candidate={candidate_feature_completeness:.4f} < floor={config.min_feature_completeness:.4f})"
+    if source_activity_insufficient:
+        details = source_activity_pre_gate.get("details") or {}
+        warnings.append(
+            "insufficient_source_activity "
+            f"(no_events_from_source={details.get('no_events_from_source_count')}; "
+            f"fetched_odds={details.get('fetched_odds')}; "
+            f"fetched_schedule={details.get('fetched_schedule')})"
         )
+    else:
+        if candidate_feature_completeness is None:
+            if candidate.get("schema_markers", {}).get("legacy_feature_contract"):
+                markers = ",".join(candidate.get("schema_markers", {}).get("markers", [])) or "unknown"
+                warnings.append(f"legacy_schema_insufficient_feature_contract markers={markers}")
+            else:
+                diag = candidate["diagnostics"].get("feature_completeness_reason_code", "missing_field_feature_completeness")
+                failures.append(f"missing_feature_completeness_metric reason_code={diag}")
+        elif candidate_feature_completeness < config.min_feature_completeness:
+            failures.append(
+                "feature_completeness_below_floor "
+                f"(candidate={candidate_feature_completeness:.4f} < floor={config.min_feature_completeness:.4f})"
+            )
 
     candidate_edge_volatility = candidate["edge_volatility"]
     scored_signals = candidate.get("scored_signals")
@@ -1618,7 +1662,9 @@ def evaluate_edge_quality_gate(
     confidence_threshold = 1.0
     confidence_adequate = confidence is None or confidence >= confidence_threshold
     volatility_gate_phase = "strict_gate"
-    if confidence is not None and not confidence_adequate:
+    if source_activity_insufficient:
+        volatility_gate_phase = "pre_gate_insufficient_source_activity"
+    elif confidence is not None and not confidence_adequate:
         volatility_gate_phase = "pre_gate_insufficient_sample"
     adaptive_ceiling_info = _adaptive_volatility_ceiling(
         rows=rows,
@@ -1648,7 +1694,7 @@ def evaluate_edge_quality_gate(
             "insufficient_sample": bool(not confidence_adequate) if confidence is not None else False,
         },
         "strict_gate": {
-            "enforced": bool(confidence_adequate),
+            "enforced": bool(confidence_adequate) and not source_activity_insufficient,
             "hard_fail_applied": False,
         },
         "comparison": {
@@ -1666,32 +1712,34 @@ def evaluate_edge_quality_gate(
                 "min_matched_events_for_volatility": int(config.min_matched_events_for_volatility),
                 "enough_sample_for_volatility": bool(enough_sample_for_volatility),
             },
+            "source_activity_pre_gate": source_activity_pre_gate,
         },
         "top_contributors": _top_volatility_contributors(baseline=baseline, candidate=candidate),
     }
 
-    if candidate_edge_volatility is None:
-        diag = candidate["diagnostics"].get("edge_volatility_reason_code", "missing_field_edge_volatility")
-        failures.append(f"missing_edge_volatility_metric reason_code={diag}")
-    elif effective_sample["known"] and not enough_sample_for_volatility:
-        warnings.append(
-            "insufficient_sample_for_edge_volatility "
-            f"(scored_signals={effective_sample['scored_signals']} required>={config.min_scored_signals_for_volatility}; "
-            f"matched_events={effective_sample['matched_events']} required>={config.min_matched_events_for_volatility}; "
-            f"strategy={sample_strategy}; reason_code={sample_reason_code})"
-        )
-    elif not confidence_adequate:
-        warnings.append(
-            "insufficient_sample_for_edge_volatility "
-            f"(confidence={confidence:.3f} threshold>={confidence_threshold:.3f}; "
-            f"strategy={sample_strategy}; reason_code=insufficient_sample_confidence)"
-        )
-    elif candidate_edge_volatility > effective_volatility_ceiling:
-        volatility_gate_diagnostic["strict_gate"]["hard_fail_applied"] = True
-        failures.append(
-            "edge_volatility_above_ceiling "
-            f"(candidate={candidate_edge_volatility:.4f} > ceiling={effective_volatility_ceiling:.4f})"
-        )
+    if not source_activity_insufficient:
+        if candidate_edge_volatility is None:
+            diag = candidate["diagnostics"].get("edge_volatility_reason_code", "missing_field_edge_volatility")
+            failures.append(f"missing_edge_volatility_metric reason_code={diag}")
+        elif effective_sample["known"] and not enough_sample_for_volatility:
+            warnings.append(
+                "insufficient_sample_for_edge_volatility "
+                f"(scored_signals={effective_sample['scored_signals']} required>={config.min_scored_signals_for_volatility}; "
+                f"matched_events={effective_sample['matched_events']} required>={config.min_matched_events_for_volatility}; "
+                f"strategy={sample_strategy}; reason_code={sample_reason_code})"
+            )
+        elif not confidence_adequate:
+            warnings.append(
+                "insufficient_sample_for_edge_volatility "
+                f"(confidence={confidence:.3f} threshold>={confidence_threshold:.3f}; "
+                f"strategy={sample_strategy}; reason_code=insufficient_sample_confidence)"
+            )
+        elif candidate_edge_volatility > effective_volatility_ceiling:
+            volatility_gate_diagnostic["strict_gate"]["hard_fail_applied"] = True
+            failures.append(
+                "edge_volatility_above_ceiling "
+                f"(candidate={candidate_edge_volatility:.4f} > ceiling={effective_volatility_ceiling:.4f})"
+            )
 
     suppression_reasons = sorted(set(baseline["suppression_counts"].keys()) | set(candidate["suppression_counts"].keys()))
     suppression_drifts: dict[str, float] = {}
@@ -1701,7 +1749,7 @@ def evaluate_edge_quality_gate(
             "failing_reasons": {},
         }
     }
-    can_evaluate_drift = (not effective_sample["known"]) or enough_sample_for_volatility
+    can_evaluate_drift = ((not effective_sample["known"]) or enough_sample_for_volatility) and not source_activity_insufficient
     if can_evaluate_drift:
         for reason in suppression_reasons:
             base = int(baseline["suppression_counts"].get(reason, 0))
@@ -1746,7 +1794,7 @@ def evaluate_edge_quality_gate(
         elif baseline_has_no_actionable_hits:
             failures.append(f"dominant_no_hit_reason_baseline (baseline={baseline_terminal_reason})")
         status = "schema_missing" if has_schema_failure else "fail"
-    elif has_insufficient_sample_warning:
+    elif source_activity_insufficient or has_insufficient_sample_warning:
         status = "insufficient_sample"
     else:
         status = "pass"
@@ -1780,7 +1828,7 @@ def evaluate_edge_quality_gate(
             "matched_events": effective_sample["matched_events"],
             "run_ids": effective_sample["run_ids"],
             "enough_sample_for_volatility": enough_sample_for_volatility,
-            "reason_code": sample_reason_code,
+            "reason_code": source_activity_pre_gate.get("reason_code") if source_activity_insufficient else sample_reason_code,
             "confidence": confidence,
             "confidence_threshold": confidence_threshold,
             "confidence_adequate": confidence_adequate,

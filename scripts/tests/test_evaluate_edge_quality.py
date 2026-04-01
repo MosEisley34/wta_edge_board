@@ -213,6 +213,55 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertIsInstance(report["suppression_drift_details"], dict)
         self.assertIn("suppression_drift", report["failure_diagnostics"])
 
+    def test_gate_pre_gates_on_no_events_from_source_activity(self):
+        rows = [
+            {
+                **self._summary_row("run-baseline", "2026-03-01T00:00:00Z", edge_volatility=0.010),
+                "no_hit_no_events_from_source_count": 0,
+                "fetched_odds": 3,
+                "fetched_schedule": 2,
+            },
+            {
+                **self._summary_row("run-candidate", "2026-03-02T00:00:00Z", edge_volatility=0.090),
+                "no_hit_no_events_from_source_count": 4,
+                "fetched_odds": 0,
+                "fetched_schedule": 0,
+                "feature_completeness": 0.2,
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(max_edge_volatility=0.03),
+        )
+        self.assertEqual("insufficient_sample", report["status"])
+        self.assertEqual("insufficient_source_activity", report["sample_assessment"]["reason_code"])
+        self.assertEqual("pre_gate_insufficient_source_activity", report["volatility_diagnostic"]["phase"])
+        self.assertFalse(report["volatility_diagnostic"]["strict_gate"]["enforced"])
+        self.assertTrue(any(item.startswith("insufficient_source_activity") for item in report["warnings"]))
+        self.assertFalse(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
+        self.assertFalse(any("feature_completeness_below_floor" in item for item in report["failures"]))
+
+    def test_gate_pre_gates_on_zero_schedule_and_odds_fetch_counts(self):
+        rows = [
+            self._summary_row("run-baseline", "2026-03-01T00:00:00Z", edge_volatility=0.010),
+            {
+                **self._summary_row("run-candidate", "2026-03-02T00:00:00Z", edge_volatility=0.080),
+                "fetched_odds": 0,
+                "fetched_schedule": 0,
+            },
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-baseline",
+            candidate_run_id="run-candidate",
+            config=EdgeQualityGateConfig(max_edge_volatility=0.03),
+        )
+        self.assertEqual("insufficient_sample", report["status"])
+        self.assertEqual("insufficient_source_activity", report["sample_assessment"]["reason_code"])
+        self.assertFalse(any("edge_volatility_above_ceiling" in item for item in report["failures"]))
+
     def test_suppression_drift_failure_emits_pair_level_causal_diagnostics(self):
         rows = [
             self._summary_row(
