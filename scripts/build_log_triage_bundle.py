@@ -156,6 +156,7 @@ def build_bundle(
     status_counts: Counter[str] = Counter()
     failure_warning_codes: Counter[str] = Counter()
     failure_only_codes: Counter[str] = Counter()
+    warning_only_codes: Counter[str] = Counter()
     timestamps: list[str] = []
     run_ids: Counter[str] = Counter()
     representative_pool: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -171,10 +172,12 @@ def build_bundle(
         severity = _classify_severity(status)
         if severity in {"failure", "warning"}:
             failure_warning_codes[code] += 1
-        if severity == "failure":
-            failure_only_codes[code] += 1
             if len(representative_pool[code]) < samples_per_failure:
                 representative_pool[code].append(record)
+        if severity == "failure":
+            failure_only_codes[code] += 1
+        if severity == "warning":
+            warning_only_codes[code] += 1
 
         ts = _extract_timestamp(record)
         if ts:
@@ -197,7 +200,12 @@ def build_bundle(
             previous_transition_status = status
 
     dominant = _dominant_failures(failure_only_codes, top_failures)
-    representative_samples = {code: representative_pool[code] for code in dominant if representative_pool.get(code)}
+    representative_codes = dominant or _dominant_failures(warning_only_codes, top_failures)
+    representative_samples = {
+        code: representative_pool[code]
+        for code in representative_codes
+        if representative_pool.get(code)
+    }
 
     top_code_rows = [
         {"code": code, "count": count}
@@ -225,12 +233,12 @@ def build_bundle(
     if include_fingerprint:
         bundle["fingerprint"] = _fingerprint_block(records)
 
-    bundle, trimmed = _enforce_size_cap(bundle, max_chars=max_chars, dominant_failures=dominant)
+    bundle, trimmed = _enforce_size_cap(bundle, max_chars=max_chars, dominant_failures=representative_codes)
     encoded = _encode_bundle(bundle)
     if len(encoded) > max_chars:
         # Keep required summary plus one top exemplar if available.
         fallback_samples = bundle.get("representative_samples") or {}
-        first_code = dominant[0] if dominant else next(iter(fallback_samples.keys()), None)
+        first_code = representative_codes[0] if representative_codes else next(iter(fallback_samples.keys()), None)
         preserved_samples = {}
         if first_code and fallback_samples.get(first_code):
             preserved_samples[first_code] = [fallback_samples[first_code][0]]
