@@ -247,6 +247,7 @@ scripts/run_triage_bundle.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime
 
 The wrapper runs `scripts/prepare_runtime_exports.sh` and then invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`) so diagnostics inputs are consistently prepared before scanning.
 `prepare_runtime_exports.sh` now enforces a single-source Run_Log snapshot contract: it re-exports `Run_Log.csv` and `Run_Log.json` together from the same latest source snapshot and applies one export batch timestamp before parity checks.
+It always emits deterministic batch metadata artifacts (`runtime_export_manifest.json` and `runtime_export_manifest.pointer.json`) and, on failure, writes `runtime_export_failure.json` so follow-on tooling can resolve an explicit failure path instead of failing on a missing manifest.
 
 If you need to refresh JSON from CSV before preflight, use:
 
@@ -286,6 +287,7 @@ scripts/export_parity_precheck.sh --out-dir ./exports_live 20260320T095837_9ccfe
 ```
 
 Do not run compare/gate scripts against ad-hoc inputs before this wrapper succeeds.
+Even when wrapper preflight fails, inspect deterministic pointer/failure artifacts in the export directory first (`export_parity_precheck.pointer.json`, `export_parity_precheck_failure.json`, plus `runtime_export_manifest.pointer.json`) before re-running.
 
 Behavior contract:
 - scans `./exports_live/*Run_Log*.json` and `./exports_live/*Run_Log*.csv` (recursive),
@@ -378,6 +380,10 @@ scripts/prepare_runtime_exports.sh --out-dir ./exports ./runtime/Run_Log.csv ./r
 
 This pre-step copies matching `Run_Log`/`State` CSV/JSON files into `./exports` and then validates exports before scanning.
 Parity output also writes `./exports/run_log_latest_batch_note.json` so operators can verify the latest batch `run_id` set is identical across CSV and JSON.
+The pre-step always writes deterministic metadata artifacts:
+- `./exports/runtime_export_manifest.json`
+- `./exports/runtime_export_manifest.pointer.json`
+- `./exports/runtime_export_failure.json` (failure only; pointer includes this path)
 
 Preferred diagnostics artifact source order:
 - `Run_Log.csv`

@@ -20,6 +20,9 @@ Fail-fast operational wrapper:
   4) Block on target run-id precheck before compare/gate steps
   5) Canonical stageFetchPlayerStats sync path (patch CSV, mirror JSON, validate key fields)
   6) Re-run precheck after sync before compare/gate steps
+  7) Emit deterministic precheck pointer artifact:
+     - success:  <out-dir>/export_parity_precheck.pointer.json
+     - failure:  <out-dir>/export_parity_precheck_failure.json
 
 Examples:
   scripts/export_parity_precheck.sh runA runB ./runtime
@@ -31,6 +34,48 @@ USAGE
 out_dir="./exports"
 allow_csv_only_triage=0
 incident_tag=""
+precheck_pointer_path=""
+precheck_failure_path=""
+
+write_precheck_failure_artifacts() {
+  local reason_code="$1"
+  local detail_message="$2"
+  mkdir -p "$out_dir"
+  python3 - "$out_dir" "$precheck_pointer_path" "$precheck_failure_path" "$reason_code" "$detail_message" <<'PY'
+import datetime as dt
+import json
+import sys
+from pathlib import Path
+
+out_dir = Path(sys.argv[1])
+pointer_path = Path(sys.argv[2])
+failure_path = Path(sys.argv[3])
+reason_code = sys.argv[4]
+detail_message = sys.argv[5]
+manifest_path = out_dir / "runtime_export_manifest.json"
+manifest_pointer_path = out_dir / "runtime_export_manifest.pointer.json"
+
+failure_payload = {
+    "generated_at_utc": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+    "status": "failed",
+    "reason_code": reason_code,
+    "detail_message": detail_message,
+    "manifest_path": str(manifest_path),
+    "manifest_exists": manifest_path.is_file(),
+    "manifest_pointer_path": str(manifest_pointer_path),
+}
+failure_path.write_text(json.dumps(failure_payload, indent=2) + "\n", encoding="utf-8")
+
+pointer_payload = {
+    "generated_at_utc": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+    "status": "failed",
+    "manifest_path": str(manifest_path),
+    "manifest_exists": manifest_path.is_file(),
+    "failure_artifact_path": str(failure_path),
+}
+pointer_path.write_text(json.dumps(pointer_payload, indent=2) + "\n", encoding="utf-8")
+PY
+}
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -67,6 +112,20 @@ while [[ "$#" -gt 0 ]]; do
       ;;
   esac
 done
+
+precheck_pointer_path="$out_dir/export_parity_precheck.pointer.json"
+precheck_failure_path="$out_dir/export_parity_precheck_failure.json"
+
+on_exit() {
+  local exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    write_precheck_failure_artifacts \
+      "export_parity_precheck_failed" \
+      "export_parity_precheck.sh failed before preflight completed"
+    echo "Precheck failure artifacts: $precheck_pointer_path (pointer), $precheck_failure_path (failure details)" >&2
+  fi
+}
+trap on_exit EXIT
 
 if [[ "$#" -lt 3 ]]; then
   echo "Error: expected <run_id_a> <run_id_b> and at least one input path." >&2
@@ -226,6 +285,27 @@ sidecar_path = write_preflight_sidecar(
     incident_tag=incident_tag,
 )
 print(f"Preflight sidecar written: {sidecar_path}")
+PY
+
+python3 - "$out_dir" "$precheck_pointer_path" <<'PY'
+import datetime as dt
+import json
+import sys
+from pathlib import Path
+
+out_dir = Path(sys.argv[1])
+pointer_path = Path(sys.argv[2])
+manifest_path = out_dir / "runtime_export_manifest.json"
+
+pointer_payload = {
+    "generated_at_utc": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+    "status": "ok",
+    "manifest_path": str(manifest_path),
+    "manifest_exists": manifest_path.is_file(),
+    "failure_artifact_path": None,
+}
+pointer_path.write_text(json.dumps(pointer_payload, indent=2) + "\n", encoding="utf-8")
+print(f"Precheck export pointer written: {pointer_path}")
 PY
 
 echo
