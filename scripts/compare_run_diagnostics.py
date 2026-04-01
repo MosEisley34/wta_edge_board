@@ -336,6 +336,32 @@ def canonical_counts(counter: Counter, expected: Iterable[str]) -> Dict[str, int
     return out
 
 
+def _top_reason_code_contributors(
+    successful: Counter,
+    degraded: Counter,
+    expected: Iterable[str],
+    top_n: int = 5,
+) -> List[Tuple[str, int, int, int]]:
+    expected_set = {str(code) for code in expected}
+    concrete_codes = {
+        str(code)
+        for code in (set(successful) | set(degraded))
+        if str(code) and str(code) not in expected_set
+    }
+    ranked = sorted(
+        concrete_codes,
+        key=lambda code: (
+            -(int(successful.get(code, 0)) + int(degraded.get(code, 0))),
+            -abs(int(degraded.get(code, 0)) - int(successful.get(code, 0))),
+            code,
+        ),
+    )[: max(0, int(top_n))]
+    return [
+        (code, int(successful.get(code, 0)), int(degraded.get(code, 0)), int(degraded.get(code, 0)) - int(successful.get(code, 0)))
+        for code in ranked
+    ]
+
+
 def _extract_reason_metadata(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Any]:
     candidates: List[Dict[str, Any]] = []
     for row in _run_rows(rows, run_id):
@@ -506,6 +532,15 @@ def compare_rows(
             da = a.get(code, 0)
             db = b.get(code, 0)
             lines.append(f"| {code} | {da} | {db} | {db-da:+d} |")
+        lines.append("")
+        lines.append("| top_concrete_reason_code | successful | degraded | delta (degraded-successful) |")
+        lines.append("|---|---:|---:|---:|")
+        top_contributors = _top_reason_code_contributors(ca, cb, expected, top_n=5)
+        if top_contributors:
+            for code, da, db, delta in top_contributors:
+                lines.append(f"| {code} | {da} | {db} | {delta:+d} |")
+        else:
+            lines.append("| none | 0 | 0 | +0 |")
 
     # Canonicalization-focused counts
     lines.append("\n## Canonicalization focus deltas")

@@ -179,6 +179,27 @@ class CompareRunDiagnosticsValidationTests(unittest.TestCase):
         report = _with_reason_code_fallback({"status": "fail", "reason_code": ""})
         self.assertEqual("gate_fail_no_reason_code", report["reason_code"])
 
+    def test_compare_rows_emits_stage_top_concrete_reason_contributors(self):
+        rows = _full_stage_rows("run-a") + _full_stage_rows("run-b")
+        rows.extend(
+            [
+                {"run_id": "run-a", "stage": "stageMatchEvents", "row_type": "diag", "reason_code": "fallback_name_similarity"},
+                {"run_id": "run-b", "stage": "stageMatchEvents", "row_type": "diag", "reason_code": "fallback_name_similarity"},
+                {"run_id": "run-b", "stage": "stageMatchEvents", "row_type": "diag", "reason_code": "fallback_name_similarity"},
+                {"run_id": "run-a", "stage": "stageFetchPlayerStats", "row_type": "diag", "reason_code": "fallback_provider_timeout"},
+                {"run_id": "run-b", "stage": "stageFetchPlayerStats", "row_type": "diag", "reason_code": "fallback_provider_timeout"},
+                {"run_id": "run-b", "stage": "stageFetchPlayerStats", "row_type": "diag", "reason_code": "fallback_model_miss"},
+                {"run_id": "run-a", "stage": "stageGenerateSignals", "row_type": "diag", "reason_code": "fallback_low_confidence"},
+                {"run_id": "run-b", "stage": "stageGenerateSignals", "row_type": "diag", "reason_code": "fallback_low_confidence"},
+                {"run_id": "run-b", "stage": "stageGenerateSignals", "row_type": "diag", "reason_code": "fallback_low_confidence"},
+            ]
+        )
+        report = compare_rows(rows, "run-a", "run-b")
+        self.assertIn("top_concrete_reason_code", report)
+        self.assertIn("| fallback_name_similarity | 1 | 2 | +1 |", report)
+        self.assertIn("| fallback_provider_timeout | 1 | 1 | +0 |", report)
+        self.assertIn("| fallback_low_confidence | 1 | 2 | +1 |", report)
+
 
 if __name__ == "__main__":
     unittest.main()
