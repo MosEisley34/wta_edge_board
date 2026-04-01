@@ -2049,6 +2049,14 @@ def evaluate_edge_quality_compare_report(
         decision_authoritative_source = "windowed_fallback_result"
         decision_authoritative_status = windowed_status
 
+    gate_verdict = "blocked_insufficient_sample"
+    if not strict_pair_preconditions["ok"]:
+        gate_verdict = "blocked_insufficient_sample"
+    elif decision_authoritative_status == "fail":
+        gate_verdict = "failed_quality_regression"
+    elif decision_authoritative_status == "pass":
+        gate_verdict = "passed_quality_gate"
+
     baseline_stake_summary = (pair_level_result.get("baseline") or {}).get("stake_policy_summary") or {}
     candidate_stake_summary = (pair_level_result.get("candidate") or {}).get("stake_policy_summary") or {}
     policy_delta_metrics = {}
@@ -2166,11 +2174,13 @@ def evaluate_edge_quality_compare_report(
             ),
             "decision_authoritative_source": decision_authoritative_source,
             "decision_authoritative_status": decision_authoritative_status,
+            "gate_verdict": gate_verdict,
             "strict_pair_preconditions": strict_pair_preconditions,
             "runbook_branch": runbook_branch,
             "stake_policy_enabled": bool(config.stake_policy_enabled),
         },
-        "status": decision_authoritative_status,
+        "status": "success",
+        "gate_verdict": gate_verdict,
     }
 
 
@@ -3005,7 +3015,7 @@ def main() -> int:
         resolved_artifact = _write_json_atomic(compare_out_path, report)
         print(json.dumps(report, indent=2, sort_keys=True))
         print(f"Compare report artifact: {resolved_artifact}", file=sys.stderr)
-        return 1 if report["status"] != "pass" else 0
+        return 1 if str(report.get("gate_verdict") or "") != "passed_quality_gate" else 0
 
     if args.baseline_run_id or args.candidate_run_id:
         parser.error("--baseline-run-id and --candidate-run-id must be provided together.")
@@ -3047,7 +3057,7 @@ def main() -> int:
         resolved_artifact = _write_json_atomic(compare_out_path, report)
         print(json.dumps(report, indent=2, sort_keys=True))
         print(f"Compare report artifact: {resolved_artifact}", file=sys.stderr)
-        return 1 if report["status"] != "pass" else 0
+        return 1 if str(report.get("gate_verdict") or "") != "passed_quality_gate" else 0
 
     report = evaluate_rolling_edge_quality(
         rows=rows,
