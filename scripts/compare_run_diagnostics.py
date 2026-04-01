@@ -468,6 +468,32 @@ def compare_rows(
         lines.append("One or both run IDs were not found in available Run_Log artifacts under the chosen export directory.")
         return "\n".join(lines)
 
+    summary_a = _pick_run_summary(rows, run_a)
+    summary_b = _pick_run_summary(rows, run_b)
+    no_hit_a = _no_hit_counters(summary_a)
+    no_hit_b = _no_hit_counters(summary_b)
+    terminal_reason_a = _no_hit_terminal_reason(summary_a)
+    terminal_reason_b = _no_hit_terminal_reason(summary_b)
+    lines.append("\n## Triage summary (root-cause first)")
+    lines.append("| signal | successful (pre) | degraded (post) | delta |")
+    lines.append("|---|---|---|---:|")
+    lines.append(
+        f"| terminal_no_hit_reason | `{terminal_reason_a}` | `{terminal_reason_b}` | "
+        f"{'changed' if terminal_reason_a != terminal_reason_b else 'unchanged'} |"
+    )
+    no_events_a = int(no_hit_a.get("no_hit_no_events_from_source_count", 0))
+    no_events_b = int(no_hit_b.get("no_hit_no_events_from_source_count", 0))
+    lines.append(
+        "| no_hit_no_events_from_source_count | "
+        f"{no_events_a} | {no_events_b} | {no_events_b-no_events_a:+d} |"
+    )
+    odds_match_failed_a = int(no_hit_a.get("no_hit_odds_present_but_match_failed_count", 0))
+    odds_match_failed_b = int(no_hit_b.get("no_hit_odds_present_but_match_failed_count", 0))
+    lines.append(
+        "| no_hit_odds_present_but_match_failed_count | "
+        f"{odds_match_failed_a} | {odds_match_failed_b} | {odds_match_failed_b-odds_match_failed_a:+d} |"
+    )
+
     for stage, expected in TARGETS.items():
         ca = reason_distribution(rows, run_a, stage)
         cb = reason_distribution(rows, run_b, stage)
@@ -517,8 +543,6 @@ def compare_rows(
     if not delta_pairs:
         lines.append("| - | - | - | - | - | - | - | 0 |")
 
-    no_hit_a = _no_hit_counters(_pick_run_summary(rows, run_a))
-    no_hit_b = _no_hit_counters(_pick_run_summary(rows, run_b))
     lines.append("\n## runEdgeBoard no-hit reason counters")
     lines.append("| counter | successful | degraded | delta |")
     lines.append("|---|---:|---:|---:|")
@@ -527,8 +551,8 @@ def compare_rows(
         vb = int(no_hit_b.get(field, 0))
         lines.append(f"| {field} | {va} | {vb} | {vb-va:+d} |")
     lines.append("\n## runEdgeBoard terminal no-hit reason")
-    lines.append(f"- successful: `{_no_hit_terminal_reason(_pick_run_summary(rows, run_a))}`")
-    lines.append(f"- degraded: `{_no_hit_terminal_reason(_pick_run_summary(rows, run_b))}`")
+    lines.append(f"- successful: `{terminal_reason_a}`")
+    lines.append(f"- degraded: `{terminal_reason_b}`")
 
     stats_a = _player_stats_snapshot(rows, run_a)
     stats_b = _player_stats_snapshot(rows, run_b)
