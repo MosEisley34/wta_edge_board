@@ -2918,7 +2918,22 @@ def _parse_window_thresholds(raw: str, field_name: str) -> dict[int, int]:
     return parsed
 
 
-def _emit_strict_cardinality_failure(exc: ValueError, *, debug: bool) -> int:
+def _emit_compare_report(report: dict[str, Any], out_path: Path | None = None) -> int:
+    resolved_artifact: Path | None = None
+    if out_path is not None:
+        resolved_artifact = _write_json_atomic(out_path, report)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    if resolved_artifact is not None:
+        print(f"Compare report artifact: {resolved_artifact}", file=sys.stderr)
+    return 1 if str(report.get("gate_verdict") or "") != "passed_quality_gate" else 0
+
+
+def _emit_strict_cardinality_failure(
+    exc: ValueError,
+    *,
+    debug: bool,
+    out_json_path: Path | None = None,
+) -> int:
     message = str(exc)
     diagnostics: dict[str, Any] = {}
     run_id = ""
@@ -2945,6 +2960,9 @@ def _emit_strict_cardinality_failure(exc: ValueError, *, debug: bool) -> int:
         "run_id": run_id,
         "diagnostics": diagnostics,
     }
+    if out_json_path is not None:
+        _write_json_atomic(out_json_path, payload)
+    print(json.dumps(payload, indent=2, sort_keys=True))
     print(classification, file=sys.stderr)
     print(json.dumps(payload, sort_keys=True), file=sys.stderr)
     if debug:
@@ -3042,12 +3060,9 @@ def main() -> int:
         except ValueError as exc:
             if "Expected exactly one runEdgeBoard summary row for run_id=" not in str(exc):
                 raise
-            return _emit_strict_cardinality_failure(exc, debug=bool(args.debug))
+            return _emit_strict_cardinality_failure(exc, debug=bool(args.debug), out_json_path=(_resolve_compare_out_path(run_pair[0], run_pair[1], str(args.out_json or "")) if str(args.out_json or "").strip() else None))
         compare_out_path = _resolve_compare_out_path(run_pair[0], run_pair[1], str(args.out_json or ""))
-        resolved_artifact = _write_json_atomic(compare_out_path, report)
-        print(json.dumps(report, indent=2, sort_keys=True))
-        print(f"Compare report artifact: {resolved_artifact}", file=sys.stderr)
-        return 1 if str(report.get("gate_verdict") or "") != "passed_quality_gate" else 0
+        return _emit_compare_report(report, compare_out_path)
 
     if args.baseline_run_id or args.candidate_run_id:
         parser.error("--baseline-run-id and --candidate-run-id must be provided together.")
@@ -3078,7 +3093,7 @@ def main() -> int:
         except ValueError as exc:
             if "Expected exactly one runEdgeBoard summary row for run_id=" not in str(exc):
                 raise
-            return _emit_strict_cardinality_failure(exc, debug=bool(args.debug))
+            return _emit_strict_cardinality_failure(exc, debug=bool(args.debug), out_json_path=(_resolve_compare_out_path(run_pair[0], run_pair[1], str(args.out_json or "")) if str(args.out_json or "").strip() else None))
         report["selected_run_pair"] = {
             "baseline_run_id": run_pair[0],
             "candidate_run_id": run_pair[1],
@@ -3086,10 +3101,7 @@ def main() -> int:
         }
         report["selection_diagnostics"] = selection_diagnostics
         compare_out_path = _resolve_compare_out_path(run_pair[0], run_pair[1], str(args.out_json or ""))
-        resolved_artifact = _write_json_atomic(compare_out_path, report)
-        print(json.dumps(report, indent=2, sort_keys=True))
-        print(f"Compare report artifact: {resolved_artifact}", file=sys.stderr)
-        return 1 if str(report.get("gate_verdict") or "") != "passed_quality_gate" else 0
+        return _emit_compare_report(report, compare_out_path)
 
     report = evaluate_rolling_edge_quality(
         rows=rows,

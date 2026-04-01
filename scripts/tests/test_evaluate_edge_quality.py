@@ -474,6 +474,35 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             self.assertTrue(out_path.exists(), msg=f"missing artifact: {out_path}")
             self.assertIn(str(out_path.resolve()), proc.stderr)
 
+    def test_cli_compare_fail_out_json_matches_stdout_with_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "custom" / "edge_compare_fail.json"
+            cmd = [
+                "python3",
+                str(ROOT / "scripts" / "evaluate_edge_quality.py"),
+                str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_fail.json"),
+                "--baseline-run-id",
+                "run-baseline",
+                "--candidate-run-id",
+                "run-candidate",
+                "--out-json",
+                str(out_path),
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(1, proc.returncode, msg=proc.stdout + proc.stderr)
+            stdout_payload = json.loads(proc.stdout)
+            out_json_payload = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(stdout_payload, out_json_payload)
+            pair_level = out_json_payload["pair_level_result"]
+            self.assertIn("warnings", pair_level)
+            self.assertIn("failures", pair_level)
+            self.assertIn("failure_diagnostics", pair_level)
+            self.assertIn("baseline", pair_level)
+            self.assertIn("candidate", pair_level)
+            self.assertIn("windowed_fallback_result", out_json_payload)
+            self.assertIn("status_counts", out_json_payload["windowed_fallback_result"])
+
+
     def test_cli_compare_duplicate_summary_rows_emits_structured_failure_without_traceback(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = Path(tmp) / "Run_Log.json"
@@ -498,7 +527,9 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             ]
             proc = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(2, proc.returncode, msg=proc.stdout + proc.stderr)
-        self.assertEqual("", proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual("run_summary_cardinality_mismatch", payload["error_type"])
+        self.assertEqual("duplicate_summary_rows", payload["classification"])
         self.assertIn("duplicate_summary_rows", proc.stderr)
         self.assertIn('"error_type": "run_summary_cardinality_mismatch"', proc.stderr)
         self.assertIn('"qualifying_row_count": 2', proc.stderr)
