@@ -9860,3 +9860,64 @@ function testRunEdgeBoard_runHealthReasonCodes_consistentAcrossStageSummariesAnd
     harness.restore();
   }
 }
+
+function testBuildTerminalMismatchSummaryBlock_includesCompactMismatchPayload_() {
+  const payload = buildTerminalMismatchSummaryBlock_({
+    terminal_reason_code: 'odds_present_but_match_failed',
+    fetched_odds: 7,
+    fetched_schedule: 13,
+    unmatched_candidate_count: 7,
+    top_rejection_reason_codes: [
+      { reason_code: 'no_player_match', count: 4 },
+      { reason_code: 'competition_mismatch', count: 2 },
+    ],
+    sample_unmatched_cases: [
+      {
+        odds_event_id: 'odds_evt_1',
+        competition: 'WTA 500 Doha',
+        player_1: 'Player One',
+        player_2: 'Player Two',
+        commence_time: '2026-03-01T11:00:00Z',
+      },
+      {
+        odds_event_id: 'odds_evt_2',
+        competition: 'WTA 250 Austin',
+        player_1: 'Player Three',
+        player_2: 'Player Four',
+        commence_time: '2026-03-01T12:00:00Z',
+      },
+      {
+        odds_event_id: 'odds_evt_3',
+        competition: 'WTA 1000 Miami',
+        player_1: 'Player Five',
+        player_2: 'Player Six',
+        commence_time: '2026-03-01T13:00:00Z',
+      },
+      {
+        odds_event_id: 'odds_evt_4',
+        competition: 'WTA 125',
+        player_1: 'Player Seven',
+        player_2: 'Player Eight',
+        commence_time: '2026-03-01T14:00:00Z',
+      },
+    ],
+  });
+
+  assertEquals_('odds_present_but_match_failed', payload.terminal_reason_code);
+  assertEquals_(7, Number(payload.fetched_odds || 0));
+  assertEquals_(13, Number(payload.fetched_schedule || 0));
+  assertEquals_(7, Number(payload.unmatched_candidate_count || 0));
+  assertEquals_(2, (payload.top_rejection_reason_codes || []).length);
+  assertEquals_('no_player_match', String((((payload.top_rejection_reason_codes || [])[0]) || {}).reason_code || ''));
+  assertEquals_(3, (payload.sampled_unmatched_event_identifiers || []).length);
+  assertEquals_('odds_evt_1', String((((payload.sampled_unmatched_event_identifiers || [])[0]) || {}).odds_event_id || ''));
+  assertEquals_('Player One', String(((((payload.sampled_unmatched_event_identifiers || [])[0]) || {}).players || [])[0] || ''));
+}
+
+function testBuildTerminalMismatchSummaryBlock_returnsNullWhenTerminalReasonDiffers_() {
+  const payload = buildTerminalMismatchSummaryBlock_({
+    terminal_reason_code: 'no_events_from_source',
+    fetched_odds: 0,
+  });
+  assertEquals_(null, payload);
+}

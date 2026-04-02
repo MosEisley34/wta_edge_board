@@ -902,6 +902,14 @@ function runEdgeBoard() {
 
     const topRejectionReasonsRaw = getTopReasonCodes_(combinedReasonCodes, 10);
     const topRejectionReasonNormalization = normalizeReasonCodeEntriesForDisplay_(topRejectionReasonsRaw, REASON_CODE_ALIAS_SCHEMA_ID);
+    const terminalMismatchSummary = buildTerminalMismatchSummaryBlock_({
+      terminal_reason_code: noHitDiagnostics.no_hit_terminal_reason_code,
+      fetched_odds: fetchedOddsCount,
+      fetched_schedule: scheduleStage.events.length,
+      unmatched_candidate_count: matchStage.unmatchedCount,
+      top_rejection_reason_codes: topRejectionReasonsRaw,
+      sample_unmatched_cases: matchStage.unmatched,
+    });
 
     const verbosePayload = {
       run_id: runId,
@@ -952,6 +960,7 @@ function runEdgeBoard() {
       sample_unmatched_cases: matchStage.unmatched.slice(0, 20),
       top_rejection_reasons: topRejectionReasonNormalization.entries,
       top_rejection_reasons_raw: topRejectionReasonsRaw,
+      terminal_mismatch_summary: terminalMismatchSummary,
       reason_code_display_normalization: topRejectionReasonNormalization.metadata,
       reason_codes: combinedReasonCodes,
       reason_metadata: combinedReasonMetadata,
@@ -1038,6 +1047,7 @@ function runEdgeBoard() {
       no_hit_odds_present_but_match_failed_count: noHitDiagnostics.no_hit_odds_present_but_match_failed_count,
       no_hit_schema_invalid_metrics_count: noHitDiagnostics.no_hit_schema_invalid_metrics_count,
       no_hit_terminal_reason_code: noHitDiagnostics.no_hit_terminal_reason_code,
+      terminal_mismatch_summary: terminalMismatchSummary ? JSON.stringify(terminalMismatchSummary) : '',
       stake_mode_used: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
         ? signalDecisionSummary.stake_policy_summary.stake_mode_used
         : '',
@@ -2272,6 +2282,44 @@ function resolveRunNoHitDiagnostics_(metrics, runQualityContract) {
     no_hit_odds_present_but_match_failed_count: Number(counters.odds_present_but_match_failed || 0),
     no_hit_schema_invalid_metrics_count: Number(counters.schema_invalid_metrics || 0),
     no_hit_terminal_reason_code: dominant,
+  };
+}
+
+function buildTerminalMismatchSummaryBlock_(metrics) {
+  const safe = metrics && typeof metrics === 'object' ? metrics : {};
+  const terminalReasonCode = String(safe.terminal_reason_code || '');
+  if (terminalReasonCode !== 'odds_present_but_match_failed') return null;
+  const topRejectionReasonCodes = Array.isArray(safe.top_rejection_reason_codes)
+    ? safe.top_rejection_reason_codes
+    : [];
+  const sampleUnmatchedCases = Array.isArray(safe.sample_unmatched_cases)
+    ? safe.sample_unmatched_cases
+    : [];
+
+  return {
+    terminal_reason_code: terminalReasonCode,
+    fetched_odds: Math.max(0, Number(safe.fetched_odds || 0)),
+    fetched_schedule: Math.max(0, Number(safe.fetched_schedule || 0)),
+    unmatched_candidate_count: Math.max(0, Number(safe.unmatched_candidate_count || 0)),
+    top_rejection_reason_codes: topRejectionReasonCodes.slice(0, 5).map(function (entry) {
+      return {
+        reason_code: String(entry && entry.reason_code || ''),
+        count: Math.max(0, Number(entry && entry.count || 0)),
+      };
+    }),
+    sampled_unmatched_event_identifiers: sampleUnmatchedCases.slice(0, 3).map(function (entry) {
+      const playerA = sanitizeRunHealthText_(entry && entry.player_1, 72);
+      const playerB = sanitizeRunHealthText_(entry && entry.player_2, 72);
+      const players = [];
+      if (playerA) players.push(playerA);
+      if (playerB) players.push(playerB);
+      return {
+        odds_event_id: sanitizeRunHealthText_(entry && entry.odds_event_id, 120),
+        competition: sanitizeRunHealthText_(entry && entry.competition, 120),
+        players: players,
+        commence_time: sanitizeRunHealthText_(entry && entry.commence_time, 64),
+      };
+    }),
   };
 }
 
