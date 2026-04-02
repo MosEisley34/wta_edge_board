@@ -12,6 +12,7 @@ import re
 import sys
 import tempfile
 import traceback
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from statistics import quantiles
@@ -2333,6 +2334,78 @@ def _window_threshold_value(mapping: dict[int, int] | None, window_days: int, fa
     return max(0, int(value))
 
 
+def _daily_readiness_sentinel(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    per_day: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not is_run_edgeboard_summary_row(row):
+            continue
+        summary = _normalize_legacy_summary_row(row)
+        signal_summary = _extract_signal_summary(summary)
+        ended_at = _parse_timestamp(summary.get("ended_at")) or _parse_timestamp(summary.get("started_at"))
+        day = ended_at.date().isoformat() if ended_at else "unknown"
+        bucket = per_day.setdefault(
+            day,
+            {
+                "date": day,
+                "run_count": 0,
+                "runs_with_matched_events_gt0": 0,
+                "runs_with_scored_signals_gt0": 0,
+                "terminal_reason_counts": Counter(),
+            },
+        )
+        bucket["run_count"] += 1
+
+        matched_events = _extract_matched_events(summary)
+        scored_signals = _extract_scored_signals(summary, signal_summary)
+        if int(matched_events or 0) > 0:
+            bucket["runs_with_matched_events_gt0"] += 1
+        if int(scored_signals or 0) > 0:
+            bucket["runs_with_scored_signals_gt0"] += 1
+
+        terminal_reason = str(summary.get("no_hit_terminal_reason_code") or "none")
+        bucket["terminal_reason_counts"][terminal_reason] += 1
+
+    daily_rows: list[dict[str, Any]] = []
+    for day in sorted(per_day):
+        row = per_day[day]
+        terminal_counts = row.pop("terminal_reason_counts")
+        dominant_terminal_no_hit_reason = "none"
+        if terminal_counts:
+            dominant_terminal_no_hit_reason = sorted(
+                terminal_counts.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )[0][0]
+        gate_recommendation = (
+            "ready_for_strict_gate"
+            if min(
+                int(row.get("runs_with_matched_events_gt0") or 0),
+                int(row.get("runs_with_scored_signals_gt0") or 0),
+            ) >= 2
+            else "insufficient_operational_sample"
+        )
+        daily_rows.append(
+            {
+                **row,
+                "dominant_terminal_no_hit_reason": dominant_terminal_no_hit_reason,
+                "gate_recommendation": gate_recommendation,
+            }
+        )
+
+    latest_day = daily_rows[-1] if daily_rows else {}
+    triage_decision_summary = {
+        "date": latest_day.get("date"),
+        "runs_with_matched_events_gt0": int(latest_day.get("runs_with_matched_events_gt0") or 0),
+        "runs_with_scored_signals_gt0": int(latest_day.get("runs_with_scored_signals_gt0") or 0),
+        "dominant_terminal_no_hit_reason": str(latest_day.get("dominant_terminal_no_hit_reason") or "none"),
+        "gate_recommendation": str(latest_day.get("gate_recommendation") or "insufficient_operational_sample"),
+    }
+    return {
+        "schema": "edge_quality_daily_readiness_sentinel_v1",
+        "days": daily_rows,
+        "triage_decision_summary": triage_decision_summary,
+    }
+
+
 def evaluate_daily_edge_quality_slo(
     rows: list[dict[str, Any]],
     gate_config: EdgeQualityGateConfig,
@@ -2541,6 +2614,8 @@ def evaluate_daily_edge_quality_slo(
     else:
         operator_composite_reason = "all_components_passing"
 
+    readiness_sentinel = _daily_readiness_sentinel(rows)
+
     return {
         "schema": "edge_quality_daily_slo_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -2562,6 +2637,8 @@ def evaluate_daily_edge_quality_slo(
         "decisionable_window_count": len(decisionable_windows),
         "failing_decisionable_window_count": len(failing_decisionable_windows),
         "stake_policy_summary_counts": stake_policy_aggregate,
+        "triage_decision_summary": readiness_sentinel.get("triage_decision_summary") or {},
+        "daily_readiness_sentinel": readiness_sentinel,
     }
 
 
@@ -2569,7 +2646,7 @@ def write_daily_slo_artifacts(
     report: dict[str, Any],
     output_dir: str,
     archive_dir: str = "",
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     reports_path = Path(output_dir)
     reports_path.mkdir(parents=True, exist_ok=True)
@@ -2578,6 +2655,11 @@ def write_daily_slo_artifacts(
     quality_summary = _build_daily_slo_quality_summary(report)
     quality_summary_output = reports_path / f"edge_quality_daily_slo_quality_summary_{stamp}.json"
     quality_summary_output.write_text(json.dumps(quality_summary, separators=(",", ":"), sort_keys=True) + "\n", encoding="utf-8")
+    readiness_sentinel_output = reports_path / f"edge_quality_daily_readiness_sentinel_{stamp}.json"
+    readiness_sentinel_output.write_text(
+        json.dumps(report.get("daily_readiness_sentinel") or {}, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     markdown_output = reports_path / f"edge_quality_daily_slo_summary_{stamp}.md"
     markdown_output.write_text(_daily_slo_markdown_summary(report, quality_summary), encoding="utf-8")
 
@@ -2598,6 +2680,7 @@ def write_daily_slo_artifacts(
         "aggregate_status_counts": report.get("aggregate_status_counts"),
         "aggregate_decisionable_status_counts": report.get("aggregate_decisionable_status_counts"),
         "excluded_pair_count": report.get("excluded_pair_count"),
+        "triage_decision_summary": report.get("triage_decision_summary") or {},
         "windows": [
             {
                 "window_days": row.get("window_days"),
@@ -2614,7 +2697,7 @@ def write_daily_slo_artifacts(
     with archive_summary.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(summary_row, sort_keys=True) + "\n")
 
-    return daily_output, archive_summary
+    return daily_output, archive_summary, readiness_sentinel_output
 
 
 def _extract_issue_code(item: Any) -> str:
@@ -3073,7 +3156,7 @@ def main() -> int:
             slo_config=slo_config,
             as_of_utc=str(args.as_of_utc or "").strip(),
         )
-        daily_path, summary_path = write_daily_slo_artifacts(
+        daily_path, summary_path, sentinel_path = write_daily_slo_artifacts(
             report=report,
             output_dir=str(args.daily_slo_output_dir or "reports"),
             archive_dir=str(args.daily_slo_archive_dir or ""),
@@ -3081,6 +3164,7 @@ def main() -> int:
         report["artifacts"] = {
             "daily_report_path": str(daily_path),
             "summary_archive_path": str(summary_path),
+            "daily_readiness_sentinel_path": str(sentinel_path),
         }
         print(json.dumps(report, indent=2, sort_keys=True))
         return 1 if str(report.get("gate_verdict") or "") == "fail" else 0

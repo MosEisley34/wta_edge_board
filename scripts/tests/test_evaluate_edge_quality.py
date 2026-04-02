@@ -1755,14 +1755,16 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_reports_dir = Path(temp_dir) / "reports"
             temp_archive_dir = Path(temp_dir) / "archive"
-            daily_path, summary_path = write_daily_slo_artifacts(
+            daily_path, summary_path, sentinel_path = write_daily_slo_artifacts(
                 report=report,
                 output_dir=str(temp_reports_dir),
                 archive_dir=str(temp_archive_dir),
             )
             self.assertTrue(daily_path.exists())
             self.assertTrue(summary_path.exists())
+            self.assertTrue(sentinel_path.exists())
             self.assertIn("edge_quality_daily_slo_", daily_path.name)
+            self.assertIn("edge_quality_daily_readiness_sentinel_", sentinel_path.name)
             markdown_paths = list(temp_reports_dir.glob("edge_quality_daily_slo_summary_*.md"))
             self.assertEqual(1, len(markdown_paths))
             markdown = markdown_paths[0].read_text(encoding="utf-8")
@@ -1773,6 +1775,8 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             self.assertIn("edge_quality_daily_slo_quality_summary_v1", markdown)
             summary_lines = summary_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertGreaterEqual(len(summary_lines), 1)
+            summary_payload = json.loads(summary_lines[-1])
+            self.assertIn("triage_decision_summary", summary_payload)
             quality_paths = list(temp_reports_dir.glob("edge_quality_daily_slo_quality_summary_*.json"))
             self.assertEqual(1, len(quality_paths))
             quality_summary = json.loads(quality_paths[0].read_text(encoding="utf-8"))
@@ -1783,6 +1787,30 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             self.assertEqual("2026-03-24T00:10:00+00:00", quality_summary["top_failure_codes"][0]["last_seen_utc"])
             self.assertEqual("insufficient_sample_for_edge_volatility", quality_summary["top_warning_codes"][0]["code"])
             self.assertEqual(2, quality_summary["top_warning_codes"][0]["count"])
+
+    def test_daily_slo_builds_readiness_sentinel_and_triage_summary(self):
+        rows = [
+            self._summary_row("run-a", "2026-03-21T00:00:00Z", edge_volatility=0.01, scored_signals=0, matched_events=0, no_hit_terminal_reason_code="none"),
+            self._summary_row("run-b", "2026-03-22T00:00:00Z", edge_volatility=0.01, scored_signals=3, matched_events=1, no_hit_terminal_reason_code="odds_present_but_match_failed"),
+            self._summary_row("run-c", "2026-03-22T01:00:00Z", edge_volatility=0.01, scored_signals=2, matched_events=2, no_hit_terminal_reason_code="events_outside_time_window"),
+            self._summary_row("run-d", "2026-03-22T02:00:00Z", edge_volatility=0.01, scored_signals=0, matched_events=0, no_hit_terminal_reason_code="events_outside_time_window"),
+        ]
+        report = evaluate_daily_edge_quality_slo(
+            rows=rows,
+            gate_config=EdgeQualityGateConfig(max_edge_volatility=0.03),
+            slo_config=DailyEdgeQualitySLOConfig(window_days=(3,), min_pairs_per_window=1, fail_rate_threshold=0.5),
+            as_of_utc="2026-03-22T12:00:00Z",
+        )
+        sentinel = report["daily_readiness_sentinel"]
+        self.assertEqual("edge_quality_daily_readiness_sentinel_v1", sentinel["schema"])
+        self.assertEqual(2, len(sentinel["days"]))
+        latest = sentinel["triage_decision_summary"]
+        self.assertEqual("2026-03-22", latest["date"])
+        self.assertEqual(2, latest["runs_with_matched_events_gt0"])
+        self.assertEqual(2, latest["runs_with_scored_signals_gt0"])
+        self.assertEqual("events_outside_time_window", latest["dominant_terminal_no_hit_reason"])
+        self.assertEqual("ready_for_strict_gate", latest["gate_recommendation"])
+        self.assertEqual(latest, report["triage_decision_summary"])
 
 
 if __name__ == "__main__":
