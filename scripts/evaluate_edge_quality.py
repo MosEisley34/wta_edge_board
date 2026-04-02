@@ -1388,6 +1388,27 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
             source_fetch_counts[field] = max(0, int(float(raw_value)))
         except (TypeError, ValueError):
             source_fetch_counts[field] = None
+    def _int_or_none(field: str) -> int | None:
+        raw_value = summary.get(field)
+        if raw_value in (None, ""):
+            return None
+        try:
+            return int(float(raw_value))
+        except (TypeError, ValueError):
+            return None
+
+    odds_refresh_executed = _int_or_none("odds_refresh_executed")
+    odds_refresh_skipped_outside_window = _int_or_none("odds_refresh_skipped_outside_window")
+    opening_lag_exceeded = _int_or_none("opening_lag_exceeded")
+    opening_lag_within_limit = _int_or_none("opening_lag_within_limit")
+    baseline_window_counter = int(no_hit_counters.get("no_hit_events_outside_time_window_count", 0) or 0)
+    terminal_reason = str(no_hit_terminal_reason_code or "none")
+    outside_window_dominant = terminal_reason == "events_outside_time_window" or baseline_window_counter > 0
+    opening_lag_dominant = bool((opening_lag_exceeded or 0) > 0 and (opening_lag_within_limit or 0) <= 0)
+    odds_refresh_executed_effective = bool((odds_refresh_executed or 0) > 0)
+    if odds_refresh_executed is None:
+        odds_refresh_executed_effective = not bool((odds_refresh_skipped_outside_window or 0) > 0)
+    actionable_window_run = odds_refresh_executed_effective and not outside_window_dominant and not opening_lag_dominant
     return {
         "run_id": run_id,
         "feature_completeness": feature_completeness,
@@ -1404,6 +1425,15 @@ def _snapshot(rows: list[dict[str, Any]], run_id: str, config: EdgeQualityGateCo
         "no_hit_counters": no_hit_counters,
         "source_fetch_counts": source_fetch_counts,
         "no_hit_terminal_reason_code": no_hit_terminal_reason_code,
+        "actionable_window_run": actionable_window_run,
+        "run_actionability_context": {
+            "odds_refresh_executed": odds_refresh_executed,
+            "odds_refresh_skipped_outside_window": odds_refresh_skipped_outside_window,
+            "opening_lag_exceeded": opening_lag_exceeded,
+            "opening_lag_within_limit": opening_lag_within_limit,
+            "outside_window_dominant": outside_window_dominant,
+            "opening_lag_dominant": opening_lag_dominant,
+        },
         "schema_markers": schema_markers,
         "stake_policy_summary": stake_policy_summary,
     }
@@ -2319,15 +2349,29 @@ def evaluate_daily_edge_quality_slo(
     for window_days in sorted(set(int(item) for item in slo_config.window_days if int(item) > 0)):
         min_ended_at = _window_threshold_iso(as_of, window_days)
         run_ids = _rolling_run_ids(rows, min_ended_at=min_ended_at)
+        run_snapshots = {run_id: _snapshot(rows=rows, run_id=run_id, config=gate_config) for run_id in run_ids}
+        actionable_window_run_ids = [
+            run_id for run_id in run_ids if bool((run_snapshots.get(run_id) or {}).get("actionable_window_run"))
+        ]
+        non_actionable_runs = [
+            {
+                "run_id": run_id,
+                "actionable_window_run": False,
+                "no_hit_terminal_reason_code": (run_snapshots.get(run_id) or {}).get("no_hit_terminal_reason_code"),
+                "run_actionability_context": (run_snapshots.get(run_id) or {}).get("run_actionability_context") or {},
+            }
+            for run_id in run_ids
+            if run_id not in actionable_window_run_ids
+        ]
         pair_reports = [
             evaluate_edge_quality_gate(
                 rows=rows,
                 baseline_run_id=baseline_run_id,
                 candidate_run_id=candidate_run_id,
                 config=gate_config,
-                ordered_run_ids=run_ids,
+                ordered_run_ids=actionable_window_run_ids,
             )
-            for baseline_run_id, candidate_run_id in _run_pairs_from_ids(run_ids)
+            for baseline_run_id, candidate_run_id in _run_pairs_from_ids(actionable_window_run_ids)
         ]
 
         status_counts = {"pass": 0, "true_fail": 0, "insufficient_sample": 0, "schema_missing": 0}
@@ -2409,6 +2453,9 @@ def evaluate_daily_edge_quality_slo(
             "window_days": window_days,
             "min_ended_at": min_ended_at,
             "run_count": len(run_ids),
+            "actionable_window_run_count": len(actionable_window_run_ids),
+            "non_actionable_run_count": len(non_actionable_runs),
+            "non_actionable_runs": non_actionable_runs,
             "pair_count": len(pair_reports),
             "sample_floor": {
                 "min_scored_signals": min_scored,

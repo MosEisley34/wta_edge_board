@@ -34,9 +34,10 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         matched_events: int = 8,
         suppression_counts: dict[str, int] | None = None,
         suppression_reason_context: dict[str, dict[str, object]] | None = None,
+        **extra_fields: object,
     ) -> dict[str, object]:
         suppression_counts = suppression_counts or {}
-        return {
+        row = {
             "row_type": "summary",
             "stage": "runEdgeBoard",
             "run_id": run_id,
@@ -67,6 +68,8 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
                 ]
             ),
         }
+        row.update(extra_fields)
+        return row
 
     def test_gate_passes_within_thresholds(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_pass.json"))
@@ -1638,6 +1641,56 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         trend = report["window_ratio_trends"][0]
         self.assertEqual(0.0, trend["decisionable_ratio"])
         self.assertEqual(0.0, trend["insufficient_sample_ratio"])
+
+    def test_daily_slo_strict_gating_uses_actionable_window_runs_only(self):
+        rows = [
+            self._summary_row(
+                "run-1",
+                "2026-03-01T00:00:00Z",
+                edge_volatility=0.01,
+                odds_refresh_executed=1,
+                opening_lag_exceeded=0,
+                opening_lag_within_limit=1,
+            ),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.09,
+                odds_refresh_executed=0,
+                odds_refresh_skipped_outside_window=1,
+                no_hit_terminal_reason_code="events_outside_time_window",
+            ),
+            self._summary_row(
+                "run-3",
+                "2026-03-03T00:00:00Z",
+                edge_volatility=0.09,
+                odds_refresh_executed=1,
+                opening_lag_exceeded=1,
+                opening_lag_within_limit=0,
+            ),
+            self._summary_row(
+                "run-4",
+                "2026-03-04T00:00:00Z",
+                edge_volatility=0.02,
+                odds_refresh_executed=1,
+                opening_lag_exceeded=0,
+                opening_lag_within_limit=1,
+            ),
+        ]
+        report = evaluate_daily_edge_quality_slo(
+            rows=rows,
+            gate_config=EdgeQualityGateConfig(max_edge_volatility=0.03),
+            slo_config=DailyEdgeQualitySLOConfig(window_days=(7,), min_pairs_per_window=1, fail_rate_threshold=0.5),
+            as_of_utc="2026-03-04T12:00:00Z",
+        )
+        window = report["window_reports"][0]
+        self.assertEqual(4, window["run_count"])
+        self.assertEqual(2, window["actionable_window_run_count"])
+        self.assertEqual(2, window["non_actionable_run_count"])
+        self.assertEqual(1, window["pair_count"])
+        self.assertEqual(1, window["decisionable_pair_count"])
+        self.assertEqual("pass", window["verdict"])
+        self.assertEqual(["run-2", "run-3"], [item["run_id"] for item in window["non_actionable_runs"]])
 
     def test_daily_slo_includes_stake_policy_summary_counts(self):
         rows = [
