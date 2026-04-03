@@ -1,0 +1,7 @@
+{
+  "generated_at_utc": "2026-04-03T04:26:44.119903+00:00",
+  "status": "failed",
+  "reason_code": "runtime_export_prestep_failed",
+  "detail_message": "prepare_runtime_exports.sh failed before producing a parity-ready export batch",
+  "manifest_path": "triage_impl_20260403T025209Z/exports/runtime_export_manifest.json"
+}

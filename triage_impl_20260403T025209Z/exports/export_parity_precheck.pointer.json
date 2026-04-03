@@ -1,0 +1,7 @@
+{
+  "generated_at_utc": "2026-04-03T04:26:45.237393+00:00",
+  "status": "failed",
+  "manifest_path": "triage_impl_20260403T025209Z/exports/runtime_export_manifest.json",
+  "manifest_exists": true,
+  "failure_artifact_path": "triage_impl_20260403T025209Z/exports/export_parity_precheck_failure.json"
+}

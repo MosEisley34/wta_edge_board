@@ -1,0 +1,9 @@
+{
+  "generated_at_utc": "2026-04-03T04:26:45.236923+00:00",
+  "status": "failed",
+  "reason_code": "export_parity_precheck_failed",
+  "detail_message": "export_parity_precheck.sh failed before preflight completed",
+  "manifest_path": "triage_impl_20260403T025209Z/exports/runtime_export_manifest.json",
+  "manifest_exists": true,
+  "manifest_pointer_path": "triage_impl_20260403T025209Z/exports/runtime_export_manifest.pointer.json"
+}
