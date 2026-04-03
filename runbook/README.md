@@ -308,9 +308,57 @@ scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./exports_live
 #   - scripts/compare_run_diagnostics_preflight.sh
 #   - scripts/compare_run_metrics_preflight.sh
 #   - python3 scripts/evaluate_edge_quality.py
-python3 scripts/precheck_run_ids.py <run_id_a> <run_id_b> --export-dir "$EXPORT_SRC" --recent-limit 10
+CANDIDATE_RUN_ID="<run_id_b>"
+PRE_RUN_ID="$(python3 - "$EXPORT_SRC" "$CANDIDATE_RUN_ID" <<'PY'
+import csv
+import sys
+from pathlib import Path
 
-scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC"
+export_path = Path(sys.argv[1])
+candidate_run_id = sys.argv[2]
+run_log_csv = export_path / "Run_Log.csv"
+if not run_log_csv.exists():
+    print("")
+    raise SystemExit(0)
+
+rows = []
+with run_log_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+    reader = csv.DictReader(handle)
+    for idx, row in enumerate(reader):
+        run_id = (row.get("run_id") or "").strip()
+        timestamp = (row.get("run_utc") or row.get("timestamp_utc") or "").strip()
+        if run_id:
+            rows.append((idx, run_id, timestamp))
+
+ordered_ids = []
+seen = set()
+for _idx, run_id, _ts in sorted(rows, key=lambda item: ((item[2] or ""), item[0])):
+    if run_id in seen:
+        continue
+    seen.add(run_id)
+    ordered_ids.append(run_id)
+
+try:
+    candidate_index = ordered_ids.index(candidate_run_id)
+except ValueError:
+    print("")
+    raise SystemExit(0)
+
+if candidate_index == 0:
+    print("")
+    raise SystemExit(0)
+
+print(ordered_ids[candidate_index - 1])
+PY
+)"
+if [[ -z "$PRE_RUN_ID" ]]; then
+  echo "Unable to derive predecessor for candidate run; refresh exports (candidate_run_id=$CANDIDATE_RUN_ID export_path=$EXPORT_SRC)" >&2
+  exit 1
+fi
+
+python3 scripts/precheck_run_ids.py "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" --export-dir "$EXPORT_SRC" --recent-limit 10
+
+scripts/export_parity_precheck.sh --out-dir ./exports_live "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" "$EXPORT_SRC"
 
 # Stale-source troubleshooting fallback (existing exports_live contract flow).
 # If the fresh source path is stale/unavailable, rerun precheck from ./exports_live.
@@ -325,7 +373,7 @@ scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b>
 # 2b) Capture preflight report with strict failure propagation.
 bash -c '
   set -euo pipefail
-  scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC" \
+  scripts/export_parity_precheck.sh --out-dir ./exports_live "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" "$EXPORT_SRC" \
     | tee "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
@@ -348,7 +396,7 @@ bash -c '
 # 3) Compare diagnostics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
 bash -c '
   set -euo pipefail
-  scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC" \
+  scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" "$EXPORT_SRC" \
     | tee "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
@@ -363,7 +411,7 @@ bash -c '
 # 4) Compare metrics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
 bash -c '
   set -euo pipefail
-  scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live <run_id_a> <run_id_b> "$EXPORT_SRC" \
+  scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" "$EXPORT_SRC" \
     | tee "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
@@ -376,14 +424,14 @@ bash -c '
 '
 
 # 5) Evaluate edge quality only after the same source lock/precheck has succeeded.
-EDGE_COMPARE_ARTIFACT="./artifacts/compare/<run_id_a>_vs_<run_id_b>.json"
-python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b> \
+EDGE_COMPARE_ARTIFACT="./artifacts/compare/${PRE_RUN_ID}_vs_${CANDIDATE_RUN_ID}.json"
+python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id "$PRE_RUN_ID" --candidate-run-id "$CANDIDATE_RUN_ID" \
   --out-json "$EDGE_COMPARE_ARTIFACT" \
   | tee "$RUN_REPORT_DIR/evaluate_edge_quality.report.log"
 
 [[ -s "$EDGE_COMPARE_ARTIFACT" ]] || {
   echo "Error: missing edge compare artifact at $EDGE_COMPARE_ARTIFACT" >&2
-  echo "Hint: regenerate via: python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id <run_id_a> --candidate-run-id <run_id_b> --out-json \"$EDGE_COMPARE_ARTIFACT\"" >&2
+  echo "Hint: regenerate via: python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id \"$PRE_RUN_ID\" --candidate-run-id \"$CANDIDATE_RUN_ID\" --out-json \"$EDGE_COMPARE_ARTIFACT\"" >&2
   exit 1
 }
 
