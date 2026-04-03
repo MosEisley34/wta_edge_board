@@ -83,6 +83,14 @@ run_b="$2"
 shift 2
 runtime_inputs=("$@")
 
+if [[ -z "${run_a//[[:space:]]/}" ]]; then
+  echo "Error: PRE_RUN_ID resolved to empty after run-id computation." >&2
+  echo "Candidate run ID: ${run_b:-<empty>}" >&2
+  echo "Export path: $out_dir" >&2
+  echo "Aborting before compare/evaluate steps to avoid invalid artifacts." >&2
+  exit 1
+fi
+
 if [[ "$allow_csv_only_triage" -eq 1 && -z "$incident_tag" ]]; then
   echo "Error: --allow-csv-only-triage requires --incident-tag <INCIDENT-TAG>." >&2
   exit 1
