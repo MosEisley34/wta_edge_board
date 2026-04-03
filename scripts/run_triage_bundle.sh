@@ -7,18 +7,22 @@ Usage:
   scripts/run_triage_bundle.sh [--out-dir <dir>] [--rolling-report-out <json>] <file-or-directory> [more paths...]
 
 Standard triage bundle flow:
-  1) Export Run_Log/State CSV/JSON artifacts into ./exports (default)
+  1) Export Run_Log/State CSV/JSON artifacts into an operator workspace (default: /tmp/wta_edge_board_triage_exports)
   2) Run runtime diagnostics scan against the export directory
   3) Evaluate edge-quality stability/robustness gate
 
+Important:
+  - Prefer --out-dir outside this repository tree to avoid generated artifact merge blockers on main.
+  - Example outside-repo workspace: /tmp/wta_edge_board_triage_exports
+
 Examples:
   scripts/run_triage_bundle.sh ./runtime
-  scripts/run_triage_bundle.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
-  scripts/run_triage_bundle.sh --out-dir ./exports --rolling-report-out ./docs/baselines/runtime_rollups/edge_quality_rolling_2026-03-24.json ./runtime
+  scripts/run_triage_bundle.sh --out-dir /tmp/wta_edge_board_triage_exports ./runtime/Run_Log.csv ./runtime/state_dump.json
+  scripts/run_triage_bundle.sh --out-dir /tmp/wta_edge_board_triage_exports --rolling-report-out ./docs/baselines/runtime_rollups/edge_quality_rolling_2026-03-24.json ./runtime
 USAGE
 }
 
-out_dir="./exports"
+out_dir="${TMPDIR:-/tmp}/wta_edge_board_triage_exports"
 rolling_report_out=""
 inputs=()
 
