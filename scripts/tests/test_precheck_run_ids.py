@@ -250,6 +250,27 @@ class PrecheckRunIdsSourceContractTests(unittest.TestCase):
             self.assertIn('"reason_code": "fresh_export_dir"', output)
             self.assertIn("Precheck passed", output)
 
+    def test_freshness_uses_parseable_started_at_timestamps_for_non_timestamp_run_ids(self):
+        fixture = ROOT / "scripts" / "fixtures" / "precheck_run_ids_freshness_parseable_started_at.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Run_Log.json").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+            (root / "Run_Log.csv").write_text(
+                "run_id,stage,row_type\nrun-a,stageFetchOdds,\nrun-b,stageFetchOdds,\n",
+                encoding="utf-8",
+            )
+
+            code, output = self._run_main(
+                ["precheck_run_ids.py", "run-a", "run-b", "--export-dir", str(root)]
+            )
+
+            self.assertEqual(code, 0)
+            self.assertIn('"reason_code": "fresh_export_dir"', output)
+            self.assertNotIn('"reason_code": "requested_run_id_timestamp_unparseable"', output)
+            self.assertNotIn('"reason_code": "export_run_id_timestamp_unparseable"', output)
+            self.assertIn('"latest_requested_run_id_timestamp_utc": "2026-03-30T00:20:00+00:00"', output)
+            self.assertIn('"max_export_run_id_timestamp_utc": "2026-03-30T00:30:00+00:00"', output)
+
     def test_gate_prereqs_accepts_compare_prereq_placeholders_from_summary_envelope(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
