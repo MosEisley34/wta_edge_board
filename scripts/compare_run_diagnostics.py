@@ -212,6 +212,11 @@ def _no_hit_terminal_reason(summary: Dict[str, Any]) -> str:
     return str(summary.get("no_hit_terminal_reason_code") or "none")
 
 
+def _terminal_no_hit_diagnostics(summary: Dict[str, Any]) -> Dict[str, Any]:
+    parsed = _parse_json(summary.get("terminal_no_hit_diagnostics"), {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _summary_stake_policy_enabled(summary: Dict[str, Any]) -> bool | None:
     signal_summary = _parse_json(summary.get("signal_decision_summary"), {})
     if not isinstance(signal_summary, dict):
@@ -588,6 +593,29 @@ def compare_rows(
     lines.append("\n## runEdgeBoard terminal no-hit reason")
     lines.append(f"- successful: `{terminal_reason_a}`")
     lines.append(f"- degraded: `{terminal_reason_b}`")
+    no_hit_diag_a = _terminal_no_hit_diagnostics(summary_a)
+    no_hit_diag_b = _terminal_no_hit_diagnostics(summary_b)
+    if no_hit_diag_a or no_hit_diag_b:
+        lines.append("\n## runEdgeBoard terminal no-hit diagnostics (compact)")
+        lines.append("| field | successful | degraded |")
+        lines.append("|---|---|---|")
+        lines.append(
+            f"| unmatched_odds_rows_count | {no_hit_diag_a.get('unmatched_odds_rows_count', 0)} | "
+            f"{no_hit_diag_b.get('unmatched_odds_rows_count', 0)} |"
+        )
+        lines.append(
+            f"| top_rejection_reasons | `{json.dumps(no_hit_diag_a.get('top_rejection_reasons', []), sort_keys=True)}` | "
+            f"`{json.dumps(no_hit_diag_b.get('top_rejection_reasons', []), sort_keys=True)}` |"
+        )
+        lines.append(
+            f"| sampled_unmatched_rows | `{json.dumps(no_hit_diag_a.get('sampled_unmatched_rows', []), sort_keys=True)}` | "
+            f"`{json.dumps(no_hit_diag_b.get('sampled_unmatched_rows', []), sort_keys=True)}` |"
+        )
+        lines.append(
+            "| normalized_keys_used_for_matching_comparison | "
+            f"`{json.dumps(no_hit_diag_a.get('normalized_keys_used_for_matching_comparison', {}), sort_keys=True)}` | "
+            f"`{json.dumps(no_hit_diag_b.get('normalized_keys_used_for_matching_comparison', {}), sort_keys=True)}` |"
+        )
 
     stats_a = _player_stats_snapshot(rows, run_a)
     stats_b = _player_stats_snapshot(rows, run_b)

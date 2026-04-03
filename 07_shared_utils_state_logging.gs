@@ -392,6 +392,7 @@ function appendLogRow_(entry) {
     normalized.no_hit_odds_present_but_match_failed_count === null || normalized.no_hit_odds_present_but_match_failed_count === undefined ? '' : normalized.no_hit_odds_present_but_match_failed_count,
     normalized.no_hit_schema_invalid_metrics_count === null || normalized.no_hit_schema_invalid_metrics_count === undefined ? '' : normalized.no_hit_schema_invalid_metrics_count,
     normalized.no_hit_terminal_reason_code || '',
+    sanitizeForLog_(normalized.terminal_no_hit_diagnostics || ''),
     sanitizeForLog_(normalized.feature_completeness_detail || ''),
     sanitizeForLog_(normalized.reason_alias_payload || ''),
     sanitizeForLog_(normalized.schema_violation || ''),
