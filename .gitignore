@@ -1,0 +1,5 @@
+# Generated triage export artifacts
+triage_impl_*/exports/*.pointer.json
+triage_impl_*/exports/*manifest*.json
+triage_impl_*/exports/*failure*.json
+triage_impl_*/exports/export_parity_precheck*.json
