@@ -424,11 +424,57 @@ def _strict_pair_precondition_diagnostics(baseline: dict[str, Any], candidate: d
     }
 
 
+def _strict_pair_operational_sample_pre_gate(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    config: EdgeQualityGateConfig,
+) -> dict[str, Any]:
+    min_scored = max(1, int(config.min_scored_signals_for_volatility))
+    min_matched = max(1, int(config.min_matched_events_for_volatility))
+    baseline_scored = int(baseline.get("scored_signals") or 0)
+    baseline_matched = int(baseline.get("matched_events") or 0)
+    candidate_scored = int(candidate.get("scored_signals") or 0)
+    candidate_matched = int(candidate.get("matched_events") or 0)
+
+    reason_codes: list[str] = []
+    if baseline_scored < min_scored:
+        reason_codes.append("baseline_scored_signals_below_minimum")
+    if baseline_matched < min_matched:
+        reason_codes.append("baseline_matched_events_below_minimum")
+    if candidate_scored < min_scored:
+        reason_codes.append("candidate_scored_signals_below_minimum")
+    if candidate_matched < min_matched:
+        reason_codes.append("candidate_matched_events_below_minimum")
+
+    return {
+        "ok": len(reason_codes) == 0,
+        "reason_code": "operational_sample_thresholds_met" if not reason_codes else "insufficient_operational_sample",
+        "reason_codes": reason_codes,
+        "minimums": {
+            "min_scored_signals_for_volatility": min_scored,
+            "min_matched_events_for_volatility": min_matched,
+        },
+        "baseline": {
+            "run_id": baseline.get("run_id"),
+            "scored_signals": baseline_scored,
+            "matched_events": baseline_matched,
+        },
+        "candidate": {
+            "run_id": candidate.get("run_id"),
+            "scored_signals": candidate_scored,
+            "matched_events": candidate_matched,
+        },
+    }
+
+
 def _invalid_strict_pair_result(
     baseline: dict[str, Any],
     candidate: dict[str, Any],
     config: EdgeQualityGateConfig,
     reason_codes: list[str],
+    status: str = "insufficient_sample",
+    reason_code: str = "strict_pair_precondition_failed",
+    pre_gate_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     canonical_stake_policy = StakePolicyConfig.from_legacy(
         enabled=bool(config.stake_policy_enabled),
@@ -436,7 +482,7 @@ def _invalid_strict_pair_result(
         round_to_min=bool(config.stake_policy_round_to_min),
     ).with_canonicalized_fields()
     return {
-        "status": "insufficient_sample",
+        "status": status,
         "baseline": baseline,
         "candidate": candidate,
         "thresholds": {
@@ -460,12 +506,12 @@ def _invalid_strict_pair_result(
             "matched_events": candidate.get("matched_events"),
             "run_ids": [candidate.get("run_id")],
             "enough_sample_for_volatility": False,
-            "reason_code": "strict_pair_precondition_failed",
+            "reason_code": reason_code,
         },
         "suppression_drifts": {},
         "suppression_drift_details": {},
         "failure_diagnostics": {"suppression_drift": {"failing_reasons": {}}},
-        "warnings": [f"strict_pair_precondition_failed reason_codes={','.join(reason_codes)}"],
+        "warnings": [f"{reason_code} reason_codes={','.join(reason_codes)}"],
         "high_visibility_warnings": [],
         "failures": [],
         "strict_pair_precondition": {
@@ -473,6 +519,7 @@ def _invalid_strict_pair_result(
             "reason_codes": sorted(set(reason_codes)),
             "fallback_route": "windowed_fallback_result",
         },
+        "strict_pair_operational_pre_gate": pre_gate_details,
     }
 
 
@@ -2035,8 +2082,23 @@ def evaluate_edge_quality_compare_report(
 
     baseline_snapshot = _snapshot(rows, baseline_run_id, config)
     candidate_snapshot = _snapshot(rows, candidate_run_id, config)
+    strict_pair_operational_pre_gate = _strict_pair_operational_sample_pre_gate(
+        baseline=baseline_snapshot,
+        candidate=candidate_snapshot,
+        config=config,
+    )
     strict_pair_preconditions = _strict_pair_precondition_diagnostics(baseline_snapshot, candidate_snapshot)
-    if strict_pair_preconditions["ok"]:
+    if not strict_pair_operational_pre_gate["ok"]:
+        pair_level_result = _invalid_strict_pair_result(
+            baseline=baseline_snapshot,
+            candidate=candidate_snapshot,
+            config=config,
+            reason_codes=list(strict_pair_operational_pre_gate.get("reason_codes") or ["insufficient_operational_sample"]),
+            status="insufficient_operational_sample",
+            reason_code="strict_pair_operational_pre_gate_failed",
+            pre_gate_details=strict_pair_operational_pre_gate,
+        )
+    elif strict_pair_preconditions["ok"]:
         pair_level_result = evaluate_edge_quality_gate(
             rows=rows,
             baseline_run_id=baseline_run_id,
@@ -2050,6 +2112,7 @@ def evaluate_edge_quality_compare_report(
             candidate=candidate_snapshot,
             config=config,
             reason_codes=list(strict_pair_preconditions.get("reason_codes") or ["invalid_strict_pair_baseline"]),
+            pre_gate_details=strict_pair_operational_pre_gate,
         )
 
     fallback_result: dict[str, Any] | None = None
@@ -2081,7 +2144,9 @@ def evaluate_edge_quality_compare_report(
         decision_authoritative_status = windowed_status
 
     gate_verdict = "blocked_insufficient_sample"
-    if not strict_pair_preconditions["ok"]:
+    if not strict_pair_operational_pre_gate["ok"]:
+        gate_verdict = "blocked_insufficient_operational_sample"
+    elif not strict_pair_preconditions["ok"]:
         gate_verdict = "blocked_insufficient_sample"
     elif decision_authoritative_status == "fail":
         gate_verdict = "failed_quality_regression"
@@ -2239,6 +2304,7 @@ def evaluate_edge_quality_compare_report(
             "decision_authoritative_status": decision_authoritative_status,
             "gate_verdict": gate_verdict,
             "strict_pair_preconditions": strict_pair_preconditions,
+            "strict_pair_operational_pre_gate": strict_pair_operational_pre_gate,
             "runbook_branch": runbook_branch,
             "stake_policy_enabled": bool(config.stake_policy_enabled),
         },

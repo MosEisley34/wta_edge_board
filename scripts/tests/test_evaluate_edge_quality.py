@@ -672,10 +672,47 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             config=EdgeQualityGateConfig(max_edge_volatility=0.03),
             ordered_run_ids=["run-1", "run-2", "run-3"],
         )
-        self.assertEqual("insufficient_sample", report["pair_level_result"]["status"])
-        self.assertIn("invalid_strict_pair_baseline", report["pair_level_result"]["strict_pair_precondition"]["reason_codes"])
-        self.assertIsNotNone(report["windowed_fallback_result"])
-        self.assertEqual("windowed_fallback_result", report["final_operator_summary"]["decision_authoritative_source"])
+        self.assertEqual("insufficient_operational_sample", report["pair_level_result"]["status"])
+        self.assertEqual("blocked_insufficient_operational_sample", report["gate_verdict"])
+        self.assertIsNone(report["windowed_fallback_result"])
+        self.assertEqual("strict_pair_gate", report["final_operator_summary"]["decision_authoritative_source"])
+        pre_gate = report["final_operator_summary"]["strict_pair_operational_pre_gate"]
+        self.assertFalse(pre_gate["ok"])
+        self.assertEqual("insufficient_operational_sample", pre_gate["reason_code"])
+        self.assertIn("baseline_matched_events_below_minimum", pre_gate["reason_codes"])
+
+    def test_compare_report_marks_operational_sample_pregate_metadata_when_candidate_below_floor(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=3, matched_events=2),
+            self._summary_row("run-3", "2026-03-03T00:00:00Z", edge_volatility=0.02, scored_signals=12, matched_events=8),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+            ),
+            ordered_run_ids=["run-1", "run-2", "run-3"],
+        )
+        self.assertEqual("insufficient_operational_sample", report["pair_level_result"]["status"])
+        self.assertEqual("blocked_insufficient_operational_sample", report["gate_verdict"])
+        self.assertEqual("insufficient_operational_sample", report["final_operator_summary"]["strict_pair_status"])
+        self.assertEqual(
+            "strict_pair_operational_pre_gate_failed",
+            report["final_operator_summary"]["strict_pair_status_reason"],
+        )
+        pre_gate = report["final_operator_summary"]["strict_pair_operational_pre_gate"]
+        self.assertFalse(pre_gate["ok"])
+        self.assertEqual(
+            ["candidate_matched_events_below_minimum", "candidate_scored_signals_below_minimum"],
+            sorted(pre_gate["reason_codes"]),
+        )
+        self.assertEqual(10, pre_gate["minimums"]["min_scored_signals_for_volatility"])
+        self.assertEqual(5, pre_gate["minimums"]["min_matched_events_for_volatility"])
 
     def test_alias_envelope_csv_pass_derives_non_zero_feature_completeness(self):
         rows = load_run_log_rows(str(ROOT / "scripts" / "fixtures" / "edge_quality_gate_alias_pass.csv"))
