@@ -37,8 +37,32 @@ class PreflightGuardTests(unittest.TestCase):
         (export_dir / "Run_Log.json").write_text(
             json.dumps(
                 [
-                    {"run_id": "run-a", "row_type": "summary", "stage": "runEdgeBoard", "stage_summaries": []},
-                    {"run_id": "run-b", "row_type": "summary", "stage": "runEdgeBoard", "stage_summaries": []},
+                    {
+                        "run_id": "run-a",
+                        "row_type": "summary",
+                        "stage": "runEdgeBoard",
+                        "stage_summaries": [{"stage": stage} for stage in (
+                            "stageFetchOdds",
+                            "stageFetchSchedule",
+                            "stageMatchEvents",
+                            "stageFetchPlayerStats",
+                            "stageGenerateSignals",
+                            "stagePersist",
+                        )],
+                    },
+                    {
+                        "run_id": "run-b",
+                        "row_type": "summary",
+                        "stage": "runEdgeBoard",
+                        "stage_summaries": [{"stage": stage} for stage in (
+                            "stageFetchOdds",
+                            "stageFetchSchedule",
+                            "stageMatchEvents",
+                            "stageFetchPlayerStats",
+                            "stageGenerateSignals",
+                            "stagePersist",
+                        )],
+                    },
                 ]
             ),
             encoding="utf-8",

@@ -1,0 +1,24 @@
+[
+  {
+    "run_id": "run-a",
+    "stage": "stageFetchOdds",
+    "started_at": "2026-03-30T00:00:00Z"
+  },
+  {
+    "run_id": "run-a",
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "started_at": "2026-03-30T00:10:00+00:00"
+  },
+  {
+    "run_id": "run-b",
+    "stage": "stageFetchOdds",
+    "started_at": "2026-03-30T00:20:00+00:00"
+  },
+  {
+    "run_id": "run-b",
+    "row_type": "summary",
+    "stage": "runEdgeBoard",
+    "started_at": "2026-03-30T00:30:00Z"
+  }
+]

@@ -37,7 +37,18 @@ REQUIRED_COMPARE_STAGES = (
 )
 RUN_ID_TIMESTAMP_PATTERNS = (
     re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})[-_]?(\d{2})(\d{2})(\d{2})?(?!\d)"),
-    re.compile(r"(?<!\d)(20\d{2})-(\d{2})-(\d{2})[Tt_ -]?(\d{2}):?(\d{2})(?::?(\d{2}))?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?(?!\d)"),
+    re.compile(
+        r"(?<!\d)"
+        r"(20\d{2}-\d{2}-\d{2}[Tt_ -]?\d{2}:?\d{2}(?::?\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
+        r"(?!\d)"
+    ),
+)
+RUN_LOG_FRESHNESS_TIMESTAMP_KEYS = (
+    "started_at",
+    "ended_at",
+    "timestamp",
+    "created_at",
+    "updated_at",
 )
 
 
@@ -128,15 +139,29 @@ def _load_run_log_rows(export_dir: str) -> list[dict[str, Any]]:
     return [row for row in payload if isinstance(row, dict)]
 
 
+def _parse_timestamp_utc(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def parse_run_id_timestamp(run_id: str) -> datetime | None:
     value = str(run_id or "").strip()
     if not value:
         return None
-    for pattern in RUN_ID_TIMESTAMP_PATTERNS:
-        match = pattern.search(value)
-        if not match:
-            continue
-        year, month, day, hour, minute, second = match.groups()
+    compact_match = RUN_ID_TIMESTAMP_PATTERNS[0].search(value)
+    if compact_match:
+        year, month, day, hour, minute, second = compact_match.groups()
         second = second or "00"
         try:
             return datetime(
@@ -149,7 +174,11 @@ def parse_run_id_timestamp(run_id: str) -> datetime | None:
                 tzinfo=timezone.utc,
             )
         except ValueError:
-            continue
+            pass
+
+    iso_match = RUN_ID_TIMESTAMP_PATTERNS[1].search(value)
+    if iso_match:
+        return _parse_timestamp_utc(iso_match.group(1))
     return None
 
 
@@ -175,27 +204,70 @@ def _collect_export_run_ids(export_dir: str) -> set[str]:
     return run_ids
 
 
+def _collect_export_run_log_rows(export_dir: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    run_log_json = Path(export_dir) / "Run_Log.json"
+    run_log_csv = Path(export_dir) / "Run_Log.csv"
+    if run_log_json.is_file():
+        with run_log_json.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if isinstance(payload, list):
+            rows.extend(item for item in payload if isinstance(item, dict))
+    if run_log_csv.is_file():
+        with run_log_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows.extend(dict(row) for row in csv.DictReader(handle))
+    return rows
+
+
+def _parse_row_freshness_timestamp_utc(row: dict[str, Any]) -> datetime | None:
+    for key in RUN_LOG_FRESHNESS_TIMESTAMP_KEYS:
+        parsed = _parse_timestamp_utc(row.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def evaluate_export_freshness(export_dir: str, requested_run_ids: list[str]) -> dict[str, Any]:
     requested = [str(run_id or "").strip() for run_id in requested_run_ids if str(run_id or "").strip()]
-    requested_ts = {
+    requested_from_run_id = {
         run_id: parse_run_id_timestamp(run_id)
         for run_id in requested
     }
-    requested_parsed = {run_id: ts for run_id, ts in requested_ts.items() if ts is not None}
+    requested_resolved: dict[str, datetime] = {
+        run_id: ts for run_id, ts in requested_from_run_id.items() if ts is not None
+    }
     export_run_ids = _collect_export_run_ids(export_dir)
     export_parsed: dict[str, datetime] = {}
     for run_id in export_run_ids:
         parsed = parse_run_id_timestamp(run_id)
         if parsed is not None:
             export_parsed[run_id] = parsed
+    export_rows = _collect_export_run_log_rows(export_dir)
+    export_row_timestamps: list[tuple[str, datetime]] = []
+    for row in export_rows:
+        run_id = str(row.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        parsed = _parse_row_freshness_timestamp_utc(row)
+        if parsed is None:
+            continue
+        export_row_timestamps.append((run_id, parsed))
+        if run_id in requested_resolved:
+            continue
+        if run_id in requested:
+            requested_resolved[run_id] = parsed
 
     latest_export = None
     if export_parsed:
         latest_export = max(export_parsed.items(), key=lambda item: item[1])
+    if export_row_timestamps:
+        latest_export_row = max(export_row_timestamps, key=lambda item: item[1])
+        if latest_export is None or latest_export_row[1] > latest_export[1]:
+            latest_export = latest_export_row
 
     latest_requested = None
-    if requested_parsed:
-        latest_requested = max(requested_parsed.items(), key=lambda item: item[1])
+    if requested_resolved:
+        latest_requested = max(requested_resolved.items(), key=lambda item: item[1])
 
     command = (
         f"scripts/export_parity_precheck.sh --out-dir {os.path.normpath(export_dir)} "
@@ -205,7 +277,7 @@ def evaluate_export_freshness(export_dir: str, requested_run_ids: list[str]) -> 
         "status": "ok",
         "reason_code": "fresh_export_dir",
         "requested_run_ids": requested,
-        "requested_run_id_timestamps_utc": {run_id: ts.isoformat() for run_id, ts in requested_parsed.items()},
+        "requested_run_id_timestamps_utc": {run_id: ts.isoformat() for run_id, ts in requested_resolved.items()},
         "latest_requested_run_id": latest_requested[0] if latest_requested else "",
         "latest_requested_run_id_timestamp_utc": latest_requested[1].isoformat() if latest_requested else "",
         "max_export_run_id": latest_export[0] if latest_export else "",
@@ -213,7 +285,7 @@ def evaluate_export_freshness(export_dir: str, requested_run_ids: list[str]) -> 
         "suggested_export_command": command,
     }
 
-    if not requested_parsed:
+    if not latest_requested:
         result["status"] = "warning"
         result["reason_code"] = "requested_run_id_timestamp_unparseable"
         return result
