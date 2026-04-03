@@ -30,6 +30,7 @@ from run_summary_cardinality import (
     is_run_edgeboard_summary_row,
     merge_run_summary_rows_for_cardinality,
 )
+from preflight_guard import enforce_preflight_guard
 
 RUN_LOG_TYPED_FIELDS: dict[str, type] = {
     "feature_completeness": float,
@@ -3237,6 +3238,20 @@ def main() -> int:
 
     if args.baseline_run_id and args.candidate_run_id:
         run_pair = [args.baseline_run_id, args.candidate_run_id]
+        try:
+            enforce_preflight_guard(
+                export_dir=str(args.path),
+                run_a=run_pair[0],
+                run_b=run_pair[1],
+                emergency_override_incident_tag="",
+            )
+        except ValueError as exc:
+            parser.error(
+                "Compare preflight guard failed before evaluate step:\n"
+                f"- {exc}\n"
+                "Remediation: rerun `scripts/export_parity_precheck.sh` for this export directory and run pair, "
+                "then retry evaluate_edge_quality.py."
+            )
         preflight_errors = _preflight_validate_run_ids(rows, run_pair)
         if preflight_errors:
             parser.error(

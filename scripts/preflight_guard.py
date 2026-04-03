@@ -470,4 +470,50 @@ def enforce_preflight_guard(
             "Re-run scripts/export_parity_precheck.sh to regenerate complete CSV/JSON tab exports."
         )
 
+    run_checklist_by_run_id = (
+        preflight_evidence.get("run_checklist_by_run_id")
+        if isinstance(preflight_evidence, dict)
+        else None
+    )
+    if not isinstance(run_checklist_by_run_id, dict):
+        raise ValueError(
+            "Preflight guard failed: sidecar missing run_checklist_by_run_id evidence. "
+            "Re-run scripts/export_parity_precheck.sh for this export batch and run pair."
+        )
+
+    compare_ready_failures: list[str] = []
+    for run_id in _canonical_run_pair(run_a, run_b):
+        checklist = run_checklist_by_run_id.get(run_id)
+        if not isinstance(checklist, dict) or not bool(checklist.get("compare_ready")):
+            compare_ready_failures.append(run_id)
+    if compare_ready_failures:
+        raise ValueError(
+            "Preflight guard failed: compare_ready evidence is missing/false for run ID(s): "
+            f"{compare_ready_failures}. "
+            "Block compare/evaluate commands until scripts/export_parity_precheck.sh passes with compare_ready=true for both runs."
+        )
+
+    duplicate_summary_diagnostics = (
+        preflight_evidence.get("duplicate_summary_diagnostics_by_run_id")
+        if isinstance(preflight_evidence, dict)
+        else None
+    )
+    if isinstance(duplicate_summary_diagnostics, dict):
+        duplicate_failures = [
+            run_id
+            for run_id in _canonical_run_pair(run_a, run_b)
+            if bool(
+                isinstance(duplicate_summary_diagnostics.get(run_id), dict)
+                and duplicate_summary_diagnostics.get(run_id, {}).get(
+                    "compare_will_fail_due_to_duplicate_summary_rows"
+                )
+            )
+        ]
+        if duplicate_failures:
+            raise ValueError(
+                "Preflight guard failed: duplicate summary diagnostics indicate compare failure for run ID(s): "
+                f"{duplicate_failures}. "
+                "Block compare/evaluate commands until replacement run IDs pass precheck."
+            )
+
     return {"status": "ok", "sidecar_path": str(sidecar_path)}
