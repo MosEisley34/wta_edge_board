@@ -170,37 +170,42 @@ Expected size/performance tradeoff:
 - `compact`: reduced `Run_Log`/`State` payload size and less serialization/write overhead.
 - `verbose`: larger runtime artifacts and higher write cost, but better for deep incident triage.
 
-## Standard triage bundle (recommended)
+## Standard triage bundle (only supported daily matrix operator path)
 
-Run this wrapper each triage cycle so runtime diagnostics inputs are prepared consistently before analysis:
-
-```bash
-scripts/run_triage_bundle.sh [--out-dir /tmp/wta_edge_board_triage_exports] <file-or-directory> [more paths...]
-```
-
-> Expected operator output location: use an out-of-repo workspace (recommended: `/tmp/wta_edge_board_triage_exports`) so generated exports do not create merge blockers on `main`.
-
-What it does:
-1. Runs `scripts/prepare_runtime_exports.sh` to export `Run_Log`/`State` CSV/JSON into your `--out-dir` (default: `/tmp/wta_edge_board_triage_exports`).
-2. Immediately invokes `scripts/scan_runtime_diagnostics.sh` against that same `--out-dir`.
-3. Prioritize the scanner's **Run-health degraded contract (first-pass triage)** section before any key-specific deep dive.
-
-`prepare_runtime_exports.sh` enforces a single-snapshot Run_Log export contract: `Run_Log.csv` + `Run_Log.json` are regenerated together from the same latest source snapshot, parity-gated, and recorded in `run_log_latest_batch_note.json`.
-
-For compare/gate workflows that require explicit run IDs, always use this fail-fast preflight first:
+Use this wrapper for **all daily matrix generation** and run-to-run diagnostics triage. No other manual command sequence is supported for operators.
 
 ```bash
-scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> <live_runtime_dir_or_files>
+scripts/run_triage_bundle.sh [--out-dir ./exports_live] [--baseline-run-id <run_id>] [--candidate-run-id <run_id>] <file-or-directory> [more paths...]
 ```
 
-Operational contract for compare/gate workflows:
-- `scripts/export_parity_precheck.sh` must be the first command in the sequence.
-- If wrapper parity/precheck fails, stop triage and re-export immediately.
-- After wrapper success, run all downstream commands against `./exports_live` only (`precheck_run_ids.py`, `verify_run_log_parity.py`, `compare_*`, `evaluate_edge_quality.py`).
-- Failure classes are split intentionally:
-  - **`compare_contract_missing`** (precheck): missing run summary / stage chain / coverage prerequisite contract.
-  - **`data_quality_low`** (quality gates): data exists but quality metrics fail policy thresholds.
-- Do not mix stale `live_runtime/Run_Log.json` with fresh `Run_Log.csv` in runbook examples or operator commands.
+Strict enforced execution order:
+1. **derive run pair** (manual `--baseline-run-id/--candidate-run-id` override or automatic latest pair derivation from exported `Run_Log.json`),
+2. **precheck** (`scripts/precheck_run_ids.py --require-gate-prereqs`),
+3. **compare diagnostics** (`scripts/compare_run_diagnostics.py`),
+4. **edge quality evaluation** (`scripts/evaluate_edge_quality.py`),
+5. **summary output** (machine-readable JSON).
+
+Hard stage gates (fail-fast):
+- Stop when run IDs are missing/empty.
+- Stop when diagnostics compare validation fails.
+- Stop when required JSON stage artifacts are missing/empty.
+
+Machine-readable artifacts (per execution):
+- `triage_impl_<UTC timestamp>/out/derive_run_pair.json`
+- `triage_impl_<UTC timestamp>/out/precheck_stage.json`
+- `triage_impl_<UTC timestamp>/out/compare_validation.json`
+- `triage_impl_<UTC timestamp>/out/edge_quality_compare.json`
+- `triage_impl_<UTC timestamp>/out/triage_bundle_summary.json`
+
+The final summary JSON includes:
+- `status`
+- `reason_code`
+- `candidate_run_id`
+- `baseline_run_id`
+- artifact paths and required-JSON presence flags
+
+Operational note:
+- Keep `--out-dir` outside long-lived tracked branches when possible (for example `/tmp/wta_edge_board_triage_exports`) to avoid accidental artifact commits.
 
 Optional shell muscle-memory helper (ops dotfiles):
 
@@ -213,26 +218,17 @@ alias rl_compare_metrics='scripts/compare_run_metrics_preflight.sh --out-dir ./e
 
 ## Quick operational checks (copy/paste)
 
-Use this short flow when validating trigger health and recent runtime diagnostics artifacts:
+Use the supported wrapper path when validating trigger health and generating the daily matrix packet:
 
 ```bash
-# 1) Prepare deterministic exports in ./exports from local files/dirs.
-scripts/prepare_runtime_exports.sh --out-dir ./exports <file-or-directory>
-
-# 2) Run local triage scanner (first-pass contract + grouped counts + row samples).
-scripts/triage_runtime_diagnostics_local.sh ./exports
-
-# 3) Emit 7-line compact incident summary for chat/ticket updates.
-scripts/runtime_diagnostics_summary.py ./exports
-
-# 4) Optional: run the wrapper that does steps (1)+(2) in one command.
-scripts/run_triage_bundle.sh --out-dir ./exports <file-or-directory>
+# Single supported operator command:
+scripts/run_triage_bundle.sh --out-dir ./exports_live <file-or-directory>
 ```
 
 Operational expectation:
-- `prepare_runtime_exports.sh` must produce `runtime_export_manifest.json` plus at least one Run_Log/State artifact.
-- `triage_runtime_diagnostics_local.sh` should show `Run-health degraded contract (first-pass triage)` near the top.
-- `runtime_diagnostics_summary.py` should print deterministic seven-line summary output including daily status and day-over-day deltas.
+- `scripts/run_triage_bundle.sh` must finish with `status=pass` and emit `triage_impl_*/out/triage_bundle_summary.json`.
+- The summary JSON must include non-empty `baseline_run_id` and `candidate_run_id`.
+- If any stage gate fails, treat outputs as invalid and rerun only after remediation.
 
 ## Compare/gate command checklist (run IDs required)
 
