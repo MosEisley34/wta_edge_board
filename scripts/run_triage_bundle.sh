@@ -145,6 +145,41 @@ fail_and_exit() {
   exit 1
 }
 
+write_edge_stage_failure() {
+  local reason="$1"
+  local exit_code="$2"
+  local command_used="$3"
+  local stderr_log="$4"
+  python3 - "$edge_json" "$reason" "$exit_code" "$baseline_run_id" "$candidate_run_id" "$command_used" "$stderr_log" <<'PY'
+import json
+import sys
+
+(
+    out_path,
+    reason_code,
+    exit_code,
+    baseline_run_id,
+    candidate_run_id,
+    command_used,
+    stderr_log_path,
+) = sys.argv[1:]
+
+payload = {
+    "status": "fail",
+    "reason_code": reason_code,
+    "gate_verdict": "fail",
+    "exit_code": int(exit_code),
+    "baseline_run_id": baseline_run_id,
+    "candidate_run_id": candidate_run_id,
+    "command_used": command_used,
+    "stderr_log_path": stderr_log_path,
+}
+
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2, sort_keys=True)
+PY
+}
+
 ensure_required_json() {
   local path="$1"
   local missing_reason="$2"
@@ -306,11 +341,53 @@ if [[ "$compare_exit" -ne 0 ]]; then
 fi
 
 echo "[4/5] Evaluating edge quality"
-python3 scripts/evaluate_edge_quality.py "$out_dir" --baseline-run-id "$baseline_run_id" --candidate-run-id "$candidate_run_id" --out-json "$edge_json" > "$triage_impl_dir/edge_quality_stdout.log" 2>&1 || {
+edge_quality_stderr_log="$triage_impl_dir/edge_quality_stderr.log"
+edge_quality_command=(
+  python3 scripts/evaluate_edge_quality.py "$out_dir"
+  --baseline-run-id "$baseline_run_id"
+  --candidate-run-id "$candidate_run_id"
+  --out-json "$edge_json"
+)
+printf '%q ' "${edge_quality_command[@]}" > "$triage_impl_dir/edge_quality_command.sh"
+echo >> "$triage_impl_dir/edge_quality_command.sh"
+set +e
+"${edge_quality_command[@]}" > "$triage_impl_dir/edge_quality_stdout.log" 2> "$edge_quality_stderr_log"
+edge_quality_exit=$?
+set -e
+if [[ "$edge_quality_exit" -ne 0 ]]; then
   cat "$triage_impl_dir/edge_quality_stdout.log" >&2 || true
+  cat "$edge_quality_stderr_log" >&2 || true
+  write_edge_stage_failure "EDGE_QUALITY_EVAL_FAILED" "$edge_quality_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
   fail_and_exit "EDGE_QUALITY_EVAL_FAILED"
-}
-ensure_required_json "$edge_json" "REQUIRED_JSON_MISSING"
+fi
+if [[ ! -s "$edge_json" ]]; then
+  echo "Error: required JSON artifact missing or empty: $edge_json" >&2
+  write_edge_stage_failure "edge_quality_artifact_missing" "$edge_quality_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
+  fail_and_exit "EDGE_QUALITY_ARTIFACT_MISSING"
+fi
+set +e
+python3 - "$edge_json" <<'PY'
+import json
+import sys
+
+required_keys = ("status", "gate_verdict", "reason_code")
+path = sys.argv[1]
+
+with open(path, "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+missing = [key for key in required_keys if key not in payload]
+if missing:
+    raise SystemExit(f"missing required keys: {', '.join(missing)}")
+PY
+edge_parse_exit=$?
+set -e
+if [[ "$edge_parse_exit" -ne 0 ]]; then
+  echo "Error: edge quality artifact exists but failed postcondition validation: $edge_json" >&2
+  cat "$edge_quality_stderr_log" >&2 || true
+  write_edge_stage_failure "EDGE_QUALITY_POSTCONDITION_FAILED" "$edge_parse_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
+  fail_and_exit "EDGE_QUALITY_POSTCONDITION_FAILED"
+fi
 
 echo "[5/5] Writing summary"
 status="pass"
