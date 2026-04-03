@@ -189,6 +189,7 @@ Hard stage gates (fail-fast):
 - Stop when run IDs are missing/empty.
 - Stop when diagnostics compare validation fails.
 - Stop when required JSON stage artifacts are missing/empty.
+- Stop when `edge_quality_compare.json` does not parse or is missing required keys: `status`, `gate_verdict`, `reason_code`.
 
 Machine-readable artifacts (per execution):
 - `triage_impl_<UTC timestamp>/out/derive_run_pair.json`
@@ -228,6 +229,7 @@ scripts/run_triage_bundle.sh --out-dir ./exports_live <file-or-directory>
 Operational expectation:
 - `scripts/run_triage_bundle.sh` must finish with `status=pass` and emit `triage_impl_*/out/triage_bundle_summary.json`.
 - The summary JSON must include non-empty `baseline_run_id` and `candidate_run_id`.
+- Daily matrix generation is blocked unless `triage_impl_*/out/edge_quality_compare.json` exists and parses with required keys `status`, `gate_verdict`, `reason_code`.
 - If any stage gate fails, treat outputs as invalid and rerun only after remediation.
 
 ## Compare/gate command checklist (run IDs required)
@@ -453,6 +455,17 @@ python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id "$PRE_
   echo "Hint: regenerate via: python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id \"$PRE_RUN_ID\" --candidate-run-id \"$NEW_RUN_ID\" --out-json \"$EDGE_COMPARE_ARTIFACT\"" >&2
   exit 1
 }
+python3 - "$EDGE_COMPARE_ARTIFACT" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+required = ("status", "gate_verdict", "reason_code")
+missing = [k for k in required if k not in payload]
+if missing:
+    raise SystemExit(f"Error: edge compare artifact missing required keys: {', '.join(missing)}")
+PY
 
 # 6) Strict post-run evidence/report validation (copy/paste as-is).
 bash -c '
