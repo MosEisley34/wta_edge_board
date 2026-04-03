@@ -308,8 +308,9 @@ scripts/prepare_runtime_exports.sh --out-dir ./exports_live ./exports_live
 #   - scripts/compare_run_diagnostics_preflight.sh
 #   - scripts/compare_run_metrics_preflight.sh
 #   - python3 scripts/evaluate_edge_quality.py
-CANDIDATE_RUN_ID="<run_id_b>"
-PRE_RUN_ID="$(python3 - "$EXPORT_SRC" "$CANDIDATE_RUN_ID" <<'PY'
+NEW_RUN_ID="<run_id_b>"
+export NEW_RUN_ID
+PRE_RUN_ID="$(python3 - "$EXPORT_SRC" "$NEW_RUN_ID" <<'PY'
 import csv
 import sys
 from pathlib import Path
@@ -351,14 +352,30 @@ if candidate_index == 0:
 print(ordered_ids[candidate_index - 1])
 PY
 )"
-if [[ -z "$PRE_RUN_ID" ]]; then
-  echo "Unable to derive predecessor for candidate run; refresh exports (candidate_run_id=$CANDIDATE_RUN_ID export_path=$EXPORT_SRC)" >&2
-  exit 1
-fi
+export PRE_RUN_ID NEW_RUN_ID
+python3 - <<'PY'
+import json
+import os
+import sys
 
-python3 scripts/precheck_run_ids.py "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" --export-dir "$EXPORT_SRC" --recent-limit 10
+baseline_run_id = (os.environ.get("PRE_RUN_ID") or "").strip()
+candidate_run_id = (os.environ.get("NEW_RUN_ID") or "").strip()
+if baseline_run_id and candidate_run_id:
+    raise SystemExit(0)
 
-scripts/export_parity_precheck.sh --out-dir ./exports_live "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" "$EXPORT_SRC"
+print(json.dumps({
+    "status": "error",
+    "code": "RUN_IDS_MISSING",
+    "message": "Baseline/candidate run IDs must both be non-empty before compare/evaluate.",
+    "baseline_run_id": baseline_run_id,
+    "candidate_run_id": candidate_run_id,
+}, sort_keys=True))
+raise SystemExit(1)
+PY
+
+python3 scripts/precheck_run_ids.py "$PRE_RUN_ID" "$NEW_RUN_ID" --export-dir "$EXPORT_SRC" --recent-limit 10
+
+scripts/export_parity_precheck.sh --out-dir ./exports_live "$PRE_RUN_ID" "$NEW_RUN_ID" "$EXPORT_SRC"
 
 # Stale-source troubleshooting fallback (existing exports_live contract flow).
 # If the fresh source path is stale/unavailable, rerun precheck from ./exports_live.
@@ -373,7 +390,7 @@ scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b>
 # 2b) Capture preflight report with strict failure propagation.
 bash -c '
   set -euo pipefail
-  scripts/export_parity_precheck.sh --out-dir ./exports_live "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" "$EXPORT_SRC" \
+  scripts/export_parity_precheck.sh --out-dir ./exports_live "$PRE_RUN_ID" "$NEW_RUN_ID" "$EXPORT_SRC" \
     | tee "'"$RUN_REPORT_DIR"'/run_compare_preflight.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
@@ -396,7 +413,7 @@ bash -c '
 # 3) Compare diagnostics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
 bash -c '
   set -euo pipefail
-  scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" "$EXPORT_SRC" \
+  scripts/compare_run_diagnostics_preflight.sh --out-dir ./exports_live "$PRE_RUN_ID" "$NEW_RUN_ID" "$EXPORT_SRC" \
     | tee "'"$RUN_REPORT_DIR"'/compare_run_diagnostics.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
@@ -411,7 +428,7 @@ bash -c '
 # 4) Compare metrics through mandatory preflight wrapper (source-locked via $EXPORT_SRC).
 bash -c '
   set -euo pipefail
-  scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live "$PRE_RUN_ID" "$CANDIDATE_RUN_ID" "$EXPORT_SRC" \
+  scripts/compare_run_metrics_preflight.sh --out-dir ./exports_live "$PRE_RUN_ID" "$NEW_RUN_ID" "$EXPORT_SRC" \
     | tee "'"$RUN_REPORT_DIR"'/compare_run_metrics.report.log"
   exit_code=${PIPESTATUS[0]} # zsh: exit_code=${pipestatus[1]}
   if [[ "$exit_code" -ne 0 ]]; then
@@ -424,14 +441,18 @@ bash -c '
 '
 
 # 5) Evaluate edge quality only after the same source lock/precheck has succeeded.
-EDGE_COMPARE_ARTIFACT="./artifacts/compare/${PRE_RUN_ID}_vs_${CANDIDATE_RUN_ID}.json"
-python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id "$PRE_RUN_ID" --candidate-run-id "$CANDIDATE_RUN_ID" \
+SAFE_PRE_RUN_ID="$(printf '%s' "$PRE_RUN_ID" | sed -E 's/[^A-Za-z0-9._-]+/_/g; s/^[._-]+//; s/[._-]+$//')"
+SAFE_NEW_RUN_ID="$(printf '%s' "$NEW_RUN_ID" | sed -E 's/[^A-Za-z0-9._-]+/_/g; s/^[._-]+//; s/[._-]+$//')"
+[[ -n "$SAFE_PRE_RUN_ID" ]] || SAFE_PRE_RUN_ID="unknown_baseline"
+[[ -n "$SAFE_NEW_RUN_ID" ]] || SAFE_NEW_RUN_ID="unknown_candidate"
+EDGE_COMPARE_ARTIFACT="./artifacts/compare/${SAFE_PRE_RUN_ID}_vs_${SAFE_NEW_RUN_ID}.json"
+python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id "$PRE_RUN_ID" --candidate-run-id "$NEW_RUN_ID" \
   --out-json "$EDGE_COMPARE_ARTIFACT" \
   | tee "$RUN_REPORT_DIR/evaluate_edge_quality.report.log"
 
 [[ -s "$EDGE_COMPARE_ARTIFACT" ]] || {
   echo "Error: missing edge compare artifact at $EDGE_COMPARE_ARTIFACT" >&2
-  echo "Hint: regenerate via: python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id \"$PRE_RUN_ID\" --candidate-run-id \"$CANDIDATE_RUN_ID\" --out-json \"$EDGE_COMPARE_ARTIFACT\"" >&2
+  echo "Hint: regenerate via: python3 scripts/evaluate_edge_quality.py ./exports_live --baseline-run-id \"$PRE_RUN_ID\" --candidate-run-id \"$NEW_RUN_ID\" --out-json \"$EDGE_COMPARE_ARTIFACT\"" >&2
   exit 1
 }
 
