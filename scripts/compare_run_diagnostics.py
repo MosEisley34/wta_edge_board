@@ -217,6 +217,64 @@ def _terminal_no_hit_diagnostics(summary: Dict[str, Any]) -> Dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _parse_named_counts(value: Any) -> Counter:
+    counts: Counter = Counter()
+    if isinstance(value, dict):
+        for key, raw_count in value.items():
+            name = str(key or "").strip()
+            if not name:
+                continue
+            try:
+                counts[name] += int(float(raw_count))
+            except Exception:
+                continue
+        return counts
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                name = str(item.get("reason") or item.get("code") or item.get("name") or "").strip()
+                if not name:
+                    continue
+                try:
+                    count = int(float(item.get("count", item.get("value", 1)) or 0))
+                except Exception:
+                    count = 1
+                counts[name] += max(0, count)
+            elif isinstance(item, str):
+                name = item.strip()
+                if name:
+                    counts[name] += 1
+    return counts
+
+
+def _sample_pair_identifiers(value: Any, limit: int = 8) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    identifiers: List[str] = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        odds_event_id = str(item.get("odds_event_id") or item.get("event_id") or "").strip()
+        schedule_event_id = str(item.get("schedule_event_id") or item.get("matched_event_id") or "").strip()
+        pair_id = str(item.get("pair_id") or item.get("candidate_pair_id") or "").strip()
+        parts = [part for part in (odds_event_id, schedule_event_id, pair_id) if part]
+        if not parts:
+            normalized_a = str(item.get("normalized_player_a") or item.get("norm_player_a") or "").strip()
+            normalized_b = str(item.get("normalized_player_b") or item.get("norm_player_b") or "").strip()
+            parts = [part for part in (normalized_a, normalized_b) if part]
+        if not parts:
+            continue
+        identifier = " | ".join(parts)
+        if identifier in seen:
+            continue
+        seen.add(identifier)
+        identifiers.append(identifier)
+        if len(identifiers) >= max(1, int(limit)):
+            break
+    return identifiers
+
+
 def _summary_stake_policy_enabled(summary: Dict[str, Any]) -> bool | None:
     signal_summary = _parse_json(summary.get("signal_decision_summary"), {})
     if not isinstance(signal_summary, dict):
@@ -595,6 +653,43 @@ def compare_rows(
     lines.append(f"- degraded: `{terminal_reason_b}`")
     no_hit_diag_a = _terminal_no_hit_diagnostics(summary_a)
     no_hit_diag_b = _terminal_no_hit_diagnostics(summary_b)
+    lines.append("\n## Matcher rejection diagnostics")
+    rejection_a = _parse_named_counts(no_hit_diag_a.get("top_rejection_reasons", []))
+    rejection_b = _parse_named_counts(no_hit_diag_b.get("top_rejection_reasons", []))
+    rejection_codes = sorted(
+        set(rejection_a) | set(rejection_b),
+        key=lambda code: (-(rejection_a[code] + rejection_b[code]), code),
+    )[:10]
+    lines.append("### Top rejection reason deltas (pre vs post)")
+    lines.append("| rejection_reason | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    if rejection_codes:
+        for code in rejection_codes:
+            lines.append(f"| {code} | {rejection_a[code]} | {rejection_b[code]} | {rejection_b[code]-rejection_a[code]:+d} |")
+    else:
+        lines.append("| none | 0 | 0 | +0 |")
+
+    lines.append("\n### Normalized-key mismatch categories")
+    norm_a = _parse_named_counts(no_hit_diag_a.get("normalized_keys_used_for_matching_comparison", {}))
+    norm_b = _parse_named_counts(no_hit_diag_b.get("normalized_keys_used_for_matching_comparison", {}))
+    norm_codes = sorted(
+        set(norm_a) | set(norm_b),
+        key=lambda code: (-(norm_a[code] + norm_b[code]), code),
+    )[:10]
+    lines.append("| mismatch_category | successful | degraded | delta |")
+    lines.append("|---|---:|---:|---:|")
+    if norm_codes:
+        for code in norm_codes:
+            lines.append(f"| {code} | {norm_a[code]} | {norm_b[code]} | {norm_b[code]-norm_a[code]:+d} |")
+    else:
+        lines.append("| none | 0 | 0 | +0 |")
+
+    lines.append("\n### Sample failing pair identifiers")
+    sample_ids_a = _sample_pair_identifiers(no_hit_diag_a.get("sampled_unmatched_rows", []))
+    sample_ids_b = _sample_pair_identifiers(no_hit_diag_b.get("sampled_unmatched_rows", []))
+    lines.append(f"- successful samples: `{json.dumps(sample_ids_a, sort_keys=True)}`")
+    lines.append(f"- degraded samples: `{json.dumps(sample_ids_b, sort_keys=True)}`")
+
     if no_hit_diag_a or no_hit_diag_b:
         lines.append("\n## runEdgeBoard terminal no-hit diagnostics (compact)")
         lines.append("| field | successful | degraded |")
