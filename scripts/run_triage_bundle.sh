@@ -15,20 +15,21 @@ Usage:
 
 Supported operator flow (strict order):
   0) runtime export workspace setup
-  1) derive run pair
+  1) run-pair selection
   2) precheck
   3) compare diagnostics
   4) edge quality evaluation
-  5) summary output
+  5) summary JSON emission
 
-Stage gates:
+Hard stage gates:
   - stop if run IDs are missing/empty
-  - stop if compare validation fails
-  - stop if required JSON artifacts are missing
+  - stop if precheck JSON is missing/invalid or precheck exits non-zero
+  - stop if compare validation JSON is missing/invalid or compare exits non-zero
+  - stop if edge quality JSON is missing/invalid
 
 Outputs:
   - triage implementation directory: <out-dir>/triage_impl_<timestamp>/
-  - machine-readable final summary: <out-dir>/triage_impl_<timestamp>/out/triage_bundle_summary.json
+  - machine-readable final summary: <out-dir>/triage_impl_<timestamp>/out/triage_summary.json
 
 Notes:
   - This script is the only supported operator path for daily matrix generation.
@@ -83,15 +84,24 @@ derive_pair_json="$out_stage_dir/derive_run_pair.json"
 precheck_json="$out_stage_dir/precheck_stage.json"
 compare_json="$out_stage_dir/compare_validation.json"
 edge_json="$out_stage_dir/edge_quality_compare.json"
-summary_json="$out_stage_dir/triage_bundle_summary.json"
+summary_json="$out_stage_dir/triage_summary.json"
 
 baseline_run_id=""
 candidate_run_id=""
 status="fail"
 reason_code="UNINITIALIZED"
 
+run_pair_status="not_run"
+run_pair_reason_code="NOT_RUN"
+precheck_status="not_run"
+precheck_reason_code="NOT_RUN"
+compare_status="not_run"
+compare_reason_code="NOT_RUN"
+edge_quality_status="not_run"
+edge_quality_reason_code="NOT_RUN"
+
 write_summary() {
-  python3 - "$summary_json" "$status" "$reason_code" "$candidate_run_id" "$baseline_run_id" "$derive_pair_json" "$precheck_json" "$compare_json" "$edge_json" "$triage_impl_dir" "$out_dir" <<'PY'
+  python3 - "$summary_json" "$status" "$reason_code" "$candidate_run_id" "$baseline_run_id" "$derive_pair_json" "$precheck_json" "$compare_json" "$edge_json" "$triage_impl_dir" "$out_dir" "$run_pair_status" "$run_pair_reason_code" "$precheck_status" "$precheck_reason_code" "$compare_status" "$compare_reason_code" "$edge_quality_status" "$edge_quality_reason_code" <<'PY'
 import json
 import os
 import sys
@@ -108,28 +118,65 @@ import sys
     edge_json,
     triage_impl_dir,
     export_dir,
+    run_pair_status,
+    run_pair_reason_code,
+    precheck_status,
+    precheck_reason_code,
+    compare_status,
+    compare_reason_code,
+    edge_quality_status,
+    edge_quality_reason_code,
 ) = sys.argv[1:]
+
+artifact_paths = {
+    "derive_run_pair_json": derive_pair_json,
+    "precheck_stage_json": precheck_json,
+    "compare_validation_json": compare_json,
+    "edge_quality_compare_json": edge_json,
+    "triage_impl_dir": triage_impl_dir,
+    "export_dir": export_dir,
+}
+
+required_json_exists = {
+    "derive_run_pair_json": os.path.isfile(derive_pair_json) and os.path.getsize(derive_pair_json) > 0,
+    "precheck_stage_json": os.path.isfile(precheck_json) and os.path.getsize(precheck_json) > 0,
+    "compare_validation_json": os.path.isfile(compare_json) and os.path.getsize(compare_json) > 0,
+    "edge_quality_compare_json": os.path.isfile(edge_json) and os.path.getsize(edge_json) > 0,
+}
 
 payload = {
     "status": status,
     "reason_code": reason_code,
-    "candidate_run_id": candidate_run_id or None,
-    "baseline_run_id": baseline_run_id or None,
-    "artifact_paths": {
-        "derive_run_pair_json": derive_pair_json,
-        "precheck_stage_json": precheck_json,
-        "compare_validation_json": compare_json,
-        "edge_quality_compare_json": edge_json,
-        "triage_impl_dir": triage_impl_dir,
-        "export_dir": export_dir,
+    "run_ids": {
+        "candidate_run_id": candidate_run_id or None,
+        "baseline_run_id": baseline_run_id or None,
     },
-    "required_json_exists": {
-        "derive_run_pair_json": os.path.isfile(derive_pair_json) and os.path.getsize(derive_pair_json) > 0,
-        "precheck_stage_json": os.path.isfile(precheck_json) and os.path.getsize(precheck_json) > 0,
-        "compare_validation_json": os.path.isfile(compare_json) and os.path.getsize(compare_json) > 0,
-        "edge_quality_compare_json": os.path.isfile(edge_json) and os.path.getsize(edge_json) > 0,
+    "gate_outcomes": {
+        "run_pair_selection": {
+            "status": run_pair_status,
+            "reason_code": run_pair_reason_code,
+            "artifact_path": derive_pair_json,
+        },
+        "precheck": {
+            "status": precheck_status,
+            "reason_code": precheck_reason_code,
+            "artifact_path": precheck_json,
+        },
+        "compare_validation": {
+            "status": compare_status,
+            "reason_code": compare_reason_code,
+            "artifact_path": compare_json,
+        },
+        "edge_quality": {
+            "status": edge_quality_status,
+            "reason_code": edge_quality_reason_code,
+            "artifact_path": edge_json,
+        },
     },
+    "artifact_paths": artifact_paths,
+    "required_json_exists": required_json_exists,
 }
+
 os.makedirs(os.path.dirname(summary_path), exist_ok=True)
 with open(summary_path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, indent=2, sort_keys=True)
@@ -195,6 +242,8 @@ scripts/prepare_runtime_exports.sh --out-dir "$out_dir" "${inputs[@]}"
 echo "[1/5] Deriving run pair"
 if [[ -n "${manual_baseline_run_id//[[:space:]]/}" || -n "${manual_candidate_run_id//[[:space:]]/}" ]]; then
   if [[ -z "${manual_baseline_run_id//[[:space:]]/}" || -z "${manual_candidate_run_id//[[:space:]]/}" ]]; then
+    run_pair_status="fail"
+    run_pair_reason_code="RUN_IDS_MISSING"
     fail_and_exit "RUN_IDS_MISSING"
   fi
   baseline_run_id="$manual_baseline_run_id"
@@ -278,15 +327,21 @@ PY
   derive_exit=$?
   set -e
   if [[ "$derive_exit" -ne 0 ]]; then
+    run_pair_status="fail"
+    run_pair_reason_code="RUN_IDS_MISSING"
     fail_and_exit "RUN_IDS_MISSING"
   fi
   baseline_run_id="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["baseline_run_id"])' "$derive_pair_json")"
   candidate_run_id="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["candidate_run_id"])' "$derive_pair_json")"
 fi
-ensure_required_json "$derive_pair_json" "REQUIRED_JSON_MISSING"
+ensure_required_json "$derive_pair_json" "RUN_PAIR_JSON_MISSING"
 if [[ -z "${baseline_run_id//[[:space:]]/}" || -z "${candidate_run_id//[[:space:]]/}" ]]; then
+  run_pair_status="fail"
+  run_pair_reason_code="RUN_IDS_MISSING"
   fail_and_exit "RUN_IDS_MISSING"
 fi
+run_pair_status="pass"
+run_pair_reason_code="RUN_PAIR_READY"
 
 echo "[2/5] Running precheck"
 set +e
@@ -308,11 +363,15 @@ with open(out, "w", encoding="utf-8") as handle:
         "stdout_log": log_path,
     }, handle, indent=2, sort_keys=True)
 PY
-ensure_required_json "$precheck_json" "REQUIRED_JSON_MISSING"
+ensure_required_json "$precheck_json" "PRECHECK_JSON_MISSING"
 if [[ "$precheck_exit" -ne 0 ]]; then
+  precheck_status="fail"
+  precheck_reason_code="PRECHECK_FAILED"
   cat "$triage_impl_dir/precheck_stdout.log" >&2 || true
   fail_and_exit "PRECHECK_FAILED"
 fi
+precheck_status="pass"
+precheck_reason_code="PRECHECK_PASSED"
 
 echo "[3/5] Comparing diagnostics"
 set +e
@@ -334,11 +393,15 @@ with open(out, "w", encoding="utf-8") as handle:
         "stdout_log": log_path,
     }, handle, indent=2, sort_keys=True)
 PY
-ensure_required_json "$compare_json" "REQUIRED_JSON_MISSING"
+ensure_required_json "$compare_json" "COMPARE_JSON_MISSING"
 if [[ "$compare_exit" -ne 0 ]]; then
+  compare_status="fail"
+  compare_reason_code="COMPARE_VALIDATION_FAILED"
   cat "$triage_impl_dir/compare_stdout.log" >&2 || true
   fail_and_exit "COMPARE_VALIDATION_FAILED"
 fi
+compare_status="pass"
+compare_reason_code="COMPARE_VALIDATION_PASSED"
 
 echo "[4/5] Evaluating edge quality"
 edge_quality_stderr_log="$triage_impl_dir/edge_quality_stderr.log"
@@ -355,14 +418,18 @@ set +e
 edge_quality_exit=$?
 set -e
 if [[ "$edge_quality_exit" -ne 0 ]]; then
+  edge_quality_status="fail"
+  edge_quality_reason_code="EDGE_QUALITY_EVAL_FAILED"
   cat "$triage_impl_dir/edge_quality_stdout.log" >&2 || true
   cat "$edge_quality_stderr_log" >&2 || true
   write_edge_stage_failure "EDGE_QUALITY_EVAL_FAILED" "$edge_quality_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
   fail_and_exit "EDGE_QUALITY_EVAL_FAILED"
 fi
 if [[ ! -s "$edge_json" ]]; then
+  edge_quality_status="fail"
+  edge_quality_reason_code="EDGE_QUALITY_ARTIFACT_MISSING"
   echo "Error: required JSON artifact missing or empty: $edge_json" >&2
-  write_edge_stage_failure "edge_quality_artifact_missing" "$edge_quality_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
+  write_edge_stage_failure "EDGE_QUALITY_ARTIFACT_MISSING" "$edge_quality_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
   fail_and_exit "EDGE_QUALITY_ARTIFACT_MISSING"
 fi
 set +e
@@ -376,6 +443,9 @@ path = sys.argv[1]
 with open(path, "r", encoding="utf-8") as handle:
     payload = json.load(handle)
 
+if not isinstance(payload, dict):
+    raise SystemExit("edge quality JSON must be an object")
+
 missing = [key for key in required_keys if key not in payload]
 if missing:
     raise SystemExit(f"missing required keys: {', '.join(missing)}")
@@ -383,11 +453,15 @@ PY
 edge_parse_exit=$?
 set -e
 if [[ "$edge_parse_exit" -ne 0 ]]; then
+  edge_quality_status="fail"
+  edge_quality_reason_code="EDGE_QUALITY_JSON_INVALID"
   echo "Error: edge quality artifact exists but failed postcondition validation: $edge_json" >&2
   cat "$edge_quality_stderr_log" >&2 || true
-  write_edge_stage_failure "EDGE_QUALITY_POSTCONDITION_FAILED" "$edge_parse_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
-  fail_and_exit "EDGE_QUALITY_POSTCONDITION_FAILED"
+  write_edge_stage_failure "EDGE_QUALITY_JSON_INVALID" "$edge_parse_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
+  fail_and_exit "EDGE_QUALITY_JSON_INVALID"
 fi
+edge_quality_status="pass"
+edge_quality_reason_code="EDGE_QUALITY_JSON_VALID"
 
 echo "[5/5] Writing summary"
 status="pass"

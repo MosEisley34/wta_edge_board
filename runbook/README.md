@@ -187,22 +187,22 @@ Strict enforced execution order:
 
 Hard stage gates (fail-fast):
 - Stop when run IDs are missing/empty.
-- Stop when diagnostics compare validation fails.
-- Stop when required JSON stage artifacts are missing/empty.
-- Stop when `edge_quality_compare.json` does not parse or is missing required keys: `status`, `gate_verdict`, `reason_code`.
+- Stop when `precheck_stage.json` is missing/empty or precheck exits non-zero.
+- Stop when `compare_validation.json` is missing/empty or compare validation exits non-zero.
+- Stop when `edge_quality_compare.json` is missing/empty, fails JSON parsing, or is missing required keys: `status`, `gate_verdict`, `reason_code`.
 
 Machine-readable artifacts (per execution):
 - `triage_impl_<UTC timestamp>/out/derive_run_pair.json`
 - `triage_impl_<UTC timestamp>/out/precheck_stage.json`
 - `triage_impl_<UTC timestamp>/out/compare_validation.json`
 - `triage_impl_<UTC timestamp>/out/edge_quality_compare.json`
-- `triage_impl_<UTC timestamp>/out/triage_bundle_summary.json`
+- `triage_impl_<UTC timestamp>/out/triage_summary.json`
 
 The final summary JSON includes:
 - `status`
 - `reason_code`
-- `candidate_run_id`
-- `baseline_run_id`
+- `run_ids` (`candidate_run_id`, `baseline_run_id`)
+- per-stage `gate_outcomes` (`run_pair_selection`, `precheck`, `compare_validation`, `edge_quality`) with status, reason code, and artifact path
 - artifact paths and required-JSON presence flags
 
 Operational note:
@@ -227,7 +227,7 @@ scripts/run_triage_bundle.sh --out-dir ./exports_live <file-or-directory>
 ```
 
 Operational expectation:
-- `scripts/run_triage_bundle.sh` must finish with `status=pass` and emit `triage_impl_*/out/triage_bundle_summary.json`.
+- `scripts/run_triage_bundle.sh` must finish with `status=pass` and emit `triage_impl_*/out/triage_summary.json`.
 - The summary JSON must include non-empty `baseline_run_id` and `candidate_run_id`.
 - Daily matrix generation is blocked unless `triage_impl_*/out/edge_quality_compare.json` exists and parses with required keys `status`, `gate_verdict`, `reason_code`.
 - If any stage gate fails, treat outputs as invalid and rerun only after remediation.
