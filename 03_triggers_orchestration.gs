@@ -1047,7 +1047,7 @@ function runEdgeBoard() {
       no_hit_odds_present_but_match_failed_count: noHitDiagnostics.no_hit_odds_present_but_match_failed_count,
       no_hit_schema_invalid_metrics_count: noHitDiagnostics.no_hit_schema_invalid_metrics_count,
       no_hit_terminal_reason_code: noHitDiagnostics.no_hit_terminal_reason_code,
-      terminal_mismatch_summary: terminalMismatchSummary ? JSON.stringify(terminalMismatchSummary) : '',
+      terminal_no_hit_diagnostics: terminalMismatchSummary ? JSON.stringify(terminalMismatchSummary) : '',
       stake_mode_used: signalDecisionSummary && signalDecisionSummary.stake_policy_summary
         ? signalDecisionSummary.stake_policy_summary.stake_mode_used
         : '',
@@ -2296,30 +2296,51 @@ function buildTerminalMismatchSummaryBlock_(metrics) {
     ? safe.sample_unmatched_cases
     : [];
 
+  const sampledUnmatchedRows = sampleUnmatchedCases.slice(0, 3).map(function (entry) {
+    const playerA = sanitizeRunHealthText_(entry && entry.player_1, 72);
+    const playerB = sanitizeRunHealthText_(entry && entry.player_2, 72);
+    const players = [];
+    if (playerA) players.push(playerA);
+    if (playerB) players.push(playerB);
+    const normalizedOddsPlayers = Array.isArray(entry && entry.normalized_odds_players)
+      ? entry.normalized_odds_players.slice(0, 2).map(function (value) {
+        return sanitizeRunHealthText_(value, 72);
+      }).filter(function (value) { return !!value; })
+      : [];
+    const normalizedSchedulePlayers = Array.isArray(entry && entry.normalized_schedule_players)
+      ? entry.normalized_schedule_players.slice(0, 2).map(function (value) {
+        return sanitizeRunHealthText_(value, 72);
+      }).filter(function (value) { return !!value; })
+      : [];
+    return {
+      odds_event_id: sanitizeRunHealthText_(entry && entry.odds_event_id, 120),
+      competition: sanitizeRunHealthText_(entry && entry.competition, 120),
+      players: players,
+      commence_time: sanitizeRunHealthText_(entry && entry.commence_time, 64),
+      normalized_keys: {
+        odds_players_key: normalizedOddsPlayers.join('|'),
+        schedule_players_key: normalizedSchedulePlayers.join('|'),
+      },
+    };
+  });
+
   return {
     terminal_reason_code: terminalReasonCode,
     fetched_odds: Math.max(0, Number(safe.fetched_odds || 0)),
     fetched_schedule: Math.max(0, Number(safe.fetched_schedule || 0)),
-    unmatched_candidate_count: Math.max(0, Number(safe.unmatched_candidate_count || 0)),
-    top_rejection_reason_codes: topRejectionReasonCodes.slice(0, 5).map(function (entry) {
+    unmatched_odds_rows_count: Math.max(0, Number(safe.unmatched_candidate_count || 0)),
+    top_rejection_reasons: topRejectionReasonCodes.slice(0, 5).map(function (entry) {
       return {
         reason_code: String(entry && entry.reason_code || ''),
         count: Math.max(0, Number(entry && entry.count || 0)),
       };
     }),
-    sampled_unmatched_event_identifiers: sampleUnmatchedCases.slice(0, 3).map(function (entry) {
-      const playerA = sanitizeRunHealthText_(entry && entry.player_1, 72);
-      const playerB = sanitizeRunHealthText_(entry && entry.player_2, 72);
-      const players = [];
-      if (playerA) players.push(playerA);
-      if (playerB) players.push(playerB);
-      return {
-        odds_event_id: sanitizeRunHealthText_(entry && entry.odds_event_id, 120),
-        competition: sanitizeRunHealthText_(entry && entry.competition, 120),
-        players: players,
-        commence_time: sanitizeRunHealthText_(entry && entry.commence_time, 64),
-      };
-    }),
+    sampled_unmatched_rows: sampledUnmatchedRows,
+    normalized_keys_used_for_matching_comparison: {
+      odds_players_source_fields: ['normalized_odds_players'],
+      schedule_players_source_fields: ['normalized_schedule_players'],
+      comparison_key_format: 'joined_with_pipe',
+    },
   };
 }
 

@@ -9878,6 +9878,8 @@ function testBuildTerminalMismatchSummaryBlock_includesCompactMismatchPayload_()
         player_1: 'Player One',
         player_2: 'Player Two',
         commence_time: '2026-03-01T11:00:00Z',
+        normalized_odds_players: ['player one', 'player two'],
+        normalized_schedule_players: ['player uno', 'player dos'],
       },
       {
         odds_event_id: 'odds_evt_2',
@@ -9885,6 +9887,8 @@ function testBuildTerminalMismatchSummaryBlock_includesCompactMismatchPayload_()
         player_1: 'Player Three',
         player_2: 'Player Four',
         commence_time: '2026-03-01T12:00:00Z',
+        normalized_odds_players: ['player three', 'player four'],
+        normalized_schedule_players: ['player tres', 'player cuatro'],
       },
       {
         odds_event_id: 'odds_evt_3',
@@ -9892,6 +9896,8 @@ function testBuildTerminalMismatchSummaryBlock_includesCompactMismatchPayload_()
         player_1: 'Player Five',
         player_2: 'Player Six',
         commence_time: '2026-03-01T13:00:00Z',
+        normalized_odds_players: ['player five', 'player six'],
+        normalized_schedule_players: ['player cinco', 'player seis'],
       },
       {
         odds_event_id: 'odds_evt_4',
@@ -9906,12 +9912,14 @@ function testBuildTerminalMismatchSummaryBlock_includesCompactMismatchPayload_()
   assertEquals_('odds_present_but_match_failed', payload.terminal_reason_code);
   assertEquals_(7, Number(payload.fetched_odds || 0));
   assertEquals_(13, Number(payload.fetched_schedule || 0));
-  assertEquals_(7, Number(payload.unmatched_candidate_count || 0));
-  assertEquals_(2, (payload.top_rejection_reason_codes || []).length);
-  assertEquals_('no_player_match', String((((payload.top_rejection_reason_codes || [])[0]) || {}).reason_code || ''));
-  assertEquals_(3, (payload.sampled_unmatched_event_identifiers || []).length);
-  assertEquals_('odds_evt_1', String((((payload.sampled_unmatched_event_identifiers || [])[0]) || {}).odds_event_id || ''));
-  assertEquals_('Player One', String(((((payload.sampled_unmatched_event_identifiers || [])[0]) || {}).players || [])[0] || ''));
+  assertEquals_(7, Number(payload.unmatched_odds_rows_count || 0));
+  assertEquals_(2, (payload.top_rejection_reasons || []).length);
+  assertEquals_('no_player_match', String((((payload.top_rejection_reasons || [])[0]) || {}).reason_code || ''));
+  assertEquals_(3, (payload.sampled_unmatched_rows || []).length);
+  assertEquals_('odds_evt_1', String((((payload.sampled_unmatched_rows || [])[0]) || {}).odds_event_id || ''));
+  assertEquals_('Player One', String(((((payload.sampled_unmatched_rows || [])[0]) || {}).players || [])[0] || ''));
+  assertEquals_('player one|player two', String((((((payload.sampled_unmatched_rows || [])[0]) || {}).normalized_keys || {}).odds_players_key) || ''));
+  assertEquals_('joined_with_pipe', String(((payload.normalized_keys_used_for_matching_comparison || {}).comparison_key_format) || ''));
 }
 
 function testBuildTerminalMismatchSummaryBlock_returnsNullWhenTerminalReasonDiffers_() {

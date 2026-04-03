@@ -166,7 +166,7 @@ const RUN_LOG_HEADERS = [
   'feature_completeness', 'edge_volatility', 'matched_events', 'scored_signals',
   'no_hit_no_events_from_source_count', 'no_hit_events_outside_time_window_count',
   'no_hit_tournament_filter_excluded_count', 'no_hit_odds_present_but_match_failed_count',
-  'no_hit_schema_invalid_metrics_count', 'no_hit_terminal_reason_code',
+  'no_hit_schema_invalid_metrics_count', 'no_hit_terminal_reason_code', 'terminal_no_hit_diagnostics',
   'feature_completeness_detail', 'reason_alias_payload', 'schema_violation', 'field_type_error',
   'stake_mode_used', 'raw_risk_mxn', 'raw_target_win_mxn', 'final_risk_mxn', 'final_units',
   'stake_adjustment_reason', 'min_bet_mxn', 'bucket_step_mxn', 'unit_size_mxn',

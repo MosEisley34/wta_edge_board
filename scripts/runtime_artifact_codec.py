@@ -12,6 +12,7 @@ RUN_LOG_STRUCTURED_FIELD_KINDS: dict[str, str] = {
     "reason_codes": "object",
     "reason_metadata": "object",
     "signal_decision_summary": "object",
+    "terminal_no_hit_diagnostics": "object",
     "stageFetchPlayerStats": "object",
     "fallback_aliases": "object",
 }
