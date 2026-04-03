@@ -232,20 +232,20 @@ Credit fallback behavior:
 
 ## Runtime diagnostics triage flow
 
-Use this standard bundle flow so each triage cycle always exports `Run_Log`/`State` CSV/JSON into `./exports` (default) before analysis:
+Use this standard bundle flow so each triage cycle exports `Run_Log`/`State` CSV/JSON into an out-of-repo operator workspace (default: `/tmp/wta_edge_board_triage_exports`) before analysis:
 
 ```bash
-scripts/run_triage_bundle.sh [--out-dir ./exports] <file-or-directory> [more paths...]
+scripts/run_triage_bundle.sh [--out-dir /tmp/wta_edge_board_triage_exports] <file-or-directory> [more paths...]
 ```
 
 Examples:
 
 ```bash
 scripts/run_triage_bundle.sh ./runtime
-scripts/run_triage_bundle.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/state_dump.json
+scripts/run_triage_bundle.sh --out-dir /tmp/wta_edge_board_triage_exports ./runtime/Run_Log.csv ./runtime/state_dump.json
 ```
 
-The wrapper runs `scripts/prepare_runtime_exports.sh` and then invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`) so diagnostics inputs are consistently prepared before scanning.
+The wrapper runs `scripts/prepare_runtime_exports.sh` and then invokes `scripts/scan_runtime_diagnostics.sh` against the same `--out-dir`, so diagnostics inputs are consistently prepared before scanning without creating tracked-artifact noise in the repo.
 `prepare_runtime_exports.sh` now enforces a single-source Run_Log snapshot contract: it re-exports `Run_Log.csv` and `Run_Log.json` together from the same latest source snapshot and applies one export batch timestamp before parity checks.
 It always emits deterministic batch metadata artifacts (`runtime_export_manifest.json` and `runtime_export_manifest.pointer.json`) and, on failure, writes `runtime_export_failure.json` so follow-on tooling can resolve an explicit failure path instead of failing on a missing manifest.
 

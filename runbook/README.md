@@ -175,12 +175,14 @@ Expected size/performance tradeoff:
 Run this wrapper each triage cycle so runtime diagnostics inputs are prepared consistently before analysis:
 
 ```bash
-scripts/run_triage_bundle.sh [--out-dir ./exports] <file-or-directory> [more paths...]
+scripts/run_triage_bundle.sh [--out-dir /tmp/wta_edge_board_triage_exports] <file-or-directory> [more paths...]
 ```
 
+> Expected operator output location: use an out-of-repo workspace (recommended: `/tmp/wta_edge_board_triage_exports`) so generated exports do not create merge blockers on `main`.
+
 What it does:
-1. Runs `scripts/prepare_runtime_exports.sh` to export `Run_Log`/`State` CSV/JSON into `./exports` (default).
-2. Immediately invokes `scripts/scan_runtime_diagnostics.sh ./exports` (or your custom `--out-dir`).
+1. Runs `scripts/prepare_runtime_exports.sh` to export `Run_Log`/`State` CSV/JSON into your `--out-dir` (default: `/tmp/wta_edge_board_triage_exports`).
+2. Immediately invokes `scripts/scan_runtime_diagnostics.sh` against that same `--out-dir`.
 3. Prioritize the scanner's **Run-health degraded contract (first-pass triage)** section before any key-specific deep dive.
 
 `prepare_runtime_exports.sh` enforces a single-snapshot Run_Log export contract: `Run_Log.csv` + `Run_Log.json` are regenerated together from the same latest source snapshot, parity-gated, and recorded in `run_log_latest_batch_note.json`.

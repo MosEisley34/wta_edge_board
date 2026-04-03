@@ -7,7 +7,7 @@ Usage:
   scripts/prepare_runtime_exports.sh [--out-dir <dir>] <file-or-directory> [more paths...]
 
 Repeatable pre-step before diagnostics scanning:
-  1) Export Run_Log/State CSV/JSON artifacts into ./exports (default)
+  1) Export Run_Log/State CSV/JSON artifacts into an operator workspace (default: /tmp/wta_edge_board_triage_exports)
   2) Mirror canonical runtime CSV tabs to JSON and enforce CSV↔JSON row parity
   3) Enforce Run_Log CSV/JSON parity for latest batch before publish
   4) Verify expected export files exist before running scan
@@ -16,25 +16,29 @@ Repeatable pre-step before diagnostics scanning:
      - runtime_export_manifest.pointer.json
      - runtime_export_failure.json (failure only)
 
+Important:
+  - Prefer --out-dir outside this repository tree to avoid generated artifact merge blockers on main.
+  - Example outside-repo workspace: /tmp/wta_edge_board_triage_exports
+
 Expected exported files (all must exist):
-  - ./exports/Run_Log.csv
-  - ./exports/Run_Log.json
-  - ./exports/State.csv
-  - ./exports/State.json
+  - <out-dir>/Run_Log.csv
+  - <out-dir>/Run_Log.json
+  - <out-dir>/State.csv
+  - <out-dir>/State.json
 
 The pre-step writes a deterministic manifest and pointer:
-  - ./exports/runtime_export_manifest.json
-  - ./exports/runtime_export_manifest.pointer.json
+  - <out-dir>/runtime_export_manifest.json
+  - <out-dir>/runtime_export_manifest.pointer.json
 If export fails, pointer includes explicit failure artifact path:
-  - ./exports/runtime_export_failure.json
+  - <out-dir>/runtime_export_failure.json
 
 Examples:
   scripts/prepare_runtime_exports.sh ./runtime
-  scripts/prepare_runtime_exports.sh --out-dir ./exports ./runtime/Run_Log.csv ./runtime/State.json
+  scripts/prepare_runtime_exports.sh --out-dir /tmp/wta_edge_board_triage_exports ./runtime/Run_Log.csv ./runtime/State.json
 USAGE
 }
 
-out_dir="./exports"
+out_dir="${TMPDIR:-/tmp}/wta_edge_board_triage_exports"
 inputs=()
 
 while [[ "$#" -gt 0 ]]; do
