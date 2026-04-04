@@ -1117,7 +1117,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("candidate_window_aggregate", report["sample_assessment"]["strategy"])
         self.assertTrue(any("aggregated_sample_used_for_edge_volatility" in item for item in report["warnings"]))
 
-    def test_low_volume_mode_applies_alternate_threshold_profile(self):
+    def test_low_volume_mode_applies_semifinal_profile(self):
         rows = [
             self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=9, matched_events=4),
             self._summary_row(
@@ -1144,11 +1144,56 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             ordered_run_ids=["run-1", "run-2"],
         )
         self.assertEqual("pass", report["status"])
-        self.assertEqual("low_volume_fallback", report["threshold_profile"]["active_profile"])
+        self.assertEqual("low_volume_semifinal_final", report["threshold_profile"]["active_profile"])
         self.assertTrue(report["threshold_profile"]["fallback_mode_used"])
+        self.assertIn("tournament_phase_semifinal_or_final", report["threshold_profile"]["activation_reasons"])
+        self.assertIn("evidence_snapshot", report["threshold_profile"])
         self.assertTrue(report["threshold_profile"]["low_volume_mode"]["active"])
         self.assertFalse(report["sample_assessment"]["strict_default_result"]["enough"])
         self.assertEqual("low_volume_profile_sufficient_sample", report["sample_assessment"]["reason_code"])
+
+    def test_threshold_profile_defaults_to_strict_when_evidence_missing(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=12, matched_events=8),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        self.assertEqual("strict_default", report["threshold_profile"]["active_profile"])
+        self.assertIn("insufficient_low_volume_evidence_keep_strict", report["threshold_profile"]["activation_reasons"])
+
+    def test_threshold_profile_uses_ultra_low_volume_single_match_profile(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=9,
+                matched_events=4,
+                reason_codes=json.dumps({"raw_schedule_upserts": 1}),
+            ),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                low_volume_min_scored_signals_for_volatility=8,
+                low_volume_min_matched_events_for_volatility=4,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        self.assertEqual("ultra_low_volume_single_match", report["threshold_profile"]["active_profile"])
+        self.assertFalse(report["threshold_profile"]["fallback_mode_used"])
+        self.assertEqual("insufficient_sample", report["status"])
 
     def test_compare_report_marks_low_volume_strict_sample_block(self):
         rows = [
