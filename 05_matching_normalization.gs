@@ -1031,8 +1031,16 @@ function canonicalizePlayerName_(name, aliasMap) {
 }
 
 function normalizePlayerNameAliasRules_(normalized) {
-  const value = String(normalized || '').trim();
-  if (!value) return '';
+  const originalValue = String(normalized || '').trim();
+  if (!originalValue) return '';
+
+  const givenNameVariantMap = {
+    yuliia: 'yulia',
+    iuliia: 'yulia',
+    juliia: 'yulia',
+  };
+  const canonicalizedGivenNameValue = applyGivenNameVariantAliases_(originalValue, givenNameVariantMap);
+  const value = canonicalizedGivenNameValue || originalValue;
 
   const knownGivenNames = {
     alexandra: true, alina: true, alycia: true, amanda: true, anastasia: true, anna: true, anhelina: true, aryna: true,
@@ -1152,6 +1160,21 @@ function normalizePlayerNameAliasRules_(normalized) {
   }
 
   return value;
+}
+
+function applyGivenNameVariantAliases_(value, variantMap) {
+  const map = variantMap || {};
+  const tokens = String(value || '').trim().split(' ').filter(function (token) { return token; });
+  if (!tokens.length) return '';
+  let changed = false;
+  const rewritten = tokens.map(function (token) {
+    const replacement = map[token];
+    if (!replacement) return token;
+    changed = true;
+    return replacement;
+  });
+  if (!changed) return value;
+  return rewritten.join(' ').trim();
 }
 
 function expandPlayerInitialAlias_(initial, surnameExpression) {
