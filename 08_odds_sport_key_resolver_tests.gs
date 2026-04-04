@@ -5761,6 +5761,46 @@ function testStageFetchPlayerStats_providerAvailableButEmptyTracksReason_() {
   assertEquals_(2, result.stage.summary.reason_metadata.top_unresolved_player_samples.length);
 }
 
+function testStageFetchPlayerStats_givenNameVariantAliasResolvesYuliiaProfile_() {
+  const result = runStageFetchPlayerStatsScenario_({
+    oddsEvents: [{
+      event_id: 'odds_evt_1',
+      player_1: 'Yuliia Starodubtseva',
+      player_2: 'Madison Keys',
+      odds_updated_time: new Date('2025-03-01T00:00:00.000Z'),
+      commence_time: new Date('2025-03-01T03:00:00.000Z'),
+      market: 'h2h',
+      outcome: 'Yuliia Starodubtseva',
+      bookmaker: 'book_a',
+      price: 2.4,
+    }],
+    batchResult: {
+      stats_by_player: {
+        'yulia starodubtseva': { ranking: 98, recent_form: 0.52, surface_win_rate: 0.49, hold_pct: 0.61, break_pct: 0.29 },
+        'madison keys': { ranking: 7, recent_form: 0.71, surface_win_rate: 0.66, hold_pct: 0.69, break_pct: 0.36 },
+      },
+      provider_available: true,
+      api_credit_usage: 2,
+      reason_code: 'player_stats_api_success',
+      selection_metadata: {
+        player_source_by_player: {
+          'yulia starodubtseva': 'tennis_abstract',
+          'madison keys': 'tennis_abstract',
+        },
+      },
+    },
+  });
+
+  const meta = result.stage.summary.reason_metadata || {};
+  const sourceByPlayer = meta.player_resolution_source_by_player || {};
+  assertEquals_(2, Number(meta.resolved_player_count || 0));
+  assertEquals_(0, Number(meta.unresolved_player_count || 0));
+  assertEquals_('tennis_abstract', String(sourceByPlayer['yulia starodubtseva'] || ''));
+  assertEquals_('tennis_abstract', String(sourceByPlayer['madison keys'] || ''));
+  assertEquals_(2, Number(meta.players_found_ta || 0));
+  assertEquals_(0, Number(meta.players_unresolved || 0));
+}
+
 function testStageFetchPlayerStats_providerReturnedNullFeaturesMarksFallbackMetadata_() {
   const result = runStageFetchPlayerStatsScenario_({
     batchResult: {
@@ -6552,6 +6592,8 @@ function testCanonicalizePlayerName_handlesPunctuationInitialHyphenOrderingAndDi
   assertEquals_('elena rybakina', canonicalizePlayerName_('Rybakina, E.', aliasMap));
   assertEquals_('beatriz haddad maia', canonicalizePlayerName_('B. Haddad-Maia', aliasMap));
   assertEquals_('dayana yastremska', canonicalizePlayerName_('Yastremska D.', aliasMap));
+  assertEquals_('yulia starodubtseva', canonicalizePlayerName_('Yuliia Starodubtseva', aliasMap));
+  assertEquals_('yulia starodubtseva', canonicalizePlayerName_('Starodubtseva Yuliia', aliasMap));
 }
 
 function testStageMatchEvents_recordsStructuredDiagnosticsForUnresolvedSamples_() {
