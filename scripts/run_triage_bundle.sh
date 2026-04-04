@@ -76,15 +76,13 @@ if [[ "${#inputs[@]}" -eq 0 ]]; then
 fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-triage_impl_dir="${out_dir}/triage_impl_${timestamp}"
-out_stage_dir="${triage_impl_dir}/out"
-mkdir -p "$out_stage_dir"
-
-derive_pair_json="$out_stage_dir/derive_run_pair.json"
-precheck_json="$out_stage_dir/precheck_stage.json"
-compare_json="$out_stage_dir/compare_validation.json"
-edge_json="$out_stage_dir/edge_quality_compare.json"
-summary_json="$out_stage_dir/triage_summary.json"
+triage_impl_dir=""
+out_stage_dir=""
+derive_pair_json=""
+precheck_json=""
+compare_json=""
+edge_json=""
+summary_json=""
 
 baseline_run_id=""
 candidate_run_id=""
@@ -238,6 +236,16 @@ ensure_required_json() {
 
 echo "[0/5] Preparing runtime exports into ${out_dir}"
 scripts/prepare_runtime_exports.sh --out-dir "$out_dir" "${inputs[@]}"
+
+triage_impl_dir="${out_dir}/triage_impl_${timestamp}"
+out_stage_dir="${triage_impl_dir}/out"
+mkdir -p "$out_stage_dir"
+
+derive_pair_json="$out_stage_dir/derive_run_pair.json"
+precheck_json="$out_stage_dir/precheck_stage.json"
+compare_json="$out_stage_dir/compare_validation.json"
+edge_json="$out_stage_dir/edge_quality_compare.json"
+summary_json="$out_stage_dir/triage_summary.json"
 
 echo "[1/5] Deriving run pair"
 if [[ -n "${manual_baseline_run_id//[[:space:]]/}" || -n "${manual_candidate_run_id//[[:space:]]/}" ]]; then
