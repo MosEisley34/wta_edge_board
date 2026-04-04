@@ -31,6 +31,7 @@ from run_summary_cardinality import (
     merge_run_summary_rows_for_cardinality,
 )
 from preflight_guard import enforce_preflight_guard
+from schedule_context import compute_schedule_context
 
 RUN_LOG_TYPED_FIELDS: dict[str, type] = {
     "feature_completeness": float,
@@ -1621,6 +1622,8 @@ def _detect_low_volume_mode(
 
     reasons: list[str] = []
     evidence: dict[str, Any] = {"mode_enabled": True}
+    schedule_context = _resolve_summary_schedule_context(summary_row)
+    evidence["schedule_context"] = schedule_context
 
     stage_tokens: list[str] = []
     for key in ("competition_stage", "tournament_stage", "draw_stage", "round", "round_name"):
@@ -1635,6 +1638,7 @@ def _detect_low_volume_mode(
             value = metadata.get(key)
             if value not in (None, ""):
                 stage_tokens.append(str(value).strip().lower())
+    stage_tokens.extend([str(token) for token in schedule_context.get("stage_tokens", []) if str(token).strip()])
     evidence["stage_tokens"] = stage_tokens
     if any(token in {"semifinal", "semi_final", "semi-final", "final", "quarterfinal", "quarter-final"} for token in stage_tokens):
         reasons.append("competition_stage_near_finals")
@@ -1649,6 +1653,10 @@ def _detect_low_volume_mode(
             break
         except (TypeError, ValueError):
             continue
+    if upcoming_matches is None:
+        schedule_context_upcoming = schedule_context.get("upcoming_match_count")
+        if bool(schedule_context.get("has_schedule_rows")) and isinstance(schedule_context_upcoming, int):
+            upcoming_matches = schedule_context_upcoming
     if upcoming_matches is None:
         for stage in _extract_stage_summaries(summary_row):
             metadata = _parse_json_like(stage.get("reason_metadata"), {})
@@ -1729,6 +1737,7 @@ def _resolve_threshold_profile(
         config=config,
     )
     evidence = dict(low_volume_mode.get("evidence") or {})
+    schedule_context = dict(evidence.get("schedule_context") or {})
     reasons: list[str] = []
 
     reason_totals, _, _ = _reason_code_totals(summary_row)
@@ -1748,6 +1757,8 @@ def _resolve_threshold_profile(
     evidence["near_finals"] = near_finals
     if near_finals:
         reasons.append("tournament_phase_semifinal_or_final")
+    if bool(schedule_context.get("has_schedule_rows")) and not bool(schedule_context.get("stage_inference_available")):
+        reasons.append("schedule_stage_inference_unavailable")
 
     upcoming_matches = evidence.get("upcoming_match_count")
     if isinstance(upcoming_matches, int) and upcoming_matches <= int(config.low_volume_upcoming_match_count_trigger):
@@ -1796,7 +1807,25 @@ def _resolve_threshold_profile(
         "sample_floors": sample_floors,
         "fallback_mode_used": fallback_mode_used,
         "low_volume_mode": low_volume_mode,
+        "schedule_context": schedule_context,
     }
+
+
+def _resolve_summary_schedule_context(summary_row: dict[str, Any]) -> dict[str, Any]:
+    candidate_keys = ("raw_schedule_rows", "raw_schedule", "raw_schedule_payload", "Raw_Schedule")
+    for key in candidate_keys:
+        parsed = _parse_json_like(summary_row.get(key), None)
+        if isinstance(parsed, (dict, list)):
+            return compute_schedule_context(parsed)
+    for stage in _extract_stage_summaries(summary_row):
+        metadata = _parse_json_like(stage.get("reason_metadata"), {})
+        if not isinstance(metadata, dict):
+            continue
+        for key in candidate_keys:
+            parsed = _parse_json_like(metadata.get(key), None)
+            if isinstance(parsed, (dict, list)):
+                return compute_schedule_context(parsed)
+    return compute_schedule_context([])
 
 
 def _top_volatility_contributors(
@@ -2154,6 +2183,7 @@ def evaluate_edge_quality_gate(
             "fallback_mode_used": fallback_profile_used,
             "activation_reasons": list(threshold_profile.get("activation_reasons") or []),
             "evidence_snapshot": dict(threshold_profile.get("evidence_snapshot") or {}),
+            "schedule_context": dict(threshold_profile.get("schedule_context") or {}),
             "sample_floors": {
                 "min_scored_signals_for_volatility": sample_floor_scored,
                 "min_matched_events_for_volatility": sample_floor_matched,
@@ -2560,6 +2590,7 @@ def evaluate_edge_quality_compare_report(
             "range": window_run_id_range,
         },
     }
+    schedule_context_metadata = dict(((pair_level_result.get("threshold_profile") or {}).get("schedule_context")) or {})
 
     compare_reason_code = {
         "passed_quality_gate": "EDGE_QUALITY_GATE_PASSED",
@@ -2594,6 +2625,7 @@ def evaluate_edge_quality_compare_report(
             "min_bet_mxn": float(canonical_stake_policy.min_bet_mxn),
             "bucket_step_mxn": float(canonical_stake_policy.bucket_step_mxn),
             "rounding_mode": str(canonical_stake_policy.bucket_rounding),
+            "schedule_context": schedule_context_metadata,
         },
         "stake_policy_outcome_comparison": {
             "counts": policy_delta_metrics,
@@ -2610,6 +2642,7 @@ def evaluate_edge_quality_compare_report(
             "windowed_decision_status": windowed_status,
             "strict_pair_sample_assessment": (pair_level_result.get("sample_assessment") or {}),
             "strict_pair_threshold_profile": (pair_level_result.get("threshold_profile") or {}),
+            "schedule_context": schedule_context_metadata,
             "fallback_effective_sample_counts": (
                 (fallback_result or {}).get("effective_sample_counts")
                 if isinstance(fallback_result, dict)
