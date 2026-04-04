@@ -18,6 +18,48 @@ def _write_executable(path: Path, content: str) -> None:
 
 
 class RunTriageBundleTests(unittest.TestCase):
+    def test_rejects_unknown_option_before_runtime_export_setup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            scripts_dir = repo / "scripts"
+            scripts_dir.mkdir(parents=True)
+
+            shutil.copy2(SCRIPT_UNDER_TEST, scripts_dir / "run_triage_bundle.sh")
+
+            marker = repo / "prepare_called.marker"
+            _write_executable(
+                scripts_dir / "prepare_runtime_exports.sh",
+                f"""#!/usr/bin/env bash
+set -euo pipefail
+echo called > "{marker}"
+exit 99
+""",
+            )
+
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            (repo / "runtime").mkdir()
+            (repo / "runtime" / "dummy.txt").write_text("ok", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(scripts_dir / "run_triage_bundle.sh"),
+                    "--export-dir",
+                    str(repo / "runtime"),
+                ],
+                cwd=repo,
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PATH": os.environ.get("PATH", "")},
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Error: unsupported option --export-dir", result.stderr)
+            self.assertIn("Usage:", result.stderr)
+            self.assertFalse(marker.exists())
+
     def test_stage_one_writes_derive_json_after_export_prestep(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

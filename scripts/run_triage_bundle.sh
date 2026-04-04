@@ -62,6 +62,11 @@ while [[ "$#" -gt 0 ]]; do
       usage
       exit 0
       ;;
+    -*)
+      echo "Error: unsupported option $1" >&2
+      usage >&2
+      exit 1
+      ;;
     *)
       inputs+=("$1")
       ;;
