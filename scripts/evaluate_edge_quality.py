@@ -2256,6 +2256,13 @@ def evaluate_edge_quality_compare_report(
         },
     }
 
+    compare_reason_code = {
+        "passed_quality_gate": "EDGE_QUALITY_GATE_PASSED",
+        "failed_quality_regression": "EDGE_QUALITY_GATE_FAILED",
+        "blocked_insufficient_operational_sample": "EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE",
+        "blocked_insufficient_sample": "EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_SAMPLE",
+    }.get(gate_verdict, "EDGE_QUALITY_GATE_BLOCKED")
+
     return {
         "schema": "edge_quality_compare_report_v1",
         "comparison_scope": "strict_pair_with_optional_window_fallback",
@@ -2311,6 +2318,7 @@ def evaluate_edge_quality_compare_report(
         },
         "status": "success",
         "gate_verdict": gate_verdict,
+        "reason_code": compare_reason_code,
     }
 
 

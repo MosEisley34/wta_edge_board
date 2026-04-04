@@ -351,7 +351,10 @@ with open(out, "w", encoding="utf-8") as handle:
             self.assertEqual(1, len(summary_paths))
             summary = json.loads(summary_paths[0].read_text(encoding="utf-8"))
             self.assertEqual("pass", summary["status"])
+            self.assertEqual("TRIAGE_BUNDLE_OK", summary["reason_code"])
             self.assertEqual("COMPARE_VALIDATION_PASSED", summary["gate_outcomes"]["compare_validation"]["reason_code"])
+            self.assertEqual("pass", summary["gate_outcomes"]["edge_quality"]["status"])
+            self.assertEqual("EDGE_QUALITY_GATE_PASSED", summary["gate_outcomes"]["edge_quality"]["reason_code"])
 
     def test_stage_four_uses_gate_blocked_reason_when_edge_json_is_valid(self):
         with tempfile.TemporaryDirectory() as tmp:
