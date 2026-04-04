@@ -11,7 +11,7 @@ cd "$repo_root"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/export_parity_precheck.sh [--out-dir <dir>] [--allow-csv-only-triage --incident-tag <TAG>] <run_id_a> <run_id_b> <file-or-directory> [more paths...]
+  scripts/export_parity_precheck.sh [--out-dir <dir>] [--allow-csv-only-triage --incident-tag <TAG>] [--allow-derived-export-source] <run_id_a> <run_id_b> <file-or-directory> [more paths...]
 
 Fail-fast operational wrapper:
   1) Export Run_Log/State artifacts from a single latest snapshot
@@ -34,6 +34,7 @@ USAGE
 out_dir="./exports"
 allow_csv_only_triage=0
 incident_tag=""
+allow_derived_export_source=0
 precheck_pointer_path=""
 precheck_failure_path=""
 
@@ -103,6 +104,10 @@ while [[ "$#" -gt 0 ]]; do
       incident_tag="$1"
       shift
       ;;
+    --allow-derived-export-source)
+      allow_derived_export_source=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -144,11 +149,138 @@ if [[ "$allow_csv_only_triage" -eq 1 && -z "$incident_tag" ]]; then
 fi
 
 canonical_source_dirs=()
+candidate_source_dirs=()
 for input_path in "${inputs[@]}"; do
   if [[ -d "$input_path" ]]; then
     canonical_source_dirs+=("$input_path")
+    candidate_source_dirs+=("$input_path")
+  elif [[ -f "$input_path" ]]; then
+    candidate_source_dirs+=("$(dirname "$input_path")")
   fi
 done
+
+if [[ "${#canonical_source_dirs[@]}" -gt 0 && "$allow_derived_export_source" -ne 1 ]]; then
+  derived_inputs=()
+  for source_dir in "${canonical_source_dirs[@]}"; do
+    base_name="$(basename "$source_dir")"
+    if [[ "$base_name" == "exports_live" || "$base_name" == triage_verify_* || -f "$source_dir/runtime_export_manifest.json" || -f "$source_dir/export_parity_precheck.pointer.json" ]]; then
+      derived_inputs+=("$source_dir")
+    fi
+  done
+  if [[ "${#derived_inputs[@]}" -gt 0 ]]; then
+    echo "Precheck failed: derived_export_source_rejected." >&2
+    echo "Refusing to use likely derived export directories as source input to prevent stale re-export loops." >&2
+    for derived_dir in "${derived_inputs[@]}"; do
+      echo "- derived source: $derived_dir" >&2
+    done
+    echo "Remediation: point to a fresh live source path (for example ./live_runtime/batches/<timestamp>)." >&2
+    echo "Override (incident-only): rerun with --allow-derived-export-source." >&2
+    exit 2
+  fi
+fi
+
+if [[ "${#candidate_source_dirs[@]}" -gt 0 ]]; then
+  echo "[0/6] Source-path sanity check (run-id presence + freshness)"
+  python3 - "$run_id_a" "$run_id_b" "${candidate_source_dirs[@]}" <<'PY'
+import csv
+import difflib
+import json
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path.cwd()
+sys.path.insert(0, str(repo_root / "scripts"))
+from preflight_guard import evaluate_export_freshness
+
+run_a = str(sys.argv[1]).strip()
+run_b = str(sys.argv[2]).strip()
+target_ids = [run_a, run_b]
+candidate_dirs = [Path(path).resolve() for path in sys.argv[3:]]
+
+def _collect_run_ids(source_dir: Path) -> set[str]:
+    run_ids: set[str] = set()
+    run_log_json = source_dir / "Run_Log.json"
+    run_log_csv = source_dir / "Run_Log.csv"
+    if run_log_json.is_file():
+        with run_log_json.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        rows = payload if isinstance(payload, list) else []
+        for row in rows:
+            if isinstance(row, dict):
+                run_id = str(row.get("run_id") or "").strip()
+                if run_id:
+                    run_ids.add(run_id)
+    if run_log_csv.is_file():
+        with run_log_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                run_id = str(row.get("run_id") or "").strip()
+                if run_id:
+                    run_ids.add(run_id)
+    return run_ids
+
+observations = []
+seen: set[Path] = set()
+for source_dir in candidate_dirs:
+    if source_dir in seen:
+        continue
+    seen.add(source_dir)
+    run_ids = _collect_run_ids(source_dir)
+    freshness = evaluate_export_freshness(str(source_dir), target_ids)
+    max_ts = str(freshness.get("max_export_run_id_timestamp_utc") or "")
+    matches = sum(1 for run_id in target_ids if run_id in run_ids)
+    observations.append(
+        {
+            "source_dir": str(source_dir),
+            "run_ids": run_ids,
+            "matches": matches,
+            "freshness": freshness,
+            "max_ts": max_ts,
+        }
+    )
+
+if not observations:
+    print("Warning: source-path sanity check skipped (no usable source directories).")
+    raise SystemExit(0)
+
+observations.sort(
+    key=lambda item: (item["matches"], item["max_ts"], item["source_dir"]),
+    reverse=True,
+)
+strongest = observations[0]
+strongest_dir = strongest["source_dir"]
+strongest_freshness = strongest["freshness"]
+strongest_run_ids = strongest["run_ids"]
+missing = [run_id for run_id in target_ids if run_id not in strongest_run_ids]
+
+print(f"- strongest source candidate: {strongest_dir} (matches={strongest['matches']}/2)")
+if strongest_freshness.get("reason_code") == "stale_export_dir":
+    print("Precheck failed: source_export_stale.")
+    print(
+        "Requested run IDs are newer than the latest run timestamp available in strongest source candidate."
+    )
+    print(
+        f"Requested latest timestamp: {strongest_freshness.get('latest_requested_run_id_timestamp_utc')}; "
+        f"source latest timestamp: {strongest_freshness.get('max_export_run_id_timestamp_utc')}."
+    )
+    print(f"Suggested source refresh command: {strongest_freshness.get('suggested_export_command')}")
+    print("Remediation: update EXPORT_SRC to a fresher live batch path and rerun.")
+    raise SystemExit(2)
+
+if missing:
+    print("Precheck failed: source_path_run_id_mismatch.")
+    print(f"Strongest source candidate is missing requested run IDs: {', '.join(missing)}")
+    known_ids = sorted(strongest_run_ids)
+    for run_id in missing:
+        close = difflib.get_close_matches(run_id, known_ids, n=3, cutoff=0.2)
+        if close:
+            print(f"- Closest run IDs to {run_id} in strongest source: {', '.join(close)}")
+    print("Strongest-candidate warning: source path likely points at stale or wrong batch.")
+    print("Remediation: resolve Discord run IDs against live batch path before exporting.")
+    raise SystemExit(2)
+PY
+  echo
+fi
 
 if [[ "${#canonical_source_dirs[@]}" -gt 0 ]]; then
   echo "[0/6] Auto-mirroring canonical CSV tabs in source directory inputs (when present)"
