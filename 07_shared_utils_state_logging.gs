@@ -132,6 +132,7 @@ function stagePersist(runId, payload) {
     'stake_mode_used', 'raw_risk_mxn', 'raw_target_win_mxn', 'final_risk_mxn', 'final_units',
     'stake_adjustment_reason', 'min_bet_mxn', 'bucket_step_mxn', 'unit_size_mxn',
     'opening_price', 'evaluation_price', 'price_delta_bps', 'opening_lag_minutes', 'decision_gate_status',
+    'stats_coverage_score', 'stats_coverage_tier', 'stats_coverage_reason_code',
     'signal_hash', 'notification_outcome', 'reason_code', 'created_at',
   ], payload.signals);
 

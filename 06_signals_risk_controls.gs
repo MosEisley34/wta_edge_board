@@ -586,6 +586,31 @@ function resolveStatsBundleConfidence_(playerAStats, playerBStats, providerUnava
   return roundNumber_(Math.max(0, Math.min(1, confidence)), 4);
 }
 
+function resolveStatsCoverageProfile_(statsBundle) {
+  const playerA = statsBundle && statsBundle.player_a ? statsBundle.player_a : null;
+  const playerB = statsBundle && statsBundle.player_b ? statsBundle.player_b : null;
+  const usableA = !!(playerA && (playerA.usable_stats !== undefined ? playerA.usable_stats : playerA.has_stats));
+  const usableB = !!(playerB && (playerB.usable_stats !== undefined ? playerB.usable_stats : playerB.has_stats));
+  if (usableA && usableB) {
+    return { score: 1, tier: 'full', reason_code: 'coverage_full' };
+  }
+  if (usableA || usableB) {
+    return { score: 0.6, tier: 'medium', reason_code: 'coverage_scaled_medium' };
+  }
+  return { score: 0.25, tier: 'low', reason_code: 'coverage_scaled_low' };
+}
+
+function withCoverageContext_(detail, coverageProfile) {
+  const base = detail && typeof detail === 'object' ? Object.assign({}, detail) : {};
+  const coverage = coverageProfile && typeof coverageProfile === 'object'
+    ? coverageProfile
+    : { score: 0.25, tier: 'low', reason_code: 'coverage_scaled_low' };
+  base.stats_coverage_score = Number(coverage.score);
+  base.stats_coverage_tier = String(coverage.tier || '');
+  base.stats_coverage_reason_code = String(coverage.reason_code || '');
+  return base;
+}
+
 function resolveStatsBundleCohortPolicyOutcome_(statsBundle, upstreamOutcome) {
   const defaultOutcome = String(upstreamOutcome || '');
   if (!statsBundle || !statsBundle.player_a || !statsBundle.player_b) return defaultOutcome || 'unknown';
@@ -608,6 +633,13 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
 
   const playerA = statsBundle.player_a;
   const playerB = statsBundle.player_b;
+  const coverageProfile = resolveStatsCoverageProfile_(statsBundle);
+  const coverageScore = Math.max(0, Math.min(1, Number(coverageProfile.score)));
+  if (coverageProfile.reason_code === 'coverage_scaled_low') {
+    reasonCodes.coverage_scaled_low = (reasonCodes.coverage_scaled_low || 0) + 1;
+  } else if (coverageProfile.reason_code === 'coverage_scaled_medium') {
+    reasonCodes.coverage_scaled_medium = (reasonCodes.coverage_scaled_medium || 0) + 1;
+  }
 
   if (!playerA || !playerA.has_stats) reasonCodes.stats_missing_player_a = (reasonCodes.stats_missing_player_a || 0) + 1;
   if (!playerB || !playerB.has_stats) reasonCodes.stats_missing_player_b = (reasonCodes.stats_missing_player_b || 0) + 1;
@@ -682,7 +714,7 @@ function combinePlayerStatsFeatureBump_(statsBundle, reasonCodes) {
     reasonCodes.full_confidence_stats_scored = (reasonCodes.full_confidence_stats_scored || 0) + 1;
   }
 
-  return roundNumber_(rawBump * resolvedConfidence, 4);
+  return roundNumber_(rawBump * resolvedConfidence * coverageScore, 4);
 }
 
 
@@ -800,6 +832,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     notify_http_failed: 0,
     notify_missing_config: 0,
     fallback_only: 0,
+    coverage_scaled_low: 0,
+    coverage_scaled_medium: 0,
   };
   const legacyReasonCodeMap = {
     missing_match: 'missing_schedule_match',
@@ -859,6 +893,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
 
     const statsBundle = (playerStatsByOddsEventId || {})[event.event_id] || null;
     const enrichedStatsBundle = attachH2hStatsContext_(statsBundle, event);
+    const coverageProfile = resolveStatsCoverageProfile_(enrichedStatsBundle);
     const hasStatsBundleRows = !!(statsBundle && statsBundle.player_a && statsBundle.player_b);
     const hasUsableStats = !!(hasStatsBundleRows
       && (statsBundle.player_a.usable_stats !== undefined ? statsBundle.player_a.usable_stats : statsBundle.player_a.has_stats)
@@ -873,12 +908,12 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         || statsBundle.player_b.stats_fallback_mode === 'null_features'
         || statsBundle.stats_fallback_mode === 'null_features'));
 
-    if ((!hasUsableStats || cohortBlocked || upstreamZeroCoverageBlocked) && !nullFeaturesFallback) {
-      captureDecision_(event, match, 'missing_stats', {
+    if ((cohortBlocked || upstreamZeroCoverageBlocked) && !nullFeaturesFallback) {
+      captureDecision_(event, match, 'missing_stats', withCoverageContext_({
         scored: false,
         cohort_policy_outcome: cohortPolicyOutcome,
         resolved_with_usable_stats_count: upstreamResolvedUsableStatsCount,
-      });
+      }, coverageProfile));
       return;
     }
 
@@ -920,7 +955,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         lastH2hDecision = resolveH2hProbabilityBump_(enrichedStatsBundle, config || {});
         recordH2hDecisionCount_(h2hDecisionCounts, lastH2hDecision);
       }
-      rows.push(buildSignalRow_(runId, config, event, match, {
+      rows.push(buildSignalRow_(runId, config, event, match, withCoverageContext_({
         notification_outcome: 'too_close_to_start_skip',
         model_probability: modelProbabilityTooClose,
         market_implied_probability: impliedProbability,
@@ -930,8 +965,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         signal_hash: buildSignalHash_(event.event_id, event.market, event.outcome, modelVersion),
         model_version: modelVersion,
         stats_confidence: resolvedStatsConfidence,
-      }));
-      captureDecision_(event, match, 'too_close_to_start_skip', {
+      }, coverageProfile)));
+      captureDecision_(event, match, 'too_close_to_start_skip', withCoverageContext_({
         scored: !suppressionPrecheckSkipScoring,
         stats_confidence: resolvedStatsConfidence,
         suppression_precheck_skip_scoring: suppressionPrecheckSkipScoring,
@@ -944,7 +979,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         threshold_minutes_base: Number(startCutoffPolicy.base_cutoff_minutes || 0),
         threshold_minutes_h2h_relaxed: Number(startCutoffPolicy.h2h_relaxed_cutoff_minutes || 0),
         start_cutoff_relaxation_applied: !!startCutoffPolicy.relaxation_applied,
-      });
+      }, coverageProfile));
       return;
     }
 
@@ -974,7 +1009,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         lastH2hDecision = resolveH2hProbabilityBump_(enrichedStatsBundle, config || {});
         recordH2hDecisionCount_(h2hDecisionCounts, lastH2hDecision);
       }
-      rows.push(buildSignalRow_(runId, config, event, match, {
+      rows.push(buildSignalRow_(runId, config, event, match, withCoverageContext_({
         notification_outcome: 'stale_odds_skip',
         model_probability: modelProbabilityStale,
         market_implied_probability: impliedProbability,
@@ -984,8 +1019,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         signal_hash: buildSignalHash_(event.event_id, event.market, event.outcome, modelVersion),
         model_version: modelVersion,
         stats_confidence: resolvedStatsConfidence,
-      }));
-      captureDecision_(event, match, 'stale_odds_skip', {
+      }, coverageProfile)));
+      captureDecision_(event, match, 'stale_odds_skip', withCoverageContext_({
         scored: !suppressionPrecheckSkipScoring,
         stats_confidence: resolvedStatsConfidence,
         suppression_precheck_skip_scoring: suppressionPrecheckSkipScoring,
@@ -995,7 +1030,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         reference_timestamp_utc: new Date(nowMs).toISOString(),
         stale_age_minutes: staleAgeMinutes,
         threshold_minutes: Number(config.STALE_ODDS_WINDOW_MIN || 0),
-      });
+      }, coverageProfile));
       return;
     }
 
@@ -1008,7 +1043,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     const preActionGate = evaluatePreActionRiskGuard_(event, config, nowMs);
 
     if (edgeTierAndStake.edge_tier === 'NONE') {
-      rows.push(buildSignalRow_(runId, config, event, match, {
+      rows.push(buildSignalRow_(runId, config, event, match, withCoverageContext_({
         notification_outcome: 'edge_below_threshold',
         model_probability: modelProbability,
         market_implied_probability: impliedProbability,
@@ -1018,16 +1053,16 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         signal_hash: signalHash,
         model_version: modelVersion,
         stats_confidence: resolvedStatsConfidence,
-      }));
-      captureDecision_(event, match, 'edge_below_threshold', {
+      }, coverageProfile)));
+      captureDecision_(event, match, 'edge_below_threshold', withCoverageContext_({
         scored: true,
         stats_confidence: resolvedStatsConfidence,
-      });
+      }, coverageProfile));
       return;
     }
 
     if (!preActionGate.is_tradable) {
-      captureDecision_(event, match, preActionGate.reason_code, {
+      captureDecision_(event, match, preActionGate.reason_code, withCoverageContext_({
         scored: true,
         model_probability: modelProbability,
         market_implied_probability: impliedProbability,
@@ -1036,9 +1071,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stake_units: edgeTierAndStake.stake_units,
         stats_confidence: resolvedStatsConfidence,
         pre_action_guard: preActionGate,
-      });
+      }, coverageProfile));
 
-      rows.push(buildSignalRow_(runId, config, event, match, {
+      rows.push(buildSignalRow_(runId, config, event, match, withCoverageContext_({
         notification_outcome: preActionGate.reason_code,
         model_probability: modelProbability,
         market_implied_probability: impliedProbability,
@@ -1053,13 +1088,13 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
           non_tradable: true,
           pre_action_guard: preActionGate,
         },
-      }));
+      }, coverageProfile)));
       return;
     }
 
     const stakePolicyDecision = evaluateSignalStakePolicy_(edgeTierAndStake.stake_units, event.price, config);
     if (stakePolicyDecision.reason_code === 'stake_policy_config_error') {
-      captureDecision_(event, match, stakePolicyDecision.reason_code, {
+      captureDecision_(event, match, stakePolicyDecision.reason_code, withCoverageContext_({
         scored: true,
         model_probability: modelProbability,
         market_implied_probability: impliedProbability,
@@ -1068,8 +1103,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stake_units: edgeTierAndStake.stake_units,
         stats_confidence: resolvedStatsConfidence,
         stake_policy_decision: stakePolicyDecision,
-      });
-      rows.push(buildSignalRow_(runId, config, event, match, {
+      }, coverageProfile));
+      rows.push(buildSignalRow_(runId, config, event, match, withCoverageContext_({
         notification_outcome: stakePolicyDecision.reason_code,
         model_probability: modelProbability,
         market_implied_probability: impliedProbability,
@@ -1081,11 +1116,11 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stats_confidence: resolvedStatsConfidence,
         stake_policy_decision: stakePolicyDecision,
         signal_delivery_mode: 'stake_policy_error',
-      }));
+      }, coverageProfile)));
       return;
     }
     if (stakePolicyDecision.decision === 'suppressed') {
-      captureDecision_(event, match, stakePolicyDecision.reason_code, {
+      captureDecision_(event, match, stakePolicyDecision.reason_code, withCoverageContext_({
         scored: true,
         model_probability: modelProbability,
         market_implied_probability: impliedProbability,
@@ -1094,8 +1129,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stake_units: edgeTierAndStake.stake_units,
         stats_confidence: resolvedStatsConfidence,
         stake_policy_decision: stakePolicyDecision,
-      });
-      rows.push(buildSignalRow_(runId, config, event, match, {
+      }, coverageProfile));
+      rows.push(buildSignalRow_(runId, config, event, match, withCoverageContext_({
         notification_outcome: stakePolicyDecision.reason_code,
         model_probability: modelProbability,
         market_implied_probability: impliedProbability,
@@ -1107,7 +1142,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stats_confidence: resolvedStatsConfidence,
         stake_policy_decision: stakePolicyDecision,
         signal_delivery_mode: 'stake_policy_suppressed',
-      }));
+      }, coverageProfile)));
       return;
     }
 
@@ -1123,6 +1158,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       stake_units: edgeTierAndStake.stake_units,
       stake_policy_decision: stakePolicyDecision,
       stats_confidence: resolvedStatsConfidence,
+      stats_coverage_score: Number(coverageProfile.score),
+      stats_coverage_tier: String(coverageProfile.tier || ''),
+      stats_coverage_reason_code: String(coverageProfile.reason_code || ''),
       h2h_decision: lastH2hDecision,
       enriched_stats_bundle: enrichedStatsBundle,
     });
@@ -1177,7 +1215,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       && sideKey === winningSide;
 
     if (suppressedByOppositeSideConflict) {
-      captureDecision_(event, match, 'opposite_side_conflict_suppressed', {
+      captureDecision_(event, match, 'opposite_side_conflict_suppressed', withCoverageContext_({
         scored: true,
         model_probability: candidate.model_probability,
         market_implied_probability: candidate.market_implied_probability,
@@ -1189,8 +1227,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         conflict_winner_side: String((winningCandidate.event && winningCandidate.event.outcome) || ''),
         conflict_winner_edge_value: Number(winningCandidate.edge_value || 0),
         conflict_resolution: 'strongest_side_preserved',
-      });
-      rows.push(buildSignalRow_(runId, config, event, match, {
+      }, candidate));
+      rows.push(buildSignalRow_(runId, config, event, match, withCoverageContext_({
         notification_outcome: 'opposite_side_conflict_suppressed',
         model_probability: candidate.model_probability,
         market_implied_probability: candidate.market_implied_probability,
@@ -1202,12 +1240,12 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stats_confidence: candidate.stats_confidence,
         signal_delivery_mode: 'h2h_conflict_suppressed',
         stake_policy_decision: candidate.stake_policy_decision,
-      }));
+      }, candidate)));
       return;
     }
     if (suppressedBySameSideConflict) {
       const winningSideCandidate = pendingNotificationCandidates[preferredBySideIndex] || {};
-      captureDecision_(event, match, 'same_side_conflict_suppressed', {
+      captureDecision_(event, match, 'same_side_conflict_suppressed', withCoverageContext_({
         scored: true,
         model_probability: candidate.model_probability,
         market_implied_probability: candidate.market_implied_probability,
@@ -1219,8 +1257,8 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         conflict_winner_side: String((winningSideCandidate.event && winningSideCandidate.event.outcome) || ''),
         conflict_winner_edge_value: Number(winningSideCandidate.edge_value || 0),
         conflict_resolution: 'same_side_best_price_preserved',
-      });
-      rows.push(buildSignalRow_(runId, config, event, match, {
+      }, candidate));
+      rows.push(buildSignalRow_(runId, config, event, match, withCoverageContext_({
         notification_outcome: 'same_side_conflict_suppressed',
         model_probability: candidate.model_probability,
         market_implied_probability: candidate.market_implied_probability,
@@ -1232,7 +1270,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         stats_confidence: candidate.stats_confidence,
         signal_delivery_mode: 'h2h_same_side_conflict_suppressed',
         stake_policy_decision: candidate.stake_policy_decision,
-      }));
+      }, candidate)));
       return;
     }
 
@@ -1296,7 +1334,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       });
     }
 
-    captureDecision_(event, match, notifyOutcome, {
+    captureDecision_(event, match, notifyOutcome, withCoverageContext_({
       scored: true,
       model_probability: candidate.model_probability,
       market_implied_probability: candidate.market_implied_probability,
@@ -1305,9 +1343,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       stake_units: candidate.stake_units,
       stats_confidence: candidate.stats_confidence,
       stake_policy_decision: candidate.stake_policy_decision,
-    });
+    }, candidate));
 
-    rows.push(buildSignalRow_(runId, config, event, match, {
+    rows.push(buildSignalRow_(runId, config, event, match, withCoverageContext_({
       notification_outcome: notifyOutcome,
       model_probability: candidate.model_probability,
       market_implied_probability: candidate.market_implied_probability,
@@ -1320,7 +1358,7 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       stats_confidence: candidate.stats_confidence,
       signal_delivery_mode: fallbackOnlyMode ? 'fallback_only' : 'normal',
       stake_policy_decision: candidate.stake_policy_decision,
-    }));
+    }, candidate)));
   });
 
   setSignalState_(signalState);
@@ -1352,6 +1390,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
       notification_outcome: row.notification_outcome,
       notification_metadata: row.notification_metadata || null,
       stats_confidence: row.stats_confidence,
+      stats_coverage_score: row.stats_coverage_score,
+      stats_coverage_tier: row.stats_coverage_tier,
+      stats_coverage_reason_code: row.stats_coverage_reason_code,
       recommended_stake: row.recommended_stake,
       recommended_stake_currency: row.recommended_stake_currency,
       proposed_stake: row.proposed_stake,
@@ -1390,6 +1431,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
   const observedStatsConfidence = rows
     .map(function (row) { return Number(row.stats_confidence); })
     .filter(function (value) { return Number.isFinite(value); });
+  const observedCoverageScores = rows
+    .map(function (row) { return Number(row.stats_coverage_score); })
+    .filter(function (value) { return Number.isFinite(value); });
 
   const allDropReasons = Object.keys(reasonCounts)
     .filter(function (reasonCode) {
@@ -1400,7 +1444,9 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         && reasonCode !== 'stats_fallback_model_used'
         && reasonCode !== 'low_confidence_stats_scored'
         && reasonCode !== 'full_confidence_stats_scored'
-        && reasonCode !== 'null_features_low_confidence_scored';
+        && reasonCode !== 'null_features_low_confidence_scored'
+        && reasonCode !== 'coverage_scaled_low'
+        && reasonCode !== 'coverage_scaled_medium';
     })
     .reduce(function (sum, reasonCode) {
       return sum + Number(reasonCounts[reasonCode] || 0);
@@ -1427,6 +1473,14 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
         : null,
       minimum: observedStatsConfidence.length ? Math.min.apply(null, observedStatsConfidence) : null,
       maximum: observedStatsConfidence.length ? Math.max.apply(null, observedStatsConfidence) : null,
+    },
+    stats_coverage_summary: {
+      observed_count: observedCoverageScores.length,
+      average: observedCoverageScores.length
+        ? roundNumber_(observedCoverageScores.reduce(function (sum, value) { return sum + value; }, 0) / observedCoverageScores.length, 4)
+        : null,
+      minimum: observedCoverageScores.length ? Math.min.apply(null, observedCoverageScores) : null,
+      maximum: observedCoverageScores.length ? Math.max.apply(null, observedCoverageScores) : null,
     },
     sent_count: Number(reasonCounts.sent || 0),
     invariant: {
@@ -1502,6 +1556,13 @@ function stageGenerateSignals(runId, config, oddsEvents, matchRows, playerStatsB
     signal_decision_summary: JSON.stringify(signalDecisionSummary),
     signal_quality_metrics: JSON.stringify(signalQualityMetrics),
     stale_suppression_diagnostics: JSON.stringify(staleSuppressionDiagnostics),
+    coverage_scaling: JSON.stringify({
+      coverage_scaled_low: Number(reasonCounts.coverage_scaled_low || 0),
+      coverage_scaled_medium: Number(reasonCounts.coverage_scaled_medium || 0),
+      average_coverage_score: observedCoverageScores.length
+        ? roundNumber_(observedCoverageScores.reduce(function (sum, value) { return sum + value; }, 0) / observedCoverageScores.length, 4)
+        : null,
+    }),
   };
   if (oddsEvents.length === 0) {
     summaryReasonMetadata.upstream_gate_reason = normalizedUpstreamGateReason;
@@ -1652,6 +1713,8 @@ function buildSignalDecisionRunSummary_(payload) {
         && reasonCode !== 'full_confidence_stats_scored'
         && reasonCode !== 'low_confidence_stats_scored'
         && reasonCode !== 'null_features_low_confidence_scored'
+        && reasonCode !== 'coverage_scaled_low'
+        && reasonCode !== 'coverage_scaled_medium'
         && reasonCode !== 'null_features_fallback_scored';
     })
     .sort(function (a, b) { return Number(reasonCounts[b] || 0) - Number(reasonCounts[a] || 0); })
@@ -2115,6 +2178,9 @@ function buildSignalRow_(runId, config, event, match, detail) {
     opening_lag_minutes: resolveOpeningLagMinutes_(event, Date.now()),
     decision_gate_status: resolveDecisionGateStatus_(detail),
     stats_confidence: Number.isFinite(Number(detail.stats_confidence)) ? Number(detail.stats_confidence) : null,
+    stats_coverage_score: Number.isFinite(Number(detail.stats_coverage_score)) ? Number(detail.stats_coverage_score) : null,
+    stats_coverage_tier: String(detail.stats_coverage_tier || ''),
+    stats_coverage_reason_code: String(detail.stats_coverage_reason_code || ''),
     signal_hash: detail.signal_hash,
     notification_outcome: detail.notification_outcome,
     signal_delivery_mode: detail.signal_delivery_mode || 'normal',
