@@ -88,6 +88,8 @@ precheck_json=""
 compare_json=""
 edge_json=""
 summary_json=""
+player_diagnostics_json=""
+player_diagnostics_csv=""
 
 baseline_run_id=""
 candidate_run_id=""
@@ -104,7 +106,7 @@ edge_quality_status="not_run"
 edge_quality_reason_code="NOT_RUN"
 
 write_summary() {
-  python3 - "$summary_json" "$status" "$reason_code" "$candidate_run_id" "$baseline_run_id" "$derive_pair_json" "$precheck_json" "$compare_json" "$edge_json" "$triage_impl_dir" "$out_dir" "$run_pair_status" "$run_pair_reason_code" "$precheck_status" "$precheck_reason_code" "$compare_status" "$compare_reason_code" "$edge_quality_status" "$edge_quality_reason_code" <<'PY'
+  python3 - "$summary_json" "$status" "$reason_code" "$candidate_run_id" "$baseline_run_id" "$derive_pair_json" "$precheck_json" "$compare_json" "$edge_json" "$player_diagnostics_json" "$player_diagnostics_csv" "$triage_impl_dir" "$out_dir" "$run_pair_status" "$run_pair_reason_code" "$precheck_status" "$precheck_reason_code" "$compare_status" "$compare_reason_code" "$edge_quality_status" "$edge_quality_reason_code" <<'PY'
 import json
 import os
 import sys
@@ -119,6 +121,8 @@ import sys
     precheck_json,
     compare_json,
     edge_json,
+    player_diagnostics_json,
+    player_diagnostics_csv,
     triage_impl_dir,
     export_dir,
     run_pair_status,
@@ -136,6 +140,8 @@ artifact_paths = {
     "precheck_stage_json": precheck_json,
     "compare_validation_json": compare_json,
     "edge_quality_compare_json": edge_json,
+    "player_diagnostics_json": player_diagnostics_json,
+    "player_diagnostics_csv": player_diagnostics_csv,
     "triage_impl_dir": triage_impl_dir,
     "export_dir": export_dir,
 }
@@ -145,6 +151,8 @@ required_json_exists = {
     "precheck_stage_json": os.path.isfile(precheck_json) and os.path.getsize(precheck_json) > 0,
     "compare_validation_json": os.path.isfile(compare_json) and os.path.getsize(compare_json) > 0,
     "edge_quality_compare_json": os.path.isfile(edge_json) and os.path.getsize(edge_json) > 0,
+    "player_diagnostics_json": os.path.isfile(player_diagnostics_json) and os.path.getsize(player_diagnostics_json) > 0,
+    "player_diagnostics_csv": os.path.isfile(player_diagnostics_csv) and os.path.getsize(player_diagnostics_csv) > 0,
 }
 
 payload = {
@@ -273,6 +281,8 @@ precheck_json="$out_stage_dir/precheck_stage.json"
 compare_json="$out_stage_dir/compare_validation.json"
 edge_json="$out_stage_dir/edge_quality_compare.json"
 summary_json="$out_stage_dir/triage_summary.json"
+player_diagnostics_json="$out_stage_dir/player_stats_player_diagnostics.json"
+player_diagnostics_csv="$out_stage_dir/player_stats_player_diagnostics.csv"
 
 echo "[1/5] Deriving run pair"
 if [[ -n "${manual_baseline_run_id//[[:space:]]/}" || -n "${manual_candidate_run_id//[[:space:]]/}" ]]; then
@@ -469,7 +479,7 @@ if [[ "$compare_preflight_validate_exit" -ne 0 ]]; then
 fi
 
 set +e
-python3 scripts/compare_run_diagnostics.py "$baseline_run_id" "$candidate_run_id" --export-dir "$out_dir" > "$triage_impl_dir/compare_stdout.log" 2>&1
+python3 scripts/compare_run_diagnostics.py "$baseline_run_id" "$candidate_run_id" --export-dir "$out_dir" --player-diagnostics-json "$player_diagnostics_json" --player-diagnostics-csv "$player_diagnostics_csv" > "$triage_impl_dir/compare_stdout.log" 2>&1
 compare_exit=$?
 set -e
 if [[ "$compare_exit" -eq 0 ]]; then

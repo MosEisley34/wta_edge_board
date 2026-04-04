@@ -2,12 +2,18 @@ import unittest
 import json
 from pathlib import Path
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from compare_run_diagnostics import compare_rows, _with_reason_code_fallback  # noqa: E402
+from compare_run_diagnostics import (  # noqa: E402
+    compare_rows,
+    _with_reason_code_fallback,
+    _normalize_player_key,
+    _write_player_diagnostics_artifacts,
+)
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate  # noqa: E402
 from stake_policy import StakePolicyConfig  # noqa: E402
 
@@ -199,6 +205,67 @@ class CompareRunDiagnosticsValidationTests(unittest.TestCase):
         self.assertIn("| fallback_name_similarity | 1 | 2 | +1 |", report)
         self.assertIn("| fallback_provider_timeout | 1 | 1 | +0 |", report)
         self.assertIn("| fallback_low_confidence | 1 | 2 | +1 |", report)
+
+    def test_player_name_normalization_collapses_non_ascii_variants(self):
+        self.assertEqual("jelena ostapenko", _normalize_player_key("Jeļena Ostapenko"))
+        self.assertEqual("jelena ostapenko", _normalize_player_key("Jelena Ostapenko"))
+
+    def test_write_player_diagnostics_artifacts_marks_repeated_offenders(self):
+        rows = _full_stage_rows("run-a") + _full_stage_rows("run-b")
+        rows.extend(
+            [
+                {
+                    "run_id": "run-a",
+                    "stage": "runEdgeBoard",
+                    "row_type": "summary",
+                    "message": {
+                        "stage_summaries": [
+                            {
+                                "stage": "stageFetchPlayerStats",
+                                "reason_metadata": {
+                                    "player_diagnostics_by_player": {
+                                        "Jeļena Ostapenko": {
+                                            "reason_code": "stats_name_resolution_miss",
+                                            "source_attribution": "unresolved",
+                                        }
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                },
+                {
+                    "run_id": "run-b",
+                    "stage": "runEdgeBoard",
+                    "row_type": "summary",
+                    "message": {
+                        "stage_summaries": [
+                            {
+                                "stage": "stageFetchPlayerStats",
+                                "reason_metadata": {
+                                    "player_diagnostics_by_player": {
+                                        "Jelena Ostapenko": {
+                                            "reason_code": "stats_provider_no_record",
+                                            "source_attribution": "provider_fallback",
+                                        }
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out_json = Path(tmp) / "player_diag.json"
+            out_csv = Path(tmp) / "player_diag.csv"
+            _write_player_diagnostics_artifacts(rows, "run-a", "run-b", str(out_json), str(out_csv))
+            payload = json.loads(out_json.read_text(encoding="utf-8"))
+            self.assertEqual(2, len(payload["entries"]))
+            self.assertEqual(2, payload["repeated_offenders"]["jelena ostapenko"])
+            repeated_flags = [entry["repeated_offender"] for entry in payload["entries"]]
+            self.assertTrue(all(repeated_flags))
+            self.assertTrue(out_csv.exists())
 
 
 if __name__ == "__main__":

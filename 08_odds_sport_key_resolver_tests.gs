@@ -5627,6 +5627,7 @@ function testStageFetchPlayerStats_partialMissingIncrementsReasonCodes_() {
   assertEquals_(0, result.stage.summary.reason_codes.stats_missing_player_a);
   assertEquals_(1, result.stage.summary.reason_codes.stats_missing_player_b);
   assertEquals_(0, result.stage.summary.reason_codes.stats_fallback_model_used);
+  assertEquals_(1, Number(result.stage.summary.reason_codes.stats_provider_no_record || 0));
 
   const bundle = result.stage.byOddsEventId.odds_evt_1;
   assertTrue_(bundle.player_a.has_stats, 'player a should have provider stats');
@@ -5697,6 +5698,7 @@ function testStageFetchPlayerStats_providerUnavailableFallsBackDeterministically
   });
 
   assertEquals_(2, first.stage.summary.reason_codes.stats_fallback_model_used);
+  assertEquals_(2, Number(first.stage.summary.reason_codes.stats_model_fallback_used || 0));
   assertEquals_(JSON.stringify(first.stage.byOddsEventId), JSON.stringify(second.stage.byOddsEventId));
   assertEquals_(JSON.stringify(first.stage.rows), JSON.stringify(second.stage.rows));
 }
@@ -5873,12 +5875,14 @@ function testStageFetchPlayerStats_givenNameVariantAliasResolvesYuliiaProfile_()
 
   const meta = result.stage.summary.reason_metadata || {};
   const sourceByPlayer = meta.player_resolution_source_by_player || {};
+  const diagnosticsByPlayer = meta.player_diagnostics_by_player || {};
   assertEquals_(2, Number(meta.resolved_player_count || 0));
   assertEquals_(0, Number(meta.unresolved_player_count || 0));
   assertEquals_('tennis_abstract', String(sourceByPlayer['yulia starodubtseva'] || ''));
   assertEquals_('tennis_abstract', String(sourceByPlayer['madison keys'] || ''));
   assertEquals_(2, Number(meta.players_found_ta || 0));
   assertEquals_(0, Number(meta.players_unresolved || 0));
+  assertEquals_('tennis_abstract', String((diagnosticsByPlayer['yulia starodubtseva'] || {}).source_attribution || ''));
 }
 
 function testStageFetchPlayerStats_providerReturnedNullFeaturesMarksFallbackMetadata_() {
