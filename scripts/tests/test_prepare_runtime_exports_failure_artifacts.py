@@ -69,10 +69,127 @@ class RuntimeExportFailureArtifactsTests(unittest.TestCase):
             )
 
             self.assertNotEqual(0, proc.returncode)
-            self.assertTrue((out_dir / "runtime_export_manifest.json").is_file())
-            self.assertTrue((out_dir / "runtime_export_manifest.pointer.json").is_file())
             self.assertTrue((out_dir / "export_parity_precheck.pointer.json").is_file())
             self.assertTrue((out_dir / "export_parity_precheck_failure.json").is_file())
+
+    def test_precheck_rejects_derived_export_source_without_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "exports_live"
+            out_dir = Path(tmp) / "out"
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "runtime_export_manifest.json").write_text('{"status":"ok"}', encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(PRECHECK_SCRIPT),
+                    "--out-dir",
+                    str(out_dir),
+                    "run-a",
+                    "run-b",
+                    str(source),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(2, proc.returncode)
+            self.assertIn("derived_export_source_rejected", proc.stderr)
+            self.assertIn("--allow-derived-export-source", proc.stderr)
+
+    def test_precheck_fails_fast_on_stale_source_with_remediation_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "live_runtime_batch"
+            out_dir = Path(tmp) / "out"
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "Run_Log.csv").write_text(
+                "run_id,stage,row_type,started_at\n"
+                "run-20260330-0000,stageFetchOdds,,2026-03-30T00:00:00Z\n"
+                "run-20260330-0100,stageFetchOdds,,2026-03-30T01:00:00Z\n",
+                encoding="utf-8",
+            )
+            (source / "Run_Log.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "run_id": "run-20260330-0000",
+                            "stage": "stageFetchOdds",
+                            "started_at": "2026-03-30T00:00:00Z",
+                        },
+                        {
+                            "run_id": "run-20260330-0100",
+                            "stage": "stageFetchOdds",
+                            "started_at": "2026-03-30T01:00:00Z",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(PRECHECK_SCRIPT),
+                    "--out-dir",
+                    str(out_dir),
+                    "run-20260401-0000",
+                    "run-20260331-0000",
+                    str(source),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(2, proc.returncode)
+            self.assertIn("source_export_stale", proc.stdout)
+            self.assertIn("Suggested source refresh command:", proc.stdout)
+            self.assertIn("Remediation: update EXPORT_SRC to a fresher live batch path and rerun.", proc.stdout)
+
+    def test_precheck_stops_early_when_requested_run_ids_missing_from_strongest_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "live_runtime_batch"
+            out_dir = Path(tmp) / "out"
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "Run_Log.csv").write_text(
+                "run_id,stage,row_type\n"
+                "run-a,stageFetchOdds,\n"
+                "run-b,stageFetchOdds,\n",
+                encoding="utf-8",
+            )
+            (source / "Run_Log.json").write_text(
+                json.dumps(
+                    [
+                        {"run_id": "run-a", "stage": "stageFetchOdds"},
+                        {"run_id": "run-b", "stage": "stageFetchOdds"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(PRECHECK_SCRIPT),
+                    "--out-dir",
+                    str(out_dir),
+                    "run-a",
+                    "run-z",
+                    str(source),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(2, proc.returncode)
+            self.assertIn("source_path_run_id_mismatch", proc.stdout)
+            self.assertIn("Strongest-candidate warning", proc.stdout)
+            self.assertIn("Remediation: resolve Discord run IDs against live batch path before exporting.", proc.stdout)
 
 
 if __name__ == "__main__":

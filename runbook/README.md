@@ -418,6 +418,21 @@ python3 scripts/precheck_run_ids.py "$PRE_RUN_ID" "$NEW_RUN_ID" --export-dir "$E
 
 scripts/export_parity_precheck.sh --out-dir ./exports_live "$PRE_RUN_ID" "$NEW_RUN_ID" "$EXPORT_SRC"
 
+# Live signal reconciliation mini-playbook (Discord run ID -> source path -> export -> triage)
+#
+# Use this every time a run ID pair comes from Discord, especially before reusing any existing exports dir.
+# 1) Resolve run IDs from Discord alert thread and validate both are exact values (no truncation).
+# 2) Validate source path freshness against those run IDs:
+#    - preferred: a live batch directory (for example ./live_runtime/batches/<timestamp>)
+#    - avoid derived dirs like ./exports_live or triage_verify_* unless incident override is explicit
+# 3) Run export precheck on the validated source:
+#      scripts/export_parity_precheck.sh --out-dir ./exports_live "$PRE_RUN_ID" "$NEW_RUN_ID" "$EXPORT_SRC"
+# 4) If precheck reports source mismatch/stale-source, stop and re-point EXPORT_SRC before compare scripts.
+# 5) Only then run diagnostics + metrics + edge-quality triage wrappers.
+#
+# Incident-only override for intentionally derived sources:
+#   scripts/export_parity_precheck.sh --allow-derived-export-source --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
+#
 # Stale-source troubleshooting fallback (existing exports_live contract flow).
 # If the fresh source path is stale/unavailable, rerun precheck from ./exports_live.
 scripts/export_parity_precheck.sh --out-dir ./exports_live <run_id_a> <run_id_b> ./exports_live
