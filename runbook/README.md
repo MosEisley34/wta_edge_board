@@ -199,15 +199,20 @@ After parser hardening (issue #2), unsupported flags fail fast with:
 Examples:
 
 ```bash
+OUT_DIR="./exports_live"
+mkdir -p "$OUT_DIR"
+
 # Valid explicit run-ID override flow:
 scripts/run_triage_bundle.sh \
-  --out-dir ./exports_live \
+  --out-dir "$OUT_DIR" \
   --baseline-run-id 20260401T120000Z \
   --candidate-run-id 20260402T120000Z \
-  ./runtime_logs
+  ./runtime_logs \
+  | tee "$OUT_DIR/triage_bundle.log"
 
 # Valid auto-derive flow (latest pair from exported Run_Log.json):
-scripts/run_triage_bundle.sh --out-dir ./exports_live ./runtime_logs
+scripts/run_triage_bundle.sh --out-dir "$OUT_DIR" ./runtime_logs \
+  | tee "$OUT_DIR/triage_bundle.log"
 ```
 
 Strict enforced execution order:
