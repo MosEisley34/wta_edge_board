@@ -1681,6 +1681,124 @@ def _detect_low_volume_mode(
     return {"active": bool(reasons), "reasons": sorted(set(reasons)), "evidence": evidence}
 
 
+def _resolve_threshold_profile(
+    *,
+    summary_row: dict[str, Any],
+    candidate_run_id: str,
+    ordered_run_ids: list[str],
+    config: EdgeQualityGateConfig,
+) -> dict[str, Any]:
+    profile_map = {
+        "strict_default": {
+            "min_scored_signals_for_volatility": max(1, int(config.min_scored_signals_for_volatility)),
+            "min_matched_events_for_volatility": max(0, int(config.min_matched_events_for_volatility)),
+            "rationale": "strict defaults enforced",
+        },
+        "low_volume_semifinal_final": {
+            "min_scored_signals_for_volatility": max(1, int(config.low_volume_min_scored_signals_for_volatility)),
+            "min_matched_events_for_volatility": max(0, int(config.low_volume_min_matched_events_for_volatility)),
+            "rationale": "semifinal/final stage with low remaining volume allows relaxed floors",
+        },
+        "ultra_low_volume_single_match": {
+            "min_scored_signals_for_volatility": max(
+                1,
+                int(
+                    max(
+                        int(config.min_scored_signals_for_volatility),
+                        int(config.low_volume_min_scored_signals_for_volatility),
+                    )
+                ),
+            ),
+            "min_matched_events_for_volatility": max(
+                0,
+                int(
+                    max(
+                        int(config.min_matched_events_for_volatility),
+                        int(config.low_volume_min_matched_events_for_volatility),
+                    )
+                ),
+            ),
+            "rationale": "single-match residual volume uses conservative fallback thresholds",
+        },
+    }
+
+    low_volume_mode = _detect_low_volume_mode(
+        summary_row=summary_row,
+        candidate_run_id=candidate_run_id,
+        ordered_run_ids=ordered_run_ids,
+        config=config,
+    )
+    evidence = dict(low_volume_mode.get("evidence") or {})
+    reasons: list[str] = []
+
+    reason_totals, _, _ = _reason_code_totals(summary_row)
+    raw_schedule_upserts = None
+    for key in ("raw_schedule_upserts", "SCH_UPS"):
+        try:
+            raw_schedule_upserts = max(0, int(float(reason_totals.get(key))))
+            break
+        except (TypeError, ValueError):
+            continue
+    evidence["raw_schedule_upserts"] = raw_schedule_upserts
+    if raw_schedule_upserts is not None and raw_schedule_upserts <= 1:
+        reasons.append("raw_schedule_single_match_signal")
+
+    stage_tokens = [str(token) for token in (evidence.get("stage_tokens") or [])]
+    near_finals = any(token in {"semifinal", "semi_final", "semi-final", "final"} for token in stage_tokens)
+    evidence["near_finals"] = near_finals
+    if near_finals:
+        reasons.append("tournament_phase_semifinal_or_final")
+
+    upcoming_matches = evidence.get("upcoming_match_count")
+    if isinstance(upcoming_matches, int) and upcoming_matches <= int(config.low_volume_upcoming_match_count_trigger):
+        reasons.append("upcoming_matches_low_volume")
+
+    remaining_pairs = evidence.get("remaining_pairs_after_candidate")
+    if isinstance(remaining_pairs, int):
+        remaining_pairs_trigger = int(config.low_volume_remaining_pairs_trigger)
+        if remaining_pairs_trigger >= 0 and remaining_pairs <= remaining_pairs_trigger:
+            reasons.append("remaining_pairs_below_trigger")
+        if remaining_pairs <= 0:
+            reasons.append("single_remaining_pair_or_less")
+
+    if not bool(config.low_volume_mode_enabled):
+        active_profile = "strict_default"
+        reasons = ["low_volume_mode_disabled"]
+    elif ("raw_schedule_single_match_signal" in reasons) or (isinstance(upcoming_matches, int) and upcoming_matches <= 1):
+        active_profile = "ultra_low_volume_single_match"
+    elif near_finals and bool(low_volume_mode.get("active")):
+        active_profile = "low_volume_semifinal_final"
+    else:
+        active_profile = "strict_default"
+        decisive_reasons = {"tournament_phase_semifinal_or_final", "upcoming_matches_low_volume", "raw_schedule_single_match_signal"}
+        if not any(reason in decisive_reasons for reason in reasons):
+            reasons = ["insufficient_low_volume_evidence_keep_strict"]
+
+    profile = profile_map[active_profile]
+    strict_profile = profile_map["strict_default"]
+    sample_floors = {
+        "min_scored_signals_for_volatility": int(profile["min_scored_signals_for_volatility"]),
+        "min_matched_events_for_volatility": int(profile["min_matched_events_for_volatility"]),
+    }
+    fallback_mode_used = (
+        active_profile != "strict_default"
+        and (
+            sample_floors["min_scored_signals_for_volatility"] < strict_profile["min_scored_signals_for_volatility"]
+            or sample_floors["min_matched_events_for_volatility"] < strict_profile["min_matched_events_for_volatility"]
+        )
+    )
+
+    return {
+        "active_profile": active_profile,
+        "activation_reasons": sorted(set(reasons)),
+        "evidence_snapshot": evidence,
+        "rationale": str(profile["rationale"]),
+        "sample_floors": sample_floors,
+        "fallback_mode_used": fallback_mode_used,
+        "low_volume_mode": low_volume_mode,
+    }
+
+
 def _top_volatility_contributors(
     baseline: dict[str, Any],
     candidate: dict[str, Any],
@@ -1778,17 +1896,17 @@ def evaluate_edge_quality_gate(
     matched_events = candidate.get("matched_events")
     ordered_ids = ordered_run_ids or _rolling_run_ids(rows)
     candidate_summary_row = _pick_run_summary(rows, candidate_run_id)
-    low_volume_mode = _detect_low_volume_mode(
+    threshold_profile = _resolve_threshold_profile(
         summary_row=candidate_summary_row,
         candidate_run_id=candidate_run_id,
         ordered_run_ids=ordered_ids,
         config=config,
     )
-    threshold_profile_name = "strict_default"
-    threshold_profile_rationale = "strict defaults enforced"
-    fallback_profile_used = False
-    sample_floor_scored = int(config.min_scored_signals_for_volatility)
-    sample_floor_matched = int(config.min_matched_events_for_volatility)
+    threshold_profile_name = str(threshold_profile["active_profile"])
+    threshold_profile_rationale = str(threshold_profile["rationale"])
+    fallback_profile_used = bool(threshold_profile["fallback_mode_used"])
+    sample_floor_scored = max(1, int(config.min_scored_signals_for_volatility))
+    sample_floor_matched = max(0, int(config.min_matched_events_for_volatility))
     sample_known = scored_signals is not None and matched_events is not None
     sample_strategy = "candidate_only"
     effective_sample = {
@@ -1822,9 +1940,9 @@ def evaluate_edge_quality_gate(
                 min_matched_events_for_volatility=sample_floor_matched,
             )
     strict_sample_result = {"enough": bool(enough_sample_for_volatility), "reason_code": str(sample_reason_code)}
-    if (not enough_sample_for_volatility) and bool(low_volume_mode.get("active")):
-        low_volume_scored = max(1, int(config.low_volume_min_scored_signals_for_volatility))
-        low_volume_matched = max(0, int(config.low_volume_min_matched_events_for_volatility))
+    if (not enough_sample_for_volatility) and threshold_profile_name != "strict_default":
+        low_volume_scored = int((threshold_profile.get("sample_floors") or {}).get("min_scored_signals_for_volatility", sample_floor_scored))
+        low_volume_matched = int((threshold_profile.get("sample_floors") or {}).get("min_matched_events_for_volatility", sample_floor_matched))
         low_volume_enough, low_volume_reason = _resolve_sample_assessment_reason(
             sample_known=bool(effective_sample["known"]),
             scored_signals=effective_sample["scored_signals"],
@@ -1835,17 +1953,13 @@ def evaluate_edge_quality_gate(
         if low_volume_enough:
             enough_sample_for_volatility = True
             sample_reason_code = "low_volume_profile_sufficient_sample"
-            threshold_profile_name = "low_volume_fallback"
-            threshold_profile_rationale = (
-                "strict profile insufficient during low-volume period; alternate floor applied for actionable verdicts"
-            )
-            fallback_profile_used = True
             sample_floor_scored = low_volume_scored
             sample_floor_matched = low_volume_matched
             warnings.append(
                 "low_volume_threshold_profile_applied "
                 f"(scored_floor={low_volume_scored}; matched_floor={low_volume_matched}; "
-                f"reasons={','.join(low_volume_mode.get('reasons') or ['none'])})"
+                f"profile={threshold_profile_name}; "
+                f"reasons={','.join((threshold_profile.get('activation_reasons') or ['none']))})"
             )
     confidence = _sample_confidence(
         sample_known=bool(effective_sample["known"]),
@@ -2038,11 +2152,13 @@ def evaluate_edge_quality_gate(
             "active_profile": threshold_profile_name,
             "rationale": threshold_profile_rationale,
             "fallback_mode_used": fallback_profile_used,
+            "activation_reasons": list(threshold_profile.get("activation_reasons") or []),
+            "evidence_snapshot": dict(threshold_profile.get("evidence_snapshot") or {}),
             "sample_floors": {
                 "min_scored_signals_for_volatility": sample_floor_scored,
                 "min_matched_events_for_volatility": sample_floor_matched,
             },
-            "low_volume_mode": low_volume_mode,
+            "low_volume_mode": threshold_profile.get("low_volume_mode") or {},
         },
         "volatility_diagnostic": volatility_gate_diagnostic,
         "suppression_drifts": suppression_drifts,
@@ -2220,15 +2336,17 @@ def evaluate_edge_quality_compare_report(
         candidate=candidate_snapshot,
         config=config,
     )
-    low_volume_mode = _detect_low_volume_mode(
+    threshold_profile = _resolve_threshold_profile(
         summary_row=_pick_run_summary(rows, candidate_run_id),
         candidate_run_id=candidate_run_id,
         ordered_run_ids=ordered_run_ids or _rolling_run_ids(rows),
         config=config,
     )
-    if (not strict_pair_operational_pre_gate["ok"]) and bool(low_volume_mode.get("active")):
-        low_scored = max(1, int(config.low_volume_min_scored_signals_for_volatility))
-        low_matched = max(1, int(config.low_volume_min_matched_events_for_volatility))
+    low_volume_mode = threshold_profile.get("low_volume_mode") or {}
+    profile_floors = threshold_profile.get("sample_floors") or {}
+    if (not strict_pair_operational_pre_gate["ok"]) and str(threshold_profile.get("active_profile")) != "strict_default":
+        low_scored = max(1, int(profile_floors.get("min_scored_signals_for_volatility", config.min_scored_signals_for_volatility)))
+        low_matched = max(1, int(profile_floors.get("min_matched_events_for_volatility", config.min_matched_events_for_volatility)))
         baseline_ok = int(baseline_snapshot.get("scored_signals") or 0) >= low_scored and int(
             baseline_snapshot.get("matched_events") or 0
         ) >= low_matched
@@ -2245,17 +2363,21 @@ def evaluate_edge_quality_compare_report(
                 "min_matched_events_for_volatility": low_matched,
             }
             strict_pair_operational_pre_gate["threshold_profile"] = {
-                "active_profile": "low_volume_fallback",
-                "fallback_mode_used": True,
-                "rationale": "strict operational thresholds relaxed during low-volume period",
+                "active_profile": str(threshold_profile.get("active_profile") or "strict_default"),
+                "fallback_mode_used": bool(threshold_profile.get("fallback_mode_used")),
+                "rationale": str(threshold_profile.get("rationale") or "strict operational thresholds relaxed during low-volume period"),
+                "activation_reasons": list(threshold_profile.get("activation_reasons") or []),
+                "evidence_snapshot": dict(threshold_profile.get("evidence_snapshot") or {}),
                 "low_volume_mode": low_volume_mode,
             }
     strict_pair_operational_pre_gate.setdefault(
         "threshold_profile",
         {
-            "active_profile": "strict_default",
-            "fallback_mode_used": False,
-            "rationale": "strict operational thresholds enforced",
+            "active_profile": str(threshold_profile.get("active_profile") or "strict_default"),
+            "fallback_mode_used": bool(threshold_profile.get("fallback_mode_used")),
+            "rationale": str(threshold_profile.get("rationale") or "strict operational thresholds enforced"),
+            "activation_reasons": list(threshold_profile.get("activation_reasons") or []),
+            "evidence_snapshot": dict(threshold_profile.get("evidence_snapshot") or {}),
             "low_volume_mode": low_volume_mode,
         },
     )
@@ -2318,7 +2440,7 @@ def evaluate_edge_quality_compare_report(
     gate_verdict = "blocked_insufficient_sample"
     blocked_by_strict_sample_in_low_volume = False
     if not strict_pair_operational_pre_gate["ok"]:
-        if bool(low_volume_mode.get("active")):
+        if str(threshold_profile.get("active_profile")) != "strict_default":
             gate_verdict = "blocked_low_volume_strict_sample"
             blocked_by_strict_sample_in_low_volume = True
         else:
