@@ -179,6 +179,7 @@ scripts/run_triage_bundle.sh [--out-dir ./exports_live] [--baseline-run-id <run_
 ```
 
 Strict enforced execution order:
+0. **runtime export pre-step** (`scripts/prepare_runtime_exports.sh`),
 1. **derive run pair** (manual `--baseline-run-id/--candidate-run-id` override or automatic latest pair derivation from exported `Run_Log.json`),
 2. **precheck** (`scripts/precheck_run_ids.py --require-gate-prereqs`),
 3. **compare diagnostics** (`scripts/compare_run_diagnostics.py`),
@@ -197,6 +198,9 @@ Machine-readable artifacts (per execution):
 - `triage_impl_<UTC timestamp>/out/compare_validation.json`
 - `triage_impl_<UTC timestamp>/out/edge_quality_compare.json`
 - `triage_impl_<UTC timestamp>/out/triage_summary.json`
+
+Directory lifecycle note:
+- `triage_impl_<UTC timestamp>/` is created only after the runtime export pre-step completes, so export workspace refresh cannot delete stage artifacts in-flight.
 
 The final summary JSON includes:
 - `status`
