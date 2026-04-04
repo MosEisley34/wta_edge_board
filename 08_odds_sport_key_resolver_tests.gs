@@ -3589,7 +3589,7 @@ function testStageGenerateSignals_recordsFullyUnmatchedCandidates_() {
   }
 }
 
-function testStageGenerateSignals_recordsFullyMissingStatsCandidates_() {
+function testStageGenerateSignals_scoresFullyMissingStatsCandidatesWithLowCoverage_() {
   const originalDateNow = Date.now;
   const originalGetSignalState = getSignalState_;
   const originalSetSignalState = setSignalState_;
@@ -3635,13 +3635,14 @@ function testStageGenerateSignals_recordsFullyMissingStatsCandidates_() {
     const result = stageGenerateSignals('run_missing_stats', config, events, matches, {});
     const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
 
-    assertEquals_(0, result.rows.length);
-    assertEquals_(2, result.summary.reason_codes.missing_stats || 0);
-    assertEquals_(2, (decisionState.reason_counts && decisionState.reason_counts.missing_stats) || 0);
+    assertEquals_(2, result.rows.length);
+    assertEquals_(0, result.summary.reason_codes.missing_stats || 0);
+    assertEquals_(2, Number(result.summary.reason_codes.coverage_scaled_low || 0));
+    assertEquals_(0, (decisionState.reason_counts && decisionState.reason_counts.missing_stats) || 0);
     assertEquals_(2, decisionState.all_drop_reasons || 0);
     assertEquals_(0, decisionState.sent_count || 0);
     assertEquals_(true, !!(decisionState.invariant && decisionState.invariant.sent_plus_drop_reasons_equals_input));
-    assertEquals_('missing_stats', (decisionState.sampled_candidate_rows[0] || {}).decision_reason_code || '');
+    assertEquals_('coverage_scaled_low', String((((decisionState.sampled_candidate_rows[0] || {}).detail || {}).stats_coverage_reason_code || '')));
   } finally {
     Date.now = originalDateNow;
     getSignalState_ = originalGetSignalState;
@@ -3709,6 +3710,85 @@ function testStageGenerateSignals_scoresNullFeaturesFallbackAndTracksReason_() {
     assertEquals_(0, result.summary.reason_codes.missing_stats || 0);
     assertEquals_(1, result.summary.reason_codes.null_features_fallback_scored || 0);
     assertTrue_((decisionState.sampled_candidate_rows[0] || {}).decision_reason_code !== 'missing_stats', 'null-feature fallback should not be dropped as missing stats');
+  } finally {
+    Date.now = originalDateNow;
+    getSignalState_ = originalGetSignalState;
+    setSignalState_ = originalSetSignalState;
+    setStateValue_ = originalSetStateValue;
+    localAndUtcTimestamps_ = originalLocalAndUtcTimestamps;
+  }
+}
+
+function testStageGenerateSignals_appliesCoverageScoreAcrossFullPartialAndMissingStats_() {
+  const originalDateNow = Date.now;
+  const originalGetSignalState = getSignalState_;
+  const originalSetSignalState = setSignalState_;
+  const originalSetStateValue = setStateValue_;
+  const originalLocalAndUtcTimestamps = localAndUtcTimestamps_;
+
+  const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+  const stateWrites = {};
+  Date.now = function () { return nowMs; };
+  getSignalState_ = function () { return { sent_hashes: {} }; };
+  setSignalState_ = function () {};
+  setStateValue_ = function (key, value) { stateWrites[key] = value; };
+  localAndUtcTimestamps_ = function () {
+    return { local: '2026-01-01T00:00:00-07:00', utc: '2026-01-01T07:00:00.000Z' };
+  };
+
+  try {
+    const events = [
+      { event_id: 'evt_cov_full', market: 'h2h', outcome: 'player_a', bookmaker: 'book_x', price: 150, commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs) },
+      { event_id: 'evt_cov_partial', market: 'h2h', outcome: 'player_a', bookmaker: 'book_x', price: 150, commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs) },
+      { event_id: 'evt_cov_none', market: 'h2h', outcome: 'player_a', bookmaker: 'book_x', price: 150, commence_time: new Date(nowMs + (5 * 60 * 60 * 1000)), odds_updated_time: new Date(nowMs) },
+    ];
+    const matches = [
+      { odds_event_id: 'evt_cov_full', schedule_event_id: 'sched_cov_full', competition_tier: 'WTA_500' },
+      { odds_event_id: 'evt_cov_partial', schedule_event_id: 'sched_cov_partial', competition_tier: 'WTA_500' },
+      { odds_event_id: 'evt_cov_none', schedule_event_id: 'sched_cov_none', competition_tier: 'WTA_500' },
+    ];
+    const stats = {
+      evt_cov_full: {
+        player_a: { has_stats: true, usable_stats: true, features: { ranking: 8, recent_form: 0.68, surface_win_rate: 0.64, hold_pct: 0.67, break_pct: 0.38 } },
+        player_b: { has_stats: true, usable_stats: true, features: { ranking: 18, recent_form: 0.56, surface_win_rate: 0.53, hold_pct: 0.61, break_pct: 0.31 } },
+      },
+      evt_cov_partial: {
+        player_a: { has_stats: true, usable_stats: true, features: { ranking: 10, recent_form: 0.62, surface_win_rate: 0.58, hold_pct: 0.64, break_pct: 0.35 } },
+        player_b: { has_stats: false, usable_stats: false, features: {} },
+      },
+      evt_cov_none: {
+        player_a: { has_stats: false, usable_stats: false, features: {} },
+        player_b: { has_stats: false, usable_stats: false, features: {} },
+      },
+    };
+    const config = {
+      MODEL_VERSION: 'test_model_v1',
+      EDGE_THRESHOLD_MICRO: 0.001, EDGE_THRESHOLD_SMALL: 0.03, EDGE_THRESHOLD_MED: 0.05, EDGE_THRESHOLD_STRONG: 0.08,
+      STAKE_UNITS_MICRO: 0.25, STAKE_UNITS_SMALL: 0.5, STAKE_UNITS_MED: 1, STAKE_UNITS_STRONG: 1.5,
+      SIGNAL_COOLDOWN_MIN: 180, MINUTES_BEFORE_START_CUTOFF: 60, STALE_ODDS_WINDOW_MIN: 60,
+      NOTIFY_ENABLED: false, NOTIFY_TEST_MODE: false, DISCORD_WEBHOOK: '', SIGNAL_DECISION_SAMPLE_LIMIT: 10,
+    };
+
+    const result = stageGenerateSignals('run_cov_score', config, events, matches, stats);
+    const decisionState = JSON.parse(stateWrites.LAST_SIGNAL_DECISIONS || '{}');
+
+    assertEquals_(3, result.rows.length);
+    assertEquals_(0, Number(result.summary.reason_codes.missing_stats || 0));
+    assertEquals_(1, Number(result.summary.reason_codes.coverage_scaled_medium || 0));
+    assertEquals_(1, Number(result.summary.reason_codes.coverage_scaled_low || 0));
+
+    const byEventId = {};
+    result.rows.forEach(function (row) { byEventId[row.odds_event_id] = row; });
+    assertEquals_(1, Number((byEventId.evt_cov_full || {}).stats_coverage_score || 0));
+    assertEquals_(0.6, Number((byEventId.evt_cov_partial || {}).stats_coverage_score || 0));
+    assertEquals_(0.25, Number((byEventId.evt_cov_none || {}).stats_coverage_score || 0));
+    assertEquals_('coverage_full', String((byEventId.evt_cov_full || {}).stats_coverage_reason_code || ''));
+    assertEquals_('coverage_scaled_medium', String((byEventId.evt_cov_partial || {}).stats_coverage_reason_code || ''));
+    assertEquals_('coverage_scaled_low', String((byEventId.evt_cov_none || {}).stats_coverage_reason_code || ''));
+
+    const decisionRows = decisionState.sampled_candidate_rows || [];
+    assertEquals_(3, decisionRows.length);
+    assertEquals_(true, Number((((decisionRows[1] || {}).detail || {}).stats_coverage_score) || 0) < 1);
   } finally {
     Date.now = originalDateNow;
     getSignalState_ = originalGetSignalState;
