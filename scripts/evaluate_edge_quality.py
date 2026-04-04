@@ -71,6 +71,11 @@ class EdgeQualityGateConfig:
     volatility_dynamic_target_sample_multiplier: float = 3.0
     max_suppression_drift: float = 0.50
     suppression_min_volume: int = 2
+    low_volume_mode_enabled: bool = True
+    low_volume_upcoming_match_count_trigger: int = 4
+    low_volume_remaining_pairs_trigger: int = -1
+    low_volume_min_scored_signals_for_volatility: int = 6
+    low_volume_min_matched_events_for_volatility: int = 3
     stake_policy_enabled: bool = False
     stake_policy_min_stake_mxn: float = 20.0
     stake_policy_round_to_min: bool = False
@@ -1604,6 +1609,78 @@ def _sample_confidence(
     return min(1.0, min(scored_ratio, matched_ratio))
 
 
+def _detect_low_volume_mode(
+    *,
+    summary_row: dict[str, Any],
+    candidate_run_id: str,
+    ordered_run_ids: list[str],
+    config: EdgeQualityGateConfig,
+) -> dict[str, Any]:
+    if not bool(config.low_volume_mode_enabled):
+        return {"active": False, "reasons": [], "evidence": {"mode_enabled": False}}
+
+    reasons: list[str] = []
+    evidence: dict[str, Any] = {"mode_enabled": True}
+
+    stage_tokens: list[str] = []
+    for key in ("competition_stage", "tournament_stage", "draw_stage", "round", "round_name"):
+        value = summary_row.get(key)
+        if value not in (None, ""):
+            stage_tokens.append(str(value).strip().lower())
+    for stage in _extract_stage_summaries(summary_row):
+        metadata = _parse_json_like(stage.get("reason_metadata"), {})
+        if not isinstance(metadata, dict):
+            continue
+        for key in ("competition_stage", "tournament_stage", "draw_stage", "round", "round_name"):
+            value = metadata.get(key)
+            if value not in (None, ""):
+                stage_tokens.append(str(value).strip().lower())
+    evidence["stage_tokens"] = stage_tokens
+    if any(token in {"semifinal", "semi_final", "semi-final", "final", "quarterfinal", "quarter-final"} for token in stage_tokens):
+        reasons.append("competition_stage_near_finals")
+
+    upcoming_matches: int | None = None
+    for key in ("upcoming_match_count", "upcoming_matches_count", "remaining_matches", "remaining_match_count"):
+        value = summary_row.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            upcoming_matches = max(0, int(float(value)))
+            break
+        except (TypeError, ValueError):
+            continue
+    if upcoming_matches is None:
+        for stage in _extract_stage_summaries(summary_row):
+            metadata = _parse_json_like(stage.get("reason_metadata"), {})
+            if not isinstance(metadata, dict):
+                continue
+            for key in ("upcoming_match_count", "upcoming_matches_count", "remaining_matches", "remaining_match_count"):
+                value = metadata.get(key)
+                if value in (None, ""):
+                    continue
+                try:
+                    upcoming_matches = max(0, int(float(value)))
+                    break
+                except (TypeError, ValueError):
+                    continue
+            if upcoming_matches is not None:
+                break
+    evidence["upcoming_match_count"] = upcoming_matches
+    if upcoming_matches is not None and upcoming_matches <= int(config.low_volume_upcoming_match_count_trigger):
+        reasons.append("upcoming_match_count_below_trigger")
+
+    remaining_pairs = None
+    candidate_index = _find_run_index(ordered_run_ids, candidate_run_id)
+    if candidate_index >= 0:
+        remaining_pairs = max(0, (len(ordered_run_ids) - 1) - candidate_index)
+    evidence["remaining_pairs_after_candidate"] = remaining_pairs
+    remaining_pairs_trigger = int(config.low_volume_remaining_pairs_trigger)
+    if remaining_pairs is not None and remaining_pairs_trigger >= 0 and remaining_pairs <= remaining_pairs_trigger:
+        reasons.append("few_remaining_pairs_in_window")
+
+    return {"active": bool(reasons), "reasons": sorted(set(reasons)), "evidence": evidence}
+
+
 def _top_volatility_contributors(
     baseline: dict[str, Any],
     candidate: dict[str, Any],
@@ -1699,6 +1776,19 @@ def evaluate_edge_quality_gate(
     candidate_edge_volatility = candidate["edge_volatility"]
     scored_signals = candidate.get("scored_signals")
     matched_events = candidate.get("matched_events")
+    ordered_ids = ordered_run_ids or _rolling_run_ids(rows)
+    candidate_summary_row = _pick_run_summary(rows, candidate_run_id)
+    low_volume_mode = _detect_low_volume_mode(
+        summary_row=candidate_summary_row,
+        candidate_run_id=candidate_run_id,
+        ordered_run_ids=ordered_ids,
+        config=config,
+    )
+    threshold_profile_name = "strict_default"
+    threshold_profile_rationale = "strict defaults enforced"
+    fallback_profile_used = False
+    sample_floor_scored = int(config.min_scored_signals_for_volatility)
+    sample_floor_matched = int(config.min_matched_events_for_volatility)
     sample_known = scored_signals is not None and matched_events is not None
     sample_strategy = "candidate_only"
     effective_sample = {
@@ -1711,8 +1801,8 @@ def evaluate_edge_quality_gate(
         sample_known=sample_known,
         scored_signals=scored_signals,
         matched_events=matched_events,
-        min_scored_signals_for_volatility=config.min_scored_signals_for_volatility,
-        min_matched_events_for_volatility=config.min_matched_events_for_volatility,
+        min_scored_signals_for_volatility=sample_floor_scored,
+        min_matched_events_for_volatility=sample_floor_matched,
     )
     if (not enough_sample_for_volatility) and int(config.volatility_sample_window_runs) > 1:
         candidate_window = _window_sample_activity(
@@ -1728,15 +1818,41 @@ def evaluate_edge_quality_gate(
                 sample_known=bool(candidate_window["known"]),
                 scored_signals=candidate_window["scored_signals"],
                 matched_events=candidate_window["matched_events"],
-                min_scored_signals_for_volatility=config.min_scored_signals_for_volatility,
-                min_matched_events_for_volatility=config.min_matched_events_for_volatility,
+                min_scored_signals_for_volatility=sample_floor_scored,
+                min_matched_events_for_volatility=sample_floor_matched,
+            )
+    strict_sample_result = {"enough": bool(enough_sample_for_volatility), "reason_code": str(sample_reason_code)}
+    if (not enough_sample_for_volatility) and bool(low_volume_mode.get("active")):
+        low_volume_scored = max(1, int(config.low_volume_min_scored_signals_for_volatility))
+        low_volume_matched = max(0, int(config.low_volume_min_matched_events_for_volatility))
+        low_volume_enough, low_volume_reason = _resolve_sample_assessment_reason(
+            sample_known=bool(effective_sample["known"]),
+            scored_signals=effective_sample["scored_signals"],
+            matched_events=effective_sample["matched_events"],
+            min_scored_signals_for_volatility=low_volume_scored,
+            min_matched_events_for_volatility=low_volume_matched,
+        )
+        if low_volume_enough:
+            enough_sample_for_volatility = True
+            sample_reason_code = "low_volume_profile_sufficient_sample"
+            threshold_profile_name = "low_volume_fallback"
+            threshold_profile_rationale = (
+                "strict profile insufficient during low-volume period; alternate floor applied for actionable verdicts"
+            )
+            fallback_profile_used = True
+            sample_floor_scored = low_volume_scored
+            sample_floor_matched = low_volume_matched
+            warnings.append(
+                "low_volume_threshold_profile_applied "
+                f"(scored_floor={low_volume_scored}; matched_floor={low_volume_matched}; "
+                f"reasons={','.join(low_volume_mode.get('reasons') or ['none'])})"
             )
     confidence = _sample_confidence(
         sample_known=bool(effective_sample["known"]),
         scored_signals=effective_sample["scored_signals"],
         matched_events=effective_sample["matched_events"],
-        min_scored=int(config.min_scored_signals_for_volatility),
-        min_matched=int(config.min_matched_events_for_volatility),
+        min_scored=sample_floor_scored,
+        min_matched=sample_floor_matched,
     )
     confidence_threshold = 1.0
     confidence_adequate = confidence is None or confidence >= confidence_threshold
@@ -1787,8 +1903,8 @@ def evaluate_edge_quality_gate(
                 "reason_code": sample_reason_code,
                 "scored_signals": effective_sample["scored_signals"],
                 "matched_events": effective_sample["matched_events"],
-                "min_scored_signals_for_volatility": int(config.min_scored_signals_for_volatility),
-                "min_matched_events_for_volatility": int(config.min_matched_events_for_volatility),
+                "min_scored_signals_for_volatility": sample_floor_scored,
+                "min_matched_events_for_volatility": sample_floor_matched,
                 "enough_sample_for_volatility": bool(enough_sample_for_volatility),
             },
             "source_activity_pre_gate": source_activity_pre_gate,
@@ -1803,8 +1919,8 @@ def evaluate_edge_quality_gate(
         elif effective_sample["known"] and not enough_sample_for_volatility:
             warnings.append(
                 "insufficient_sample_for_edge_volatility "
-                f"(scored_signals={effective_sample['scored_signals']} required>={config.min_scored_signals_for_volatility}; "
-                f"matched_events={effective_sample['matched_events']} required>={config.min_matched_events_for_volatility}; "
+                f"(scored_signals={effective_sample['scored_signals']} required>={sample_floor_scored}; "
+                f"matched_events={effective_sample['matched_events']} required>={sample_floor_matched}; "
                 f"strategy={sample_strategy}; reason_code={sample_reason_code})"
             )
         elif not confidence_adequate:
@@ -1886,6 +2002,11 @@ def evaluate_edge_quality_gate(
             "max_edge_volatility": config.max_edge_volatility,
             "min_scored_signals_for_volatility": config.min_scored_signals_for_volatility,
             "min_matched_events_for_volatility": config.min_matched_events_for_volatility,
+            "low_volume_mode_enabled": config.low_volume_mode_enabled,
+            "low_volume_upcoming_match_count_trigger": config.low_volume_upcoming_match_count_trigger,
+            "low_volume_remaining_pairs_trigger": config.low_volume_remaining_pairs_trigger,
+            "low_volume_min_scored_signals_for_volatility": config.low_volume_min_scored_signals_for_volatility,
+            "low_volume_min_matched_events_for_volatility": config.low_volume_min_matched_events_for_volatility,
             "volatility_sample_window_runs": config.volatility_sample_window_runs,
             "volatility_dynamic_scaling_enabled": config.volatility_dynamic_scaling_enabled,
             "volatility_dynamic_small_sample_loosen_max": config.volatility_dynamic_small_sample_loosen_max,
@@ -1911,6 +2032,17 @@ def evaluate_edge_quality_gate(
             "confidence": confidence,
             "confidence_threshold": confidence_threshold,
             "confidence_adequate": confidence_adequate,
+            "strict_default_result": strict_sample_result,
+        },
+        "threshold_profile": {
+            "active_profile": threshold_profile_name,
+            "rationale": threshold_profile_rationale,
+            "fallback_mode_used": fallback_profile_used,
+            "sample_floors": {
+                "min_scored_signals_for_volatility": sample_floor_scored,
+                "min_matched_events_for_volatility": sample_floor_matched,
+            },
+            "low_volume_mode": low_volume_mode,
         },
         "volatility_diagnostic": volatility_gate_diagnostic,
         "suppression_drifts": suppression_drifts,
@@ -2088,6 +2220,45 @@ def evaluate_edge_quality_compare_report(
         candidate=candidate_snapshot,
         config=config,
     )
+    low_volume_mode = _detect_low_volume_mode(
+        summary_row=_pick_run_summary(rows, candidate_run_id),
+        candidate_run_id=candidate_run_id,
+        ordered_run_ids=ordered_run_ids or _rolling_run_ids(rows),
+        config=config,
+    )
+    if (not strict_pair_operational_pre_gate["ok"]) and bool(low_volume_mode.get("active")):
+        low_scored = max(1, int(config.low_volume_min_scored_signals_for_volatility))
+        low_matched = max(1, int(config.low_volume_min_matched_events_for_volatility))
+        baseline_ok = int(baseline_snapshot.get("scored_signals") or 0) >= low_scored and int(
+            baseline_snapshot.get("matched_events") or 0
+        ) >= low_matched
+        candidate_ok = int(candidate_snapshot.get("scored_signals") or 0) >= low_scored and int(
+            candidate_snapshot.get("matched_events") or 0
+        ) >= low_matched
+        if baseline_ok and candidate_ok:
+            strict_pair_operational_pre_gate = dict(strict_pair_operational_pre_gate)
+            strict_pair_operational_pre_gate["ok"] = True
+            strict_pair_operational_pre_gate["reason_code"] = "operational_sample_thresholds_met_low_volume_profile"
+            strict_pair_operational_pre_gate["reason_codes"] = []
+            strict_pair_operational_pre_gate["minimums"] = {
+                "min_scored_signals_for_volatility": low_scored,
+                "min_matched_events_for_volatility": low_matched,
+            }
+            strict_pair_operational_pre_gate["threshold_profile"] = {
+                "active_profile": "low_volume_fallback",
+                "fallback_mode_used": True,
+                "rationale": "strict operational thresholds relaxed during low-volume period",
+                "low_volume_mode": low_volume_mode,
+            }
+    strict_pair_operational_pre_gate.setdefault(
+        "threshold_profile",
+        {
+            "active_profile": "strict_default",
+            "fallback_mode_used": False,
+            "rationale": "strict operational thresholds enforced",
+            "low_volume_mode": low_volume_mode,
+        },
+    )
     strict_pair_preconditions = _strict_pair_precondition_diagnostics(baseline_snapshot, candidate_snapshot)
     if not strict_pair_operational_pre_gate["ok"]:
         pair_level_result = _invalid_strict_pair_result(
@@ -2145,14 +2316,26 @@ def evaluate_edge_quality_compare_report(
         decision_authoritative_status = windowed_status
 
     gate_verdict = "blocked_insufficient_sample"
+    blocked_by_strict_sample_in_low_volume = False
     if not strict_pair_operational_pre_gate["ok"]:
-        gate_verdict = "blocked_insufficient_operational_sample"
+        if bool(low_volume_mode.get("active")):
+            gate_verdict = "blocked_low_volume_strict_sample"
+            blocked_by_strict_sample_in_low_volume = True
+        else:
+            gate_verdict = "blocked_insufficient_operational_sample"
     elif not strict_pair_preconditions["ok"]:
         gate_verdict = "blocked_insufficient_sample"
     elif decision_authoritative_status == "fail":
         gate_verdict = "failed_quality_regression"
     elif decision_authoritative_status == "pass":
         gate_verdict = "passed_quality_gate"
+    elif (
+        strict_status == "insufficient_sample"
+        and decision_authoritative_status == "insufficient_sample"
+        and bool(((pair_level_result.get("threshold_profile") or {}).get("low_volume_mode") or {}).get("active"))
+    ):
+        gate_verdict = "blocked_low_volume_strict_sample"
+        blocked_by_strict_sample_in_low_volume = True
 
     baseline_stake_summary = (pair_level_result.get("baseline") or {}).get("stake_policy_summary") or {}
     candidate_stake_summary = (pair_level_result.get("candidate") or {}).get("stake_policy_summary") or {}
@@ -2261,6 +2444,7 @@ def evaluate_edge_quality_compare_report(
         "failed_quality_regression": "EDGE_QUALITY_GATE_FAILED",
         "blocked_insufficient_operational_sample": "EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE",
         "blocked_insufficient_sample": "EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_SAMPLE",
+        "blocked_low_volume_strict_sample": "EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE",
     }.get(gate_verdict, "EDGE_QUALITY_GATE_BLOCKED")
 
     return {
@@ -2303,6 +2487,7 @@ def evaluate_edge_quality_compare_report(
             "strict_pair_status_reason": strict_status_reason,
             "windowed_decision_status": windowed_status,
             "strict_pair_sample_assessment": (pair_level_result.get("sample_assessment") or {}),
+            "strict_pair_threshold_profile": (pair_level_result.get("threshold_profile") or {}),
             "fallback_effective_sample_counts": (
                 (fallback_result or {}).get("effective_sample_counts")
                 if isinstance(fallback_result, dict)
@@ -2313,6 +2498,7 @@ def evaluate_edge_quality_compare_report(
             "gate_verdict": gate_verdict,
             "strict_pair_preconditions": strict_pair_preconditions,
             "strict_pair_operational_pre_gate": strict_pair_operational_pre_gate,
+            "blocked_by_strict_sample_in_low_volume": blocked_by_strict_sample_in_low_volume,
             "runbook_branch": runbook_branch,
             "stake_policy_enabled": bool(config.stake_policy_enabled),
         },

@@ -529,6 +529,14 @@ if missing:
 gate_verdict = str(payload["gate_verdict"]).strip().lower()
 if gate_verdict in {"pass", "ok"}:
     print("pass|EDGE_QUALITY_GATE_PASSED")
+elif gate_verdict == "failed_quality_regression":
+    print("fail|EDGE_QUALITY_GATE_FAILED_QUALITY_REGRESSION")
+elif gate_verdict == "blocked_low_volume_strict_sample":
+    print("fail|EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE")
+elif gate_verdict == "blocked_insufficient_operational_sample":
+    print("fail|EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE")
+elif gate_verdict == "blocked_insufficient_sample":
+    print("fail|EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_SAMPLE")
 else:
     print("fail|EDGE_QUALITY_GATE_BLOCKED")
 PY
