@@ -1117,6 +1117,71 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("candidate_window_aggregate", report["sample_assessment"]["strategy"])
         self.assertTrue(any("aggregated_sample_used_for_edge_volatility" in item for item in report["warnings"]))
 
+    def test_low_volume_mode_applies_alternate_threshold_profile(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=9, matched_events=4),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=9,
+                matched_events=4,
+                competition_stage="semifinal",
+                upcoming_match_count=3,
+            ),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                low_volume_min_scored_signals_for_volatility=8,
+                low_volume_min_matched_events_for_volatility=4,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        self.assertEqual("pass", report["status"])
+        self.assertEqual("low_volume_fallback", report["threshold_profile"]["active_profile"])
+        self.assertTrue(report["threshold_profile"]["fallback_mode_used"])
+        self.assertTrue(report["threshold_profile"]["low_volume_mode"]["active"])
+        self.assertFalse(report["sample_assessment"]["strict_default_result"]["enough"])
+        self.assertEqual("low_volume_profile_sufficient_sample", report["sample_assessment"]["reason_code"])
+
+    def test_compare_report_marks_low_volume_strict_sample_block(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=3, matched_events=2),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=3,
+                matched_events=2,
+                competition_stage="final",
+                upcoming_match_count=1,
+            ),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                low_volume_min_scored_signals_for_volatility=6,
+                low_volume_min_matched_events_for_volatility=3,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+            fallback_recent_run_window_radius=1,
+            fallback_min_neighboring_pairs=1,
+        )
+        self.assertEqual("blocked_low_volume_strict_sample", report["gate_verdict"])
+        self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE", report["reason_code"])
+        self.assertTrue(report["final_operator_summary"]["blocked_by_strict_sample_in_low_volume"])
+
     def test_candidate_only_marks_zero_scored_signals_as_non_decisive(self):
         rows = [
             self._summary_row(
