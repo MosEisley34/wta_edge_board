@@ -501,14 +501,6 @@ set +e
 "${edge_quality_command[@]}" > "$triage_impl_dir/edge_quality_stdout.log" 2> "$edge_quality_stderr_log"
 edge_quality_exit=$?
 set -e
-if [[ "$edge_quality_exit" -ne 0 ]]; then
-  edge_quality_status="fail"
-  edge_quality_reason_code="EDGE_QUALITY_EVAL_FAILED"
-  cat "$triage_impl_dir/edge_quality_stdout.log" >&2 || true
-  cat "$edge_quality_stderr_log" >&2 || true
-  write_edge_stage_failure "EDGE_QUALITY_EVAL_FAILED" "$edge_quality_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
-  fail_and_exit "EDGE_QUALITY_EVAL_FAILED"
-fi
 if [[ ! -s "$edge_json" ]]; then
   edge_quality_status="fail"
   edge_quality_reason_code="EDGE_QUALITY_ARTIFACT_MISSING"
@@ -517,7 +509,7 @@ if [[ ! -s "$edge_json" ]]; then
   fail_and_exit "EDGE_QUALITY_ARTIFACT_MISSING"
 fi
 set +e
-python3 - "$edge_json" <<'PY'
+edge_classification="$(python3 - "$edge_json" <<'PY'
 import json
 import sys
 
@@ -533,7 +525,14 @@ if not isinstance(payload, dict):
 missing = [key for key in required_keys if key not in payload]
 if missing:
     raise SystemExit(f"missing required keys: {', '.join(missing)}")
+
+gate_verdict = str(payload["gate_verdict"]).strip().lower()
+if gate_verdict in {"pass", "ok"}:
+    print("pass|EDGE_QUALITY_GATE_PASSED")
+else:
+    print("fail|EDGE_QUALITY_GATE_BLOCKED")
 PY
+)"
 edge_parse_exit=$?
 set -e
 if [[ "$edge_parse_exit" -ne 0 ]]; then
@@ -544,8 +543,16 @@ if [[ "$edge_parse_exit" -ne 0 ]]; then
   write_edge_stage_failure "EDGE_QUALITY_JSON_INVALID" "$edge_parse_exit" "$(cat "$triage_impl_dir/edge_quality_command.sh")" "$edge_quality_stderr_log"
   fail_and_exit "EDGE_QUALITY_JSON_INVALID"
 fi
-edge_quality_status="pass"
-edge_quality_reason_code="EDGE_QUALITY_JSON_VALID"
+
+edge_quality_status="${edge_classification%%|*}"
+edge_quality_reason_code="${edge_classification#*|}"
+
+if [[ "$edge_quality_status" != "pass" ]]; then
+  status="fail"
+  reason_code="$edge_quality_reason_code"
+  write_summary
+  exit 1
+fi
 
 echo "[5/5] Writing summary"
 status="pass"
