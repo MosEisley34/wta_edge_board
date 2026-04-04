@@ -178,6 +178,38 @@ Use this wrapper for **all daily matrix generation** and run-to-run diagnostics 
 scripts/run_triage_bundle.sh [--out-dir ./exports_live] [--baseline-run-id <run_id>] [--candidate-run-id <run_id>] <file-or-directory> [more paths...]
 ```
 
+### Accepted options
+
+`scripts/run_triage_bundle.sh` accepts only:
+
+- `--out-dir <dir>`
+- `--baseline-run-id <run_id>`
+- `--candidate-run-id <run_id>`
+- `-h` / `--help`
+
+### Do not pass
+
+Do **not** pass sibling-wrapper flags such as `--export-dir` or `--incident-tag` to `scripts/run_triage_bundle.sh`. Those flags are not part of this command's parser contract.
+
+After parser hardening (issue #2), unsupported flags fail fast with:
+- `Error: unsupported option <flag>`
+- usage text printed to stderr
+- non-zero exit status (`exit 1`)
+
+Examples:
+
+```bash
+# Valid explicit run-ID override flow:
+scripts/run_triage_bundle.sh \
+  --out-dir ./exports_live \
+  --baseline-run-id 20260401T120000Z \
+  --candidate-run-id 20260402T120000Z \
+  ./runtime_logs
+
+# Valid auto-derive flow (latest pair from exported Run_Log.json):
+scripts/run_triage_bundle.sh --out-dir ./exports_live ./runtime_logs
+```
+
 Strict enforced execution order:
 0. **runtime export pre-step** (`scripts/prepare_runtime_exports.sh`),
 1. **derive run pair** (manual `--baseline-run-id/--candidate-run-id` override or automatic latest pair derivation from exported `Run_Log.json`),
