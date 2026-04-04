@@ -230,6 +230,28 @@ with open(out_path, "w", encoding="utf-8") as handle:
 PY
 }
 
+write_compare_stage_result() {
+  local reason="$1"
+  local exit_code="$2"
+  local log_path="$3"
+  python3 - "$compare_json" "$reason" "$exit_code" "$baseline_run_id" "$candidate_run_id" "$log_path" <<'PY'
+import json
+import sys
+
+out, reason_code, exit_code, baseline, candidate, log_path = sys.argv[1:]
+exit_code = int(exit_code)
+with open(out, "w", encoding="utf-8") as handle:
+    json.dump({
+        "status": "ok" if reason_code == "COMPARE_VALIDATION_PASSED" else "fail",
+        "reason_code": reason_code,
+        "exit_code": exit_code,
+        "baseline_run_id": baseline,
+        "candidate_run_id": candidate,
+        "stdout_log": log_path,
+    }, handle, indent=2, sort_keys=True)
+PY
+}
+
 ensure_required_json() {
   local path="$1"
   local missing_reason="$2"
@@ -387,25 +409,74 @@ precheck_status="pass"
 precheck_reason_code="PRECHECK_PASSED"
 
 echo "[3/5] Comparing diagnostics"
+compare_preflight_log="$triage_impl_dir/compare_preflight.log"
+echo "[3/5] Writing compare preflight sidecar"
+set +e
+python3 - "$out_dir" "$baseline_run_id" "$candidate_run_id" > "$compare_preflight_log" 2>&1 <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path.cwd()
+sys.path.insert(0, str(repo_root / "scripts"))
+from preflight_guard import write_preflight_sidecar
+
+out_dir, run_a, run_b = sys.argv[1:4]
+sidecar_path = write_preflight_sidecar(
+    out_dir,
+    run_a,
+    run_b,
+    allow_csv_only_triage=False,
+    incident_tag="",
+)
+print(f"Preflight sidecar written: {sidecar_path}")
+PY
+compare_preflight_write_exit=$?
+set -e
+if [[ "$compare_preflight_write_exit" -ne 0 ]]; then
+  compare_status="fail"
+  compare_reason_code="COMPARE_PREFLIGHT_WRITE_FAILED"
+  write_compare_stage_result "COMPARE_PREFLIGHT_WRITE_FAILED" "$compare_preflight_write_exit" "$compare_preflight_log"
+  cat "$compare_preflight_log" >&2 || true
+  fail_and_exit "COMPARE_PREFLIGHT_WRITE_FAILED"
+fi
+set +e
+python3 - "$out_dir" "$baseline_run_id" "$candidate_run_id" >> "$compare_preflight_log" 2>&1 <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path.cwd()
+sys.path.insert(0, str(repo_root / "scripts"))
+from preflight_guard import enforce_preflight_guard
+
+out_dir, run_a, run_b = sys.argv[1:4]
+status = enforce_preflight_guard(
+    out_dir,
+    run_a,
+    run_b,
+    "",
+)
+print(f"Preflight guard status: {status.get('status')}")
+print(f"Preflight evidence: {status.get('sidecar_path', '')}")
+PY
+compare_preflight_validate_exit=$?
+set -e
+if [[ "$compare_preflight_validate_exit" -ne 0 ]]; then
+  compare_status="fail"
+  compare_reason_code="COMPARE_PREFLIGHT_INVALID"
+  write_compare_stage_result "COMPARE_PREFLIGHT_INVALID" "$compare_preflight_validate_exit" "$compare_preflight_log"
+  cat "$compare_preflight_log" >&2 || true
+  fail_and_exit "COMPARE_PREFLIGHT_INVALID"
+fi
+
 set +e
 python3 scripts/compare_run_diagnostics.py "$baseline_run_id" "$candidate_run_id" --export-dir "$out_dir" > "$triage_impl_dir/compare_stdout.log" 2>&1
 compare_exit=$?
 set -e
-python3 - "$compare_json" "$compare_exit" "$baseline_run_id" "$candidate_run_id" "$triage_impl_dir/compare_stdout.log" <<'PY'
-import json
-import sys
-out, exit_code, baseline, candidate, log_path = sys.argv[1:]
-exit_code = int(exit_code)
-with open(out, "w", encoding="utf-8") as handle:
-    json.dump({
-        "status": "ok" if exit_code == 0 else "fail",
-        "reason_code": "COMPARE_VALIDATION_PASSED" if exit_code == 0 else "COMPARE_VALIDATION_FAILED",
-        "exit_code": exit_code,
-        "baseline_run_id": baseline,
-        "candidate_run_id": candidate,
-        "stdout_log": log_path,
-    }, handle, indent=2, sort_keys=True)
-PY
+if [[ "$compare_exit" -eq 0 ]]; then
+  write_compare_stage_result "COMPARE_VALIDATION_PASSED" "$compare_exit" "$triage_impl_dir/compare_stdout.log"
+else
+  write_compare_stage_result "COMPARE_VALIDATION_FAILED" "$compare_exit" "$triage_impl_dir/compare_stdout.log"
+fi
 ensure_required_json "$compare_json" "COMPARE_JSON_MISSING"
 if [[ "$compare_exit" -ne 0 ]]; then
   compare_status="fail"
