@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, csv, glob, json, os, re
+import argparse, csv, glob, json, os, re, unicodedata
 from collections import Counter, defaultdict
 from typing import Any, Dict, Iterable, List, Tuple
 from check_player_stats_coverage import GateConfig, evaluate_player_stats_gate
@@ -142,6 +142,127 @@ def load_rows(export_dir: str) -> List[Dict[str, Any]]:
 
 def _run_rows(rows: List[Dict[str, Any]], run_id: str) -> List[Dict[str, Any]]:
     return [row for row in rows if str(row.get("run_id") or "") == run_id]
+
+
+def _normalize_player_key(name: Any) -> str:
+    text = str(name or "").strip().lower()
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    text = re.sub(r"[’'`]", "", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _classify_source_attribution(source: Any) -> str:
+    source_label = str(source or "").strip().lower()
+    if source_label.startswith("ta_") or "tennis_abstract" in source_label:
+        return "tennis_abstract"
+    if "derived_player_stats_v1_fallback" in source_label:
+        return "model_fallback"
+    if source_label == "unresolved" or not source_label:
+        return "unresolved"
+    return "provider_fallback"
+
+
+def _extract_player_diagnostics(rows: List[Dict[str, Any]], run_ids: Iterable[str]) -> List[Dict[str, Any]]:
+    diagnostics: List[Dict[str, Any]] = []
+    for run_id in run_ids:
+        for row in _run_rows(rows, run_id):
+            stage = str(row.get("stage") or "").strip()
+            if stage != "runEdgeBoard" or str(row.get("row_type") or "").strip() != "summary":
+                continue
+            for stage_summary in _extract_stage_summaries(row):
+                if str(stage_summary.get("stage") or "").strip() != "stageFetchPlayerStats":
+                    continue
+                metadata = stage_summary.get("reason_metadata") if isinstance(stage_summary, dict) else {}
+                if not isinstance(metadata, dict):
+                    continue
+                diagnostics_by_player = metadata.get("player_diagnostics_by_player")
+                source_by_player = metadata.get("player_resolution_source_by_player")
+                if not isinstance(diagnostics_by_player, dict):
+                    diagnostics_by_player = {}
+                if not isinstance(source_by_player, dict):
+                    source_by_player = {}
+                player_names = set(diagnostics_by_player.keys()) | set(source_by_player.keys())
+                for raw_name in player_names:
+                    canonical_name = str(raw_name or "").strip()
+                    if not canonical_name:
+                        continue
+                    diag_entry = diagnostics_by_player.get(raw_name, {})
+                    if not isinstance(diag_entry, dict):
+                        diag_entry = {}
+                    normalized_name = _normalize_player_key(canonical_name)
+                    source_used = str(
+                        diag_entry.get("source_attribution")
+                        or _classify_source_attribution(source_by_player.get(raw_name))
+                    ).strip()
+                    reason_code = str(diag_entry.get("reason_code") or "").strip() or "stats_name_resolution_miss"
+                    diagnostics.append(
+                        {
+                            "run_id": run_id,
+                            "player_name": canonical_name,
+                            "player_name_normalized": normalized_name,
+                            "reason_code": reason_code,
+                            "source_attribution": source_used,
+                        }
+                    )
+    return diagnostics
+
+
+def _write_player_diagnostics_artifacts(
+    rows: List[Dict[str, Any]],
+    run_a: str,
+    run_b: str,
+    out_json: str,
+    out_csv: str,
+) -> None:
+    entries = _extract_player_diagnostics(rows, (run_a, run_b))
+    offender_counts: Dict[str, int] = Counter(
+        entry["player_name_normalized"]
+        for entry in entries
+        if entry.get("reason_code") in {
+            "stats_name_resolution_miss",
+            "stats_provider_no_record",
+            "stats_unresolved_after_fallback",
+        }
+    )
+    repeated_offenders = {
+        name: count
+        for name, count in offender_counts.items()
+        if name and count > 1
+    }
+    for entry in entries:
+        normalized = entry.get("player_name_normalized", "")
+        entry["repeated_offender"] = bool(normalized and repeated_offenders.get(normalized, 0) > 1)
+        entry["offense_count"] = int(repeated_offenders.get(normalized, 0) or 0)
+
+    payload = {
+        "run_ids": [run_a, run_b],
+        "entries": sorted(entries, key=lambda item: (item["player_name_normalized"], item["run_id"])),
+        "repeated_offenders": repeated_offenders,
+    }
+    if out_json:
+        os.makedirs(os.path.dirname(out_json), exist_ok=True)
+        with open(out_json, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+    if out_csv:
+        os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+        fieldnames = [
+            "run_id",
+            "player_name",
+            "player_name_normalized",
+            "reason_code",
+            "source_attribution",
+            "repeated_offender",
+            "offense_count",
+        ]
+        with open(out_csv, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for entry in payload["entries"]:
+                writer.writerow({key: entry.get(key, "") for key in fieldnames})
 
 
 def _run_has_disallowed_skip(rows: List[Dict[str, Any]], run_id: str) -> str | None:
@@ -877,6 +998,8 @@ def main() -> int:
     ap.add_argument("--stake-policy-min-stake-mxn", type=float, default=20.0, help="Minimum MXN stake floor (default: 20).")
     ap.add_argument("--stake-policy-round-to-min", action="store_true", help="Adjust below-min stake to floor instead of suppressing.")
     ap.add_argument('--out', default='', help='Optional markdown output path.')
+    ap.add_argument('--player-diagnostics-json', default='', help='Optional JSON path for per-player diagnostics.')
+    ap.add_argument('--player-diagnostics-csv', default='', help='Optional CSV path for per-player diagnostics.')
     args = ap.parse_args()
     try:
         preflight_status = enforce_preflight_guard(
@@ -949,6 +1072,14 @@ def main() -> int:
             round_to_min=bool(args.stake_policy_round_to_min),
         )
         report = compare_rows(rows, args.run_success, args.run_degraded, stake_policy_config=stake_policy_config)
+        if args.player_diagnostics_json or args.player_diagnostics_csv:
+            _write_player_diagnostics_artifacts(
+                rows,
+                args.run_success,
+                args.run_degraded,
+                args.player_diagnostics_json,
+                args.player_diagnostics_csv,
+            )
         if args.out:
             os.makedirs(os.path.dirname(args.out), exist_ok=True)
             with open(args.out, 'w', encoding='utf-8') as f:
