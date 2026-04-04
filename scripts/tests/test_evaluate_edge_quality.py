@@ -674,6 +674,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertEqual("insufficient_operational_sample", report["pair_level_result"]["status"])
         self.assertEqual("blocked_insufficient_operational_sample", report["gate_verdict"])
+        self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE", report["reason_code"])
         self.assertIsNone(report["windowed_fallback_result"])
         self.assertEqual("strict_pair_gate", report["final_operator_summary"]["decision_authoritative_source"])
         pre_gate = report["final_operator_summary"]["strict_pair_operational_pre_gate"]
@@ -700,6 +701,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         )
         self.assertEqual("insufficient_operational_sample", report["pair_level_result"]["status"])
         self.assertEqual("blocked_insufficient_operational_sample", report["gate_verdict"])
+        self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE", report["reason_code"])
         self.assertEqual("insufficient_operational_sample", report["final_operator_summary"]["strict_pair_status"])
         self.assertEqual(
             "strict_pair_operational_pre_gate_failed",
@@ -1215,6 +1217,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             fallback_recent_run_window_radius=2,
         )
         self.assertEqual("pass", report["status"])
+        self.assertEqual("EDGE_QUALITY_GATE_PASSED", report["reason_code"])
         self.assertEqual("insufficient_sample", report["pair_level_result"]["status"])
         self.assertIsNotNone(report["windowed_fallback_result"])
         self.assertEqual("fallback_window_assessment", report["windowed_fallback_result"]["label"])
@@ -1245,12 +1248,28 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             fallback_recent_run_window_radius=2,
         )
         self.assertEqual("pass", report["status"])
+        self.assertEqual("EDGE_QUALITY_GATE_PASSED", report["reason_code"])
         self.assertEqual("pass", report["pair_level_result"]["status"])
         self.assertIsNone(report["windowed_fallback_result"])
         self.assertEqual("pass", report["final_operator_summary"]["strict_pair_status"])
         self.assertEqual("not_triggered", report["final_operator_summary"]["windowed_decision_status"])
         self.assertEqual("strict_pair_gate", report["final_operator_summary"]["decision_authoritative_source"])
         self.assertEqual("pass", report["final_operator_summary"]["decision_authoritative_status"])
+
+    def test_compare_report_emits_failed_reason_code_when_quality_regresses(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.20, scored_signals=12, matched_events=8),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(max_edge_volatility=0.03),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        self.assertEqual("failed_quality_regression", report["gate_verdict"])
+        self.assertEqual("EDGE_QUALITY_GATE_FAILED", report["reason_code"])
 
     def test_compare_report_dedupes_logically_identical_csv_json_summaries(self):
         run_1 = self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8)
