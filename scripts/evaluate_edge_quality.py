@@ -77,6 +77,7 @@ class EdgeQualityGateConfig:
     low_volume_remaining_pairs_trigger: int = -1
     low_volume_min_scored_signals_for_volatility: int = 6
     low_volume_min_matched_events_for_volatility: int = 3
+    low_volume_min_stage_inference_confidence: str = "medium"
     stake_policy_enabled: bool = False
     stake_policy_min_stake_mxn: float = 20.0
     stake_policy_round_to_min: bool = False
@@ -1720,6 +1721,14 @@ def _detect_low_volume_mode(
     return {"active": bool(reasons), "reasons": sorted(set(reasons)), "evidence": evidence}
 
 
+_STAGE_CONFIDENCE_RANK: dict[str, int] = {"none": 0, "low": 1, "medium": 2, "high": 3}
+
+
+def _stage_confidence_rank(value: Any) -> int:
+    token = str(value or "").strip().lower()
+    return int(_STAGE_CONFIDENCE_RANK.get(token, 0))
+
+
 def _resolve_threshold_profile(
     *,
     summary_row: dict[str, Any],
@@ -1788,6 +1797,18 @@ def _resolve_threshold_profile(
 
     stage_tokens = [str(token) for token in (evidence.get("stage_tokens") or [])]
     near_finals = any(token in {"semifinal", "semi_final", "semi-final", "final"} for token in stage_tokens)
+    inferred_stage = str(schedule_context.get("inferred_stage") or "").strip().lower()
+    stage_source = str(schedule_context.get("stage_inference_source") or "").strip().lower()
+    stage_confidence = str(schedule_context.get("stage_inference_confidence") or "none").strip().lower()
+    min_stage_confidence = str(config.low_volume_min_stage_inference_confidence or "medium").strip().lower()
+    required_confidence_rank = _stage_confidence_rank(min_stage_confidence)
+    inferred_confidence_rank = _stage_confidence_rank(stage_confidence)
+    inferred_stage_near_finals = inferred_stage in {"semifinal", "final"}
+    if inferred_stage_near_finals and stage_source != "direct_stage_token" and inferred_confidence_rank < required_confidence_rank:
+        near_finals = False
+        reasons.append("inferred_stage_confidence_below_minimum")
+    evidence["stage_inference_confidence_rank"] = inferred_confidence_rank
+    evidence["stage_inference_min_confidence_rank"] = required_confidence_rank
     evidence["near_finals"] = near_finals
     if near_finals:
         reasons.append("tournament_phase_semifinal_or_final")
