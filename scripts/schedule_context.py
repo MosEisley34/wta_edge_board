@@ -38,6 +38,35 @@ _TOURNAMENT_TIER_KEY_CANDIDATES: tuple[str, ...] = (
     "category",
 )
 
+_TOURNAMENT_CONTEXT_KEY_CANDIDATES: tuple[str, ...] = (
+    "tournament_id",
+    "tournament_key",
+    "tournament_slug",
+    "tournament",
+    "tournament_name",
+    "competition_id",
+    "competition_key",
+    "competition_name",
+    "event_group_id",
+    "event_group_name",
+    "run_context_id",
+    "context_id",
+)
+
+
+def _normalize_scope_token(value: Any) -> str:
+    token = str(value or "").strip().lower().replace("-", " ").replace("_", " ")
+    token = " ".join(token.split())
+    return token
+
+
+def _pick_primary_scope(scope_counts: dict[str, int], scope_order: list[str]) -> tuple[str | None, int | None]:
+    if not scope_counts:
+        return None, None
+    ranked = sorted(scope_counts.items(), key=lambda item: (-item[1], scope_order.index(item[0])))
+    winner_key, winner_count = ranked[0]
+    return winner_key, int(winner_count)
+
 
 def _normalize_stage_token(value: Any) -> str:
     token = str(value or "").strip().lower().replace("-", " ").replace("_", " ")
@@ -108,12 +137,34 @@ def _extract_rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _infer_stage_from_row(row: dict[str, Any]) -> str | None:
+    for key in _STAGE_KEY_CANDIDATES:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        inferred = _infer_stage_from_token(_normalize_stage_token(value))
+        if inferred is not None:
+            return inferred
+    for key in _MATCH_LABEL_KEY_CANDIDATES:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        inferred = _infer_stage_from_token(_normalize_label_token(value))
+        if inferred is not None:
+            return inferred
+    return None
+
+
 def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
     rows = _extract_rows(raw_schedule_payload)
-    upcoming_match_count = len(rows)
+    global_upcoming_match_count = len(rows)
 
     stage_tokens: list[str] = []
     tournament_tier: str | None = None
+    tournament_tier_counts: dict[str, int] = {}
+    tournament_tier_order: list[str] = []
+    tournament_context_counts: dict[str, int] = {}
+    tournament_context_order: list[str] = []
     for row in rows:
         for key in _STAGE_KEY_CANDIDATES:
             value = row.get(key)
@@ -127,6 +178,30 @@ def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
                 if value not in (None, ""):
                     tournament_tier = str(value).strip()
                     break
+        for key in _TOURNAMENT_TIER_KEY_CANDIDATES:
+            value = row.get(key)
+            if value in (None, ""):
+                continue
+            token = _normalize_scope_token(value)
+            if not token:
+                continue
+            if token not in tournament_tier_counts:
+                tournament_tier_order.append(token)
+                tournament_tier_counts[token] = 0
+            tournament_tier_counts[token] += 1
+            break
+        for key in _TOURNAMENT_CONTEXT_KEY_CANDIDATES:
+            value = row.get(key)
+            if value in (None, ""):
+                continue
+            token = _normalize_scope_token(value)
+            if not token:
+                continue
+            if token not in tournament_context_counts:
+                tournament_context_order.append(token)
+                tournament_context_counts[token] = 0
+            tournament_context_counts[token] += 1
+            break
 
     inferred_stage = None
     stage_inference_fallback = "none"
@@ -135,16 +210,63 @@ def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
         if inferred is not None:
             inferred_stage = inferred
             break
-    if inferred_stage is None and upcoming_match_count > 0:
+    if inferred_stage is None and global_upcoming_match_count > 0:
         inferred_stage, stage_inference_fallback = _infer_stage_from_rows_without_stage_tokens(rows)
         if inferred_stage is not None:
             stage_tokens.append(inferred_stage)
-    elif upcoming_match_count == 0:
+    elif global_upcoming_match_count == 0:
         stage_inference_fallback = "none"
 
+    scoped_rows = list(rows)
+    if inferred_stage is not None:
+        stage_filtered_rows = [row for row in rows if _infer_stage_from_row(row) == inferred_stage]
+        if stage_filtered_rows:
+            scoped_rows = stage_filtered_rows
+
+    scoped_tier_counts: dict[str, int] = {}
+    scoped_tier_order: list[str] = []
+    scoped_context_counts: dict[str, int] = {}
+    scoped_context_order: list[str] = []
+    for row in scoped_rows:
+        for key in _TOURNAMENT_TIER_KEY_CANDIDATES:
+            value = row.get(key)
+            if value in (None, ""):
+                continue
+            token = _normalize_scope_token(value)
+            if not token:
+                continue
+            if token not in scoped_tier_counts:
+                scoped_tier_order.append(token)
+                scoped_tier_counts[token] = 0
+            scoped_tier_counts[token] += 1
+            break
+        for key in _TOURNAMENT_CONTEXT_KEY_CANDIDATES:
+            value = row.get(key)
+            if value in (None, ""):
+                continue
+            token = _normalize_scope_token(value)
+            if not token:
+                continue
+            if token not in scoped_context_counts:
+                scoped_context_order.append(token)
+                scoped_context_counts[token] = 0
+            scoped_context_counts[token] += 1
+            break
+
+    primary_tier_token, tournament_tier_upcoming_match_count = _pick_primary_scope(scoped_tier_counts, scoped_tier_order)
+    primary_context_token, same_tournament_context_upcoming_match_count = _pick_primary_scope(
+        scoped_context_counts,
+        scoped_context_order,
+    )
+
     return {
-        "has_schedule_rows": upcoming_match_count > 0,
-        "upcoming_match_count": upcoming_match_count,
+        "has_schedule_rows": global_upcoming_match_count > 0,
+        "upcoming_match_count": global_upcoming_match_count,
+        "global_upcoming_match_count": global_upcoming_match_count,
+        "tournament_tier_upcoming_match_count": tournament_tier_upcoming_match_count,
+        "same_tournament_context_upcoming_match_count": same_tournament_context_upcoming_match_count,
+        "primary_tournament_tier_scope_token": primary_tier_token,
+        "primary_tournament_context_scope_token": primary_context_token,
         "inferred_stage": inferred_stage,
         "stage_inference_available": inferred_stage is not None,
         "stage_inference_fallback": stage_inference_fallback,
