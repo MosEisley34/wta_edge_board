@@ -1652,19 +1652,28 @@ def _detect_low_volume_mode(
         reasons.append("competition_stage_near_finals")
 
     upcoming_matches: int | None = None
-    for key in ("upcoming_match_count", "upcoming_matches_count", "remaining_matches", "remaining_match_count"):
-        value = summary_row.get(key)
-        if value in (None, ""):
-            continue
-        try:
-            upcoming_matches = max(0, int(float(value)))
+    upcoming_match_count_source = "unknown"
+    scoped_upcoming_candidates = (
+        ("same_tournament_context_upcoming_match_count", "context_scope"),
+        ("tournament_tier_upcoming_match_count", "tournament_scope"),
+    )
+    for key, source_label in scoped_upcoming_candidates:
+        scoped_value = schedule_context.get(key)
+        if isinstance(scoped_value, int):
+            upcoming_matches = max(0, int(scoped_value))
+            upcoming_match_count_source = source_label
             break
-        except (TypeError, ValueError):
-            continue
     if upcoming_matches is None:
-        schedule_context_upcoming = schedule_context.get("upcoming_match_count")
-        if bool(schedule_context.get("has_schedule_rows")) and isinstance(schedule_context_upcoming, int):
-            upcoming_matches = schedule_context_upcoming
+        for key in ("upcoming_match_count", "upcoming_matches_count", "remaining_matches", "remaining_match_count"):
+            value = summary_row.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                upcoming_matches = max(0, int(float(value)))
+                upcoming_match_count_source = "summary_row"
+                break
+            except (TypeError, ValueError):
+                continue
     if upcoming_matches is None:
         for stage in _extract_stage_summaries(summary_row):
             metadata = _parse_json_like(stage.get("reason_metadata"), {})
@@ -1676,14 +1685,28 @@ def _detect_low_volume_mode(
                     continue
                 try:
                     upcoming_matches = max(0, int(float(value)))
+                    upcoming_match_count_source = "stage_reason_metadata"
                     break
                 except (TypeError, ValueError):
                     continue
             if upcoming_matches is not None:
                 break
+    if upcoming_matches is None:
+        global_schedule_count = schedule_context.get("global_upcoming_match_count")
+        if bool(schedule_context.get("has_schedule_rows")) and isinstance(global_schedule_count, int):
+            upcoming_matches = max(0, int(global_schedule_count))
+            upcoming_match_count_source = "global_schedule_fallback"
     evidence["upcoming_match_count"] = upcoming_matches
+    evidence["upcoming_match_count_source"] = upcoming_match_count_source
     if upcoming_matches is not None and upcoming_matches <= int(config.low_volume_upcoming_match_count_trigger):
-        reasons.append("upcoming_match_count_below_trigger")
+        if upcoming_match_count_source == "context_scope":
+            reasons.append("low_volume_by_context_scope")
+        elif upcoming_match_count_source == "tournament_scope":
+            reasons.append("low_volume_by_tournament_scope")
+        elif upcoming_match_count_source == "global_schedule_fallback":
+            reasons.append("low_volume_by_global_scope_fallback")
+        else:
+            reasons.append("upcoming_match_count_below_trigger")
 
     remaining_pairs = None
     candidate_index = _find_run_index(ordered_run_ids, candidate_run_id)
@@ -1772,8 +1795,16 @@ def _resolve_threshold_profile(
         reasons.append("schedule_stage_inference_unavailable")
 
     upcoming_matches = evidence.get("upcoming_match_count")
+    upcoming_matches_source = str(evidence.get("upcoming_match_count_source") or "")
     if isinstance(upcoming_matches, int) and upcoming_matches <= int(config.low_volume_upcoming_match_count_trigger):
-        reasons.append("upcoming_matches_low_volume")
+        if upcoming_matches_source == "context_scope":
+            reasons.append("low_volume_by_context_scope")
+        elif upcoming_matches_source == "tournament_scope":
+            reasons.append("low_volume_by_tournament_scope")
+        elif upcoming_matches_source == "global_schedule_fallback":
+            reasons.append("global_volume_fallback_kept_strict")
+        else:
+            reasons.append("upcoming_matches_low_volume")
 
     remaining_pairs = evidence.get("remaining_pairs_after_candidate")
     if isinstance(remaining_pairs, int):
@@ -1792,9 +1823,19 @@ def _resolve_threshold_profile(
         active_profile = "low_volume_semifinal_final"
     else:
         active_profile = "strict_default"
-        decisive_reasons = {"tournament_phase_semifinal_or_final", "upcoming_matches_low_volume", "raw_schedule_single_match_signal"}
+        decisive_reasons = {
+            "tournament_phase_semifinal_or_final",
+            "upcoming_matches_low_volume",
+            "low_volume_by_context_scope",
+            "low_volume_by_tournament_scope",
+            "raw_schedule_single_match_signal",
+        }
+        non_relaxing_explicit_reasons = {"global_volume_fallback_kept_strict"}
         if not any(reason in decisive_reasons for reason in reasons):
-            reasons = ["insufficient_low_volume_evidence_keep_strict"]
+            if any(reason in non_relaxing_explicit_reasons for reason in reasons):
+                reasons = sorted(set(reasons + ["insufficient_low_volume_evidence_keep_strict"]))
+            else:
+                reasons = ["insufficient_low_volume_evidence_keep_strict"]
 
     profile = profile_map[active_profile]
     strict_profile = profile_map["strict_default"]
@@ -1837,6 +1878,9 @@ def _build_compare_report_schedule_context(
     if not isinstance(schedule_context, dict):
         schedule_context = fallback_schedule_context("schedule_context_unavailable")
     schedule_context.setdefault("upcoming_match_count", 0)
+    schedule_context.setdefault("global_upcoming_match_count", int(schedule_context.get("upcoming_match_count") or 0))
+    schedule_context.setdefault("tournament_tier_upcoming_match_count", None)
+    schedule_context.setdefault("same_tournament_context_upcoming_match_count", None)
     schedule_context.setdefault("stage_tokens", [])
     schedule_context["remaining_pairs_after_candidate"] = int(remaining_pairs_after_candidate)
     return schedule_context

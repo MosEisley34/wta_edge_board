@@ -1192,6 +1192,75 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("schedule_rows_present_but_stage_unknown", schedule_context["stage_inference_fallback"])
         self.assertIn("schedule_stage_inference_unavailable", report["threshold_profile"]["activation_reasons"])
 
+    def test_low_volume_prefers_context_scoped_count_over_global_schedule_total(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=9, matched_events=4),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=9,
+                matched_events=4,
+                raw_schedule_rows=json.dumps(
+                    [
+                        {"event_id": "m1", "round": "Semifinal", "tournament_tier": "WTA 1000", "tournament_id": "miami"},
+                        {"event_id": "m2", "round": "Semifinal", "tournament_tier": "WTA 1000", "tournament_id": "miami"},
+                        {"event_id": "m3", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+                        {"event_id": "m4", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+                        {"event_id": "m5", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+                        {"event_id": "m6", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+                    ]
+                ),
+            ),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                low_volume_min_scored_signals_for_volatility=8,
+                low_volume_min_matched_events_for_volatility=4,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        evidence = report["threshold_profile"]["evidence_snapshot"]
+        self.assertEqual("context_scope", evidence["upcoming_match_count_source"])
+        self.assertEqual(2, evidence["upcoming_match_count"])
+        self.assertIn("low_volume_by_context_scope", report["threshold_profile"]["activation_reasons"])
+        self.assertEqual("low_volume_semifinal_final", report["threshold_profile"]["active_profile"])
+
+    def test_low_volume_global_scope_fallback_remains_strict(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=12,
+                matched_events=8,
+                raw_schedule_rows=json.dumps(
+                    [
+                        {"event_id": "m1", "round": "Round of 16", "start_time": "2026-03-02T12:00:00Z"},
+                        {"event_id": "m2", "round": "Round of 16", "start_time": "2026-03-02T14:00:00Z"},
+                        {"event_id": "m3", "round": "Round of 16", "start_time": "2026-03-02T16:00:00Z"},
+                    ]
+                ),
+            ),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        evidence = report["threshold_profile"]["evidence_snapshot"]
+        self.assertEqual("global_schedule_fallback", evidence["upcoming_match_count_source"])
+        self.assertIn("global_volume_fallback_kept_strict", report["threshold_profile"]["activation_reasons"])
+        self.assertEqual("strict_default", report["threshold_profile"]["active_profile"])
+
     def test_compare_report_top_level_schedule_context_uses_exported_schedule_artifacts(self):
         rows = [
             self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
