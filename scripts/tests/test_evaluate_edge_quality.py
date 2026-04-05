@@ -1183,6 +1183,54 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("schedule_rows_present_but_stage_unknown", schedule_context["stage_inference_fallback"])
         self.assertIn("schedule_stage_inference_unavailable", report["threshold_profile"]["activation_reasons"])
 
+    def test_compare_report_top_level_schedule_context_uses_exported_schedule_artifacts(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=12, matched_events=8),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            export_dir = Path(tmp)
+            (export_dir / "Raw_Schedule.json").write_text(
+                json.dumps(
+                    [
+                        {"event_id": "m1", "round": "Quarterfinal", "tournament_tier": "WTA 1000"},
+                        {"event_id": "m2", "round": "Quarterfinal", "tournament_tier": "WTA 1000"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            report = evaluate_edge_quality_compare_report(
+                rows=rows,
+                baseline_run_id="run-1",
+                candidate_run_id="run-2",
+                config=EdgeQualityGateConfig(),
+                ordered_run_ids=["run-1", "run-2"],
+                export_dir=str(export_dir),
+            )
+        schedule_context = report["schedule_context"]
+        self.assertIsInstance(schedule_context, dict)
+        self.assertTrue(schedule_context["schedule_artifacts_available"])
+        self.assertEqual(2, schedule_context["upcoming_match_count"])
+        self.assertEqual(["quarterfinal"], schedule_context["stage_tokens"])
+        self.assertEqual(0, schedule_context["remaining_pairs_after_candidate"])
+
+    def test_compare_report_top_level_schedule_context_fallback_is_non_null(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=12, matched_events=8),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(),
+            ordered_run_ids=["run-1", "run-2"],
+            export_dir=str(ROOT / "scripts" / "fixtures"),
+        )
+        self.assertIsInstance(report["schedule_context"], dict)
+        self.assertFalse(report["schedule_context"]["schedule_artifacts_available"])
+        self.assertEqual("raw_schedule_artifact_missing", report["schedule_context"]["context_source_reason"])
+
     def test_threshold_profile_defaults_to_strict_when_evidence_missing(self):
         rows = [
             self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
