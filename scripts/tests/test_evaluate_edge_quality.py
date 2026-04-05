@@ -1126,8 +1126,12 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
                 edge_volatility=0.02,
                 scored_signals=9,
                 matched_events=4,
-                competition_stage="semifinal",
-                upcoming_match_count=3,
+                raw_schedule_rows=json.dumps(
+                    [
+                        {"event_id": "m1", "start_time": "2026-03-02T12:00:00Z", "tournament_tier": "WTA 1000"},
+                        {"event_id": "m2", "start_time": "2026-03-02T14:00:00Z", "tournament_tier": "WTA 1000"},
+                    ]
+                ),
             ),
         ]
         report = evaluate_edge_quality_gate(
@@ -1149,7 +1153,11 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertIn("tournament_phase_semifinal_or_final", report["threshold_profile"]["activation_reasons"])
         self.assertIn("evidence_snapshot", report["threshold_profile"])
         self.assertTrue(report["threshold_profile"]["low_volume_mode"]["active"])
-        self.assertEqual("none", report["threshold_profile"]["schedule_context"]["stage_inference_fallback"])
+        self.assertEqual(
+            "fallback_two_matches_remaining",
+            report["threshold_profile"]["schedule_context"]["stage_inference_fallback"],
+        )
+        self.assertEqual("semifinal", report["threshold_profile"]["schedule_context"]["inferred_stage"])
         self.assertFalse(report["sample_assessment"]["strict_default_result"]["enough"])
         self.assertEqual("low_volume_profile_sufficient_sample", report["sample_assessment"]["reason_code"])
 
@@ -1166,6 +1174,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
                     [
                         {"event_id": "m1", "start_time": "2026-03-02T12:00:00Z", "tournament_tier": "WTA 1000"},
                         {"event_id": "m2", "start_time": "2026-03-02T14:00:00Z", "tournament_tier": "WTA 1000"},
+                        {"event_id": "m3", "start_time": "2026-03-02T16:00:00Z", "tournament_tier": "WTA 1000"},
                     ]
                 ),
             ),
@@ -1178,7 +1187,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             ordered_run_ids=["run-1", "run-2"],
         )
         schedule_context = report["threshold_profile"]["schedule_context"]
-        self.assertEqual(2, schedule_context["upcoming_match_count"])
+        self.assertEqual(3, schedule_context["upcoming_match_count"])
         self.assertFalse(schedule_context["stage_inference_available"])
         self.assertEqual("schedule_rows_present_but_stage_unknown", schedule_context["stage_inference_fallback"])
         self.assertIn("schedule_stage_inference_unavailable", report["threshold_profile"]["activation_reasons"])
