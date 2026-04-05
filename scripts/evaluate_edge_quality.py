@@ -1705,8 +1705,8 @@ def _detect_low_volume_mode(
     upcoming_match_count_source = "unknown"
     scoped_upcoming_candidates = (
         ("upcoming_match_count_scoped", "run_scoped"),
-        ("same_tournament_context_upcoming_match_count", "context_scope"),
         ("tournament_tier_upcoming_match_count", "tournament_scope"),
+        ("same_tournament_context_upcoming_match_count", "context_scope"),
     )
     for key, source_label in scoped_upcoming_candidates:
         scoped_value = schedule_context.get(key)
@@ -1714,34 +1714,6 @@ def _detect_low_volume_mode(
             upcoming_matches = max(0, int(scoped_value))
             upcoming_match_count_source = source_label
             break
-    if upcoming_matches is None:
-        for key in ("upcoming_match_count", "upcoming_matches_count", "remaining_matches", "remaining_match_count"):
-            value = summary_row.get(key)
-            if value in (None, ""):
-                continue
-            try:
-                upcoming_matches = max(0, int(float(value)))
-                upcoming_match_count_source = "summary_row"
-                break
-            except (TypeError, ValueError):
-                continue
-    if upcoming_matches is None:
-        for stage in _extract_stage_summaries(summary_row):
-            metadata = _parse_json_like(stage.get("reason_metadata"), {})
-            if not isinstance(metadata, dict):
-                continue
-            for key in ("upcoming_match_count", "upcoming_matches_count", "remaining_matches", "remaining_match_count"):
-                value = metadata.get(key)
-                if value in (None, ""):
-                    continue
-                try:
-                    upcoming_matches = max(0, int(float(value)))
-                    upcoming_match_count_source = "stage_reason_metadata"
-                    break
-                except (TypeError, ValueError):
-                    continue
-            if upcoming_matches is not None:
-                break
     if upcoming_matches is None:
         global_schedule_count = schedule_context.get("upcoming_match_count_global")
         if not isinstance(global_schedule_count, int):
@@ -1873,13 +1845,21 @@ def _resolve_threshold_profile(
 
     upcoming_matches = evidence.get("upcoming_match_count")
     upcoming_matches_source = str(evidence.get("upcoming_match_count_source") or "")
+    if upcoming_matches_source:
+        reasons.append(f"upcoming_match_count_source_{upcoming_matches_source}")
+    scoped_sources = {"run_scoped", "tournament_scope", "context_scope"}
+    scoped_signal_available = upcoming_matches_source in scoped_sources and isinstance(upcoming_matches, int)
+    scoped_signal_low_volume = scoped_signal_available and upcoming_matches <= int(config.low_volume_upcoming_match_count_trigger)
+    scoped_signal_explicit_non_low_volume = (
+        scoped_signal_available and upcoming_matches > int(config.low_volume_upcoming_match_count_trigger)
+    )
     if isinstance(upcoming_matches, int) and upcoming_matches <= int(config.low_volume_upcoming_match_count_trigger):
         if upcoming_matches_source == "run_scoped":
             reasons.append("low_volume_by_run_scoped_schedule")
-        elif upcoming_matches_source == "context_scope":
-            reasons.append("low_volume_by_context_scope")
         elif upcoming_matches_source == "tournament_scope":
             reasons.append("low_volume_by_tournament_scope")
+        elif upcoming_matches_source == "context_scope":
+            reasons.append("low_volume_by_context_scope")
         elif upcoming_matches_source == "global_schedule_fallback":
             reasons.append("global_volume_fallback_kept_strict")
         else:
@@ -1896,26 +1876,24 @@ def _resolve_threshold_profile(
     if not bool(config.low_volume_mode_enabled):
         active_profile = "strict_default"
         reasons = ["low_volume_mode_disabled"]
-    elif ("raw_schedule_single_match_signal" in reasons) or (isinstance(upcoming_matches, int) and upcoming_matches <= 1):
+    elif not scoped_signal_available:
+        active_profile = "strict_default"
+        if upcoming_matches_source == "global_schedule_fallback":
+            reasons = sorted(set(reasons + ["insufficient_low_volume_evidence_keep_strict"]))
+        else:
+            reasons = ["insufficient_low_volume_evidence_keep_strict"]
+    elif scoped_signal_explicit_non_low_volume:
+        active_profile = "strict_default"
+        reasons = sorted(set(reasons + ["scoped_upcoming_volume_above_trigger_keep_strict"]))
+    elif ("raw_schedule_single_match_signal" in reasons) or (
+        isinstance(upcoming_matches, int) and upcoming_matches <= 1
+    ):
         active_profile = "ultra_low_volume_single_match"
-    elif near_finals and bool(low_volume_mode.get("active")):
+    elif scoped_signal_low_volume:
         active_profile = "low_volume_semifinal_final"
     else:
         active_profile = "strict_default"
-        decisive_reasons = {
-            "tournament_phase_semifinal_or_final",
-            "upcoming_matches_low_volume",
-            "low_volume_by_run_scoped_schedule",
-            "low_volume_by_context_scope",
-            "low_volume_by_tournament_scope",
-            "raw_schedule_single_match_signal",
-        }
-        non_relaxing_explicit_reasons = {"global_volume_fallback_kept_strict"}
-        if not any(reason in decisive_reasons for reason in reasons):
-            if any(reason in non_relaxing_explicit_reasons for reason in reasons):
-                reasons = sorted(set(reasons + ["insufficient_low_volume_evidence_keep_strict"]))
-            else:
-                reasons = ["insufficient_low_volume_evidence_keep_strict"]
+        reasons = ["insufficient_low_volume_evidence_keep_strict"]
 
     profile = profile_map[active_profile]
     strict_profile = profile_map["strict_default"]
