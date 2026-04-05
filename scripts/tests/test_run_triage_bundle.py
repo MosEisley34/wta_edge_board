@@ -352,6 +352,8 @@ with open(out, "w", encoding="utf-8") as handle:
             summary = json.loads(summary_paths[0].read_text(encoding="utf-8"))
             self.assertEqual("pass", summary["status"])
             self.assertEqual("TRIAGE_BUNDLE_OK", summary["reason_code"])
+            self.assertEqual("PASS", summary["classification"])
+            self.assertEqual("TRIAGE_BUNDLE_OK", summary["machine_reason_code"])
             self.assertEqual("COMPARE_VALIDATION_PASSED", summary["gate_outcomes"]["compare_validation"]["reason_code"])
             self.assertEqual("pass", summary["gate_outcomes"]["edge_quality"]["status"])
             self.assertEqual("EDGE_QUALITY_GATE_PASSED", summary["gate_outcomes"]["edge_quality"]["reason_code"])
@@ -481,9 +483,11 @@ sys.exit(2)
             summary_paths = sorted(out_dir.glob("triage_impl_*/out/triage_summary.json"))
             self.assertEqual(1, len(summary_paths))
             summary = json.loads(summary_paths[0].read_text(encoding="utf-8"))
-            self.assertEqual("fail", summary["status"])
+            self.assertEqual("blocked", summary["status"])
             self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE", summary["reason_code"])
-            self.assertEqual("fail", summary["gate_outcomes"]["edge_quality"]["status"])
+            self.assertEqual("POLICY_BLOCKED", summary["classification"])
+            self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE", summary["machine_reason_code"])
+            self.assertEqual("blocked", summary["gate_outcomes"]["edge_quality"]["status"])
             self.assertEqual(
                 "EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE",
                 summary["gate_outcomes"]["edge_quality"]["reason_code"],
@@ -596,11 +600,108 @@ with open(out, "w", encoding="utf-8") as handle:
             summary_paths = sorted(out_dir.glob("triage_impl_*/out/triage_summary.json"))
             self.assertEqual(1, len(summary_paths))
             summary = json.loads(summary_paths[0].read_text(encoding="utf-8"))
+            self.assertEqual("blocked", summary["status"])
             self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE", summary["reason_code"])
+            self.assertEqual("LOW_VOLUME_EXPECTED_BLOCK", summary["classification"])
+            self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE", summary["machine_reason_code"])
             self.assertEqual(
                 "EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE",
                 summary["gate_outcomes"]["edge_quality"]["reason_code"],
             )
+
+    def test_edge_quality_missing_artifact_is_pipeline_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            scripts_dir = repo / "scripts"
+            scripts_dir.mkdir(parents=True)
+
+            shutil.copy2(SCRIPT_UNDER_TEST, scripts_dir / "run_triage_bundle.sh")
+            shutil.copy2(ROOT / "scripts" / "preflight_guard.py", scripts_dir / "preflight_guard.py")
+            shutil.copy2(ROOT / "scripts" / "run_summary_cardinality.py", scripts_dir / "run_summary_cardinality.py")
+
+            _write_executable(
+                scripts_dir / "prepare_runtime_exports.sh",
+                """#!/usr/bin/env bash
+set -euo pipefail
+out_dir=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --out-dir)
+      shift
+      out_dir="$1"
+      ;;
+  esac
+  shift
+done
+rm -rf "$out_dir"
+mkdir -p "$out_dir"
+cat > "$out_dir/Run_Log.json" <<'JSON'
+[
+  {"stage": "runEdgeBoard", "row_type": "summary", "run_id": "baseline-1", "ended_at": "2026-04-01T00:00:00Z", "stage_summaries": [{"stage": "stageFetchOdds"}, {"stage": "stageFetchSchedule"}, {"stage": "stageMatchEvents"}, {"stage": "stageFetchPlayerStats"}, {"stage": "stageGenerateSignals"}, {"stage": "stagePersist"}]},
+  {"stage": "runEdgeBoard", "row_type": "summary", "run_id": "candidate-1", "ended_at": "2026-04-02T00:00:00Z", "stage_summaries": [{"stage": "stageFetchOdds"}, {"stage": "stageFetchSchedule"}, {"stage": "stageMatchEvents"}, {"stage": "stageFetchPlayerStats"}, {"stage": "stageGenerateSignals"}, {"stage": "stagePersist"}]}
+]
+JSON
+cat > "$out_dir/Run_Log.csv" <<'CSV'
+stage,run_id,ended_at
+runEdgeBoard,baseline-1,2026-04-01T00:00:00Z
+runEdgeBoard,candidate-1,2026-04-02T00:00:00Z
+CSV
+cat > "$out_dir/State.json" <<'JSON'
+[{"col":"val"}]
+JSON
+cat > "$out_dir/State.csv" <<'CSV'
+col
+val
+CSV
+for tab in Config Raw_Odds Raw_Schedule Raw_Player_Stats Match_Map Signals ProviderHealth; do
+  cat > "$out_dir/${tab}.csv" <<'CSV'
+id
+1
+CSV
+  cat > "$out_dir/${tab}.json" <<'JSON'
+[{"id": 1}]
+JSON
+done
+cat > "$out_dir/runtime_export_manifest.json" <<'JSON'
+{
+  "generated_at_utc": "2026-04-02T00:00:00Z",
+  "files": [
+    {"path": "Run_Log.csv"},
+    {"path": "Run_Log.json"},
+    {"path": "State.csv"},
+    {"path": "State.json"}
+  ]
+}
+JSON
+""",
+            )
+            _write_executable(scripts_dir / "precheck_run_ids.py", "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n")
+            _write_executable(scripts_dir / "compare_run_diagnostics.py", "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n")
+            _write_executable(
+                scripts_dir / "evaluate_edge_quality.py",
+                "#!/usr/bin/env python3\nimport sys\nsys.exit(9)\n",
+            )
+
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            (repo / "runtime").mkdir()
+            (repo / "runtime" / "dummy.txt").write_text("ok", encoding="utf-8")
+
+            out_dir = repo / "exports_live"
+            result = subprocess.run(
+                ["bash", str(scripts_dir / "run_triage_bundle.sh"), "--out-dir", str(out_dir), str(repo / "runtime")],
+                cwd=repo,
+                check=False,
+                env={**os.environ, "PATH": os.environ.get("PATH", "")},
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            summary_paths = sorted(out_dir.glob("triage_impl_*/out/triage_summary.json"))
+            self.assertEqual(1, len(summary_paths))
+            summary = json.loads(summary_paths[0].read_text(encoding="utf-8"))
+            self.assertEqual("fail", summary["status"])
+            self.assertEqual("PIPELINE_FAILURE", summary["classification"])
+            self.assertEqual("EDGE_QUALITY_ARTIFACT_MISSING", summary["machine_reason_code"])
 
 
 if __name__ == "__main__":

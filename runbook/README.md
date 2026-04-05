@@ -236,6 +236,38 @@ Machine-readable artifacts (per execution):
 - `triage_impl_<UTC timestamp>/out/edge_quality_compare.json`
 - `triage_impl_<UTC timestamp>/out/triage_summary.json`
 
+### Triage summary classification decision tree
+
+`triage_summary.json` now separates pipeline execution failures from valid edge-gate outcomes.
+
+Primary fields:
+- `classification`: normalized operator-facing class (`PIPELINE_FAILURE`, `POLICY_BLOCKED`, `LOW_VOLUME_EXPECTED_BLOCK`, `PASS`).
+- `machine_reason_code`: machine-readable terminal reason for automation/escalation rules.
+
+Decision tree:
+1. If required artifacts are missing/invalid, or stage commands fail before a valid edge report is interpretable:
+   - `classification=PIPELINE_FAILURE`
+   - `status=fail`
+   - `machine_reason_code` is the terminal hard-fail code (for example `PRECHECK_FAILED`, `COMPARE_VALIDATION_FAILED`, `EDGE_QUALITY_ARTIFACT_MISSING`).
+2. If edge quality returns a valid report and `gate_verdict` is `pass|ok`:
+   - `classification=PASS`
+   - `status=pass`
+   - `machine_reason_code=TRIAGE_BUNDLE_OK`
+3. If edge quality returns a valid report and `gate_verdict` is a low-volume sample block (`blocked_low_volume_strict_sample`, `blocked_insufficient_sample`):
+   - `classification=LOW_VOLUME_EXPECTED_BLOCK`
+   - `status=blocked`
+   - `machine_reason_code` uses the normalized edge gate reason code.
+4. If edge quality returns a valid report and `gate_verdict` is another policy-facing block (for example `failed_quality_regression`, `blocked_insufficient_operational_sample`, or other `blocked_*`):
+   - `classification=POLICY_BLOCKED`
+   - `status=blocked`
+   - `machine_reason_code` uses the normalized edge gate reason code.
+
+Operator guidance:
+- Escalate `PIPELINE_FAILURE` to tooling/runtime reliability triage first.
+- Route `POLICY_BLOCKED` to model/policy owner review.
+- Treat `LOW_VOLUME_EXPECTED_BLOCK` as expected guardrail behavior unless persistence breaches your runbook SLO window.
+- Treat `PASS` as standard matrix-ready outcome.
+
 Directory lifecycle note:
 - `triage_impl_<UTC timestamp>/` is created only after the runtime export pre-step completes, so export workspace refresh cannot delete stage artifacts in-flight.
 
