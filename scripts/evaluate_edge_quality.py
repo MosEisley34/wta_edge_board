@@ -695,7 +695,7 @@ def _collect_run_scoped_event_ids(summary_row: dict[str, Any]) -> set[str]:
                 _consume(item)
             return
         if isinstance(candidate, dict):
-            for key in ("event_id", "match_event_id", "match_id", "id"):
+            for key in ("event_id", "match_event_id", "match_id", "schedule_event_id", "candidate_event_id", "baseline_event_id", "id"):
                 value = candidate.get(key)
                 if value not in (None, ""):
                     token = str(value).strip()
@@ -722,11 +722,11 @@ def _collect_run_scoped_event_ids(summary_row: dict[str, Any]) -> set[str]:
                             item_token = item.strip()
                             if item_token:
                                 event_ids.add(item_token)
+                    elif token:
+                        event_ids.add(token)
 
     _consume(summary_row)
     for stage in _extract_stage_summaries(summary_row):
-        if str(stage.get("stage") or "").strip() != "stageMatchEvents":
-            continue
         _consume(stage)
         metadata = _parse_json_like(stage.get("reason_metadata"), {})
         if isinstance(metadata, dict):
@@ -1974,12 +1974,25 @@ def _resolve_summary_schedule_context(
 ) -> dict[str, Any]:
     candidate_keys = ("raw_schedule_rows", "raw_schedule", "raw_schedule_payload", "Raw_Schedule")
     run_scoped_event_ids = _collect_run_scoped_event_ids(summary_row)
+    scope_fallback_payloads: list[Any] = [summary_row]
     if isinstance(baseline_summary_row, dict):
         run_scoped_event_ids.update(_collect_run_scoped_event_ids(baseline_summary_row))
+        scope_fallback_payloads.append(baseline_summary_row)
+    for stage in _extract_stage_summaries(summary_row):
+        scope_fallback_payloads.append(stage)
+        scope_fallback_payloads.append(_parse_json_like(stage.get("reason_metadata"), {}))
+    if isinstance(baseline_summary_row, dict):
+        for stage in _extract_stage_summaries(baseline_summary_row):
+            scope_fallback_payloads.append(stage)
+            scope_fallback_payloads.append(_parse_json_like(stage.get("reason_metadata"), {}))
     for key in candidate_keys:
         parsed = _parse_json_like(summary_row.get(key), None)
         if isinstance(parsed, (dict, list)):
-            return compute_schedule_context(parsed, run_scoped_event_ids=run_scoped_event_ids)
+            return compute_schedule_context(
+                parsed,
+                run_scoped_event_ids=run_scoped_event_ids,
+                scope_fallback_payloads=scope_fallback_payloads,
+            )
     for stage in _extract_stage_summaries(summary_row):
         metadata = _parse_json_like(stage.get("reason_metadata"), {})
         if not isinstance(metadata, dict):
@@ -1987,8 +2000,12 @@ def _resolve_summary_schedule_context(
         for key in candidate_keys:
             parsed = _parse_json_like(metadata.get(key), None)
             if isinstance(parsed, (dict, list)):
-                return compute_schedule_context(parsed, run_scoped_event_ids=run_scoped_event_ids)
-    return compute_schedule_context([], run_scoped_event_ids=run_scoped_event_ids)
+                return compute_schedule_context(
+                    parsed,
+                    run_scoped_event_ids=run_scoped_event_ids,
+                    scope_fallback_payloads=scope_fallback_payloads,
+                )
+    return compute_schedule_context([], run_scoped_event_ids=run_scoped_event_ids, scope_fallback_payloads=scope_fallback_payloads)
 
 
 def _top_volatility_contributors(

@@ -58,6 +58,9 @@ _EVENT_ID_KEY_CANDIDATES: tuple[str, ...] = (
     "event_id",
     "match_event_id",
     "match_id",
+    "schedule_event_id",
+    "candidate_event_id",
+    "baseline_event_id",
     "id",
 )
 
@@ -171,6 +174,120 @@ def _row_event_id_token(row: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_event_id_tokens(candidate: Any) -> list[str]:
+    if not isinstance(candidate, dict):
+        return []
+    tokens: list[str] = []
+    for key in _EVENT_ID_KEY_CANDIDATES:
+        value = candidate.get(key)
+        if value in (None, ""):
+            continue
+        token = str(value).strip()
+        if token:
+            tokens.append(token)
+    for key, value in candidate.items():
+        if not isinstance(key, str):
+            continue
+        lowered = key.strip().lower()
+        if "event_ids" in lowered or lowered.endswith("_event_id_list"):
+            if isinstance(value, list):
+                for item in value:
+                    token = str(item).strip()
+                    if token:
+                        tokens.append(token)
+            elif isinstance(value, str):
+                for item in value.split(","):
+                    token = item.strip()
+                    if token:
+                        tokens.append(token)
+    return list(dict.fromkeys(tokens))
+
+
+def _collect_scope_hints(
+    payloads: list[Any],
+    *,
+    scoped_event_ids: set[str],
+) -> dict[str, Any]:
+    tier_by_event: dict[str, dict[str, int]] = {}
+    context_by_event: dict[str, dict[str, int]] = {}
+    tier_global_counts: dict[str, int] = {}
+    context_global_counts: dict[str, int] = {}
+    tier_order: list[str] = []
+    context_order: list[str] = []
+
+    def _bump(counter: dict[str, int], order: list[str], token: str) -> None:
+        if token not in counter:
+            order.append(token)
+            counter[token] = 0
+        counter[token] += 1
+
+    def _consume(candidate: Any) -> None:
+        if isinstance(candidate, list):
+            for item in candidate:
+                _consume(item)
+            return
+        if not isinstance(candidate, dict):
+            return
+
+        event_ids = _extract_event_id_tokens(candidate)
+        tier_token = ""
+        context_token = ""
+        for key in _TOURNAMENT_TIER_KEY_CANDIDATES:
+            value = candidate.get(key)
+            if value in (None, ""):
+                continue
+            tier_token = _normalize_scope_token(value)
+            if tier_token:
+                _bump(tier_global_counts, tier_order, tier_token)
+                break
+        for key in _TOURNAMENT_CONTEXT_KEY_CANDIDATES:
+            value = candidate.get(key)
+            if value in (None, ""):
+                continue
+            context_token = _normalize_scope_token(value)
+            if context_token:
+                _bump(context_global_counts, context_order, context_token)
+                break
+
+        if event_ids and tier_token:
+            for event_id in event_ids:
+                tier_by_event.setdefault(event_id, {})
+                tier_by_event[event_id][tier_token] = tier_by_event[event_id].get(tier_token, 0) + 1
+        if event_ids and context_token:
+            for event_id in event_ids:
+                context_by_event.setdefault(event_id, {})
+                context_by_event[event_id][context_token] = context_by_event[event_id].get(context_token, 0) + 1
+
+        for value in candidate.values():
+            _consume(value)
+
+    for payload in payloads:
+        _consume(payload)
+
+    scoped_tier_counts: dict[str, int] = {}
+    scoped_context_counts: dict[str, int] = {}
+    for event_id in scoped_event_ids:
+        for token, count in tier_by_event.get(event_id, {}).items():
+            scoped_tier_counts[token] = scoped_tier_counts.get(token, 0) + int(count)
+        for token, count in context_by_event.get(event_id, {}).items():
+            scoped_context_counts[token] = scoped_context_counts.get(token, 0) + int(count)
+
+    scoped_tier_order = [token for token in tier_order if token in scoped_tier_counts]
+    scoped_context_order = [token for token in context_order if token in scoped_context_counts]
+    primary_scoped_tier, _ = _pick_primary_scope(scoped_tier_counts, scoped_tier_order)
+    primary_scoped_context, _ = _pick_primary_scope(scoped_context_counts, scoped_context_order)
+    primary_global_tier, _ = _pick_primary_scope(tier_global_counts, tier_order)
+    primary_global_context, _ = _pick_primary_scope(context_global_counts, context_order)
+
+    return {
+        "primary_scoped_tier_token": primary_scoped_tier,
+        "primary_scoped_context_token": primary_scoped_context,
+        "primary_global_tier_token": primary_global_tier,
+        "primary_global_context_token": primary_global_context,
+        "has_event_level_scope_hints": bool(scoped_tier_counts or scoped_context_counts),
+    }
+
+
 def _infer_stage_from_rows_without_stage_tokens(rows: list[dict[str, Any]]) -> tuple[str | None, str, str, str]:
     stage_votes: dict[str, int] = {}
     stage_order: list[str] = []
@@ -245,6 +362,7 @@ def compute_schedule_context(
     raw_schedule_payload: Any,
     *,
     run_scoped_event_ids: set[str] | None = None,
+    scope_fallback_payloads: list[Any] | None = None,
 ) -> dict[str, Any]:
     rows = _extract_rows(raw_schedule_payload)
     global_upcoming_match_count = len(rows)
@@ -367,6 +485,28 @@ def compute_schedule_context(
         scoped_context_counts,
         scoped_context_order,
     )
+    scope_token_source = "schedule_rows"
+    scope_fallback_used = "none"
+    if primary_tier_token is None or primary_context_token is None:
+        hints = _collect_scope_hints(scope_fallback_payloads or [], scoped_event_ids=normalized_scoped_event_ids)
+        if primary_tier_token is None:
+            if hints.get("primary_scoped_tier_token"):
+                primary_tier_token = str(hints["primary_scoped_tier_token"])
+                scope_token_source = "fallback_event_ids"
+                scope_fallback_used = "matched_event_ids"
+            elif hints.get("primary_global_tier_token"):
+                primary_tier_token = str(hints["primary_global_tier_token"])
+                scope_token_source = "fallback_global_context"
+                scope_fallback_used = "run_summary_or_stage_reason_metadata"
+        if primary_context_token is None:
+            if hints.get("primary_scoped_context_token"):
+                primary_context_token = str(hints["primary_scoped_context_token"])
+                scope_token_source = "fallback_event_ids"
+                scope_fallback_used = "matched_event_ids"
+            elif hints.get("primary_global_context_token"):
+                primary_context_token = str(hints["primary_global_context_token"])
+                scope_token_source = "fallback_global_context"
+                scope_fallback_used = "run_summary_or_stage_reason_metadata"
 
     return {
         "has_schedule_rows": global_upcoming_match_count > 0,
@@ -380,6 +520,8 @@ def compute_schedule_context(
         "same_tournament_context_upcoming_match_count": same_tournament_context_upcoming_match_count,
         "primary_tournament_tier_scope_token": primary_tier_token,
         "primary_tournament_context_scope_token": primary_context_token,
+        "scope_token_source": scope_token_source,
+        "scope_token_fallback_used": scope_fallback_used,
         "inferred_stage": inferred_stage,
         "stage_inference_available": inferred_stage is not None,
         "stage_inference_fallback": stage_inference_fallback,

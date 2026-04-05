@@ -153,6 +153,64 @@ class ScheduleContextTests(unittest.TestCase):
         self.assertTrue(context["has_scoped_schedule_rows"])
         self.assertEqual("semifinal", context["inferred_stage"])
 
+    def test_scope_tokens_fallback_to_matched_event_ids_when_schedule_rows_lack_context(self):
+        context = compute_schedule_context(
+            [
+                {"event_id": "m1", "round": "Semifinal"},
+                {"event_id": "m2", "round": "Semifinal"},
+                {"event_id": "m3", "round": "Round of 32"},
+                {"event_id": "m4", "round": "Round of 32"},
+                {"event_id": "m5", "round": "Round of 32"},
+                {"event_id": "m6", "round": "Round of 32"},
+            ],
+            run_scoped_event_ids={"m1", "m2"},
+            scope_fallback_payloads=[
+                {
+                    "matched_event_ids": ["m1", "m2"],
+                    "tournament_tier": "WTA 1000",
+                    "tournament_id": "miami",
+                }
+            ],
+        )
+        self.assertEqual(6, context["upcoming_match_count_global"])
+        self.assertEqual(2, context["upcoming_match_count_scoped"])
+        self.assertEqual("wta 1000", context["primary_tournament_tier_scope_token"])
+        self.assertEqual("miami", context["primary_tournament_context_scope_token"])
+        self.assertEqual("fallback_event_ids", context["scope_token_source"])
+        self.assertEqual("matched_event_ids", context["scope_token_fallback_used"])
+
+    def test_scope_tokens_fallback_to_stage_and_summary_metadata_when_stage_names_unknown(self):
+        context = compute_schedule_context(
+            [
+                {"event_id": "m1", "round": "Semifinal"},
+                {"event_id": "m2", "round": "Semifinal"},
+                {"event_id": "m3", "round": "Round of 32"},
+                {"event_id": "m4", "round": "Round of 32"},
+                {"event_id": "m5", "round": "Round of 32"},
+                {"event_id": "m6", "round": "Round of 32"},
+            ],
+            run_scoped_event_ids={"m1", "m2"},
+            scope_fallback_payloads=[
+                {
+                    "stage": "mysteryScheduleStage",
+                    "reason_metadata": {
+                        "matched_event_ids": ["m1", "m2"],
+                        "competition_id": "miami",
+                    },
+                },
+                {
+                    "stage": "mysteryMatcherStage",
+                    "reason_metadata": {
+                        "matched_event_ids": ["m1", "m2"],
+                        "competition_level": "WTA 1000",
+                    },
+                },
+            ],
+        )
+        self.assertEqual("wta 1000", context["primary_tournament_tier_scope_token"])
+        self.assertEqual("miami", context["primary_tournament_context_scope_token"])
+        self.assertEqual("fallback_event_ids", context["scope_token_source"])
+
     def test_infers_semifinal_from_distribution_and_tournament_context(self):
         context = compute_schedule_context(
             [
