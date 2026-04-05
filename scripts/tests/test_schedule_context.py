@@ -26,6 +26,8 @@ class ScheduleContextTests(unittest.TestCase):
         self.assertEqual("direct_stage_token", context["stage_inference_source"])
         self.assertEqual("WTA 500", context["tournament_tier"])
         self.assertEqual(2, context["global_upcoming_match_count"])
+        self.assertEqual(2, context["upcoming_match_count_global"])
+        self.assertIsNone(context["upcoming_match_count_scoped"])
         self.assertEqual(2, context["tournament_tier_upcoming_match_count"])
 
     def test_extracts_quarterfinal_context(self):
@@ -135,6 +137,21 @@ class ScheduleContextTests(unittest.TestCase):
         self.assertEqual(3, context["same_tournament_context_upcoming_match_count"])
         self.assertEqual("wta 250", context["primary_tournament_tier_scope_token"])
         self.assertEqual("bogota", context["primary_tournament_context_scope_token"])
+
+    def test_run_scoped_counts_intersect_schedule_rows(self):
+        context = compute_schedule_context(
+            [
+                {"event_id": "m1", "round": "Semifinal", "tournament_tier": "WTA 1000", "tournament_id": "miami"},
+                {"event_id": "m2", "round": "Semifinal", "tournament_tier": "WTA 1000", "tournament_id": "miami"},
+                {"event_id": "m3", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+                {"event_id": "m4", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+            ],
+            run_scoped_event_ids={"m1", "m2", "unknown"},
+        )
+        self.assertEqual(4, context["upcoming_match_count_global"])
+        self.assertEqual(2, context["upcoming_match_count_scoped"])
+        self.assertTrue(context["has_scoped_schedule_rows"])
+        self.assertEqual("semifinal", context["inferred_stage"])
 
     def test_infers_semifinal_from_distribution_and_tournament_context(self):
         context = compute_schedule_context(
