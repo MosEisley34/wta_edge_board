@@ -1213,6 +1213,9 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual(2, schedule_context["upcoming_match_count"])
         self.assertEqual(["quarterfinal"], schedule_context["stage_tokens"])
         self.assertEqual(0, schedule_context["remaining_pairs_after_candidate"])
+        self.assertIs(schedule_context, report["threshold_profile"]["schedule_context"])
+        self.assertIs(schedule_context, report["threshold_profile"]["evidence_snapshot"]["schedule_context"])
+        self.assertTrue(report["schedule_context"]["has_schedule_rows"])
 
     def test_compare_report_top_level_schedule_context_fallback_is_non_null(self):
         rows = [
@@ -1230,6 +1233,35 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertIsInstance(report["schedule_context"], dict)
         self.assertFalse(report["schedule_context"]["schedule_artifacts_available"])
         self.assertEqual("raw_schedule_artifact_missing", report["schedule_context"]["context_source_reason"])
+
+    def test_compare_report_schedule_context_matches_threshold_evidence_when_rows_present(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=12, matched_events=8),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=12,
+                matched_events=8,
+                raw_schedule_rows=json.dumps(
+                    [
+                        {"event_id": "m1", "round": "Final", "tournament_tier": "WTA 500"},
+                    ]
+                ),
+            ),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(),
+            ordered_run_ids=["run-1", "run-2"],
+            export_dir="",
+        )
+        top_level_schedule_context = report["schedule_context"]
+        self.assertTrue(top_level_schedule_context["has_schedule_rows"])
+        self.assertIs(top_level_schedule_context, report["threshold_profile"]["evidence_snapshot"]["schedule_context"])
+        self.assertEqual(report["threshold_profile"]["evidence_snapshot"]["schedule_context"], top_level_schedule_context)
 
     def test_threshold_profile_defaults_to_strict_when_evidence_missing(self):
         rows = [
