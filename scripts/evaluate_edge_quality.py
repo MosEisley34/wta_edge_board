@@ -1745,7 +1745,10 @@ def _resolve_threshold_profile(
         config=config,
     )
     evidence = dict(low_volume_mode.get("evidence") or {})
-    schedule_context = dict(evidence.get("schedule_context") or {})
+    schedule_context = evidence.get("schedule_context")
+    if not isinstance(schedule_context, dict):
+        schedule_context = _resolve_summary_schedule_context(summary_row)
+        evidence["schedule_context"] = schedule_context
     reasons: list[str] = []
 
     reason_totals, _, _ = _reason_code_totals(summary_row)
@@ -1817,6 +1820,26 @@ def _resolve_threshold_profile(
         "low_volume_mode": low_volume_mode,
         "schedule_context": schedule_context,
     }
+
+
+def _build_compare_report_schedule_context(
+    *,
+    export_dir: str,
+    threshold_schedule_context: dict[str, Any] | None,
+    remaining_pairs_after_candidate: int,
+) -> dict[str, Any]:
+    if str(export_dir or "").strip():
+        schedule_context = schedule_context_from_export_dir(export_dir)
+    elif isinstance(threshold_schedule_context, dict):
+        schedule_context = threshold_schedule_context
+    else:
+        schedule_context = fallback_schedule_context("export_dir_not_provided")
+    if not isinstance(schedule_context, dict):
+        schedule_context = fallback_schedule_context("schedule_context_unavailable")
+    schedule_context.setdefault("upcoming_match_count", 0)
+    schedule_context.setdefault("stage_tokens", [])
+    schedule_context["remaining_pairs_after_candidate"] = int(remaining_pairs_after_candidate)
+    return schedule_context
 
 
 def _resolve_summary_schedule_context(summary_row: dict[str, Any]) -> dict[str, Any]:
@@ -2600,21 +2623,37 @@ def evaluate_edge_quality_compare_report(
             "range": window_run_id_range,
         },
     }
-    schedule_context_metadata = dict(((pair_level_result.get("threshold_profile") or {}).get("schedule_context")) or {})
-    export_schedule_context = (
-        schedule_context_from_export_dir(export_dir)
-        if str(export_dir or "").strip()
-        else fallback_schedule_context("export_dir_not_provided")
-    )
+    pair_threshold_profile = dict(pair_level_result.get("threshold_profile") or {})
+    pair_threshold_evidence = dict(pair_threshold_profile.get("evidence_snapshot") or {})
+    pair_threshold_schedule_context = pair_threshold_evidence.get("schedule_context")
+    if not isinstance(pair_threshold_schedule_context, dict):
+        candidate_threshold_schedule_context = pair_threshold_profile.get("schedule_context")
+        if isinstance(candidate_threshold_schedule_context, dict):
+            pair_threshold_schedule_context = candidate_threshold_schedule_context
+    if not isinstance(pair_threshold_schedule_context, dict):
+        pair_threshold_schedule_context = fallback_schedule_context("threshold_schedule_context_unavailable")
+
     candidate_run_order = ordered_run_ids or _rolling_run_ids(rows)
     remaining_pairs_after_candidate = 0
     if candidate_run_id in candidate_run_order:
         candidate_index = candidate_run_order.index(candidate_run_id)
         remaining_pairs_after_candidate = max(0, len(candidate_run_order) - candidate_index - 1)
-    top_level_schedule_context = dict(export_schedule_context or fallback_schedule_context("schedule_context_unavailable"))
-    top_level_schedule_context.setdefault("upcoming_match_count", 0)
-    top_level_schedule_context.setdefault("stage_tokens", [])
-    top_level_schedule_context["remaining_pairs_after_candidate"] = int(remaining_pairs_after_candidate)
+    top_level_schedule_context = _build_compare_report_schedule_context(
+        export_dir=export_dir,
+        threshold_schedule_context=pair_threshold_schedule_context,
+        remaining_pairs_after_candidate=remaining_pairs_after_candidate,
+    )
+    pair_threshold_evidence["schedule_context"] = top_level_schedule_context
+    pair_threshold_profile["evidence_snapshot"] = pair_threshold_evidence
+    pair_threshold_profile["schedule_context"] = top_level_schedule_context
+    if bool(top_level_schedule_context.get("has_schedule_rows")) and (
+        pair_threshold_evidence.get("schedule_context") is not top_level_schedule_context
+    ):
+        raise ValueError(
+            "Schedule-context invariant violated: threshold_profile.evidence_snapshot.schedule_context "
+            "must match top-level schedule_context when has_schedule_rows=true."
+        )
+    schedule_context_metadata = top_level_schedule_context
 
     compare_reason_code = {
         "passed_quality_gate": "EDGE_QUALITY_GATE_PASSED",
@@ -2628,12 +2667,12 @@ def evaluate_edge_quality_compare_report(
         "schema": "edge_quality_compare_report_v1",
         "comparison_scope": "strict_pair_with_optional_window_fallback",
         "threshold_profile": {
-            "active_profile": str(threshold_profile.get("active_profile") or "strict_default"),
-            "rationale": str(threshold_profile.get("rationale") or "strict defaults enforced"),
-            "fallback_mode_used": bool(threshold_profile.get("fallback_mode_used")),
-            "activation_reasons": list(threshold_profile.get("activation_reasons") or []),
-            "evidence_snapshot": dict(threshold_profile.get("evidence_snapshot") or {}),
-            "schedule_context": dict(threshold_profile.get("schedule_context") or {}),
+            "active_profile": str(pair_threshold_profile.get("active_profile") or threshold_profile.get("active_profile") or "strict_default"),
+            "rationale": str(pair_threshold_profile.get("rationale") or threshold_profile.get("rationale") or "strict defaults enforced"),
+            "fallback_mode_used": bool(pair_threshold_profile.get("fallback_mode_used", threshold_profile.get("fallback_mode_used"))),
+            "activation_reasons": list(pair_threshold_profile.get("activation_reasons") or threshold_profile.get("activation_reasons") or []),
+            "evidence_snapshot": pair_threshold_evidence,
+            "schedule_context": top_level_schedule_context,
             "sample_floors": {
                 "min_scored_signals_for_volatility": int(
                     profile_floors.get("min_scored_signals_for_volatility", config.min_scored_signals_for_volatility)
@@ -2667,7 +2706,7 @@ def evaluate_edge_quality_compare_report(
             "min_bet_mxn": float(canonical_stake_policy.min_bet_mxn),
             "bucket_step_mxn": float(canonical_stake_policy.bucket_step_mxn),
             "rounding_mode": str(canonical_stake_policy.bucket_rounding),
-            "schedule_context": schedule_context_metadata,
+            "schedule_context": top_level_schedule_context,
         },
         "stake_policy_outcome_comparison": {
             "counts": policy_delta_metrics,
@@ -2683,8 +2722,8 @@ def evaluate_edge_quality_compare_report(
             "strict_pair_status_reason": strict_status_reason,
             "windowed_decision_status": windowed_status,
             "strict_pair_sample_assessment": (pair_level_result.get("sample_assessment") or {}),
-            "strict_pair_threshold_profile": (pair_level_result.get("threshold_profile") or {}),
-            "schedule_context": schedule_context_metadata,
+            "strict_pair_threshold_profile": pair_threshold_profile,
+            "schedule_context": top_level_schedule_context,
             "fallback_effective_sample_counts": (
                 (fallback_result or {}).get("effective_sample_counts")
                 if isinstance(fallback_result, dict)
