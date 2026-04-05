@@ -686,6 +686,54 @@ def _extract_stage_summaries(summary_row: dict[str, Any]) -> list[dict[str, Any]
     return []
 
 
+def _collect_run_scoped_event_ids(summary_row: dict[str, Any]) -> set[str]:
+    event_ids: set[str] = set()
+
+    def _consume(candidate: Any) -> None:
+        if isinstance(candidate, list):
+            for item in candidate:
+                _consume(item)
+            return
+        if isinstance(candidate, dict):
+            for key in ("event_id", "match_event_id", "match_id", "id"):
+                value = candidate.get(key)
+                if value not in (None, ""):
+                    token = str(value).strip()
+                    if token:
+                        event_ids.add(token)
+            for key in (
+                "event_ids",
+                "matched_event_ids",
+                "matched_events",
+                "matched_event_id",
+                "event_id_list",
+                "raw_event_ids",
+            ):
+                value = candidate.get(key)
+                if isinstance(value, list):
+                    for item in value:
+                        token = str(item).strip()
+                        if token:
+                            event_ids.add(token)
+                elif isinstance(value, str):
+                    token = value.strip()
+                    if token and "," in token:
+                        for item in token.split(","):
+                            item_token = item.strip()
+                            if item_token:
+                                event_ids.add(item_token)
+
+    _consume(summary_row)
+    for stage in _extract_stage_summaries(summary_row):
+        if str(stage.get("stage") or "").strip() != "stageMatchEvents":
+            continue
+        _consume(stage)
+        metadata = _parse_json_like(stage.get("reason_metadata"), {})
+        if isinstance(metadata, dict):
+            _consume(metadata)
+    return event_ids
+
+
 def _normalize_legacy_stage_rows(stage_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     normalized: list[dict[str, Any]] = []
     markers: list[str] = []
@@ -1622,6 +1670,7 @@ def _sample_confidence(
 def _detect_low_volume_mode(
     *,
     summary_row: dict[str, Any],
+    baseline_summary_row: dict[str, Any] | None,
     candidate_run_id: str,
     ordered_run_ids: list[str],
     config: EdgeQualityGateConfig,
@@ -1631,7 +1680,7 @@ def _detect_low_volume_mode(
 
     reasons: list[str] = []
     evidence: dict[str, Any] = {"mode_enabled": True}
-    schedule_context = _resolve_summary_schedule_context(summary_row)
+    schedule_context = _resolve_summary_schedule_context(summary_row, baseline_summary_row)
     evidence["schedule_context"] = schedule_context
 
     stage_tokens: list[str] = []
@@ -1655,6 +1704,7 @@ def _detect_low_volume_mode(
     upcoming_matches: int | None = None
     upcoming_match_count_source = "unknown"
     scoped_upcoming_candidates = (
+        ("upcoming_match_count_scoped", "run_scoped"),
         ("same_tournament_context_upcoming_match_count", "context_scope"),
         ("tournament_tier_upcoming_match_count", "tournament_scope"),
     )
@@ -1693,19 +1743,23 @@ def _detect_low_volume_mode(
             if upcoming_matches is not None:
                 break
     if upcoming_matches is None:
-        global_schedule_count = schedule_context.get("global_upcoming_match_count")
+        global_schedule_count = schedule_context.get("upcoming_match_count_global")
+        if not isinstance(global_schedule_count, int):
+            global_schedule_count = schedule_context.get("global_upcoming_match_count")
         if bool(schedule_context.get("has_schedule_rows")) and isinstance(global_schedule_count, int):
             upcoming_matches = max(0, int(global_schedule_count))
             upcoming_match_count_source = "global_schedule_fallback"
     evidence["upcoming_match_count"] = upcoming_matches
     evidence["upcoming_match_count_source"] = upcoming_match_count_source
     if upcoming_matches is not None and upcoming_matches <= int(config.low_volume_upcoming_match_count_trigger):
-        if upcoming_match_count_source == "context_scope":
+        if upcoming_match_count_source == "run_scoped":
+            reasons.append("low_volume_by_run_scoped_schedule")
+        elif upcoming_match_count_source == "context_scope":
             reasons.append("low_volume_by_context_scope")
         elif upcoming_match_count_source == "tournament_scope":
             reasons.append("low_volume_by_tournament_scope")
         elif upcoming_match_count_source == "global_schedule_fallback":
-            reasons.append("low_volume_by_global_scope_fallback")
+            reasons.append("low_volume_by_global_schedule_fallback")
         else:
             reasons.append("upcoming_match_count_below_trigger")
 
@@ -1732,6 +1786,7 @@ def _stage_confidence_rank(value: Any) -> int:
 def _resolve_threshold_profile(
     *,
     summary_row: dict[str, Any],
+    baseline_summary_row: dict[str, Any] | None,
     candidate_run_id: str,
     ordered_run_ids: list[str],
     config: EdgeQualityGateConfig,
@@ -1772,6 +1827,7 @@ def _resolve_threshold_profile(
 
     low_volume_mode = _detect_low_volume_mode(
         summary_row=summary_row,
+        baseline_summary_row=baseline_summary_row,
         candidate_run_id=candidate_run_id,
         ordered_run_ids=ordered_run_ids,
         config=config,
@@ -1779,7 +1835,7 @@ def _resolve_threshold_profile(
     evidence = dict(low_volume_mode.get("evidence") or {})
     schedule_context = evidence.get("schedule_context")
     if not isinstance(schedule_context, dict):
-        schedule_context = _resolve_summary_schedule_context(summary_row)
+        schedule_context = _resolve_summary_schedule_context(summary_row, baseline_summary_row)
         evidence["schedule_context"] = schedule_context
     reasons: list[str] = []
 
@@ -1818,7 +1874,9 @@ def _resolve_threshold_profile(
     upcoming_matches = evidence.get("upcoming_match_count")
     upcoming_matches_source = str(evidence.get("upcoming_match_count_source") or "")
     if isinstance(upcoming_matches, int) and upcoming_matches <= int(config.low_volume_upcoming_match_count_trigger):
-        if upcoming_matches_source == "context_scope":
+        if upcoming_matches_source == "run_scoped":
+            reasons.append("low_volume_by_run_scoped_schedule")
+        elif upcoming_matches_source == "context_scope":
             reasons.append("low_volume_by_context_scope")
         elif upcoming_matches_source == "tournament_scope":
             reasons.append("low_volume_by_tournament_scope")
@@ -1847,6 +1905,7 @@ def _resolve_threshold_profile(
         decisive_reasons = {
             "tournament_phase_semifinal_or_final",
             "upcoming_matches_low_volume",
+            "low_volume_by_run_scoped_schedule",
             "low_volume_by_context_scope",
             "low_volume_by_tournament_scope",
             "raw_schedule_single_match_signal",
@@ -1900,6 +1959,8 @@ def _build_compare_report_schedule_context(
         schedule_context = fallback_schedule_context("schedule_context_unavailable")
     schedule_context.setdefault("upcoming_match_count", 0)
     schedule_context.setdefault("global_upcoming_match_count", int(schedule_context.get("upcoming_match_count") or 0))
+    schedule_context.setdefault("upcoming_match_count_global", int(schedule_context.get("global_upcoming_match_count") or 0))
+    schedule_context.setdefault("upcoming_match_count_scoped", None)
     schedule_context.setdefault("tournament_tier_upcoming_match_count", None)
     schedule_context.setdefault("same_tournament_context_upcoming_match_count", None)
     schedule_context.setdefault("stage_tokens", [])
@@ -1907,12 +1968,18 @@ def _build_compare_report_schedule_context(
     return schedule_context
 
 
-def _resolve_summary_schedule_context(summary_row: dict[str, Any]) -> dict[str, Any]:
+def _resolve_summary_schedule_context(
+    summary_row: dict[str, Any],
+    baseline_summary_row: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     candidate_keys = ("raw_schedule_rows", "raw_schedule", "raw_schedule_payload", "Raw_Schedule")
+    run_scoped_event_ids = _collect_run_scoped_event_ids(summary_row)
+    if isinstance(baseline_summary_row, dict):
+        run_scoped_event_ids.update(_collect_run_scoped_event_ids(baseline_summary_row))
     for key in candidate_keys:
         parsed = _parse_json_like(summary_row.get(key), None)
         if isinstance(parsed, (dict, list)):
-            return compute_schedule_context(parsed)
+            return compute_schedule_context(parsed, run_scoped_event_ids=run_scoped_event_ids)
     for stage in _extract_stage_summaries(summary_row):
         metadata = _parse_json_like(stage.get("reason_metadata"), {})
         if not isinstance(metadata, dict):
@@ -1920,8 +1987,8 @@ def _resolve_summary_schedule_context(summary_row: dict[str, Any]) -> dict[str, 
         for key in candidate_keys:
             parsed = _parse_json_like(metadata.get(key), None)
             if isinstance(parsed, (dict, list)):
-                return compute_schedule_context(parsed)
-    return compute_schedule_context([])
+                return compute_schedule_context(parsed, run_scoped_event_ids=run_scoped_event_ids)
+    return compute_schedule_context([], run_scoped_event_ids=run_scoped_event_ids)
 
 
 def _top_volatility_contributors(
@@ -2023,6 +2090,7 @@ def evaluate_edge_quality_gate(
     candidate_summary_row = _pick_run_summary(rows, candidate_run_id)
     threshold_profile = _resolve_threshold_profile(
         summary_row=candidate_summary_row,
+        baseline_summary_row=_pick_run_summary(rows, baseline_run_id),
         candidate_run_id=candidate_run_id,
         ordered_run_ids=ordered_ids,
         config=config,
@@ -2458,6 +2526,7 @@ def evaluate_edge_quality_compare_report(
 
     threshold_profile = _resolve_threshold_profile(
         summary_row=_pick_run_summary(rows, candidate_run_id),
+        baseline_summary_row=_pick_run_summary(rows, baseline_run_id),
         candidate_run_id=candidate_run_id,
         ordered_run_ids=ordered_run_ids or _rolling_run_ids(rows),
         config=config,

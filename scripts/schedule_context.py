@@ -54,6 +54,13 @@ _TOURNAMENT_CONTEXT_KEY_CANDIDATES: tuple[str, ...] = (
     "context_id",
 )
 
+_EVENT_ID_KEY_CANDIDATES: tuple[str, ...] = (
+    "event_id",
+    "match_event_id",
+    "match_id",
+    "id",
+)
+
 
 def _normalize_scope_token(value: Any) -> str:
     token = str(value or "").strip().lower().replace("-", " ").replace("_", " ")
@@ -153,6 +160,17 @@ def _row_hint_stages(row: dict[str, Any]) -> list[str]:
     return hints
 
 
+def _row_event_id_token(row: dict[str, Any]) -> str:
+    for key in _EVENT_ID_KEY_CANDIDATES:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        token = str(value).strip()
+        if token:
+            return token
+    return ""
+
+
 def _infer_stage_from_rows_without_stage_tokens(rows: list[dict[str, Any]]) -> tuple[str | None, str, str, str]:
     stage_votes: dict[str, int] = {}
     stage_order: list[str] = []
@@ -223,9 +241,20 @@ def _infer_stage_from_row(row: dict[str, Any]) -> str | None:
     return None
 
 
-def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
+def compute_schedule_context(
+    raw_schedule_payload: Any,
+    *,
+    run_scoped_event_ids: set[str] | None = None,
+) -> dict[str, Any]:
     rows = _extract_rows(raw_schedule_payload)
     global_upcoming_match_count = len(rows)
+    normalized_scoped_event_ids = {str(token).strip() for token in (run_scoped_event_ids or set()) if str(token).strip()}
+    scoped_rows = (
+        [row for row in rows if _row_event_id_token(row) in normalized_scoped_event_ids]
+        if normalized_scoped_event_ids
+        else []
+    )
+    scoped_upcoming_match_count = len(scoped_rows)
 
     stage_tokens: list[str] = []
     tournament_tier: str | None = None
@@ -233,7 +262,8 @@ def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
     tournament_tier_order: list[str] = []
     tournament_context_counts: dict[str, int] = {}
     tournament_context_order: list[str] = []
-    for row in rows:
+    stage_source_rows = scoped_rows if scoped_rows else rows
+    for row in stage_source_rows:
         for key in _STAGE_KEY_CANDIDATES:
             value = row.get(key)
             if value not in (None, ""):
@@ -282,31 +312,31 @@ def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
             stage_inference_confidence = "high"
             stage_inference_source = "direct_stage_token"
             break
-    if inferred_stage is None and global_upcoming_match_count > 0:
+    if inferred_stage is None and len(stage_source_rows) > 0:
         (
             inferred_stage,
             stage_inference_fallback,
             stage_inference_confidence,
             stage_inference_source,
-        ) = _infer_stage_from_rows_without_stage_tokens(rows)
+        ) = _infer_stage_from_rows_without_stage_tokens(stage_source_rows)
         if inferred_stage is not None:
             stage_tokens.append(inferred_stage)
-    elif global_upcoming_match_count == 0:
+    elif len(stage_source_rows) == 0:
         stage_inference_fallback = "none"
         stage_inference_confidence = "none"
         stage_inference_source = "none"
 
-    scoped_rows = list(rows)
+    stage_scoped_rows = list(stage_source_rows)
     if inferred_stage is not None:
-        stage_filtered_rows = [row for row in rows if _infer_stage_from_row(row) == inferred_stage]
+        stage_filtered_rows = [row for row in stage_source_rows if _infer_stage_from_row(row) == inferred_stage]
         if stage_filtered_rows:
-            scoped_rows = stage_filtered_rows
+            stage_scoped_rows = stage_filtered_rows
 
     scoped_tier_counts: dict[str, int] = {}
     scoped_tier_order: list[str] = []
     scoped_context_counts: dict[str, int] = {}
     scoped_context_order: list[str] = []
-    for row in scoped_rows:
+    for row in stage_scoped_rows:
         for key in _TOURNAMENT_TIER_KEY_CANDIDATES:
             value = row.get(key)
             if value in (None, ""):
@@ -342,6 +372,10 @@ def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
         "has_schedule_rows": global_upcoming_match_count > 0,
         "upcoming_match_count": global_upcoming_match_count,
         "global_upcoming_match_count": global_upcoming_match_count,
+        "upcoming_match_count_global": global_upcoming_match_count,
+        "upcoming_match_count_scoped": scoped_upcoming_match_count if normalized_scoped_event_ids else None,
+        "scoped_upcoming_match_count": scoped_upcoming_match_count if normalized_scoped_event_ids else None,
+        "has_scoped_schedule_rows": scoped_upcoming_match_count > 0 if normalized_scoped_event_ids else False,
         "tournament_tier_upcoming_match_count": tournament_tier_upcoming_match_count,
         "same_tournament_context_upcoming_match_count": same_tournament_context_upcoming_match_count,
         "primary_tournament_tier_scope_token": primary_tier_token,
