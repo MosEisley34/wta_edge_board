@@ -95,6 +95,8 @@ baseline_run_id=""
 candidate_run_id=""
 status="fail"
 reason_code="UNINITIALIZED"
+classification="PIPELINE_FAILURE"
+machine_reason_code="UNINITIALIZED"
 
 run_pair_status="not_run"
 run_pair_reason_code="NOT_RUN"
@@ -106,7 +108,7 @@ edge_quality_status="not_run"
 edge_quality_reason_code="NOT_RUN"
 
 write_summary() {
-  python3 - "$summary_json" "$status" "$reason_code" "$candidate_run_id" "$baseline_run_id" "$derive_pair_json" "$precheck_json" "$compare_json" "$edge_json" "$player_diagnostics_json" "$player_diagnostics_csv" "$triage_impl_dir" "$out_dir" "$run_pair_status" "$run_pair_reason_code" "$precheck_status" "$precheck_reason_code" "$compare_status" "$compare_reason_code" "$edge_quality_status" "$edge_quality_reason_code" <<'PY'
+  python3 - "$summary_json" "$status" "$reason_code" "$classification" "$machine_reason_code" "$candidate_run_id" "$baseline_run_id" "$derive_pair_json" "$precheck_json" "$compare_json" "$edge_json" "$player_diagnostics_json" "$player_diagnostics_csv" "$triage_impl_dir" "$out_dir" "$run_pair_status" "$run_pair_reason_code" "$precheck_status" "$precheck_reason_code" "$compare_status" "$compare_reason_code" "$edge_quality_status" "$edge_quality_reason_code" <<'PY'
 import json
 import os
 import sys
@@ -115,6 +117,8 @@ import sys
     summary_path,
     status,
     reason_code,
+    classification,
+    machine_reason_code,
     candidate_run_id,
     baseline_run_id,
     derive_pair_json,
@@ -158,6 +162,8 @@ required_json_exists = {
 payload = {
     "status": status,
     "reason_code": reason_code,
+    "classification": classification,
+    "machine_reason_code": machine_reason_code,
     "run_ids": {
         "candidate_run_id": candidate_run_id or None,
         "baseline_run_id": baseline_run_id or None,
@@ -198,6 +204,8 @@ PY
 fail_and_exit() {
   reason_code="$1"
   status="fail"
+  classification="PIPELINE_FAILURE"
+  machine_reason_code="$reason_code"
   echo "[triage-bundle] FAIL reason_code=${reason_code}" >&2
   write_summary
   exit 1
@@ -519,12 +527,13 @@ if [[ ! -s "$edge_json" ]]; then
   fail_and_exit "EDGE_QUALITY_ARTIFACT_MISSING"
 fi
 set +e
-edge_classification="$(python3 - "$edge_json" <<'PY'
+edge_classification="$(python3 - "$edge_json" "$edge_quality_exit" <<'PY'
 import json
 import sys
 
 required_keys = ("status", "gate_verdict", "reason_code")
 path = sys.argv[1]
+edge_quality_exit = int(sys.argv[2])
 
 with open(path, "r", encoding="utf-8") as handle:
     payload = json.load(handle)
@@ -538,17 +547,21 @@ if missing:
 
 gate_verdict = str(payload["gate_verdict"]).strip().lower()
 if gate_verdict in {"pass", "ok"}:
-    print("pass|EDGE_QUALITY_GATE_PASSED")
+    print("pass|EDGE_QUALITY_GATE_PASSED|PASS")
 elif gate_verdict == "failed_quality_regression":
-    print("fail|EDGE_QUALITY_GATE_FAILED_QUALITY_REGRESSION")
+    print("blocked|EDGE_QUALITY_GATE_FAILED_QUALITY_REGRESSION|POLICY_BLOCKED")
 elif gate_verdict == "blocked_low_volume_strict_sample":
-    print("fail|EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE")
+    print("blocked|EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE|LOW_VOLUME_EXPECTED_BLOCK")
 elif gate_verdict == "blocked_insufficient_operational_sample":
-    print("fail|EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE")
+    print("blocked|EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE|POLICY_BLOCKED")
 elif gate_verdict == "blocked_insufficient_sample":
-    print("fail|EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_SAMPLE")
+    print("blocked|EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_SAMPLE|LOW_VOLUME_EXPECTED_BLOCK")
+elif gate_verdict.startswith("blocked_"):
+    print("blocked|EDGE_QUALITY_GATE_BLOCKED|POLICY_BLOCKED")
+elif edge_quality_exit != 0:
+    print("fail|EDGE_QUALITY_COMMAND_FAILED|PIPELINE_FAILURE")
 else:
-    print("fail|EDGE_QUALITY_GATE_BLOCKED")
+    print("fail|EDGE_QUALITY_GATE_VERDICT_UNKNOWN|PIPELINE_FAILURE")
 PY
 )"
 edge_parse_exit=$?
@@ -564,9 +577,16 @@ fi
 
 edge_quality_status="${edge_classification%%|*}"
 edge_quality_reason_code="${edge_classification#*|}"
+edge_quality_reason_code="${edge_quality_reason_code%%|*}"
+classification="${edge_classification##*|}"
+machine_reason_code="$edge_quality_reason_code"
 
 if [[ "$edge_quality_status" != "pass" ]]; then
-  status="fail"
+  if [[ "$classification" == "PIPELINE_FAILURE" ]]; then
+    status="fail"
+  else
+    status="blocked"
+  fi
   reason_code="$edge_quality_reason_code"
   write_summary
   exit 1
@@ -575,6 +595,8 @@ fi
 echo "[5/5] Writing summary"
 status="pass"
 reason_code="TRIAGE_BUNDLE_OK"
+classification="PASS"
+machine_reason_code="TRIAGE_BUNDLE_OK"
 write_summary
 
 echo "[triage-bundle] Summary JSON: $summary_json"
