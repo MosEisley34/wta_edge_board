@@ -1241,12 +1241,12 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
                 matched_events=4,
                 raw_schedule_rows=json.dumps(
                     [
-                        {"event_id": "m1", "round": "Semifinal", "tournament_tier": "WTA 1000", "tournament_id": "miami"},
-                        {"event_id": "m2", "round": "Semifinal", "tournament_tier": "WTA 1000", "tournament_id": "miami"},
-                        {"event_id": "m3", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
-                        {"event_id": "m4", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
-                        {"event_id": "m5", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
-                        {"event_id": "m6", "round": "Round of 32", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+                        {"event_id": "m1", "round": "Semifinal", "tournament_id": "miami"},
+                        {"event_id": "m2", "round": "Semifinal", "tournament_id": "miami"},
+                        {"event_id": "m3", "round": "Round of 32", "tournament_id": "bogota"},
+                        {"event_id": "m4", "round": "Round of 32", "tournament_id": "bogota"},
+                        {"event_id": "m5", "round": "Round of 32", "tournament_id": "bogota"},
+                        {"event_id": "m6", "round": "Round of 32", "tournament_id": "bogota"},
                     ]
                 ),
             ),
@@ -1266,8 +1266,53 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         evidence = report["threshold_profile"]["evidence_snapshot"]
         self.assertEqual("context_scope", evidence["upcoming_match_count_source"])
         self.assertEqual(2, evidence["upcoming_match_count"])
+        self.assertIn(
+            "upcoming_match_count_source_context_scope",
+            report["threshold_profile"]["activation_reasons"],
+        )
         self.assertIn("low_volume_by_context_scope", report["threshold_profile"]["activation_reasons"])
         self.assertEqual("low_volume_semifinal_final", report["threshold_profile"]["active_profile"])
+
+    def test_low_volume_prefers_tournament_scope_over_context_scope_when_run_scope_missing(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=9, matched_events=4),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=9,
+                matched_events=4,
+                raw_schedule_rows=json.dumps(
+                    [
+                        {"event_id": "m1", "round": "Semifinal", "tournament_tier": "WTA 1000", "tournament_id": "miami"},
+                        {"event_id": "m2", "round": "Semifinal", "tournament_tier": "WTA 1000", "tournament_id": "miami"},
+                        {"event_id": "m3", "round": "Semifinal", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+                        {"event_id": "m4", "round": "Semifinal", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+                        {"event_id": "m5", "round": "Semifinal", "tournament_tier": "WTA 250", "tournament_id": "bogota"},
+                    ]
+                ),
+            ),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                low_volume_min_scored_signals_for_volatility=8,
+                low_volume_min_matched_events_for_volatility=4,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        evidence = report["threshold_profile"]["evidence_snapshot"]
+        self.assertEqual("tournament_scope", evidence["upcoming_match_count_source"])
+        self.assertEqual(3, evidence["upcoming_match_count"])
+        self.assertIn(
+            "upcoming_match_count_source_tournament_scope",
+            report["threshold_profile"]["activation_reasons"],
+        )
+        self.assertIn("low_volume_by_tournament_scope", report["threshold_profile"]["activation_reasons"])
 
     def test_low_volume_uses_run_scoped_schedule_when_global_volume_is_high(self):
         baseline_stage_summaries = json.dumps(
@@ -1325,6 +1370,10 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         evidence = report["threshold_profile"]["evidence_snapshot"]
         self.assertEqual("run_scoped", evidence["upcoming_match_count_source"])
         self.assertEqual(2, evidence["upcoming_match_count"])
+        self.assertIn(
+            "upcoming_match_count_source_run_scoped",
+            report["threshold_profile"]["activation_reasons"],
+        )
         self.assertEqual(6, report["threshold_profile"]["schedule_context"]["upcoming_match_count_global"])
         self.assertEqual(2, report["threshold_profile"]["schedule_context"]["upcoming_match_count_scoped"])
         self.assertIn("low_volume_by_run_scoped_schedule", report["threshold_profile"]["activation_reasons"])
@@ -1374,6 +1423,7 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual(5, evidence["upcoming_match_count"])
         self.assertEqual("strict_default", report["threshold_profile"]["active_profile"])
         self.assertNotIn("low_volume_by_run_scoped_schedule", report["threshold_profile"]["activation_reasons"])
+        self.assertIn("scoped_upcoming_volume_above_trigger_keep_strict", report["threshold_profile"]["activation_reasons"])
 
     def test_low_volume_falls_back_to_global_when_run_scoped_evidence_missing(self):
         rows = [
@@ -1434,6 +1484,10 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         evidence = report["threshold_profile"]["evidence_snapshot"]
         self.assertEqual("global_schedule_fallback", evidence["upcoming_match_count_source"])
         self.assertIn("global_volume_fallback_kept_strict", report["threshold_profile"]["activation_reasons"])
+        self.assertIn(
+            "upcoming_match_count_source_global_schedule_fallback",
+            report["threshold_profile"]["activation_reasons"],
+        )
         self.assertEqual("strict_default", report["threshold_profile"]["active_profile"])
 
     def test_compare_report_top_level_schedule_context_uses_exported_schedule_artifacts(self):
@@ -1587,12 +1641,12 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
             fallback_recent_run_window_radius=1,
             fallback_min_neighboring_pairs=1,
         )
-        self.assertEqual("blocked_low_volume_strict_sample", report["gate_verdict"])
-        self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE", report["reason_code"])
-        self.assertTrue(report["final_operator_summary"]["blocked_by_strict_sample_in_low_volume"])
+        self.assertEqual("blocked_insufficient_operational_sample", report["gate_verdict"])
+        self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_INSUFFICIENT_OPERATIONAL_SAMPLE", report["reason_code"])
+        self.assertFalse(report["final_operator_summary"]["blocked_by_strict_sample_in_low_volume"])
         self.assertIsNotNone(report["threshold_profile"])
-        self.assertEqual("ultra_low_volume_single_match", report["threshold_profile"]["active_profile"])
-        self.assertIn("upcoming_matches_low_volume", report["threshold_profile"]["activation_reasons"])
+        self.assertEqual("strict_default", report["threshold_profile"]["active_profile"])
+        self.assertIn("insufficient_low_volume_evidence_keep_strict", report["threshold_profile"]["activation_reasons"])
         self.assertEqual(
             10,
             report["final_operator_summary"]["strict_pair_operational_pre_gate"]["minimums"][
