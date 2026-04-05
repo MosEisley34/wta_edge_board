@@ -19,6 +19,15 @@ _STAGE_KEY_CANDIDATES: tuple[str, ...] = (
     "stage",
 )
 
+_MATCH_LABEL_KEY_CANDIDATES: tuple[str, ...] = (
+    "match_label",
+    "match_name",
+    "event_name",
+    "label",
+    "name",
+    "description",
+)
+
 _TOURNAMENT_TIER_KEY_CANDIDATES: tuple[str, ...] = (
     "tournament_tier",
     "tier",
@@ -31,6 +40,12 @@ _TOURNAMENT_TIER_KEY_CANDIDATES: tuple[str, ...] = (
 
 
 def _normalize_stage_token(value: Any) -> str:
+    token = str(value or "").strip().lower().replace("-", " ").replace("_", " ")
+    token = " ".join(token.split())
+    return token
+
+
+def _normalize_label_token(value: Any) -> str:
     token = str(value or "").strip().lower().replace("-", " ").replace("_", " ")
     token = " ".join(token.split())
     return token
@@ -58,6 +73,29 @@ def _infer_stage_from_token(token: str) -> str | None:
     if "3rd round" in token or token == "r3" or "third round" in token:
         return "round_3"
     return None
+
+
+def _infer_stage_from_rows_without_stage_tokens(rows: list[dict[str, Any]]) -> tuple[str | None, str]:
+    label_tokens: list[str] = []
+    for row in rows:
+        for key in _MATCH_LABEL_KEY_CANDIDATES:
+            value = row.get(key)
+            if value in (None, ""):
+                continue
+            token = _normalize_label_token(value)
+            if token:
+                label_tokens.append(token)
+
+    for token in label_tokens:
+        inferred = _infer_stage_from_token(token)
+        if inferred is not None:
+            return inferred, "fallback_match_label_token"
+
+    if len(rows) == 1:
+        return "final", "fallback_single_match_remaining"
+    if len(rows) == 2:
+        return "semifinal", "fallback_two_matches_remaining"
+    return None, "schedule_rows_present_but_stage_unknown"
 
 
 def _extract_rows(payload: Any) -> list[dict[str, Any]]:
@@ -91,22 +129,25 @@ def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
                     break
 
     inferred_stage = None
+    stage_inference_fallback = "none"
     for candidate in stage_tokens:
         inferred = _infer_stage_from_token(candidate)
         if inferred is not None:
             inferred_stage = inferred
             break
+    if inferred_stage is None and upcoming_match_count > 0:
+        inferred_stage, stage_inference_fallback = _infer_stage_from_rows_without_stage_tokens(rows)
+        if inferred_stage is not None:
+            stage_tokens.append(inferred_stage)
+    elif upcoming_match_count == 0:
+        stage_inference_fallback = "none"
 
     return {
         "has_schedule_rows": upcoming_match_count > 0,
         "upcoming_match_count": upcoming_match_count,
         "inferred_stage": inferred_stage,
         "stage_inference_available": inferred_stage is not None,
-        "stage_inference_fallback": (
-            "schedule_rows_present_but_stage_unknown"
-            if upcoming_match_count > 0 and inferred_stage is None
-            else "none"
-        ),
+        "stage_inference_fallback": stage_inference_fallback,
         "tournament_tier": tournament_tier,
         "stage_tokens": sorted(set(stage_tokens)),
     }
