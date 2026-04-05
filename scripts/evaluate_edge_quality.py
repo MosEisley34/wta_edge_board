@@ -435,9 +435,17 @@ def _strict_pair_operational_sample_pre_gate(
     baseline: dict[str, Any],
     candidate: dict[str, Any],
     config: EdgeQualityGateConfig,
+    minimums: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    min_scored = max(1, int(config.min_scored_signals_for_volatility))
-    min_matched = max(1, int(config.min_matched_events_for_volatility))
+    minimums = minimums or {}
+    min_scored = max(
+        1,
+        int(minimums.get("min_scored_signals_for_volatility", config.min_scored_signals_for_volatility)),
+    )
+    min_matched = max(
+        1,
+        int(minimums.get("min_matched_events_for_volatility", config.min_matched_events_for_volatility)),
+    )
     baseline_scored = int(baseline.get("scored_signals") or 0)
     baseline_matched = int(baseline.get("matched_events") or 0)
     candidate_scored = int(candidate.get("scored_signals") or 0)
@@ -2359,21 +2367,22 @@ def evaluate_edge_quality_compare_report(
             f"refuse to produce comparison report. compare_set={mixed_runs}"
         )
 
-    baseline_snapshot = _snapshot(rows, baseline_run_id, config)
-    candidate_snapshot = _snapshot(rows, candidate_run_id, config)
-    strict_pair_operational_pre_gate = _strict_pair_operational_sample_pre_gate(
-        baseline=baseline_snapshot,
-        candidate=candidate_snapshot,
-        config=config,
-    )
     threshold_profile = _resolve_threshold_profile(
         summary_row=_pick_run_summary(rows, candidate_run_id),
         candidate_run_id=candidate_run_id,
         ordered_run_ids=ordered_run_ids or _rolling_run_ids(rows),
         config=config,
     )
-    low_volume_mode = threshold_profile.get("low_volume_mode") or {}
+    baseline_snapshot = _snapshot(rows, baseline_run_id, config)
+    candidate_snapshot = _snapshot(rows, candidate_run_id, config)
     profile_floors = threshold_profile.get("sample_floors") or {}
+    strict_pair_operational_pre_gate = _strict_pair_operational_sample_pre_gate(
+        baseline=baseline_snapshot,
+        candidate=candidate_snapshot,
+        config=config,
+        minimums=profile_floors,
+    )
+    low_volume_mode = threshold_profile.get("low_volume_mode") or {}
     if (not strict_pair_operational_pre_gate["ok"]) and str(threshold_profile.get("active_profile")) != "strict_default":
         low_scored = max(1, int(profile_floors.get("min_scored_signals_for_volatility", config.min_scored_signals_for_volatility)))
         low_matched = max(1, int(profile_floors.get("min_matched_events_for_volatility", config.min_matched_events_for_volatility)))
@@ -2603,6 +2612,23 @@ def evaluate_edge_quality_compare_report(
     return {
         "schema": "edge_quality_compare_report_v1",
         "comparison_scope": "strict_pair_with_optional_window_fallback",
+        "threshold_profile": {
+            "active_profile": str(threshold_profile.get("active_profile") or "strict_default"),
+            "rationale": str(threshold_profile.get("rationale") or "strict defaults enforced"),
+            "fallback_mode_used": bool(threshold_profile.get("fallback_mode_used")),
+            "activation_reasons": list(threshold_profile.get("activation_reasons") or []),
+            "evidence_snapshot": dict(threshold_profile.get("evidence_snapshot") or {}),
+            "schedule_context": dict(threshold_profile.get("schedule_context") or {}),
+            "sample_floors": {
+                "min_scored_signals_for_volatility": int(
+                    profile_floors.get("min_scored_signals_for_volatility", config.min_scored_signals_for_volatility)
+                ),
+                "min_matched_events_for_volatility": int(
+                    profile_floors.get("min_matched_events_for_volatility", config.min_matched_events_for_volatility)
+                ),
+            },
+            "low_volume_mode": low_volume_mode,
+        },
         "window_health_summary": window_health_summary,
         "runbook_branch": runbook_branch,
         "runbook_path": runbook_path,

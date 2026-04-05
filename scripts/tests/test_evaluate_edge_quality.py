@@ -1257,8 +1257,104 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("blocked_low_volume_strict_sample", report["gate_verdict"])
         self.assertEqual("EDGE_QUALITY_GATE_BLOCKED_LOW_VOLUME_STRICT_SAMPLE", report["reason_code"])
         self.assertTrue(report["final_operator_summary"]["blocked_by_strict_sample_in_low_volume"])
+        self.assertIsNotNone(report["threshold_profile"])
+        self.assertEqual("ultra_low_volume_single_match", report["threshold_profile"]["active_profile"])
+        self.assertIn("upcoming_matches_low_volume", report["threshold_profile"]["activation_reasons"])
+        self.assertEqual(
+            10,
+            report["final_operator_summary"]["strict_pair_operational_pre_gate"]["minimums"][
+                "min_scored_signals_for_volatility"
+            ],
+        )
+        self.assertEqual(
+            5,
+            report["final_operator_summary"]["strict_pair_operational_pre_gate"]["minimums"][
+                "min_matched_events_for_volatility"
+            ],
+        )
         self.assertIn("schedule_context", report["evidence_bundle"])
         self.assertIn("schedule_context", report["final_operator_summary"])
+
+    def test_compare_report_operational_minimums_relax_under_low_volume_semifinal_profile(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=8, matched_events=4),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=8,
+                matched_events=4,
+                competition_stage="semifinal",
+                upcoming_match_count=3,
+            ),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                low_volume_min_scored_signals_for_volatility=8,
+                low_volume_min_matched_events_for_volatility=4,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+            fallback_recent_run_window_radius=1,
+            fallback_min_neighboring_pairs=1,
+        )
+        self.assertEqual("low_volume_semifinal_final", report["threshold_profile"]["active_profile"])
+        self.assertEqual(
+            8,
+            report["final_operator_summary"]["strict_pair_operational_pre_gate"]["minimums"][
+                "min_scored_signals_for_volatility"
+            ],
+        )
+        self.assertEqual(
+            4,
+            report["final_operator_summary"]["strict_pair_operational_pre_gate"]["minimums"][
+                "min_matched_events_for_volatility"
+            ],
+        )
+
+    def test_compare_report_strict_profile_keeps_default_operational_minimums(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=11, matched_events=6),
+            self._summary_row("run-2", "2026-03-02T00:00:00Z", edge_volatility=0.02, scored_signals=11, matched_events=6),
+        ]
+        report = evaluate_edge_quality_compare_report(
+            rows=rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                max_edge_volatility=0.03,
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                low_volume_min_scored_signals_for_volatility=6,
+                low_volume_min_matched_events_for_volatility=3,
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+            fallback_recent_run_window_radius=1,
+            fallback_min_neighboring_pairs=1,
+        )
+        self.assertIsNotNone(report["threshold_profile"])
+        self.assertEqual("strict_default", report["threshold_profile"]["active_profile"])
+        self.assertIn(
+            "insufficient_low_volume_evidence_keep_strict",
+            report["threshold_profile"]["activation_reasons"],
+        )
+        self.assertEqual(
+            10,
+            report["final_operator_summary"]["strict_pair_operational_pre_gate"]["minimums"][
+                "min_scored_signals_for_volatility"
+            ],
+        )
+        self.assertEqual(
+            5,
+            report["final_operator_summary"]["strict_pair_operational_pre_gate"]["minimums"][
+                "min_matched_events_for_volatility"
+            ],
+        )
 
     def test_candidate_only_marks_zero_scored_signals_as_non_decisive(self):
         rows = [
