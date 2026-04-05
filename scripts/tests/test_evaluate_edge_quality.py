@@ -1192,6 +1192,44 @@ class EvaluateEdgeQualityTests(unittest.TestCase):
         self.assertEqual("schedule_rows_present_but_stage_unknown", schedule_context["stage_inference_fallback"])
         self.assertIn("schedule_stage_inference_unavailable", report["threshold_profile"]["activation_reasons"])
 
+    def test_low_volume_profile_keeps_strict_thresholds_when_stage_confidence_low(self):
+        rows = [
+            self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=9, matched_events=4),
+            self._summary_row(
+                "run-2",
+                "2026-03-02T00:00:00Z",
+                edge_volatility=0.02,
+                scored_signals=9,
+                matched_events=4,
+                raw_schedule_rows=json.dumps(
+                    [
+                        {"event_id": "m1", "tournament_id": "miami", "start_time": "2026-03-02T12:00:00Z"},
+                        {"event_id": "m2", "tournament_id": "miami", "start_time": "2026-03-02T17:00:00Z"},
+                        {"event_id": "m3", "tournament_id": "doha", "start_time": "2026-03-03T13:00:00Z"},
+                    ]
+                ),
+            ),
+        ]
+        report = evaluate_edge_quality_gate(
+            rows,
+            baseline_run_id="run-1",
+            candidate_run_id="run-2",
+            config=EdgeQualityGateConfig(
+                min_scored_signals_for_volatility=10,
+                min_matched_events_for_volatility=5,
+                low_volume_min_scored_signals_for_volatility=8,
+                low_volume_min_matched_events_for_volatility=4,
+                low_volume_min_stage_inference_confidence="high",
+            ),
+            ordered_run_ids=["run-1", "run-2"],
+        )
+        self.assertEqual("strict_default", report["threshold_profile"]["active_profile"])
+        self.assertIn("inferred_stage_confidence_below_minimum", report["threshold_profile"]["activation_reasons"])
+        self.assertEqual(
+            "medium",
+            report["threshold_profile"]["schedule_context"]["stage_inference_confidence"],
+        )
+
     def test_low_volume_prefers_context_scoped_count_over_global_schedule_total(self):
         rows = [
             self._summary_row("run-1", "2026-03-01T00:00:00Z", edge_volatility=0.01, scored_signals=9, matched_events=4),

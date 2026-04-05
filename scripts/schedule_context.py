@@ -8,6 +8,7 @@ import glob
 import json
 import os
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 _STAGE_KEY_CANDIDATES: tuple[str, ...] = (
@@ -83,11 +84,21 @@ def _normalize_label_token(value: Any) -> str:
 def _infer_stage_from_token(token: str) -> str | None:
     if not token:
         return None
+    if token in {"f", "finals"}:
+        return "final"
+    if token in {"sf", "semi", "semis"}:
+        return "semifinal"
+    if token in {"qf", "quarters"}:
+        return "quarterfinal"
     if "final" in token and "semi" not in token and "quarter" not in token:
         return "final"
     if "semi" in token:
         return "semifinal"
     if "quarter" in token:
+        return "quarterfinal"
+    if " sf" in f" {token}" or token.startswith("sf "):
+        return "semifinal"
+    if " qf" in f" {token}" or token.startswith("qf "):
         return "quarterfinal"
     if "round of 16" in token or "r16" in token:
         return "round_of_16"
@@ -104,27 +115,84 @@ def _infer_stage_from_token(token: str) -> str | None:
     return None
 
 
-def _infer_stage_from_rows_without_stage_tokens(rows: list[dict[str, Any]]) -> tuple[str | None, str]:
-    label_tokens: list[str] = []
-    for row in rows:
-        for key in _MATCH_LABEL_KEY_CANDIDATES:
-            value = row.get(key)
-            if value in (None, ""):
-                continue
-            token = _normalize_label_token(value)
-            if token:
-                label_tokens.append(token)
+def _parse_start_time(value: Any) -> datetime | None:
+    token = str(value or "").strip()
+    if not token:
+        return None
+    if token.endswith("Z"):
+        token = token[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(token)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
-    for token in label_tokens:
-        inferred = _infer_stage_from_token(token)
+
+def _row_scope_token(row: dict[str, Any]) -> str:
+    for key in _TOURNAMENT_CONTEXT_KEY_CANDIDATES:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        token = _normalize_scope_token(value)
+        if token:
+            return token
+    return ""
+
+
+def _row_hint_stages(row: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    for key in _STAGE_KEY_CANDIDATES + _MATCH_LABEL_KEY_CANDIDATES:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        inferred = _infer_stage_from_token(_normalize_label_token(value))
         if inferred is not None:
-            return inferred, "fallback_match_label_token"
+            hints.append(inferred)
+    return hints
 
-    if len(rows) == 1:
-        return "final", "fallback_single_match_remaining"
-    if len(rows) == 2:
-        return "semifinal", "fallback_two_matches_remaining"
-    return None, "schedule_rows_present_but_stage_unknown"
+
+def _infer_stage_from_rows_without_stage_tokens(rows: list[dict[str, Any]]) -> tuple[str | None, str, str, str]:
+    stage_votes: dict[str, int] = {}
+    stage_order: list[str] = []
+    for row in rows:
+        for inferred in _row_hint_stages(row):
+            if inferred not in stage_votes:
+                stage_votes[inferred] = 0
+                stage_order.append(inferred)
+            stage_votes[inferred] += 1
+    if stage_votes:
+        winner = sorted(stage_votes.items(), key=lambda item: (-item[1], stage_order.index(item[0])))[0]
+        stage, votes = winner
+        confidence = "high" if votes >= 2 else "medium"
+        return stage, "fallback_match_label_token", confidence, "label_or_round_hint"
+
+    scoped_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        scope = _row_scope_token(row) or "__unknown__"
+        scoped_rows.setdefault(scope, []).append(row)
+    ranked_scopes = sorted(scoped_rows.items(), key=lambda item: -len(item[1]))
+    primary_scope, scope_rows = ranked_scopes[0]
+    secondary_count = len(ranked_scopes[1][1]) if len(ranked_scopes) > 1 else 0
+    dominant_ratio = float(len(scope_rows)) / float(max(1, len(rows)))
+    if len(scoped_rows) > 1 and (len(scope_rows) < 2 or len(scope_rows) <= secondary_count or dominant_ratio < 0.5):
+        return None, "schedule_rows_present_but_stage_unknown", "low", "mixed_tournament_distribution"
+
+    scoped_count = len(scope_rows)
+    parsed_times = [_parse_start_time(row.get("start_time")) for row in scope_rows]
+    parsed_times = [item for item in parsed_times if item is not None]
+    if scoped_count == 2:
+        cluster_hours = None
+        if len(parsed_times) == 2:
+            delta = abs((max(parsed_times) - min(parsed_times)).total_seconds()) / 3600.0
+            cluster_hours = float(delta)
+        if cluster_hours is None or cluster_hours <= 8.0:
+            confidence = "high" if (cluster_hours is not None and cluster_hours <= 4.0 and primary_scope != "__unknown__") else "medium"
+            return "semifinal", "fallback_two_matches_remaining", confidence, "scope_row_count_with_time_cluster"
+    if scoped_count == 1 and primary_scope != "__unknown__":
+        return "final", "fallback_single_match_remaining", "medium", "scope_row_count"
+    return None, "schedule_rows_present_but_stage_unknown", "low", "insufficient_progression_hints"
 
 
 def _extract_rows(payload: Any) -> list[dict[str, Any]]:
@@ -205,17 +273,28 @@ def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
 
     inferred_stage = None
     stage_inference_fallback = "none"
+    stage_inference_confidence = "none"
+    stage_inference_source = "none"
     for candidate in stage_tokens:
         inferred = _infer_stage_from_token(candidate)
         if inferred is not None:
             inferred_stage = inferred
+            stage_inference_confidence = "high"
+            stage_inference_source = "direct_stage_token"
             break
     if inferred_stage is None and global_upcoming_match_count > 0:
-        inferred_stage, stage_inference_fallback = _infer_stage_from_rows_without_stage_tokens(rows)
+        (
+            inferred_stage,
+            stage_inference_fallback,
+            stage_inference_confidence,
+            stage_inference_source,
+        ) = _infer_stage_from_rows_without_stage_tokens(rows)
         if inferred_stage is not None:
             stage_tokens.append(inferred_stage)
     elif global_upcoming_match_count == 0:
         stage_inference_fallback = "none"
+        stage_inference_confidence = "none"
+        stage_inference_source = "none"
 
     scoped_rows = list(rows)
     if inferred_stage is not None:
@@ -270,6 +349,8 @@ def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
         "inferred_stage": inferred_stage,
         "stage_inference_available": inferred_stage is not None,
         "stage_inference_fallback": stage_inference_fallback,
+        "stage_inference_confidence": stage_inference_confidence,
+        "stage_inference_source": stage_inference_source,
         "tournament_tier": tournament_tier,
         "stage_tokens": sorted(set(stage_tokens)),
     }
