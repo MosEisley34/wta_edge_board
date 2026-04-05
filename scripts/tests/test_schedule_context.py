@@ -1,11 +1,13 @@
 import unittest
 import sys
+import tempfile
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from schedule_context import compute_schedule_context
+from schedule_context import compute_schedule_context, schedule_context_from_export_dir
 
 
 class ScheduleContextTests(unittest.TestCase):
@@ -43,6 +45,31 @@ class ScheduleContextTests(unittest.TestCase):
         self.assertFalse(empty["has_schedule_rows"])
         self.assertEqual(0, empty["upcoming_match_count"])
         self.assertEqual("none", empty["stage_inference_fallback"])
+
+    def test_schedule_context_from_export_dir_reads_raw_schedule_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            export_dir = Path(tmp)
+            (export_dir / "Raw_Schedule.json").write_text(
+                json.dumps(
+                    [
+                        {"event_id": "m1", "round": "Semifinal", "tournament_tier": "WTA 1000"},
+                        {"event_id": "m2", "round": "Semifinal", "tournament_tier": "WTA 1000"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            context = schedule_context_from_export_dir(str(export_dir))
+        self.assertTrue(context["schedule_artifacts_available"])
+        self.assertEqual(2, context["upcoming_match_count"])
+        self.assertEqual("semifinal", context["inferred_stage"])
+        self.assertEqual("raw_schedule_artifact_loaded", context["context_source_reason"])
+
+    def test_schedule_context_from_export_dir_fallback_is_explicit_non_null_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            context = schedule_context_from_export_dir(str(Path(tmp)))
+        self.assertFalse(context["schedule_artifacts_available"])
+        self.assertEqual("raw_schedule_artifact_missing", context["context_source_reason"])
+        self.assertEqual(0, context["upcoming_match_count"])
 
 
 if __name__ == "__main__":

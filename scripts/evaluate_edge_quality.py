@@ -31,7 +31,7 @@ from run_summary_cardinality import (
     merge_run_summary_rows_for_cardinality,
 )
 from preflight_guard import enforce_preflight_guard
-from schedule_context import compute_schedule_context
+from schedule_context import compute_schedule_context, fallback_schedule_context, schedule_context_from_export_dir
 
 RUN_LOG_TYPED_FIELDS: dict[str, type] = {
     "feature_completeness": float,
@@ -2345,6 +2345,7 @@ def evaluate_edge_quality_compare_report(
     ordered_run_ids: list[str] | None = None,
     fallback_recent_run_window_radius: int = 3,
     fallback_min_neighboring_pairs: int = 4,
+    export_dir: str = "",
 ) -> dict[str, Any]:
     canonical_stake_policy = StakePolicyConfig.from_legacy(
         enabled=bool(config.stake_policy_enabled),
@@ -2600,6 +2601,20 @@ def evaluate_edge_quality_compare_report(
         },
     }
     schedule_context_metadata = dict(((pair_level_result.get("threshold_profile") or {}).get("schedule_context")) or {})
+    export_schedule_context = (
+        schedule_context_from_export_dir(export_dir)
+        if str(export_dir or "").strip()
+        else fallback_schedule_context("export_dir_not_provided")
+    )
+    candidate_run_order = ordered_run_ids or _rolling_run_ids(rows)
+    remaining_pairs_after_candidate = 0
+    if candidate_run_id in candidate_run_order:
+        candidate_index = candidate_run_order.index(candidate_run_id)
+        remaining_pairs_after_candidate = max(0, len(candidate_run_order) - candidate_index - 1)
+    top_level_schedule_context = dict(export_schedule_context or fallback_schedule_context("schedule_context_unavailable"))
+    top_level_schedule_context.setdefault("upcoming_match_count", 0)
+    top_level_schedule_context.setdefault("stage_tokens", [])
+    top_level_schedule_context["remaining_pairs_after_candidate"] = int(remaining_pairs_after_candidate)
 
     compare_reason_code = {
         "passed_quality_gate": "EDGE_QUALITY_GATE_PASSED",
@@ -2630,6 +2645,7 @@ def evaluate_edge_quality_compare_report(
             "low_volume_mode": low_volume_mode,
         },
         "window_health_summary": window_health_summary,
+        "schedule_context": top_level_schedule_context,
         "runbook_branch": runbook_branch,
         "runbook_path": runbook_path,
         "stake_policy_enabled": bool(config.stake_policy_enabled),
@@ -3643,6 +3659,7 @@ def main() -> int:
                 ordered_run_ids=_rolling_run_ids(rows),
                 fallback_recent_run_window_radius=max(1, int(args.fallback_recent_run_window_radius)),
                 fallback_min_neighboring_pairs=max(1, int(args.fallback_min_neighboring_pairs)),
+                export_dir=str(args.path),
             )
         except ValueError as exc:
             if "Expected exactly one runEdgeBoard summary row for run_id=" not in str(exc):
@@ -3676,6 +3693,7 @@ def main() -> int:
                 ordered_run_ids=_rolling_run_ids(rows),
                 fallback_recent_run_window_radius=max(1, int(args.fallback_recent_run_window_radius)),
                 fallback_min_neighboring_pairs=max(1, int(args.fallback_min_neighboring_pairs)),
+                export_dir=str(args.path),
             )
         except ValueError as exc:
             if "Expected exactly one runEdgeBoard summary row for run_id=" not in str(exc):

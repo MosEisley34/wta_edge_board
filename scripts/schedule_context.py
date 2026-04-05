@@ -3,6 +3,11 @@
 
 from __future__ import annotations
 
+import csv
+import glob
+import json
+import os
+from pathlib import Path
 from typing import Any
 
 _STAGE_KEY_CANDIDATES: tuple[str, ...] = (
@@ -106,3 +111,43 @@ def compute_schedule_context(raw_schedule_payload: Any) -> dict[str, Any]:
         "stage_tokens": sorted(set(stage_tokens)),
     }
 
+
+def fallback_schedule_context(reason: str = "schedule_artifacts_unavailable") -> dict[str, Any]:
+    context = compute_schedule_context([])
+    context["schedule_artifacts_available"] = False
+    context["context_source_reason"] = str(reason)
+    return context
+
+
+def schedule_context_from_export_dir(export_dir: str) -> dict[str, Any]:
+    candidate = Path(str(export_dir or "")).expanduser()
+    if not str(export_dir or "").strip():
+        return fallback_schedule_context("export_dir_missing")
+    if candidate.is_file():
+        return fallback_schedule_context("export_dir_is_file")
+    if not candidate.exists():
+        return fallback_schedule_context("export_dir_not_found")
+    if not candidate.is_dir():
+        return fallback_schedule_context("export_dir_not_directory")
+
+    artifact_paths: list[Path] = []
+    for pattern in ("**/*Raw_Schedule*.json", "**/*Raw_Schedule*.csv"):
+        for path in glob.glob(os.path.join(str(candidate), pattern), recursive=True):
+            artifact_paths.append(Path(path))
+    if not artifact_paths:
+        return fallback_schedule_context("raw_schedule_artifact_missing")
+
+    artifact = max(artifact_paths, key=lambda path: path.stat().st_mtime)
+    rows: list[dict[str, Any]] = []
+    if artifact.suffix.lower() == ".json":
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
+        rows = _extract_rows(payload)
+    elif artifact.suffix.lower() == ".csv":
+        with artifact.open("r", encoding="utf-8", newline="") as handle:
+            rows = [dict(row) for row in csv.DictReader(handle)]
+
+    context = compute_schedule_context(rows)
+    context["schedule_artifacts_available"] = True
+    context["context_source_reason"] = "raw_schedule_artifact_loaded"
+    context["schedule_artifact_path"] = str(artifact)
+    return context
